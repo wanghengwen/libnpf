@@ -104,6 +104,14 @@ add_library(npf_common STATIC
   ${_npf_tls_src}
   src/proto/sig.c
   src/proto/wsrelay.c
+
+  # NAT traversal: address probing, NAT detection, candidates, PCP / NAT-PMP, punching
+  src/ice/bind.c
+  src/ice/natprobe.c
+  src/ice/candidates.c
+  src/ice/portmap.c
+  src/punch/punch.c
+  src/punch/punch_ev.c
 )
 target_include_directories(npf_common PUBLIC include PRIVATE third_party/log)
 target_link_libraries(npf_common PUBLIC monocypher)
