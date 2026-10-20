@@ -34,6 +34,18 @@ else()
 endif()
 set(NPF_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
+# AnLiu: the vendored copy in third_party/anliu (see UPSTREAM.md there for the
+# upstream commit); NPF_ANLIU_DIR points elsewhere only for experiments.
+set(NPF_ANLIU_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/anliu" CACHE PATH "Directory holding anliu.h / anliu.c")
+if(NOT EXISTS "${NPF_ANLIU_DIR}/anliu.c")
+  message(FATAL_ERROR "anliu.c not found in ${NPF_ANLIU_DIR}")
+endif()
+message(STATUS "AnLiu: ${NPF_ANLIU_DIR}")
+
+add_library(anliu STATIC "${NPF_ANLIU_DIR}/anliu.c")
+target_include_directories(anliu PUBLIC "${NPF_ANLIU_DIR}")
+npf_target_options(anliu)
+
 # Server builds can use OpenSSL without the process-wide mbedTLS lock.
 option(NPF_USE_OPENSSL "Use OpenSSL 3 for TLS and application crypto" OFF)
 if(NPF_USE_OPENSSL)
@@ -112,9 +124,35 @@ add_library(npf_common STATIC
   src/ice/portmap.c
   src/punch/punch.c
   src/punch/punch_ev.c
+
+  # sessions: the node, calls, the tunnel and its policy, UDP forwards, media, local state
+  src/node/conf.c
+  src/node/local.c
+  src/node/resources.c
+  src/node/node.c
+  src/node/nat.c
+  src/node/nodemap.c
+  src/node/sources.c
+  src/node/setup.c
+  src/node/callee.c
+  src/node/call.c
+  src/node/media.c
+  src/node/udpfwd.c
+  src/tunnel/tunnel.c
+  src/tunnel/policy.c
+  src/version.c
 )
+# the version (npf_version, the installers' names): the program's project(), else libnpf's
+target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
+# the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)
+if(NPF_HAS_PEERS)
+  target_sources(npf_common PRIVATE src/node/peers.c)
+else()
+  target_sources(npf_common PRIVATE src/node/peers_none.c)
+  target_compile_definitions(npf_common PUBLIC NPF_NO_PEERS)
+endif()
 target_include_directories(npf_common PUBLIC include PRIVATE third_party/log)
-target_link_libraries(npf_common PUBLIC monocypher)
+target_link_libraries(npf_common PUBLIC anliu monocypher)
 if(NPF_USE_OPENSSL)
   target_compile_definitions(npf_common PRIVATE NPF_USE_OPENSSL)
   target_link_libraries(npf_common PUBLIC OpenSSL::Crypto OpenSSL::SSL)
@@ -133,4 +171,8 @@ if(WIN32)
   # Windows 10 or later: WSAPoll, GetSystemTimePreciseAsFileTime
   target_compile_definitions(npf_common PUBLIC _WIN32_WINNT=0x0A00 WINVER=0x0A00)
   target_link_libraries(npf_common PUBLIC ws2_32 iphlpapi bcrypt winmm advapi32)
+endif()
+
+if(NPF_BUILD_TESTS)
+  add_subdirectory(tests)
 endif()
