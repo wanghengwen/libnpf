@@ -53,6 +53,29 @@ if(NPF_TSAN)
   target_compile_options(monocypher PRIVATE -fsanitize=thread)
 endif()
 
+# mbedTLS 3.6 (Apache-2.0): TLS 1.3 client used only as camouflage (security.md 7.1, 12.2).
+# Every library file is compiled; the NPF config disables what is not needed.
+option(NPF_WITH_TLS "Build wss:// and https:// support" ON)
+if(NPF_WITH_TLS AND NOT NPF_USE_OPENSSL)
+  file(GLOB _mbedtls_src "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/library/*.c")
+  add_library(npf_mbedtls STATIC ${_mbedtls_src})
+  target_include_directories(npf_mbedtls PUBLIC
+    third_party/mbedtls/include third_party/mbedtls-config
+    PRIVATE third_party/mbedtls/library)
+  target_compile_definitions(npf_mbedtls PUBLIC MBEDTLS_CONFIG_FILE="npf_mbedtls_config.h")
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(npf_mbedtls PRIVATE -ffunction-sections -fdata-sections -w)
+    if(NPF_TSAN)
+      target_compile_options(npf_mbedtls PRIVATE -fsanitize=thread)
+    endif()
+  endif()
+endif()
+
+set(_npf_tls_src src/ws/tls.c)
+if(NPF_USE_OPENSSL)
+  set(_npf_tls_src src/ws/tls_openssl.c)
+endif()
+
 add_library(npf_common STATIC
   # the platform layer: system calls, the event loop, logging, name resolution
   src/platform/platform.c
@@ -72,12 +95,26 @@ add_library(npf_common STATIC
   src/crypto/noise.c
   src/crypto/cpace.c
   src/crypto/cert.c
+
+  # wire formats and clients: JSON, DNS, HTTP, WebSocket and TLS, signaling, the WS relay
+  src/proto/json.c
+  src/proto/dns.c
+  src/proto/http.c
+  src/ws/ws.c
+  ${_npf_tls_src}
+  src/proto/sig.c
+  src/proto/wsrelay.c
 )
 target_include_directories(npf_common PUBLIC include PRIVATE third_party/log)
 target_link_libraries(npf_common PUBLIC monocypher)
 if(NPF_USE_OPENSSL)
   target_compile_definitions(npf_common PRIVATE NPF_USE_OPENSSL)
   target_link_libraries(npf_common PUBLIC OpenSSL::Crypto OpenSSL::SSL)
+elseif(NPF_WITH_TLS)
+  target_link_libraries(npf_common PUBLIC npf_mbedtls)
+endif()
+if(NPF_WITH_TLS)
+  target_compile_definitions(npf_common PRIVATE NPF_WITH_TLS)
 endif()
 npf_target_options(npf_common)
 if(NOT WIN32)
