@@ -1,0 +1,34 @@
+; libnpf: the functions of npf.h (Windows DLL exports)
+EXPORTS
+    npf_version
+    npf_api_version
+    npf_options_init
+    npf_callbacks_init
+    npf_create
+    npf_start
+    npf_run
+    npf_stop
+    npf_destroy
+    npf_free
+    npf_runtime_new
+    npf_runtime_free
+    npf_status_json
+    npf_config_json
+    npf_log_json
+    npf_config_get
+    npf_config_set
+    npf_peer_add
+    npf_peer_add_argv
+    npf_peer_remove
+    npf_forward_add
+    npf_forward_del
+    npf_command
+    npf_request
+    npf_sessions_json
+    npf_public_json
+    npf_session_send
+    npf_media_opt_default
+    npf_media_open
+    npf_media_send
+    npf_media_stats_get
+    npf_media_close

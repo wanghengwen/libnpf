@@ -141,17 +141,39 @@ add_library(npf_common STATIC
   src/tunnel/tunnel.c
   src/tunnel/policy.c
   src/version.c
+
+  # the library: npf.h, the engine, the commands, published resources, modules
+  src/api/engine.c
+  src/api/cmd.c
+  src/api/nodes.c
+  src/api/publish.c
+  src/api/platform.c
+  src/api/module.c
+  src/api/api.c
 )
 # the version (npf_version, the installers' names): the program's project(), else libnpf's
 target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
+# the modules a program builds in (include/npf/module.h): its sources, one of
+# them defining the table npf_modules; none by default. A program sets
+# before add_subdirectory: NPF_MODULE_SOURCES, NPF_MODULE_INCLUDES (their
+# include directories), NPF_MODULE_LIBS (the static libraries they need,
+# CMake targets: in libnpf.a too)
+if(NPF_MODULE_SOURCES)
+  target_sources(npf_common PRIVATE ${NPF_MODULE_SOURCES})
+  target_include_directories(npf_common PRIVATE ${NPF_MODULE_INCLUDES})
+  target_link_libraries(npf_common PUBLIC ${NPF_MODULE_LIBS})
+else()
+  target_sources(npf_common PRIVATE src/api/modules_none.c)
+endif()
 # the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)
 if(NPF_HAS_PEERS)
-  target_sources(npf_common PRIVATE src/node/peers.c)
+  target_sources(npf_common PRIVATE src/node/peers.c src/api/cmd_peers.c)
 else()
-  target_sources(npf_common PRIVATE src/node/peers_none.c)
+  target_sources(npf_common PRIVATE src/node/peers_none.c src/api/cmd_peers_none.c)
   target_compile_definitions(npf_common PUBLIC NPF_NO_PEERS)
 endif()
-target_include_directories(npf_common PUBLIC include PRIVATE third_party/log)
+target_include_directories(npf_common PUBLIC include PRIVATE third_party/log src/api)
+# (src/api: the internals, npf_int.h, for the modules)
 target_link_libraries(npf_common PUBLIC anliu monocypher)
 if(NPF_USE_OPENSSL)
   target_compile_definitions(npf_common PRIVATE NPF_USE_OPENSSL)
@@ -173,6 +195,71 @@ if(WIN32)
   target_link_libraries(npf_common PUBLIC ws2_32 iphlpapi bcrypt winmm advapi32)
 endif()
 
+# ---- libnpf: the library for other programs (include/npf.h) ----
+# Every object is built with hidden visibility: only the NPF_API functions
+# of npf.h are exported. The shared library links the internals
+# statically; the static libnpf.a (Linux) is one relocatable object with
+# everything but npf.h made local, so the bundled AnLiu, Monocypher and
+# mbedTLS cannot clash with the application's own copies.
+option(NPF_BUILD_LIB "Build libnpf (shared, and static on Linux) for other programs" ON)
+if(NPF_BUILD_LIB AND CMAKE_EXE_LINKER_FLAGS MATCHES "-static")
+  message(STATUS "libnpf: not with -static programs (the static node build)")
+  set(NPF_BUILD_LIB OFF CACHE BOOL "" FORCE)
+endif()
+if(NPF_BUILD_LIB)
+  include(GNUInstallDirs)
+  add_library(npf_shared SHARED src/api/api.c)
+  set_target_properties(npf_shared PROPERTIES OUTPUT_NAME npf VERSION ${NPF_SOVERSION}.0.0 SOVERSION ${NPF_SOVERSION})
+  target_compile_definitions(npf_shared PRIVATE NPF_SHARED NPF_BUILDING)
+  target_include_directories(npf_shared PUBLIC include PRIVATE src/api)
+  target_link_libraries(npf_shared PRIVATE npf_common)
+  npf_target_options(npf_shared)
+  if(WIN32)
+    target_sources(npf_shared PRIVATE src/api/npf.def)
+  elseif(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE)
+    target_link_options(npf_shared PRIVATE -Wl,--no-undefined)
+  endif()
+  install(TARGETS npf_shared
+          LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES include/npf.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+  set(NPF_PC_PRIVATE "-lpthread")
+  set(NPF_PC_REQUIRES "")
+  if(NPF_USE_OPENSSL)
+    set(NPF_PC_REQUIRES "openssl >= 3.0")
+  endif()
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_OBJCOPY AND CMAKE_LINKER AND NOT NPF_SANITIZE)
+    set(_npf_parts $<TARGET_FILE:npf_common> $<TARGET_FILE:anliu> $<TARGET_FILE:monocypher>)
+    if(NPF_WITH_TLS AND NOT NPF_USE_OPENSSL)
+      list(APPEND _npf_parts $<TARGET_FILE:npf_mbedtls>)
+    endif()
+    foreach(_l ${NPF_MODULE_LIBS})
+      list(APPEND _npf_parts $<TARGET_FILE:${_l}>)
+    endforeach()
+    add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libnpf.a
+      COMMAND ${CMAKE_LINKER} -r -o npf_all.o --whole-archive ${_npf_parts} --no-whole-archive
+      COMMAND ${CMAKE_OBJCOPY} --localize-hidden npf_all.o
+      COMMAND ${CMAKE_COMMAND} -E rm -f libnpf.a
+      COMMAND ${CMAKE_AR} rcs libnpf.a npf_all.o
+      COMMAND ${CMAKE_COMMAND} -E rm -f npf_all.o
+      DEPENDS npf_common anliu monocypher $<$<AND:$<BOOL:${NPF_WITH_TLS}>,$<NOT:$<BOOL:${NPF_USE_OPENSSL}>>>:npf_mbedtls>
+              ${NPF_MODULE_LIBS}
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+      COMMENT "libnpf.a: one object, internals local"
+      VERBATIM)
+    add_custom_target(npf_static ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/libnpf.a)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libnpf.a DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  endif()
+  set(PROJECT_VERSION ${npf_VERSION})
+  configure_file(npf.pc.in ${CMAKE_CURRENT_BINARY_DIR}/npf.pc @ONLY)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/npf.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+endif()
+
 if(NPF_BUILD_TESTS)
   add_subdirectory(tests)
+endif()
+if(NPF_LIB_TOP AND NPF_BUILD_EXAMPLES AND NPF_BUILD_LIB AND NOT WIN32)
+  add_subdirectory(examples)
 endif()

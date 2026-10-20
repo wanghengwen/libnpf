@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/../..
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: libnpf
+Description: NAS P2P networking: sessions, port forwards, application data and media over AnLiu
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lnpf
+Requires.private: @NPF_PC_REQUIRES@
+Libs.private: @NPF_PC_PRIVATE@
+Cflags: -I${includedir}

@@ -1,3 +1,4 @@
+#include "npf.h"                    /* npf_version is also public */
 #include "npf/version.h"
 
 /* the project's version (CMakeLists.txt project()): the only place it is written */
