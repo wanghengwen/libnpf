@@ -33,7 +33,8 @@ typedef struct npf_mod_cmd {
 
 typedef struct npf_module {
     const char *name;
-    /* npf_create, once the node and its peers are there: the module's state
+    /* npf_create (its thread), once the node is there, before the saved
+     * peers are brought back: the module's state
      * (npf_mod_set_state); 0, or -1 with err (the instance is not made: this
      * module frees what it made, the modules made before it are destroyed) */
     int  (*create)(npf_t *n, char *err, size_t errcap);
@@ -68,7 +69,7 @@ typedef struct npf_module {
                       const struct npf_sublink_stats *st);
     void (*peer_refused)(npf_t *n, npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from,
                          const char *why, int opened);
-    /* the user removes a peer (node del): 1 when the module opens it again
+    /* a peer is removed (npf_peer_remove_id): 1 when the module opens it again
      * (its sync below), so the reply says so */
     int  (*peer_removing)(npf_t *n, npf_peer *p);
     void (*peer_removed)(npf_t *n);

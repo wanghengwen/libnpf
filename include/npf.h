@@ -16,8 +16,8 @@
  * configuration npf.conf and what it names: the device credential, the root
  * keys, the built-in server list); data_dir is where it keeps what changes
  * (identity, number, pairing state, pinned peer keys, account certificate,
- * the saved server list, and local.conf: settings, peers and port forwards
- * saved at run time, which override and extend npf.conf).
+ * the saved server list, and local.json: settings, peers, port forwards and
+ * resources saved at run time; its settings override npf.conf's).
  *
  * Lifecycle and threads (one instance):
  *   npf_create -> [calls] -> npf_start | npf_run -> [calls] -> npf_stop
@@ -170,7 +170,7 @@ typedef struct npf_callbacks {
     /* a log line ("date time level message"), level NPF_LEVEL_*; without
      * this callback lines go to stderr */
     void (*log)(void *user, int level, const char *line);
-    /* events, details in JSON: "online" {server}, "offline" {why}, "enrolled"
+    /* events, details in JSON: "online" {server, account_id}, "offline" {why}, "enrolled"
      * {number}, "enroll_failed" {error, reason, retry_in} (one key per model:
      * the platform refused the enrolment; reason: docs/protocol/signaling.md,
      * enroll; tried again in about retry_in seconds), "account" {account_id
@@ -250,7 +250,7 @@ typedef struct npf_options {
     const char *data_dir;       /* writable; NULL: conf_dir */
     const char *conf_file;      /* NULL: "npf.conf" in conf_dir (an absolute path also works) */
     /* settings on top of the configuration, "key = value" lines (tests,
-     * command-line options); local.conf still overrides them */
+     * command-line options); local.json's settings still override them */
     const char *overrides;
     int         role;           /* NPF_ROLE_NODE: long running (callable with a number, saved peers,
                                    router port mapping); NPF_ROLE_CLIENT: one-off tasks (account,
@@ -311,7 +311,7 @@ NPF_API char *npf_log_json(npf_t *n, int max);
 /* a setting in effect ("" when unset); NPF_ENOENT: not a configuration key,
  * NPF_ETOOBIG: out too small. Secrets read "(hidden)" */
 NPF_API int   npf_config_get(npf_t *n, const char *key, char *out, size_t cap);
-/* save: also into local.conf (data_dir). NPF_OK: in effect now; 1: saved,
+/* save: also into local.json (data_dir). NPF_OK: in effect now; 1: saved,
  * in effect at the next start (a start-up setting) */
 NPF_API int   npf_config_set(npf_t *n, const char *key, const char *value, int save, char *err, size_t errcap);
 
@@ -448,8 +448,8 @@ typedef struct npf_forward_opt {
 
 enum { NPF_FWD_WAITING = 0,            /* for the session (-R: for the peer to listen) */
        NPF_FWD_UP,                     /* the listener works (here, or on the peer for -R) */
-       NPF_FWD_FAILED };               /* the rule as a whole: why_code; tried again with the next session
-                                          (not after NPF_FWD_WHY_FORBIDDEN) */
+       NPF_FWD_FAILED };               /* the rule as a whole: why_code; tried again with backoff
+                                          (NPF_FWD_WHY_FORBIDDEN: with the next session only) */
 enum { NPF_FWD_WHY_NONE = 0,
        NPF_FWD_WHY_PORT_IN_USE,        /* the port here is taken */
        NPF_FWD_WHY_BIND,               /* the listen address cannot be bound here */
