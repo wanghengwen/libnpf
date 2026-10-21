@@ -114,8 +114,8 @@ static void nat_settled(npf_node *n)
         struct sockaddr_storage ss;
         memset(&ss, 0, sizeof ss);
         memcpy(&ss, &n->srflx, sizeof n->srflx);
-        npf_log("nat: udp=%d map=%s alloc=%s srflx=%s cands=%d", n->nat_udp,
-                npf_nat_mapping_str(n->nat.mapping), alloc_str(n->nat.allocation),
+        npf_log("nat: udp=%d map=%s alloc=%s filter=%s srflx=%s cands=%d", n->nat_udp,
+                npf_nat_mapping_str(n->nat.mapping), alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
                 n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands);
     }
     if (n->repunch_on_nat && n->online) {   /* a network check: the relayed calls try for a direct path again */
@@ -151,6 +151,7 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
             n->nat.seq_delta = was.seq_delta;
             n->nat.block_lo = was.block_lo;
             n->nat.block_hi = was.block_hi;
+            n->nat.filtering = was.filtering;
         }
         n->nat_udp = 1;
         n->srflx = res->mapped[0];
@@ -273,6 +274,7 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
     npf_jw_kstr(w, "map", n->nat_valid && n->nat_udp ? npf_nat_mapping_str(n->nat.mapping) : "UNKNOWN");
     npf_jw_kstr(w, "alloc", n->nat_valid && n->nat_udp ? alloc_str(n->nat.allocation) : "UNKNOWN");
     npf_jw_kint(w, "delta", n->nat.seq_delta);
+    npf_jw_kstr(w, "filter", n->nat_valid && n->nat_udp ? npf_nat_filter_str(n->nat.filtering) : "UNKNOWN");
     if (n->nat.allocation == NPF_ALLOC_BLOCK) {
         npf_jw_key(w, "block");
         npf_jw_arr(w);

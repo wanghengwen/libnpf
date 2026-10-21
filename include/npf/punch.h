@@ -6,6 +6,15 @@
  *   S3   birthday brute force — one EIM side (easy), one hard side; the hard
  *                             side opens N sockets to the easy srflx and the
  *                             easy side sprays M PROBEs over the hard public IP.
+ *                             S4 (a hard sprayer, the other side's filter lets
+ *                             in any port of an IP it sent to) runs as S3.
+ *   S2B  two sequential NATs — each side measures a fresh socket's mapping,
+ *                             learns the peer's (npf_punch_peer_port) and sends
+ *                             to the ports the peer's NAT gives next, the
+ *                             caller ascending, the callee descending.
+ *   S5   slow birthday       — two small port blocks: both sides send from one
+ *                             fresh socket to random ports of the peer's block,
+ *                             a few a second, for minutes.
  *
  * S1/S0 work over IPv4 or IPv6 (plan.family). S3 is IPv4 only (it depends on
  * NAT port behaviour; IPv6 has no NAT, so S1/S0 covers it).
@@ -26,7 +35,7 @@
 #define NPF_PKT_NOMINATE_ACK  6
 
 enum { NPF_PUNCH_CONTROLLING = 0, NPF_PUNCH_CONTROLLED = 1 };
-enum { NPF_PUNCH_S1 = 1, NPF_PUNCH_S3 = 3 };
+enum { NPF_PUNCH_S1 = 1, NPF_PUNCH_S3 = 3, NPF_PUNCH_S2B = 20, NPF_PUNCH_S5 = 5 };
 enum { NPF_PUNCH_EASY = 0, NPF_PUNCH_HARD = 1 };
 
 #define NPF_PUNCH_MAX_SOCKETS 512
@@ -42,11 +51,14 @@ typedef struct npf_punch_plan {
     struct sockaddr_storage peer_srflx;  /* peer address to send to (S1/S0; S3 hard -> easy srflx) */
     socklen_t peer_srflx_len;
     struct in_addr peer_ip4;        /* S3 easy: hard side public IPv4 to spray */
-    uint16_t range_lo, range_hi;    /* spray port range; 0,0 = [1024,65535] */
+    uint16_t range_lo, range_hi;    /* spray port range; 0,0 = [1024,65535]; lo > hi: it wraps past 65535 */
     int      n_sockets;             /* S3 hard socket count */
     int      m_total;               /* S3 easy spray count */
-    int      pps;                   /* S3 easy spray rate */
+    int      pps;                   /* S3 easy spray rate; S5 both sides */
     int      timeout_ms;
+    /* S2B (nat-traversal.md 7.6) */
+    int      own_delta, peer_delta; /* the NATs' allocation steps */
+    int      window, passes;        /* probes a pass, passes */
 } npf_punch_plan;
 
 typedef struct npf_punch_result {
@@ -60,6 +72,13 @@ typedef struct npf_punch_result {
     int      probes_recv;
     int      acks_recv;
     int      rtt_ms;                /* NOMINATE round trip (controlling), else -1 */
+    /* what the round showed of the peer's NAT, for the rounds after it
+     * (nat-traversal.md 7.8): the source ports of its probes (its mappings
+     * toward this side), and probes from ports this side never sent to (this
+     * side's filter lets in other ports of an IP it sent to) */
+    uint16_t seen[16];
+    int      nseen;
+    int      unsolicited;
 } npf_punch_result;
 
 /* ---- event-driven punching (used by the node) ----
@@ -82,6 +101,14 @@ typedef struct npf_punch_cfg {
     int      npeers;
     int      fd6;                   /* the node's IPv6 socket (S0: IPv6 peers are probed from it), -1: none */
     int      test_deaf;             /* tests: the peer's probes are dropped, so the round fails */
+    /* S2B: the probe servers' E1 (the fresh socket's mapping) and E2 (the
+     * caller's spacer), their key and ticket; info tells the owner the
+     * fresh mapping's port (it goes to the peer: punch_info) */
+    struct sockaddr_in probe_ep[2];
+    uint8_t  probe_key[32];
+    uint8_t  ticket[28];
+    int64_t  clock_offset_ms;
+    void   (*info)(npf_punch *p, uint16_t port, void *arg);
 } npf_punch_cfg;
 
 /* done is called once: ok with the winning fd (primary or an S3 socket, which
@@ -95,6 +122,8 @@ int  npf_punch_input(npf_punch *p, int fd, const uint8_t *buf, size_t len, const
  * are closed at done. */
 void npf_punch_free(npf_punch *p);
 int  npf_punch_finished(const npf_punch *p);
+/* S2B: the peer's fresh mapping (its punch_info) */
+void npf_punch_peer_port(npf_punch *p, uint16_t port);
 
 /* primary_fd: an already-open, already-bound UDP socket (family == plan.family)
  * for S1/S0 and the S3 easy side; ignored for the S3 hard side (it opens its

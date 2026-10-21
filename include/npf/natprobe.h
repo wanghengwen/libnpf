@@ -2,8 +2,10 @@
  *
  * E1 = IP_A:P1, E2 = IP_A:P2, E3 = IP_B:P1. One socket asks all three for its
  * mapped address (mapping behaviour), then K fresh sockets ask E1 (port
- * allocation). IPv4 only. npf_natprobe_run is synchronous (poll: the
- * npf-natprobe tool); npf_natprobe_start runs on the event loop (the node). */
+ * allocation), then E2 and E3 are asked to answer the first of those (F, which
+ * sent to E1 only) from where they are (filtering behaviour). IPv4 only.
+ * npf_natprobe_run is synchronous (poll: the npf-natprobe tool);
+ * npf_natprobe_start runs on the event loop (the node). */
 #ifndef NPF_NATPROBE_H
 #define NPF_NATPROBE_H
 
@@ -15,10 +17,13 @@
 
 enum { NPF_MAP_UNKNOWN = 0, NPF_MAP_EIM, NPF_MAP_ADM, NPF_MAP_APDM };
 enum { NPF_ALLOC_UNKNOWN = 0, NPF_ALLOC_PRESERVE, NPF_ALLOC_SEQUENTIAL, NPF_ALLOC_BLOCK, NPF_ALLOC_RANDOM };
+/* who may send in on a mapping: anyone, the IPs it sent to, the IP:ports it sent to */
+enum { NPF_FILT_UNKNOWN = 0, NPF_FILT_EIF, NPF_FILT_ADF, NPF_FILT_APDF };
 
 typedef struct npf_nat_profile {
     uint8_t  mapping;           /* NPF_MAP_* */
     uint8_t  allocation;        /* NPF_ALLOC_* */
+    uint8_t  filtering;         /* NPF_FILT_* (ADF without an E3: EIF or ADF) */
     int16_t  seq_delta;         /* step of sequential allocation */
     uint16_t block_lo, block_hi;/* smallest observed port range; lo > hi when it wraps past 65535 */
     uint8_t  open;              /* public address on a local interface, no NAT */
@@ -37,6 +42,7 @@ typedef struct npf_natprobe_cfg {
     uint8_t  ticket[NPF_TICKET_SIZE];
     int64_t  clock_offset_ms;   /* server clock - local clock, from the signaling server */
     int      alloc_sockets;     /* K fresh sockets for the allocation test; 0 = skip */
+    int      filter_test;       /* after it, the filtering test (default 1; needs E2) */
     int      main_fd;           /* >= 0: probe the mapping of this (AnLiu) socket; -1: a fresh one */
 } npf_natprobe_cfg;
 
@@ -51,6 +57,8 @@ typedef struct npf_natprobe_result {
     int      alloc_got[NPF_NATPROBE_MAX_ALLOC];
     uint16_t alloc_local[NPF_NATPROBE_MAX_ALLOC];
     uint16_t alloc_mapped[NPF_NATPROBE_MAX_ALLOC];
+    int      filter_acked[2];                /* E2, E3 got the bounce request */
+    int      filter_got[2];                  /* their answers reached F */
     int      have_offset;
     int64_t  srv_offset_ms;                 /* E1 clock - local clock */
 } npf_natprobe_result;
@@ -74,5 +82,6 @@ void npf_natprobe_cancel(npf_natprobe *p);
 
 const char *npf_nat_mapping_str(int mapping);
 const char *npf_nat_alloc_str(int allocation);
+const char *npf_nat_filter_str(int filtering);
 
 #endif

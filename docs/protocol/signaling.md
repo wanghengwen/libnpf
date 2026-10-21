@@ -468,7 +468,8 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `relay_release` | 主叫 → 平台 | 事件 | 直连已稳定 30 秒，平台释放两侧的中转分配 |
 | `punch_start` | 平台 → 双方 | 事件 | 一轮打洞的计划与同步开始时刻 |
 | `punch_request` | 主叫 → 平台 → 被叫 | 请求 | 退避时间到或网络变化后，请求新一轮打洞；被叫的应答提供最新画像与候选 |
-| `punch_result` | 双方 → 平台 | 事件 | 本轮打洞的结果与统计 |
+| `punch_result` | 双方 → 平台 | 事件 | 本轮打洞的结果与统计，以及这一轮看到的对方 NAT 的行为 |
+| `punch_info` | 任一方 → 平台 → 另一方 | 事件 | S2B：本方新 socket 的映射端口（nat-traversal.md 7.6） |
 | `call_end` | 任一方 → 平台 | 请求 | 会话结束，平台释放中转，在呼叫记录中写下结束时间 |
 | `call_ended` | 平台 → 另一方 | 事件 | 对方结束了会话，或平台终止了会话 |
 
@@ -488,7 +489,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 **NAT 画像 `nat`**（对应 `npf_nat_profile`，nat-traversal.md 4.3）：
 
 ```json
-{"udp": true, "map": "EIM", "alloc": "BLOCK", "delta": 0, "block": [20480, 22527],
+{"udp": true, "map": "EIM", "alloc": "BLOCK", "delta": 0, "block": [20480, 22527], "filter": "APDF",
  "open": false, "ip_varies": false, "pub_ip": "1.2.3.4", "at": 1791100000}
 ```
 
@@ -496,7 +497,8 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 |---|---|
 | `udp` | 地址探测是否有回应；`false` 表示 UDP 不通，平台不安排打洞和 UDP 中转 |
 | `map` | `EIM` / `ADM` / `APDM` / `UNKNOWN` |
-| `alloc` | `PRESERVE` / `SEQUENTIAL` / `BLOCK` / `RANDOM` / `UNKNOWN`；`delta` 为顺序分配的步长，`block` 为端口块区间 |
+| `alloc` | `PRESERVE` / `SEQUENTIAL` / `BLOCK` / `RANDOM` / `UNKNOWN`；`delta` 为顺序分配的步长，`block` 为端口块区间（`block[0] > block[1]` 表示跨过 65535） |
+| `filter` | 过滤行为（nat-traversal.md 4.2）：`EIF`（谁都能发进来）/ `ADF`（发过包的 IP 的任何端口）/ `APDF`（只有发过包的 IP:端口）/ `UNKNOWN`；只有一台探测服务器时测不出 EIF，`ADF` 表示"至少 ADF" |
 | `open` | 有公网地址、没有 NAT |
 | `ip_varies` | 不同目标看到不同的公网 IP，S3 不适用 |
 | `pub_ip` | 探测到的公网 IPv4 |
@@ -627,6 +629,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
   "peer": {"cand": [...], "pub_ip": "198.51.100.7"},
   "range": [20480, 22527], "m_total": 1024, "pps": 200,
   "n_sockets": 0,
+  "delta": 1, "peer_delta": 2, "window": 32, "passes": 4,
   "timeout_ms": 8000, "start_at": 1791100000300
 }}
 ```
@@ -636,17 +639,26 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `round` | 本次呼叫的第几轮打洞，迟到的旧轮次消息直接忽略 |
 | `punch_id`、`punch_key` | 每轮新生成（nat-traversal.md 6.5） |
 | `role` | 主叫为 `controlling`，被叫为 `controlled` |
-| `strategy` | `S0`（IPv6）、`S1`、`S2`、`S3`；可以有多个策略并行，此时为数组 |
-| `side` | `easy` / `hard`，只对 S2、S3 有意义 |
+| `strategy` | `S0`（IPv6）、`S1`、`S2`、`S3`、`S4`、`S2B`、`S5`（nat-traversal.md 7.1）|
+| `side` | `easy` / `hard`，只对 S2、S3、S4 有意义；S4 的 `easy` 是喷包的一方（它自己也是难侧），`hard` 是开新 socket 接收的一方 |
 | `peer.cand` | 对方的候选（含平台按画像算出的 `pred`） |
 | `peer.pub_ip` | S3 易侧喷包的目标 IP |
-| `range`、`m_total`、`pps` | S3 易侧的喷包范围、总数、速率；`range` 为空表示整个端口空间 |
-| `n_sockets` | S3 难侧新建的 socket 数 |
+| `range`、`m_total`、`pps` | S3 / S4 喷包一方的喷包范围、总数、速率；`range` 为空表示整个端口空间，`range[0] > range[1]` 表示跨过 65535；S5 双方各自的喷包范围（对方的端口块）与速率 |
+| `n_sockets` | S3 / S4 开新 socket 的一方新建的 socket 数 |
+| `delta`、`peer_delta`、`window`、`passes` | S2B：本方与对方 NAT 的分配步长，每遍的探测数与遍数 |
 | `start_at` | 开始发包的时刻（服务器时间）。平台取"当前时间 + 两侧单向时延的较大值 + 150 ms 余量"；单向时延取实测往返时延的一半：平台每 30 秒（登录后 1 秒先测一次）向每条连接发 WebSocket ping，服务器之间同样测量，主叫在另一台服务器上时还要加上 SA 测得的主叫往返时延（`call` 帧的 `caller_rtt_ms`）与 SA–SB 的往返时延；未知时按 150 ms 计。S3 难侧比易侧早 100 ms 开始 |
 
 用绝对时刻而不是延迟，是因为双方可能连在不同的服务器上，两台服务器各自只知道自己与一侧之间的 RTT。服务器之间用 NTP 同步，被叫和主叫的时钟偏差已经校准，误差在几十毫秒以内，满足同步要求。
 
-平台按 nat-traversal.md 7.1 的决策表选择策略；决策表判定为"中转"时不发送 `punch_start`，会话一直走中转。
+平台按 nat-traversal.md 7.1 的决策表选择策略。双方都是难侧、双方的过滤行为都测出来了、又没有能用的策略时（例如两侧都是 APDM + APDF + 随机端口），平台在双方的 `punch_start` 里写 `"skip": "no_strategy"`：双方都不打洞，主叫也不再为这个会话要求打洞（网络变化重新测出 NAT 后照常 `punch_request`），会话一直走中转。不认识这个字段的旧节点照常打一轮 S1。过滤行为未知（旧节点）时照旧给 S1。
+
+S2B 的双方在 `start_at` 各自用一个新 socket 向探测服务器 E1 测出它的映射端口，经平台把端口告诉对方：
+
+```json
+{"v": 1, "type": "punch_info", "data": {"call_id": "...", "round": 1, "port": 20517}}
+```
+
+平台把它原样转给另一方（对方连在另一台服务器上时经服务器之间的连接）。收到对方的端口后开始发送（nat-traversal.md 7.6）。
 
 一方还没有候选（刚启动、NAT 还没测完，被叫应答 `incoming` 时 `cand` 为空）、这一轮没有可探测的目标时（S1 要双方都有候选；S3 只要易侧有候选，易侧向难侧的公网 IP 喷包），平台在双方的 `punch_start` 里加 `"skip": "no_candidates"`（S1 计划照旧附上，供不认识这个字段的旧节点照常打一轮）：双方都不打洞，主叫 2 秒后发 `punch_request`（被叫的应答带上它最新的候选）。这样的一轮不计入 10 次，连续 5 次之后按失败的一轮计、照常退避。以前这一轮会空跑 8 秒，再等 10 秒退避，刚启动的节点要约 19 秒才打通。
 
@@ -656,10 +668,12 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 {"v": 1, "type": "punch_result", "data": {
   "call_id": "...", "round": 1, "ok": true,
   "path": {"t": "srflx", "local": "192.168.1.2:40000", "peer": "198.51.100.7:51234", "family": 4},
-  "elapsed_ms": 1840, "probes_sent": 612, "probes_recv": 3, "rtt_ms": 23}}
+  "elapsed_ms": 1840, "probes_sent": 612, "probes_recv": 3, "rtt_ms": 23,
+  "seen": [40112, 40377], "unsolicited": 2}}
 ```
 
 - 双方各自上报，平台用于统计各种画像组合下各个策略的成功率（nat-traversal.md 目标 5）；
+- `seen`：这一轮收到的对方探测的源端口（最多 16 个），即对方 NAT 朝本方分配的映射；`unsolicited`：其中来自本方从没发过包的端口的个数，说明本方的过滤放行同一 IP 的其他端口。平台据此修正这个会话之后几轮的计划，并在内存里记住一天，用于同样两个公网地址之间的下一次呼叫（nat-traversal.md 7.8）；
 - 打洞失败后，会话留在中转上。留在 **UDP 中转**上的会话，主叫按 10 秒、30 秒、1 分钟、2 分钟，之后每 3 分钟（最长间隔 3 分钟）退避，或者在网络变化后，发送 `punch_request{call_id, nat, cand}`；一个会话连第一轮最多打洞 10 次，之后一直留在中转上。网络变化（网卡地址变了、进程挂起后恢复）时，主叫在重新测出 NAT 后对 UDP 中转上的会话立即再打一轮（同样计入 10 次，之后的退避从 10 秒重新开始）。`punch_request` 发出后 30 秒没有等来新一轮的 `punch_start`（平台或被叫没有应答），按这一轮失败计，继续退避。**WebSocket 中转**上的会话不再打洞：它切不到之后找到的直连上，平台向被叫取最新的画像和候选（同样经 `punch_request` 转给被叫，被叫应答新的 `nat` 与 `cand`），再开始新一轮 `punch_start`；
 - 直连失效、切回中转（nat-traversal.md 10.3）后，同样由主叫发起 `punch_request`。
 
@@ -694,8 +708,9 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 接受时间 `accepted`、结果 `result` | `incoming` 的应答：`accepted`，或 `call_rejected` 的错误码 |
 | 结束时间 `end`、原因 `end_reason`、结束方 `ended_by` | 第一个 `call_end`（`caller` / `callee`），按 `ago_ms` 往前推，早于发起时间时取发起时间；平台终止的为 `server`（被叫未应答、没有路径） |
 | 双方的身份、所在服务器、源地址 | 各自的信令连接：节点编号或客户端 ID，主叫的计费账户，服务器编号，服务器看到的源 IP:端口。主叫连在另一台服务器上时，由那台服务器随呼叫转交 |
-| 双方的 NAT 类型 | `call` 与 `incoming` 应答中的 `nat` 和候选：UDP 是否可用，映射方式 `map`，端口分配 `alloc`，是否公网，公网 IP，是否有全局 IPv6 地址，是否在路由器上映射了端口（PCP / NAT-PMP） |
+| 双方的 NAT 类型 | `call` 与 `incoming` 应答中的 `nat` 和候选：UDP 是否可用，映射方式 `map`，端口分配 `alloc`，过滤行为 `filter`，端口块的大小 `block`，是否公网，公网 IP，是否有全局 IPv6 地址，是否在路由器上映射了端口（PCP / NAT-PMP） |
 | 直连 `p2p`、`p2p_at`、`rounds` | `punch_result`：一方打通时报告的对端地址就是对方在直连路径上的地址；首次打通的时间；打洞轮数 |
+| 各轮的策略 `plans`、打通那一轮的 `p2p_plan` | 每一轮 `punch_start` 的策略（`S1` … `S5`，不打的一轮为 `skip:原因`） |
 | 中转分配 `relays` | 每次分配的方式（`udp` / `ws`）、所在服务器、时间 |
 | 双方的程序 `app` | 各自登录时报的 `app`（名称与版本） |
 | 中转流量 `usage` | 中转服务器转发的字节数：`up`（主叫发出的）、`down`（被叫发出的），以及其中计费的 `billed_up` / `billed_down`。**呼叫发起后的前 15 秒不计费**（服务器配置 `relay_free_s`），字节数照常记录 |

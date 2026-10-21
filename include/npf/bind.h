@@ -16,6 +16,7 @@
 /* packet types (shared numbering with the punch packets of 6.5) */
 #define NPF_PKT_BIND_REQ      1
 #define NPF_PKT_BIND_RESP     2
+#define NPF_PKT_BOUNCE_REQ    7     /* the filtering test: answer another mapping of mine (4.2) */
 
 /* key directions */
 #define NPF_DIR_REQ           0     /* device -> probe server */

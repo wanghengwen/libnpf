@@ -281,6 +281,7 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
         npf_out_printf(o, "%s", n->nat_valid && n->nat_udp ? "true" : "false");
         jkstr(o, &g, "mapping", npf_nat_mapping_str(n->nat.mapping));
         jkstr(o, &g, "allocation", npf_nat_alloc_str(n->nat.allocation));
+        jkstr(o, &g, "filtering", npf_nat_filter_str(n->nat.filtering));
         memset(&ss, 0, sizeof ss);
         memcpy(&ss, &n->srflx, sizeof n->srflx);
         jkstr(o, &g, "srflx", n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : NULL);
@@ -403,8 +404,9 @@ static void status_text(npf_t *c, npf_out *o)
         struct sockaddr_storage ss;
         memset(&ss, 0, sizeof ss);
         memcpy(&ss, &n->srflx, sizeof n->srflx);
-        npf_out_printf(o, "nat:     mapping %s, allocation %s, public %s\n", npf_nat_mapping_str(n->nat.mapping),
-                       npf_nat_alloc_str(n->nat.allocation), npf_addr_str(&ss, a, sizeof a));
+        npf_out_printf(o, "nat:     mapping %s, allocation %s, filtering %s, public %s\n",
+                       npf_nat_mapping_str(n->nat.mapping), npf_nat_alloc_str(n->nat.allocation),
+                       npf_nat_filter_str(n->nat.filtering), npf_addr_str(&ss, a, sizeof a));
     } else if (!n->cfg.offline) {
         npf_out_printf(o, "nat:     unknown (no answer from the probe servers)\n");
     }

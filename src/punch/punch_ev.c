@@ -20,6 +20,9 @@
 #define TICK_MS        10
 #define TRIG_MAX       64   /* triggered checks per punch */
 #define TRIG_GAP_MS   500   /* at most one per source this often */
+#define S2B_MAX       512   /* S2B: destinations of a round (window x passes) */
+#define S2B_PASS_MS   300   /* between two passes */
+#define S2B_RESEND_MS 1000  /* the destinations sent so far, again (their mappings exist: no new ones) */
 
 typedef struct psock {
     int     fd;
@@ -39,6 +42,15 @@ struct npf_punch {
     struct { struct sockaddr_storage a; int sock; int64_t at; } trig[TRIG_MAX];
     int             ntrig;
     struct sockaddr_storage winner;
+    /* S2B */
+    npf_siv_keys    kprobe;
+    uint8_t         btx[NPF_TXID_SIZE];
+    int             bsent, pass;
+    int64_t         bnext, pass_next, resend_next;
+    uint16_t        own_port, peer_port;
+    uint16_t        dests[S2B_MAX];
+    int             ndests;
+    uint8_t         sent_to[65536 / 8]; /* the peer's IPv4 ports probed (7.8: unsolicited) */
     npf_punch_result res;
     npf_timer      *tick;
     npf_punch_done_fn done;
@@ -120,6 +132,19 @@ static const char *ss_txt(const struct sockaddr_storage *a, char *buf, size_t ca
     return buf;
 }
 
+/* a random port of [lo, hi] (lo > hi: the range wraps past 65535), not below 1024 */
+static uint16_t rand_port(uint16_t lo, uint16_t hi)
+{
+    uint32_t span = (uint32_t)(uint16_t)(hi - lo) + 1;
+    int i;
+    for (i = 0; i < 64; i++) {
+        uint16_t port = (uint16_t)(lo + npf_rand_range(0, span - 1));
+        if (port >= 1024)
+            return port;
+    }
+    return (uint16_t)npf_rand_range(1024, 65535);
+}
+
 static void probe(npf_punch *p, int sock, const struct sockaddr_storage *to)
 {
     uint8_t b[16];
@@ -132,6 +157,10 @@ static void probe(npf_punch *p, int sock, const struct sockaddr_storage *to)
     }
     st16(b + n, (uint16_t)sock);
     send_pkt(fd, &p->kp, p->cfg.plan.role, NPF_PKT_PROBE, b, n + 2, to);
+    if (to->ss_family == AF_INET) {
+        uint16_t port = ss_port(to);
+        p->sent_to[port >> 3] |= (uint8_t)(1u << (port & 7));
+    }
     if (sock == 0 && p->res.probes_sent < p->cfg.npeers && npf_log_on(NPF_LOG_TRACE)) {
         char a[64];     /* the first round, in candidate order */
         npf_logt("punch: PROBE -> %s", ss_txt(to, a, sizeof a));
@@ -231,6 +260,121 @@ static void finish(npf_punch *p, int ok)
 
 static void schedule(npf_punch *p);
 
+/* the peer's public IP at port */
+static const struct sockaddr_storage *peer_at(npf_punch *p, uint16_t port)
+{
+    static struct sockaddr_storage to;
+    struct sockaddr_in *t4 = (struct sockaddr_in *)&to;
+    memset(&to, 0, sizeof to);
+    t4->sin_family = AF_INET;
+    t4->sin_addr = p->cfg.plan.peer_ip4;
+    t4->sin_port = htons(port);
+    return &to;
+}
+
+/* S2B: a BIND_REQ from the fresh socket to a probe server (E1: its mapping;
+ * E2: the caller's spacer, one more mapping) */
+static void s2b_bind(npf_punch *p, int ep, const uint8_t txid[NPF_TXID_SIZE])
+{
+    uint8_t wire[NPF_PKT_MAX];
+    size_t len = npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
+    int n = npf_pkt_seal(&p->kprobe, NPF_DIR_REQ, NPF_PKT_BIND_REQ, txid,
+                         (uint32_t)(npf_unix_ms() + p->cfg.clock_offset_ms), p->cfg.ticket, NPF_TICKET_SIZE, len, wire);
+    if (n > 0)
+        (void)npf_udp_send(p->socks[1].fd, wire, (size_t)n, &p->cfg.probe_ep[ep]);
+}
+
+/* S2B, one pass: the next window of the ports the peer's NAT gives after its
+ * fresh mapping, the caller in ascending order, the callee in descending
+ * order. The caller's k-th new mapping meets the callee's m-th when
+ * k - m = (the callee's ports taken by others meanwhile) and k + m + 1 =
+ * W - (the caller's): a solution for every pair of shifts that adds up to
+ * less than W with the right parity; the caller's spacer before every odd
+ * pass (one more mapping of its own) gives the other parity (7.6) */
+static void s2b_pass(npf_punch *p)
+{
+    const npf_punch_plan *pl = &p->cfg.plan;
+    int w = pl->window > 0 ? pl->window : 32, k;
+    int up = pl->role == NPF_PUNCH_CONTROLLING;
+    if (up && (p->pass & 1)) {
+        uint8_t txid[NPF_TXID_SIZE];
+        npf_random(txid, sizeof txid);
+        s2b_bind(p, 1, txid);
+    }
+    for (k = 0; k < w && p->ndests < S2B_MAX; k++) {
+        int n = up ? p->pass * w + k + 1 : p->pass * w + w - k;
+        long port = (long)p->peer_port + (long)n * pl->peer_delta;
+        if (port < 1024 || port > 65535)
+            continue;
+        p->dests[p->ndests++] = (uint16_t)port;
+        probe(p, 1, peer_at(p, (uint16_t)port));
+    }
+}
+
+static void s2b_tick(npf_punch *p, int64_t now)
+{
+    const npf_punch_plan *pl = &p->cfg.plan;
+    int i;
+    if (!p->own_port) {
+        if (p->bsent < 4 && now >= p->bnext) {
+            static const int next_ms[] = {200, 400, 800, 1600};
+            s2b_bind(p, 0, p->btx);
+            p->bnext = now + next_ms[p->bsent++];
+        }
+        return;
+    }
+    if (!p->peer_port)
+        return;
+    if (p->pass < (pl->passes > 0 ? pl->passes : 4) && now >= p->pass_next) {
+        s2b_pass(p);
+        p->pass++;
+        p->pass_next = now + S2B_PASS_MS;
+        if (!p->resend_next)
+            p->resend_next = now + S2B_RESEND_MS;
+    }
+    if (p->resend_next && now >= p->resend_next) {
+        for (i = 0; i < p->ndests; i++)
+            probe(p, 1, peer_at(p, p->dests[i]));
+        p->resend_next = now + S2B_RESEND_MS;
+    }
+}
+
+/* S2B: the fresh socket's BIND_RESP from E1 (1: it was one) */
+static int s2b_input(npf_punch *p, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
+{
+    const struct sockaddr_in *f = (const struct sockaddr_in *)from;
+    uint8_t plain[NPF_PKT_MAX];
+    npf_pkt pkt;
+    npf_bind_resp resp;
+    int ep;
+    if (from->ss_family != AF_INET || len > NPF_PKT_MAX)
+        return 0;
+    for (ep = 0; ep < 2; ep++)
+        if (f->sin_addr.s_addr == p->cfg.probe_ep[ep].sin_addr.s_addr && f->sin_port == p->cfg.probe_ep[ep].sin_port)
+            break;
+    if (ep == 2)
+        return 0;
+    if (ep == 0 && !p->own_port && npf_pkt_open(&p->kprobe, NPF_DIR_RESP, buf, len, plain, &pkt) == 0
+        && memcmp(pkt.txid, p->btx, NPF_TXID_SIZE) == 0 && npf_bind_resp_parse(&pkt, &resp) == 0 && resp.family == 4) {
+        p->own_port = resp.port;
+        npf_log("punch: S2B: the fresh socket's mapping is port %u", resp.port);
+        if (p->cfg.info)
+            p->cfg.info(p, resp.port, p->arg);
+        if (p->peer_port)
+            p->pass_next = npf_mono_ms();
+    }
+    return 1;
+}
+
+void npf_punch_peer_port(npf_punch *p, uint16_t port)
+{
+    if (!p || p->finished || p->cfg.plan.strategy != NPF_PUNCH_S2B || p->peer_port)
+        return;
+    p->peer_port = port;
+    npf_log("punch: S2B: the peer's fresh mapping is port %u", port);
+    p->pass_next = npf_mono_ms();
+}
+
 static void tick_cb(npf_loop *loop, void *arg)
 {
     npf_punch *p = arg;
@@ -276,13 +420,21 @@ static void tick_cb(npf_loop *loop, void *arg)
         if (ivl < 1)
             ivl = 1;
         while (p->sprayed < pl->m_total && now >= p->spray_next) {
-            struct sockaddr_storage to;
-            struct sockaddr_in *t4 = (struct sockaddr_in *)&to;
-            memset(&to, 0, sizeof to);
-            t4->sin_family = AF_INET;
-            t4->sin_addr = pl->peer_ip4;
-            t4->sin_port = htons((uint16_t)npf_rand_range(lo, hi));
-            probe(p, 0, &to);
+            probe(p, 0, peer_at(p, rand_port(lo, hi)));
+            p->sprayed++;
+            p->spray_next += ivl;
+        }
+    }
+    if (pl->strategy == NPF_PUNCH_S2B && p->nsock > 1)
+        s2b_tick(p, now);
+    if (pl->strategy == NPF_PUNCH_S5 && p->nsock > 1) {
+        /* both sides: one fresh socket, a new destination each time (a new
+         * mapping on an APDM NAT, alive for its timeout), until the deadline */
+        int64_t ivl = 1000 / (pl->pps > 0 ? pl->pps : 4);
+        uint16_t lo = pl->range_lo ? pl->range_lo : 1024;
+        uint16_t hi = pl->range_hi ? pl->range_hi : 65535;
+        while (now >= p->spray_next) {
+            probe(p, 1, peer_at(p, rand_port(lo, hi)));
             p->sprayed++;
             p->spray_next += ivl;
         }
@@ -318,6 +470,16 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
         && pkt.body_len >= 10 && body_sid(pkt.body) == pl->session_id) {
         if (p->cfg.test_deaf)
             return 1;
+        if (from->ss_family == AF_INET) {      /* 7.8: what the peer's NAT showed */
+            uint16_t port = ss_port(from);
+            int i;
+            for (i = 0; i < p->res.nseen && p->res.seen[i] != port; i++)
+                ;
+            if (i == p->res.nseen && p->res.nseen < (int)(sizeof p->res.seen / sizeof p->res.seen[0]))
+                p->res.seen[p->res.nseen++] = port;
+            if (pkt.type == NPF_PKT_PROBE && !(p->sent_to[port >> 3] & (1u << (port & 7))))
+                p->res.unsolicited++;
+        }
         if (pkt.type == NPF_PKT_PROBE) {
             uint8_t b[40];
             p->res.probes_recv++;
@@ -389,6 +551,8 @@ static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         ssize_t r = recvfrom(fd, buf, sizeof buf, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
         if (r <= 0)
             break;
+        if (p->cfg.plan.strategy == NPF_PUNCH_S2B && s2b_input(p, buf, (size_t)r, &from))
+            continue;
         handle(p, i, fd, buf, (size_t)r, &from);
         if (p->finished)
             break;  /* the socket table changed */
@@ -417,6 +581,26 @@ npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_f
     p->nsock = 1;
     if (cfg->plan.strategy == NPF_PUNCH_S3 && cfg->plan.side == NPF_PUNCH_EASY)
         p->spray_next = p->start + S3_EASY_LEAD;
+    if (cfg->plan.strategy == NPF_PUNCH_S2B || cfg->plan.strategy == NPF_PUNCH_S5) {
+        /* one fresh socket: its mappings are the round's own */
+        struct sockaddr_in a;
+        int fd = npf_udp_socket(AF_INET, 0);
+        memset(&a, 0, sizeof a);
+        a.sin_family = AF_INET;
+        if (fd >= 0 && (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || npf_loop_add(loop, fd, NPF_EV_READ, sock_cb, p) < 0)) {
+            npf_sock_close(fd);
+            fd = -1;
+        }
+        if (fd >= 0) {
+            p->socks[1].fd = fd;
+            p->socks[1].owned = 1;
+            p->nsock = 2;
+        }
+        npf_siv_derive(&p->kprobe, cfg->probe_key, NPF_SIV_LABEL_PROBE);
+        npf_random(p->btx, sizeof p->btx);
+        p->bnext = p->start;
+        p->spray_next = p->start;
+    }
     if (cfg->plan.strategy == NPF_PUNCH_S3 && cfg->plan.side == NPF_PUNCH_HARD) {
         int n = cfg->plan.n_sockets;
         if (n > NPF_PUNCH_MAX_SOCKETS - 1)

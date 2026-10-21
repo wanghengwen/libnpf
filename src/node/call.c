@@ -137,6 +137,8 @@ struct npf_call {
     int         relay_asked;        /* relay_switch sent, waiting for a new allocation */
     int         ws_paired_once;     /* the WS relay worked at least once */
     npf_punch_cfg pcfg;
+    uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
+    int         info_round;
     int         punch_wait_keys;
 
     /* peer data from signaling */
@@ -2157,10 +2159,33 @@ static void p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
     }
 }
 
+/* a round that did not go direct (failed, or none planned) while the UDP
+ * relay was unreachable: the UDP relay once more, then the WS relay */
+static void ws_wait_end(npf_call *c, int ok)
+{
+    if (!c->t_ws_wait)
+        return;
+    npf_timer_cancel(c->n->loop, c->t_ws_wait);
+    c->t_ws_wait = NULL;
+    if (!ok && !c->relay_retried && !c->relay.bound && !c->relay.t_bind) {
+        /* once more first: a WS relay session cannot punch again later, and
+         * the UDP relay may have been lost to a passing storm (the phone at a
+         * start, five punches at once: its binds went unanswered for 5 s) */
+        npf_log("call %s: trying the UDP relay once more before the WS relay", c->call_id_s);
+        c->relay_retried = 1;
+        c->relay.tries = 0;
+        c->relay.cur = 0;
+        relay_bind_send(c);
+        c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+    } else if (!ok) {
+        ask_ws_relay(c);
+    }
+}
+
 static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *arg)
 {
     npf_call *c = arg;
-    char data[512], a[64], la[64];
+    char data[768], a[64], la[64];
     struct sockaddr_storage ls;
     socklen_t ll = sizeof ls;
     npf_jw w;
@@ -2172,23 +2197,7 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
             punch_sockets_back(c->n);
     }
     c->punched = 1;
-    if (c->t_ws_wait) {             /* the UDP relay was unreachable: a failed punch leaves the WS relay */
-        npf_timer_cancel(c->n->loop, c->t_ws_wait);
-        c->t_ws_wait = NULL;
-        if (!res->ok && !c->relay_retried && !c->relay.bound && !c->relay.t_bind) {
-            /* once more first: a WS relay session cannot punch again later, and
-             * the UDP relay may have been lost to a passing storm (the phone at a
-             * start, five punches at once: its binds went unanswered for 5 s) */
-            npf_log("call %s: trying the UDP relay once more before the WS relay", c->call_id_s);
-            c->relay_retried = 1;
-            c->relay.tries = 0;
-            c->relay.cur = 0;
-            relay_bind_send(c);
-            c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
-        } else if (!res->ok) {
-            ask_ws_relay(c);
-        }
-    }
+    ws_wait_end(c, res->ok);        /* the UDP relay was unreachable: a failed punch leaves the WS relay */
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
     npf_jw_kstr(&w, "call_id", c->call_id_s);
@@ -2206,6 +2215,16 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
     npf_jw_kint(&w, "probes_sent", res->probes_sent);
     npf_jw_kint(&w, "probes_recv", res->probes_recv);
     npf_jw_kint(&w, "rtt_ms", res->rtt_ms);
+    if (res->nseen > 0) {           /* the peer's NAT as this round showed it (nat-traversal.md 7.8) */
+        int i;
+        npf_jw_key(&w, "seen");
+        npf_jw_arr(&w);
+        for (i = 0; i < res->nseen; i++)
+            npf_jw_int(&w, res->seen[i]);
+        npf_jw_end(&w);
+    }
+    if (res->unsolicited > 0)
+        npf_jw_kint(&w, "unsolicited", res->unsolicited);
     npf_jw_end(&w);
     if (npf_jw_finish(&w) > 0)
         npf_node_send(c->n, "punch_result", 0, data);
@@ -2347,6 +2366,39 @@ static void punch_next(npf_node *n)
     best->t_repunch = npf_timer_add(n->loop, delay, repunch_timer, best);
 }
 
+/* S2B: this side's fresh mapping, to the peer (punch_info, nat-traversal.md 7.6) */
+static void punch_info_send(npf_punch *p, uint16_t port, void *arg)
+{
+    npf_call *c = arg;
+    char data[160];
+    npf_jw w;
+    (void)p;
+    npf_jw_init(&w, data, sizeof data);
+    npf_jw_obj(&w);
+    npf_jw_kstr(&w, "call_id", c->call_id_s);
+    npf_jw_kint(&w, "round", c->punch_round);
+    npf_jw_kint(&w, "port", port);
+    npf_jw_end(&w);
+    if (npf_jw_finish(&w) > 0)
+        npf_node_send(c->n, "punch_info", 0, data);
+}
+
+/* S2B: the peer's fresh mapping */
+static void handle_punch_info(npf_call *c, const npf_json *j, int d)
+{
+    int64_t round, port;
+    if (npf_json_get_int(j, d, "round", 1, 1000, &round) < 0 || npf_json_get_int(j, d, "port", 1024, 65535, &port) < 0)
+        return;
+    if (round < c->punch_round)
+        return;
+    if (round == c->punch_round && c->punch)
+        npf_punch_peer_port(c->punch, (uint16_t)port);
+    else {                          /* the punch starts later (its time, the keys, its plan) */
+        c->info_port = (uint16_t)port;
+        c->info_round = (int)round;
+    }
+}
+
 static void start_punch_now(npf_call *c)
 {
     if (!c->keys_ready) {
@@ -2400,9 +2452,25 @@ static void start_punch_now(npf_call *c)
     }
     c->pcfg.fd6 = c->n->udp6_fd;
     c->pcfg.test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;
+    if (c->pcfg.plan.strategy == NPF_PUNCH_S2B) {
+        const uint8_t *pk = node_day_key(c->n, c->n->probe_keys);
+        if (c->n->nprobe_ep < 2 || !pk) {
+            npf_logw("call %s: punch round %d S2B: no probe servers to measure the fresh mapping with",
+                     c->call_id_s, c->punch_round);
+            return;
+        }
+        c->pcfg.probe_ep[0] = c->n->probe_ep[0];
+        c->pcfg.probe_ep[1] = c->n->probe_ep[1];
+        memcpy(c->pcfg.probe_key, pk, 32);
+        memcpy(c->pcfg.ticket, c->n->ticket, sizeof c->pcfg.ticket);
+        c->pcfg.clock_offset_ms = c->n->clock_offset_ms;
+        c->pcfg.info = punch_info_send;
+    }
     c->punch = npf_punch_new(c->n->loop, &c->pcfg, c->n->udp_fd, punch_done, c);
     if (c->punch)
         c->punch_socks = c->pcfg.plan.n_sockets;
+    if (c->punch && c->info_port && c->info_round == c->punch_round)
+        npf_punch_peer_port(c->punch, c->info_port);
 }
 
 static void punch_timer(npf_loop *loop, void *arg)
@@ -2489,14 +2557,28 @@ static void handle_punch_start(npf_call *c, const npf_json *j, int d)
         empty_round(c);
         return;
     }
+    if (npf_json_eq(j, npf_json_get(j, d, "skip"), "no_strategy")) {
+        /* both NATs hard, nothing that can work between them (nat-traversal.md
+         * 7.1): no round, none asked for again; a network change measures the
+         * NAT again and asks (npf_node_repunch_now) */
+        npf_log("call %s: punch round %d: both NATs are hard, no strategy works between them: the session stays on the relay",
+                c->call_id_s, c->punch_round);
+        c->punched = 1;
+        ws_wait_end(c, 0);
+        return;
+    }
     if (npf_json_get_b64(j, d, "punch_id", pid, 8) != 8 || npf_json_get_b64(j, d, "punch_key", pl->punch_key, 32) != 32)
         return;
     pl->session_id = npf_rd64(pid);
     pl->role = c->caller ? NPF_PUNCH_CONTROLLING : NPF_PUNCH_CONTROLLED;
     pl->family = AF_INET;
     npf_json_get_str(j, d, "strategy", strat, sizeof strat);
-    /* S2 (sequential allocation) is S3 over the predicted ports: the range says which */
-    pl->strategy = strcmp(strat, "S3") == 0 || strcmp(strat, "S2") == 0 ? NPF_PUNCH_S3 : NPF_PUNCH_S1;
+    /* S2 (sequential allocation) is S3 over the predicted ports: the range says
+     * which; S4 is S3 with a hard sprayer (its main socket sprays, the other
+     * side's fresh sockets catch); S2B and S5 are their own (two hard NATs) */
+    pl->strategy = strcmp(strat, "S3") == 0 || strcmp(strat, "S2") == 0 || strcmp(strat, "S4") == 0
+                       ? NPF_PUNCH_S3 : strcmp(strat, "S2B") == 0 ? NPF_PUNCH_S2B
+                       : strcmp(strat, "S5") == 0 ? NPF_PUNCH_S5 : NPF_PUNCH_S1;
     pl->side = npf_json_eq(j, npf_json_get(j, d, "side"), "hard") ? NPF_PUNCH_HARD : NPF_PUNCH_EASY;
     arr = npf_json_get(j, peer, "cand");
     for (i = 0; arr >= 0 && i < j->tok[arr].size && c->pcfg.npeers < NPF_PUNCH_MAX_PEERS; i++) {
@@ -2527,7 +2609,13 @@ static void handle_punch_start(npf_call *c, const npf_json *j, int d)
     pl->m_total = npf_json_get_int(j, d, "m_total", 0, 4000, &v) == 0 ? (int)v : 1024;
     pl->pps = npf_json_get_int(j, d, "pps", 1, 1000, &v) == 0 ? (int)v : 200;
     pl->n_sockets = npf_json_get_int(j, d, "n_sockets", 0, 256, &v) == 0 ? (int)v : 0;
-    pl->timeout_ms = npf_json_get_int(j, d, "timeout_ms", 1000, 60000, &v) == 0 ? (int)v : 8000;
+    pl->timeout_ms = npf_json_get_int(j, d, "timeout_ms", 1000, 600000, &v) == 0 ? (int)v : 8000;
+    pl->own_delta = npf_json_get_int(j, d, "delta", -64, 64, &v) == 0 ? (int)v : 0;
+    pl->peer_delta = npf_json_get_int(j, d, "peer_delta", -64, 64, &v) == 0 ? (int)v : 0;
+    pl->window = npf_json_get_int(j, d, "window", 1, 128, &v) == 0 ? (int)v : 32;
+    pl->passes = npf_json_get_int(j, d, "passes", 1, 8, &v) == 0 ? (int)v : 4;
+    if (c->info_round != c->punch_round)
+        c->info_port = 0;
     if (getenv("NPF_TEST_PUNCH_FAIL"))  /* tests: NPF_TEST_PUNCH_FAIL=ms: every round fails, after ms */
         pl->timeout_ms = atoi(getenv("NPF_TEST_PUNCH_FAIL"));
     if (getenv("NPF_TEST_S3_HARD")) {   /* tests: this side opens N sockets (the node budget) */
@@ -3237,6 +3325,8 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
         handle_handshake(c, j, d);
     } else if (strcmp(type, "punch_start") == 0) {
         handle_punch_start(c, j, d);
+    } else if (strcmp(type, "punch_info") == 0) {
+        handle_punch_info(c, j, d);
     } else if (strcmp(type, "relay_switch") == 0) {
         if (npf_json_get(j, d, "relay") >= 0)
             relay_setup(c, j, d);
