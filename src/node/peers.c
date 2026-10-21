@@ -1138,6 +1138,12 @@ static void again(npf_peer *p, const char *why)
         snprintf(p->last_why, sizeof p->last_why, "%s", why);
         return;
     }
+    if (strcmp(why, "udp_back") == 0) {    /* not an end: the session starts again over UDP */
+        snprintf(p->last_why, sizeof p->last_why, "%s", why);
+        if (!p->t_retry)
+            p->t_retry = npf_timer_add(p->ps->n->loop, 0, retry_cb, p);
+        return;
+    }
     if (!p->keep) {
         finish(p, why);
         return;

@@ -1078,6 +1078,10 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
             probe_changed(n);
         return;
     }
+    if (strcmp(type, "replaced") == 0) {    /* the server closes this connection next */
+        n->replaced = 1;
+        return;
+    }
     if (strcmp(type, "keys") == 0) {
         node_apply_keys(n, j, d);
         if (node_apply_probe(n, j, d))
@@ -1141,7 +1145,19 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         n->t_ping = NULL;
     }
     expect_stop(n);
-    if (n->cur_server >= 0)
+    if (n->replaced) {
+        /* not the server's fault: the same identity logged in again elsewhere
+         * (another process with these files, a copy of them on another host).
+         * Taking it back at once would push that one off in turn, both every
+         * second; back off instead, and say why */
+        int up = n->last_login_unix_ms && npf_unix_ms() - n->last_login_unix_ms > 120000;
+        n->replaced = 0;
+        n->replaced_backoff_ms = up || !n->replaced_backoff_ms ? 10000
+                                 : n->replaced_backoff_ms * 2 > 300000 ? 300000 : n->replaced_backoff_ms * 2;
+        n->backoff_ms = n->replaced_backoff_ms;
+        npf_logw("signaling: this identity logged in elsewhere (another npf with the same files?): "
+                 "logging in again in %d s", n->replaced_backoff_ms / 1000);
+    } else if (n->cur_server >= 0)
         server_failed(&n->servers[n->cur_server], 1);
     npf_log("signaling: disconnected (%s)", why);
     fail_pending(n);

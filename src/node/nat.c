@@ -137,6 +137,41 @@ static void nat_settled(npf_node *n)
 
 static void nat_retry_cb(npf_loop *loop, void *arg);
 
+static int in_arc(uint16_t lo, uint16_t hi, uint16_t p)
+{
+    return (uint16_t)(p - lo) <= (uint16_t)(hi - lo);
+}
+
+/* the smallest circular range covering two (lo > hi: past 65535): the
+ * complement of the largest gap between their ends that neither covers */
+static void arc_union(uint16_t lo1, uint16_t hi1, uint16_t lo2, uint16_t hi2, uint16_t *lo, uint16_t *hi)
+{
+    uint16_t e[4] = {lo1, hi1, lo2, hi2}, t;
+    int i, j, best = -1, at = 0;
+    for (i = 1; i < 4; i++)
+        for (j = i; j > 0 && e[j - 1] > e[j]; j--) {
+            t = e[j]; e[j] = e[j - 1]; e[j - 1] = t;
+        }
+    for (i = 0; i < 4; i++) {
+        uint16_t a = e[i], b = e[(i + 1) % 4];
+        int gap = (uint16_t)(b - a);
+        uint16_t mid = (uint16_t)(a + gap / 2);
+        if (gap <= 1 || in_arc(lo1, hi1, mid) || in_arc(lo2, hi2, mid))
+            continue;
+        if (gap > best) {
+            best = gap;
+            at = i;
+        }
+    }
+    if (best < 0) {                 /* covers the ring */
+        *lo = 0;
+        *hi = 65535;
+        return;
+    }
+    *lo = e[(at + 1) % 4];
+    *hi = e[at];
+}
+
 static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
 {
     npf_node *n = arg;
@@ -145,7 +180,20 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
     if (ok) {
         int i, last = -1;
         npf_nat_profile was = n->nat;
+        struct in_addr was_ip = n->pub_ip;
         n->nat = res->profile;
+        /* a port block is the range of a few samples: each full probe's are
+         * added to the last one's while the NAT stays the same (nat-traversal.md
+         * 4.2), up to what a block can be */
+        if (!n->nat_quick && n->nat_valid && n->nat_udp && was.allocation == NPF_ALLOC_BLOCK
+            && n->nat.allocation == NPF_ALLOC_BLOCK && was_ip.s_addr == res->mapped[0].sin_addr.s_addr) {
+            uint16_t lo, hi;
+            arc_union(was.block_lo, was.block_hi, n->nat.block_lo, n->nat.block_hi, &lo, &hi);
+            if ((uint16_t)(hi - lo) < 4096) {
+                n->nat.block_lo = lo;
+                n->nat.block_hi = hi;
+            }
+        }
         if (n->nat_quick) {             /* the allocation test skipped: the NAT's, from the full probe */
             n->nat.allocation = was.allocation;
             n->nat.seq_delta = was.seq_delta;
