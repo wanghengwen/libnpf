@@ -40,7 +40,7 @@ Linux 上的 `libnpf.a` 是一个可重定位目标，除 `npf.h` 的函数外�
 
 ## 用法
 
-公开接口只有 `include/npf.h`。一个 `npf_t` 是平台上的一个身份：被别人连接的节点、主动连接的客户端，或者两者都是。
+公开接口只有 `include/npf.h`，完整的说明见 [开发者指南](docs/design/libnpf.md)。一个 `npf_t` 是平台上的一个身份：被别人连接的节点、主动连接的客户端，或者两者都是。
 
 ```c
 #include "npf.h"
@@ -86,7 +86,7 @@ src/node/ src/tunnel/  节点、会话、AnLiu、中转、隧道、UDP 转发、
 src/api/               npf.h 的实现、命令、模块
 third_party/           AnLiu、Monocypher、mbedTLS、rxi/log
 tests/                 单元测试、API 测试、模糊测试
-docs/                  信令协议、数据通道、NAT 穿透与安全设计、libnpf 的设计
+docs/                  信令协议、数据通道、NAT 穿透与安全设计，以及开发者指南（docs/design/libnpf.md）
 ```
 
 ## 许可

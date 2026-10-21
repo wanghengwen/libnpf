@@ -40,7 +40,7 @@ On Linux `libnpf.a` is one relocatable object with every symbol but those of `np
 
 ## Using it
 
-The public interface is `include/npf.h` alone. One `npf_t` is one identity on the platform: a node others call, a client that calls them, or both.
+The public interface is `include/npf.h` alone; the developer's guide is [docs/design/libnpf.md](docs/design/libnpf.md) (in Chinese). One `npf_t` is one identity on the platform: a node others call, a client that calls them, or both.
 
 ```c
 #include "npf.h"
@@ -86,7 +86,7 @@ src/node/ src/tunnel/  the node, sessions, AnLiu, relays, the tunnel, UDP forwar
 src/api/               npf.h's implementation, commands, modules
 third_party/           AnLiu, Monocypher, mbedTLS, rxi/log
 tests/                 unit tests, API tests, fuzzing
-docs/                  the signaling protocol, the data channel, NAT traversal, security, libnpf's design (in Chinese)
+docs/                  the signaling protocol, the data channel, NAT traversal, security, and the developer's guide docs/design/libnpf.md (in Chinese)
 ```
 
 ## Licence
