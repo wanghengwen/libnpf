@@ -28,8 +28,8 @@
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
-cmake --install build --prefix /opt/npf      # lib/libnpf.*、include/npf.h、lib/pkgconfig/npf.pc
-cc app.c $(PKG_CONFIG_PATH=/opt/npf/lib/pkgconfig pkg-config --cflags --libs npf) -lpthread
+cmake --install build --prefix "$PWD/install"   # lib/libnpf.*、include/npf.h、lib/pkgconfig/npf.pc
+cc app.c $(PKG_CONFIG_PATH="$PWD/install/lib/pkgconfig" pkg-config --cflags --libs npf) -lpthread
 ```
 
 | 选项 | 默认 | 说明 |
@@ -73,8 +73,8 @@ cb.session = on_session;        /* 有人连上、断开 */
 cb.data = on_data;              /* 对方发来的应用数据 */
 
 npf_options_init(&o);
-o.conf_dir = "/etc/npf";        /* 只读：npf.conf、根公钥、服务器列表 */
-o.data_dir = "/data/npf";       /* 持久化存储：身份、编号、配对状态 */
+o.conf_dir = conf_dir;          /* 应用决定的目录，只读：npf.conf、根公钥、服务器列表 */
+o.data_dir = data_dir;          /* 持久化存储上的目录：身份、编号、配对状态 */
 o.overrides = "model_cred = NPFV2....\nserial = SN0001\n";   /* 凭证不落盘 */
 o.role = NPF_ROLE_NODE;
 o.cb = &cb;
@@ -86,7 +86,7 @@ if (npf_create(&o, &dev, err, sizeof err) != NPF_OK || npf_start(dev) != NPF_OK)
 npf_destroy(dev);               /* 停止、等待、释放 */
 ```
 
-`conf_dir/npf.conf` 至少要有平台的根公钥和服务器列表：
+两个目录由应用决定（第 4 节），`conf_dir` 里的 `npf.conf` 至少要有平台的根公钥和服务器列表：
 
 ```
 root = <平台的根公钥>
@@ -344,8 +344,8 @@ const npf_module *const npf_modules[] = {&acme_module, NULL};     /* 模块表 *
 CMake 中在 `add_subdirectory(libnpf)` 之前给出：
 
 ```cmake
-set(NPF_MODULE_SOURCES ${CMAKE_SOURCE_DIR}/acme/acme.c)        # 其中一个文件定义 npf_modules
-set(NPF_MODULE_INCLUDES ${CMAKE_SOURCE_DIR}/acme)
+set(NPF_MODULE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/acme/acme.c)   # 其中一个文件定义 npf_modules
+set(NPF_MODULE_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/acme)
 set(NPF_MODULE_LIBS "")                                        # 模块需要的静态库（CMake 目标）
 add_subdirectory(libnpf)
 ```

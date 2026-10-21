@@ -55,8 +55,8 @@ npf_callbacks_init(&cb);
 cb.event = on_event;            /* "online", "enrolled", "stopped" ... */
 cb.session = on_session;        /* a session up, down */
 cb.data = on_data;              /* the peer's application data */
-o.conf_dir = "/etc/npf";        /* read only: npf.conf, the root key, the server list */
-o.data_dir = "/var/lib/npf";    /* writable: identity, number, pairing state */
+o.conf_dir = conf_dir;          /* the application's directory, read only: npf.conf, the root key, the server list */
+o.data_dir = data_dir;          /* writable: identity, number, pairing state */
 o.role = NPF_ROLE_NODE;
 o.cb = &cb;
 if (npf_create(&o, &n, err, sizeof err) != NPF_OK || npf_start(n) != NPF_OK)

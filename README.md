@@ -55,8 +55,8 @@ npf_callbacks_init(&cb);
 cb.event = on_event;            /* "online"、"enrolled"、"stopped" ... */
 cb.session = on_session;        /* 会话建立、结束 */
 cb.data = on_data;              /* 对端发来的应用数据 */
-o.conf_dir = "/etc/npf";        /* 只读：npf.conf、根公钥、服务器列表 */
-o.data_dir = "/var/lib/npf";    /* 可写：身份、编号、配对状态 */
+o.conf_dir = conf_dir;          /* 应用决定的目录，只读：npf.conf、根公钥、服务器列表 */
+o.data_dir = data_dir;          /* 可写：身份、编号、配对状态 */
 o.role = NPF_ROLE_NODE;
 o.cb = &cb;
 if (npf_create(&o, &n, err, sizeof err) != NPF_OK || npf_start(n) != NPF_OK)
