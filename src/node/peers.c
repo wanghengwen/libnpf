@@ -2041,6 +2041,46 @@ void npf_peer_set_on_demand(npf_peer *p, int idle_ms)
     peer_changed(p);
 }
 
+void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
+{
+    int busy = p->call || p->waiting;
+    if (connect == NPF_CONNECT_ON_DEMAND) {
+        p->idle_req = idle_ms > 0 ? idle_ms : 0;
+        p->idle_ms = p->idle_req ? p->idle_req : p->ps->default_idle_ms;
+        if (!p->idle_ms)
+            p->idle_ms = 300000;
+        p->connect = NPF_CONNECT_ON_DEMAND;
+        p->keep = 1;
+        p->idle_since = 0;                  /* the idle time runs from now */
+        if (p->t_retry) {                   /* no reconnecting: a connection starts the next one */
+            npf_timer_cancel(p->ps->n->loop, p->t_retry);
+            p->t_retry = NULL;
+        }
+        if (!p->listening)
+            start_forwards(p);              /* listening now, the session when a connection comes */
+        if (p->call)
+            demand_timer(p);
+        peer_changed(p);
+        return;
+    }
+    p->idle_req = p->idle_ms = 0;
+    p->connect = connect;
+    p->keep = connect != NPF_CONNECT_ONCE;
+    if (connect == NPF_CONNECT_KEEP) {
+        if (p->finished)
+            unfinish(p);
+        if (running && !busy && !p->t_retry && !p->direct)
+            start_call(p);                  /* no session: one now */
+    } else if (!busy) {                     /* ONCE, no session to end first: ended now */
+        if (p->t_retry) {
+            npf_timer_cancel(p->ps->n->loop, p->t_retry);
+            p->t_retry = NULL;
+        }
+        finish(p, p->last_why[0] ? p->last_why : "local");
+    }
+    peer_changed(p);
+}
+
 void npf_peers_set_idle(npf_peers *ps, int idle_ms)
 {
     npf_peer *p;

@@ -409,6 +409,13 @@ NPF_API int npf_peer_set_flags(npf_t *n, uint32_t peer, int flags);
 NPF_API int npf_peer_set_ctx(npf_t *n, uint32_t peer, void *ctx);
 /* NPF_CONNECT_ON_DEMAND: the session now; NPF_PEER_ENDED: one more try */
 NPF_API int npf_peer_connect_now(npf_t *n, uint32_t peer);
+/* the way it connects from now on (NPF_CONNECT_*), saved for a persisted
+ * peer: KEEP connects now when it has no session; ON_DEMAND needs
+ * NPF_PERSIST and no remote forward (else NPF_EINVAL), the session goes on
+ * and the idle time runs from now (idle_ms 0: the peer_idle default); ONCE
+ * ends it when its session ends (at once without one) and needs it not
+ * persisted. NPF_PLATFORM peers: NPF_EREADONLY */
+NPF_API int npf_peer_set_connect(npf_t *n, uint32_t peer, int connect, int idle_ms);
 
 enum { NPF_FWD_LOCAL = 1,              /* -L: a port here to a target on the peer's side */
        NPF_FWD_SOCKS = 2,              /* -D: a SOCKS5 proxy here, through the peer */

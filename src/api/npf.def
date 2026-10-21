@@ -41,6 +41,7 @@ EXPORTS
     npf_peer_set_flags
     npf_peer_set_ctx
     npf_peer_connect_now
+    npf_peer_set_connect
     npf_forward_opt_init_size
     npf_forward_info_init_size
     npf_forward_create

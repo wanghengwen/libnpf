@@ -464,6 +464,26 @@ int main(void)
               && npf_peer_connect_now(b, ids[0]) == NPF_OK, "its ctx set before the start, woken");
         i = wait_ev(0, NPF_EV_SESSION_UP, -1, 10000);
         check(i >= 0 && evs[i].ctx == &ctx_peer, "its events carry that ctx");
+        /* the way it connects, changed while it runs */
+        check(npf_peer_set_connect(b, ids[0], NPF_CONNECT_ONCE, 0) == NPF_EINVAL, "a saved peer ONCE: NPF_EINVAL");
+        check(npf_peer_set_connect(b, ids[0], NPF_CONNECT_KEEP, 0) == NPF_OK && !file_has(db, "on_demand")
+              && npf_peer_get(b, ids[0], &pi) == NPF_OK && pi.connect == NPF_CONNECT_KEEP && pi.session,
+              "set_connect KEEP: saved, its session goes on");
+        j = ev_count();
+        check(npf_peer_set_connect(b, ids[0], NPF_CONNECT_ON_DEMAND, 1500) == NPF_OK && file_has(db, "on_demand")
+              && file_has(db, "\"idle_ms\": 1500"), "set_connect ON_DEMAND, 1.5 s: saved");
+        i = wait_ev(j, NPF_EV_SESSION_DOWN, -1, 10000);
+        check(i >= 0 && evs[i].peer == ids[0], "on demand: the session ends once idle");
+        npf_peer_opt_init(&po);
+        po.target = NPF_TARGET_DIRECT;
+        po.host = "127.0.0.2";
+        po.port = (uint16_t)dport;
+        po.psk = key;
+        check(npf_peer_create(b, &po, &other, err, sizeof err) == NPF_OK
+              && npf_peer_set_connect(b, other, NPF_CONNECT_ON_DEMAND, 0) == NPF_EINVAL
+              && npf_peer_set_connect(b, other, NPF_CONNECT_ONCE, 0) == NPF_OK
+              && npf_peer_get(b, other, &pi) == NPF_OK && pi.connect == NPF_CONNECT_ONCE,
+              "a temporary peer: not on demand (NPF_EINVAL), ONCE");
         npf_destroy(b);
     }
 

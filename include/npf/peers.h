@@ -176,6 +176,10 @@ int         npf_peer_password_try(npf_peer *p, const char *password);
  * it, at most 30 s), and it ends idle_ms after its last connection closed;
  * no reconnecting in between. 0: off */
 void        npf_peer_set_on_demand(npf_peer *p, int idle_ms);
+/* NPF_CONNECT_*: KEEP connects now when it has no session (running: the
+ * instance started), ON_DEMAND's idle time runs from now (idle_ms 0: the
+ * default), ONCE ends it when its session ends, at once without one */
+void        npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running);
 /* the default idle time of the peers on demand made without one */
 void        npf_peers_set_idle(npf_peers *ps, int idle_ms);
 /* A kind of forward a module adds (npf/module.h), the option -X with its

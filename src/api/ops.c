@@ -639,6 +639,42 @@ int npf_peer_connect_now(npf_t *n, uint32_t peer)
     return npf_api_op(n, peer_connect_run, &x);
 }
 
+static int peer_set_connect_run(npf_t *n, void *arg)
+{
+    pid_arg *x = arg;
+    npf_peer *p = peer_of(n, x->id);
+    int mode = x->flags, idle = (int)x->errcap, k;
+    uint32_t f;
+    if (!p)
+        return NPF_ENOENT;
+    f = npf_ops_flags(n, p);
+    if (f & NPF_PLATFORM)
+        return NPF_EREADONLY;
+    if ((mode != NPF_CONNECT_KEEP && mode != NPF_CONNECT_ONCE && mode != NPF_CONNECT_ON_DEMAND) || idle < 0
+        || (mode == NPF_CONNECT_ONCE && (f & NPF_PERSIST)))
+        return NPF_EINVAL;
+    if (mode == NPF_CONNECT_ON_DEMAND) {
+        npf_fwd_state st;
+        if (!(f & NPF_PERSIST))
+            return NPF_EINVAL;              /* on demand is for saved peers */
+        for (k = 0; k < npf_peer_nfwd(p); k++)
+            if (npf_peer_forward_state(p, k, &st) == 0 && st.opt == 'R')
+                return NPF_EINVAL;          /* the other side may use a -R at any time */
+    }
+    if (mode == npf_peer_connect_mode(p) && (mode != NPF_CONNECT_ON_DEMAND || idle == npf_peer_idle_asked(p)))
+        return NPF_OK;
+    npf_peer_connect_put(p, mode, idle, n->started);
+    return (f & NPF_PERSIST) ? npf_ops_record(n, p, 1, NULL) : NPF_OK;
+}
+
+int npf_peer_set_connect(npf_t *n, uint32_t peer, int connect, int idle_ms)
+{
+    pid_arg x = {peer, connect, NULL, NULL, NULL, NULL, NULL, (size_t)(idle_ms < 0 ? 0 : idle_ms)};
+    if (idle_ms < 0)
+        return NPF_EINVAL;
+    return npf_api_op(n, peer_set_connect_run, &x);
+}
+
 /* ---- forwards ---- */
 
 typedef struct fc_arg {

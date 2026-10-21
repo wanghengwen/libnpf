@@ -267,6 +267,7 @@ npf_start(cli);
 - 同一个目标再次创建返回 `NPF_EEXIST` 和已有的编号（编号按数值比，直连目标按小写主机名和端口比）；
 - `npf_peer_get` 给出状态（`NPF_PEER_WAITING`、`CONNECTING`、`CONNECTED`、`RETRY`、`IDLE`、`ENDED`）和 `needs`：`NPF_NEED_PASSWORD`（没配对，要口令；口令被拒时加 `NPF_NEED_PASSWORD_WRONG`，配对丢失时加 `NPF_NEED_PAIRING_LOST`）、`NPF_NEED_ACCOUNT`（经账户授权进入的，账户会话没了）。因为这些原因结束的对端，在条件满足时自己再试：给了口令（`npf_peer_give_password`）、账户会话开始；`npf_peer_connect_now` 让按需的对端现在就建立会话，也让结束了的对端再试一次；
 - `npf_peer_set_names`、`npf_peer_set_flags`（打开或关闭保存，转发一起变；关闭后固定的公钥、名字和备注仍在）、`npf_peer_set_ctx`、`npf_peer_remove_id`（会话结束，转发删除，保存的记录不再恢复）；
+- `npf_peer_set_connect(n, peer, connect, idle_ms)` 运行中改连接方式，立即生效，保存的对端写进记录：改为 `KEEP` 时没有会话就马上连接；改为 `ON_DEMAND` 要已经保存、没有反向转发（否则 `NPF_EINVAL`），当前会话继续，空闲时间从现在算（`idle_ms` 为 0 用 `peer_idle`）；改为 `ONCE` 要不保存，当前会话结束后进入 `ENDED`（没有会话就马上）。`peer_idle` 只是默认的空闲时间，改它不会切换任何对端的连接方式（应用要这样做，自己对相应的对端调用这个函数）；`ONCE` 的对端要保存，先改为 `KEEP` 再 `npf_peer_set_flags`；
 - 为平台保存的公网映射打开的对端带 `NPF_PLATFORM`，由平台的映射决定，不能删除、改 flags 或加转发（`NPF_EREADONLY`）；
 - `npf_peer_list`、`npf_peer_find`；`NPF_ROLE_NODE` 和 `NPF_ROLE_DIRECT` 启动时恢复保存的对端，`NPF_ROLE_CLIENT` 不恢复。恢复的对端在 `npf_start` 之前就能枚举，这时用 `npf_peer_set_ctx` 登记上下文。
 
@@ -304,7 +305,7 @@ npf_start(cli);
 | 类别 | 函数 |
 |---|---|
 | 生命周期 | `npf_options_init`、`npf_callbacks_init`、`npf_setup_init`、`npf_create`、`npf_start` / `npf_run`、`npf_stop`、`npf_destroy`、`npf_free`、`npf_version`、`npf_api_version`、`npf_runtime_new` / `npf_runtime_free` |
-| 对端 | `npf_peer_create`、`npf_peer_remove_id`、`npf_peer_find`、`npf_peer_list`、`npf_peer_get`、`npf_peer_give_password`、`npf_peer_set_names`、`npf_peer_set_flags`、`npf_peer_set_ctx`、`npf_peer_connect_now` |
+| 对端 | `npf_peer_create`、`npf_peer_remove_id`、`npf_peer_find`、`npf_peer_list`、`npf_peer_get`、`npf_peer_give_password`、`npf_peer_set_names`、`npf_peer_set_flags`、`npf_peer_set_ctx`、`npf_peer_set_connect`、`npf_peer_connect_now` |
 | 转发 | `npf_forward_create`、`npf_forward_remove`、`npf_forward_list`、`npf_forward_get`、`npf_forward_set_ctx` |
 | 资源 | `npf_resource_put`、`npf_resource_remove`、`npf_resource_list` |
 | 配对与所有者 | `npf_pairing_password_get` / `_set`、`npf_pairing_list`、`npf_pairing_remove`、`npf_owner_reset` |
