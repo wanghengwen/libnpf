@@ -2081,6 +2081,8 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
     peer_changed(p);
 }
 
+const uint8_t *npf_peer_psk(const npf_peer *p) { return p->direct ? p->psk : NULL; }
+
 void npf_peer_idle_put(npf_peer *p, int idle_ms)
 {
     p->idle_req = idle_ms > 0 ? idle_ms : 0;

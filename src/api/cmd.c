@@ -536,7 +536,8 @@ static const struct {
 /* keys whose values stay out of the log and the replies */
 static int is_secret(const char *k)
 {
-    return strcmp(k, "password") == 0;
+    return strcmp(k, "password") == 0 || strcmp(k, "cred") == 0 || strcmp(k, "model_cred") == 0
+           || strcmp(k, "direct_psk") == 0;
 }
 
 /* 0, or the exit code with the reason in o */
@@ -578,7 +579,7 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
     int live = is_settable(k), r;
     const char *shown = is_secret(k) ? "(hidden)" : v;
     if (strcmp(k, "node") == 0 || strcmp(k, "cred") == 0) {
-        npf_out_printf(o, "%s: cannot be set this way%s\n", k, strcmp(k, "node") == 0 ? " (node add)" : "");
+        npf_out_printf(o, "%s: cannot be set this way%s\n", k, strcmp(k, "node") == 0 ? " (peers: npf_peer_create)" : "");
         return 2;
     }
     /* where the writable directory and its files are: read before local.json */
@@ -681,6 +682,11 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
         if (argc < 3) {
             npf_out_printf(o, "set KEY VALUE [--no-save]\n");
             return 2;
+        }
+        if (save && (c->opt_flags & NPF_OPT_NO_SAVED_SETTINGS)) {     /* as npf_config_set: NPF_EUNAVAIL */
+            npf_out_printf(o, "%s: settings are not saved here (the application keeps them): set ... --no-save\n",
+                           argv[1]);
+            return 1;
         }
         return npf_cmd_set(c, argv[1], argv[2], save, o);
     }

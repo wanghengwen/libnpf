@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "npf.h"
@@ -184,6 +185,43 @@ static npf_t *make(const char *dir, int role, const char *ov, int typed, int fla
     if (npf_create(&o, &n, err, errcap) != NPF_OK)
         return NULL;
     return n;
+}
+
+/* npf_command: its exit code (-1 none in 5 s), its text in out */
+static pthread_mutex_t cmu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ccv = PTHREAD_COND_INITIALIZER;
+static int c_done, c_code;
+static char c_text[512];
+static void on_cmd(void *user, int code, const char *text)
+{
+    (void)user;
+    pthread_mutex_lock(&cmu);
+    c_done = 1;
+    c_code = code;
+    snprintf(c_text, sizeof c_text, "%s", text ? text : "");
+    pthread_cond_broadcast(&ccv);
+    pthread_mutex_unlock(&cmu);
+}
+
+static int cmd(npf_t *n, int argc, const char *const *argv)
+{
+    struct timespec t;
+    int code = -1;
+    pthread_mutex_lock(&cmu);
+    c_done = 0;
+    c_text[0] = 0;
+    pthread_mutex_unlock(&cmu);
+    if (npf_command(n, argc, argv, on_cmd, NULL) != NPF_OK)
+        return -1;
+    clock_gettime(CLOCK_REALTIME, &t);
+    t.tv_sec += 5;
+    pthread_mutex_lock(&cmu);
+    while (!c_done && pthread_cond_timedwait(&ccv, &cmu, &t) == 0)
+        ;
+    if (c_done)
+        code = c_code;
+    pthread_mutex_unlock(&cmu);
+    return code;
 }
 
 /* npf_peer_setopt with an int, a string */
@@ -421,8 +459,8 @@ int main(void)
               && npf_peer_get(b, peer, &pi) == NPF_OK && strcmp(pi.name, "bb") == 0 && strcmp(pi.nick, "a nick") == 0
               && !(pi.flags & NPF_PERSIST), "setopt: a wrong len, option, value or length: NPF_EINVAL, unchanged");
     }
-    check(seti(b, peer, NPF_PEER_OPT_PERSIST, 1) == NPF_OK && file_has(db, "\"save\": true"),
-          "setopt PERSIST 1: saved now");
+    check(seti(b, peer, NPF_PEER_OPT_PERSIST, 1) == NPF_OK && file_has(db, "\"save\": true") && file_has(db, "\"psk\""),
+          "setopt PERSIST 1: saved now, a direct peer with its key");
     npf_forward_opt_init(&fo);
     fo.kind = NPF_FWD_LOCAL;
     fo.listen.port = 0;
@@ -544,6 +582,17 @@ int main(void)
         r.service.port = 1;
         r.flags = NPF_PERSIST;
         check(npf_resource_put(c, &r, err, sizeof err) == NPF_EUNAVAIL, "a saved resource: NPF_EUNAVAIL");
+        npf_destroy(c);
+    }
+
+    /* the application keeps its settings: npf_command's set saves nothing either */
+    c = make(dc, NPF_ROLE_DIRECT, "udp_port = 0\n", 0, NPF_OPT_NO_SAVED_SETTINGS, err, sizeof err);
+    check(c != NULL, "an instance with NPF_OPT_NO_SAVED_SETTINGS");
+    if (c) {
+        const char *set1[] = {"set", "log_level", "debug"}, *set2[] = {"set", "log_level", "debug", "--no-save"};
+        check(npf_config_set(c, "log_level", "debug", 1, err, sizeof err) == NPF_EUNAVAIL && cmd(c, 3, set1) == 1
+              && strstr(c_text, "not saved here") && cmd(c, 4, set2) == 0 && !file_has(dc, "debug"),
+              "set with saving: refused (npf_config_set and the command), --no-save in effect");
         npf_destroy(c);
     }
 

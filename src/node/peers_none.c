@@ -111,6 +111,7 @@ const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap)
 
 void npf_peer_set_on_demand(npf_peer *p, int idle_ms) { (void)p, (void)idle_ms; }
 void npf_peer_idle_put(npf_peer *p, int idle_ms) { (void)p, (void)idle_ms; }
+const uint8_t *npf_peer_psk(const npf_peer *p) { (void)p; return NULL; }
 void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
 {
     (void)p, (void)connect, (void)idle_ms, (void)running;

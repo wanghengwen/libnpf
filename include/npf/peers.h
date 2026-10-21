@@ -180,6 +180,8 @@ void        npf_peer_set_on_demand(npf_peer *p, int idle_ms);
  * instance started), ON_DEMAND's idle time runs from now (idle_ms 0: the
  * default), ONCE ends it when its session ends, at once without one */
 void        npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running);
+/* a direct peer's pre-shared key (32 bytes), NULL for a numbered one */
+const uint8_t *npf_peer_psk(const npf_peer *p);
 /* the idle time asked for on demand (0: the default), now if on demand */
 void        npf_peer_idle_put(npf_peer *p, int idle_ms);
 /* the default idle time of the peers on demand made without one */
