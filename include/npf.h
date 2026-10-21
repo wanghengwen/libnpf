@@ -383,6 +383,7 @@ typedef struct npf_peer_info {
     char     why[64];                  /* the same, or why it waits, for people */
     uint32_t session;                  /* the session up now, 0 none */
     int      nforwards;
+    void    *ctx;                      /* the application's (NPF_PEER_OPT_CTX) */
 } npf_peer_info;
 
 NPF_API void npf_peer_opt_init_size(npf_peer_opt *o, size_t size);
@@ -397,25 +398,33 @@ NPF_API int npf_peer_remove_id(npf_t *n, uint32_t peer);
 NPF_API int npf_peer_find(npf_t *n, const char *target_or_name, uint32_t *peer);
 NPF_API int npf_peer_list(npf_t *n, uint32_t *peers, size_t cap, size_t *count);
 NPF_API int npf_peer_get(npf_t *n, uint32_t peer, npf_peer_info *out);
-/* not paired yet, or the password was wrong: tried at once */
-NPF_API int npf_peer_give_password(npf_t *n, uint32_t peer, const char *password);
-/* NULL: unchanged, "": removed */
-NPF_API int npf_peer_set_names(npf_t *n, uint32_t peer, const char *name, const char *nick);
-/* NPF_PERSIST on: saved now with its forwards; off: not brought back at the
- * next start, its saved forwards leave local.json (the peer goes on; its
- * pinned key, names and the rest of its record stay) */
-NPF_API int npf_peer_set_flags(npf_t *n, uint32_t peer, int flags);
-/* the application's context for its events from now on (also NULL) */
-NPF_API int npf_peer_set_ctx(npf_t *n, uint32_t peer, void *ctx);
 /* NPF_CONNECT_ON_DEMAND: the session now; NPF_PEER_ENDED: one more try */
 NPF_API int npf_peer_connect_now(npf_t *n, uint32_t peer);
-/* the way it connects from now on (NPF_CONNECT_*), saved for a persisted
- * peer: KEEP connects now when it has no session; ON_DEMAND needs
- * NPF_PERSIST and no remote forward (else NPF_EINVAL), the session goes on
- * and the idle time runs from now (idle_ms 0: the peer_idle default); ONCE
- * ends it when its session ends (at once without one) and needs it not
- * persisted. NPF_PLATFORM peers: NPF_EREADONLY */
-NPF_API int npf_peer_set_connect(npf_t *n, uint32_t peer, int connect, int idle_ms);
+
+/* A peer's settings, one at a time (npf_peer_setopt). int options: an int,
+ * len sizeof(int); strings: NUL-terminated, len 0, "" removes; CTX: the
+ * pointer itself as val, len 0. A wrong len or value, a string too long or
+ * an unknown option: NPF_EINVAL, the peer unchanged. A persisted peer is
+ * saved after the change (NPF_ESAVE: in effect, not written yet). On an
+ * NPF_PLATFORM peer CONNECT, IDLE_MS and PERSIST are NPF_EREADONLY,
+ * PASSWORD NPF_EINVAL. */
+enum { NPF_PEER_OPT_CONNECT = 1,       /* NPF_CONNECT_*: KEEP connects now when it has no session;
+                                          ON_DEMAND needs NPF_PERSIST and no remote forward, the
+                                          session goes on and the idle time runs from now; ONCE
+                                          ends it with its session (at once without one), not for a
+                                          persisted peer */
+       NPF_PEER_OPT_IDLE_MS,           /* on demand: ms without a connection before the session
+                                          ends, 0 the instance's peer_idle (kept for later when it
+                                          is not on demand now) */
+       NPF_PEER_OPT_PERSIST,           /* 1: saved now with its forwards (not ONCE); 0: not brought
+                                          back at the next start, its saved forwards leave
+                                          local.json, its pinned key and names stay (not ON_DEMAND) */
+       NPF_PEER_OPT_NAME,              /* a name (NPF_NAME_MAX), unique among the peers */
+       NPF_PEER_OPT_NICK,              /* what people see (NPF_NICK_MAX) */
+       NPF_PEER_OPT_CTX,               /* the application's, in its events from now on (also NULL) */
+       NPF_PEER_OPT_PASSWORD };        /* not paired yet, or the password was refused: tried at
+                                          once, not kept (NPF_PASSWORD_MAX) */
+NPF_API int npf_peer_setopt(npf_t *n, uint32_t peer, int opt, const void *val, size_t len);
 
 enum { NPF_FWD_LOCAL = 1,              /* -L: a port here to a target on the peer's side */
        NPF_FWD_SOCKS = 2,              /* -D: a SOCKS5 proxy here, through the peer */
@@ -464,6 +473,7 @@ typedef struct npf_forward_info {
     int      conns;                    /* connections open now */
     uint32_t refused;                  /* connections the peer refused (its resources), so far */
     char     refused_why[64];          /* the last one's target */
+    void    *ctx;                      /* the application's (NPF_FWD_OPT_CTX) */
 } npf_forward_info;
 
 NPF_API void npf_forward_opt_init_size(npf_forward_opt *o, size_t size);
@@ -477,7 +487,9 @@ NPF_API int npf_forward_remove(npf_t *n, uint32_t fwd);
 /* peer 0: every peer's */
 NPF_API int npf_forward_list(npf_t *n, uint32_t peer, uint32_t *fwds, size_t cap, size_t *count);
 NPF_API int npf_forward_get(npf_t *n, uint32_t fwd, npf_forward_info *out);
-NPF_API int npf_forward_set_ctx(npf_t *n, uint32_t fwd, void *ctx);
+/* a forward's settings, as npf_peer_setopt: NPF_FWD_OPT_CTX the pointer as val, len 0 */
+enum { NPF_FWD_OPT_CTX = 1 };
+NPF_API int npf_forward_setopt(npf_t *n, uint32_t fwd, int opt, const void *val, size_t len);
 
 enum { NPF_RES_TCP = 1, NPF_RES_UDP, NPF_RES_NET, NPF_RES_SOCKS, NPF_RES_REVERSE };
 

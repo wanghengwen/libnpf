@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-版本：2.0。更新日期：2026-10-21（对端、转发、资源改为类型化的对象接口，类型化事件，`npf_setup` 启动；见 api-draft.md）。
+版本：2.1。更新日期：2026-10-21（对端、转发、资源改为类型化的对象接口，类型化事件，`npf_setup` 启动；2.1：对端与转发的设置合为 `npf_peer_setopt` / `npf_forward_setopt`）。
 
 本文写给在自己的产品里集成 libnpf 的开发者：NAS、路由器、摄像头等设备的固件，以及连接这些设备的电脑、手机应用。公开接口只有 `include/npf.h`，本文按使用顺序说明它；协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，NAT 穿透与安全设计见同目录的 [nat-traversal.md](nat-traversal.md)、[security.md](security.md)。
 
@@ -140,7 +140,7 @@ npf_start(cli);
 
 - `NPF_EV_SESSION_UP` 带会话编号和对端编号；`NPF_EV_FORWARD`（`NPF_FWD_UP`）之后浏览器打开 `http://127.0.0.1:端口` 就是设备上的页面；
 - `npf_session_send(cli, session, buf, len)` 发送应用数据，对方的 `data` 回调收到；`npf_media_open` / `npf_media_send` 发送音视频（第 11 节）；
-- 第一次连接用口令配对，之后库在 `data_dir/local.json` 里记住对方的公钥。设备被重置、换了密钥时，对端进入 `NPF_PEER_ENDED`，`needs` 带 `NPF_NEED_PAIRING_LOST`，要用 `npf_peer_give_password` 给它现在的口令。
+- 第一次连接用口令配对，之后库在 `data_dir/local.json` 里记住对方的公钥。设备被重置、换了密钥时，对端进入 `NPF_PEER_ENDED`，`needs` 带 `NPF_NEED_PAIRING_LOST`，要用 `npf_peer_setopt` 的 `NPF_PEER_OPT_PASSWORD` 给它现在的口令。
 
 ### 3.3 不经平台的直连
 
@@ -265,11 +265,16 @@ npf_start(cli);
 | `ctx` | 应用自己的上下文，事件里原样带回 |
 
 - 同一个目标再次创建返回 `NPF_EEXIST` 和已有的编号（编号按数值比，直连目标按小写主机名和端口比）；
-- `npf_peer_get` 给出状态（`NPF_PEER_WAITING`、`CONNECTING`、`CONNECTED`、`RETRY`、`IDLE`、`ENDED`）和 `needs`：`NPF_NEED_PASSWORD`（没配对，要口令；口令被拒时加 `NPF_NEED_PASSWORD_WRONG`，配对丢失时加 `NPF_NEED_PAIRING_LOST`）、`NPF_NEED_ACCOUNT`（经账户授权进入的，账户会话没了）。因为这些原因结束的对端，在条件满足时自己再试：给了口令（`npf_peer_give_password`）、账户会话开始；`npf_peer_connect_now` 让按需的对端现在就建立会话，也让结束了的对端再试一次；
-- `npf_peer_set_names`、`npf_peer_set_flags`（打开或关闭保存，转发一起变；关闭后固定的公钥、名字和备注仍在）、`npf_peer_set_ctx`、`npf_peer_remove_id`（会话结束，转发删除，保存的记录不再恢复）；
-- `npf_peer_set_connect(n, peer, connect, idle_ms)` 运行中改连接方式，立即生效，保存的对端写进记录：改为 `KEEP` 时没有会话就马上连接；改为 `ON_DEMAND` 要已经保存、没有反向转发（否则 `NPF_EINVAL`），当前会话继续，空闲时间从现在算（`idle_ms` 为 0 用 `peer_idle`）；改为 `ONCE` 要不保存，当前会话结束后进入 `ENDED`（没有会话就马上）。`peer_idle` 只是默认的空闲时间，改它不会切换任何对端的连接方式（应用要这样做，自己对相应的对端调用这个函数）；`ONCE` 的对端要保存，先改为 `KEEP` 再 `npf_peer_set_flags`；
+- `npf_peer_get` 给出状态（`NPF_PEER_WAITING`、`CONNECTING`、`CONNECTED`、`RETRY`、`IDLE`、`ENDED`）和 `needs`：`NPF_NEED_PASSWORD`（没配对，要口令；口令被拒时加 `NPF_NEED_PASSWORD_WRONG`，配对丢失时加 `NPF_NEED_PAIRING_LOST`）、`NPF_NEED_ACCOUNT`（经账户授权进入的，账户会话没了）。因为这些原因结束的对端，在条件满足时自己再试：给了口令（`NPF_PEER_OPT_PASSWORD`）、账户会话开始；`npf_peer_connect_now` 让按需的对端现在就建立会话，也让结束了的对端再试一次；
+- `npf_peer_setopt(n, peer, opt, val, len)` 一次改一项设置（像 `setsockopt`）：整数选项传 `int`，`len` 为 `sizeof(int)`；字符串以 NUL 结尾，`len` 为 0，`""` 删除；`NPF_PEER_OPT_CTX` 把指针本身作为 `val`，`len` 为 0。`len` 或取值不对、字符串太长、不认识的选项都是 `NPF_EINVAL`，对端不变；保存的对端改后写进记录（写不了是 `NPF_ESAVE`，改动已生效）。选项：
+  - `CONNECT`：运行中改连接方式，立即生效。改为 `KEEP` 时没有会话就马上连接；改为 `ON_DEMAND` 要已经保存、没有反向转发，当前会话继续，空闲时间从现在算；改为 `ONCE` 要不保存，当前会话结束后进入 `ENDED`（没有会话就马上）；
+  - `IDLE_MS`：按需时没有连接多久结束会话，0 用实例的 `peer_idle`；不是按需时先记下，改为按需时用。`peer_idle` 只是默认的空闲时间，改它不会切换任何对端的连接方式（应用要这样做，自己对相应的对端设 `CONNECT`）；
+  - `PERSIST`：1 现在保存，转发一起保存（`ONCE` 的不行：先把 `CONNECT` 改为 `KEEP`）；0 下次启动不再恢复，保存的转发离开 local.json，固定的公钥、名字和备注仍在（按需的不行）；
+  - `NAME`、`NICK`：名字（在对端中唯一）、备注；`CTX`：应用的上下文，之后的事件都带它；`PASSWORD`：没配对或口令被拒时给口令，马上再试，不保存；
+  - `NPF_PLATFORM` 的对端：`CONNECT`、`IDLE_MS`、`PERSIST` 为 `NPF_EREADONLY`，`PASSWORD` 为 `NPF_EINVAL`，`NAME`、`NICK`、`CTX` 可以改；
+- `npf_peer_remove_id`（会话结束，转发删除，保存的记录不再恢复）；`npf_peer_get` 的 `ctx` 是应用登记的上下文；
 - 为平台保存的公网映射打开的对端带 `NPF_PLATFORM`，由平台的映射决定，不能删除、改 flags 或加转发（`NPF_EREADONLY`）；
-- `npf_peer_list`、`npf_peer_find`；`NPF_ROLE_NODE` 和 `NPF_ROLE_DIRECT` 启动时恢复保存的对端，`NPF_ROLE_CLIENT` 不恢复。恢复的对端在 `npf_start` 之前就能枚举，这时用 `npf_peer_set_ctx` 登记上下文。
+- `npf_peer_list`、`npf_peer_find`；`NPF_ROLE_NODE` 和 `NPF_ROLE_DIRECT` 启动时恢复保存的对端，`NPF_ROLE_CLIENT` 不恢复。恢复的对端在 `npf_start` 之前就能枚举，这时用 `NPF_PEER_OPT_CTX` 登记上下文。
 
 **转发**（`npf_forward_create`）：
 
@@ -282,7 +287,7 @@ npf_start(cli);
 - 本机端口被占用、组合不合法这类立即可知的错误在创建时返回（`NPF_EFAIL`、`NPF_EINVAL`），不留下对象；每个对端最多 `NPF_PEER_FORWARDS_MAX`（16）条，超出 `NPF_EBUSY`；
 - `npf_forward_get`：状态（`NPF_FWD_WAITING`、`UP`、`FAILED` 与 `why_code`）、实际使用的端口、当前连接数、被对端拒绝的连接数。`NPF_FWD_FAILED` 只表示整条规则不能用（端口被占、对端拒绝反向监听）；单条连接被对端拒绝（目标不在它发布的资源里）只计数并发 `NPF_EV_FORWARD_REFUSED`，同一个 SOCKS 代理上允许的目标照常连通；
 - 带 `NPF_PERSIST` 的转发要求对端也是保存的；local.json 里保存的是请求的端口（0 仍是 0），实际端口只是运行状态；
-- `npf_forward_remove`、`npf_forward_list(n, peer, ...)`（`peer` 为 0 列出全部）、`npf_forward_set_ctx`。
+- `npf_forward_remove`、`npf_forward_list(n, peer, ...)`（`peer` 为 0 列出全部）、`npf_forward_setopt`（`NPF_FWD_OPT_CTX`，同 `npf_peer_setopt` 的约定；`npf_forward_get` 的 `ctx` 读出它）。
 
 **保存失败**：写不进 local.json 时返回 `NPF_ESAVE`，修改已经生效，并记为待保存（`npf_node_get` 的 `unsaved`，对象 info 的 `saved` 为 0）。`npf_save` 重试，任何一次成功的保存都会写入全部内容；成功之前重启，新建的会丢失，删除的会回来。
 
@@ -305,8 +310,8 @@ npf_start(cli);
 | 类别 | 函数 |
 |---|---|
 | 生命周期 | `npf_options_init`、`npf_callbacks_init`、`npf_setup_init`、`npf_create`、`npf_start` / `npf_run`、`npf_stop`、`npf_destroy`、`npf_free`、`npf_version`、`npf_api_version`、`npf_runtime_new` / `npf_runtime_free` |
-| 对端 | `npf_peer_create`、`npf_peer_remove_id`、`npf_peer_find`、`npf_peer_list`、`npf_peer_get`、`npf_peer_give_password`、`npf_peer_set_names`、`npf_peer_set_flags`、`npf_peer_set_ctx`、`npf_peer_set_connect`、`npf_peer_connect_now` |
-| 转发 | `npf_forward_create`、`npf_forward_remove`、`npf_forward_list`、`npf_forward_get`、`npf_forward_set_ctx` |
+| 对端 | `npf_peer_create`、`npf_peer_remove_id`、`npf_peer_find`、`npf_peer_list`、`npf_peer_get`、`npf_peer_setopt`、`npf_peer_connect_now` |
+| 转发 | `npf_forward_create`、`npf_forward_remove`、`npf_forward_list`、`npf_forward_get`、`npf_forward_setopt` |
 | 资源 | `npf_resource_put`、`npf_resource_remove`、`npf_resource_list` |
 | 配对与所有者 | `npf_pairing_password_get` / `_set`、`npf_pairing_list`、`npf_pairing_remove`、`npf_owner_reset` |
 | 本机与会话 | `npf_node_get`、`npf_session_get`、`npf_session_list`、`npf_network_changed`、`npf_save` |
@@ -359,7 +364,7 @@ npf_start(cli);
 
 - 事件在实例的线程上排队，在产生它的调用或回调之后送达，同一对象的按发生顺序；`SESSION_UP` 先于这个会话的任何 `data` 和媒体回调；
 - 从别的线程创建对象时，关于它的事件可能在创建函数返回之前到达：回调里只用 `ev->peer` / `ev->forward` 和创建时给的 `ctx`，`ctx` 指向的数据要在调用之前准备好；
-- `ctx` 在送达时从对象读取，`npf_peer_set_ctx` 返回之后的回调都带新的；`*_GONE` 和 `SESSION_DOWN` 在对象移除之后发出，自带结束时的信息；
+- `ctx` 在送达时从对象读取，`NPF_PEER_OPT_CTX` 设好之后的回调都带新的；`*_GONE` 和 `SESSION_DOWN` 在对象移除之后发出，自带结束时的信息；
 - 删除对端时依次发出 `SESSION_DOWN`（`NPF_END_LOCAL`）、它每条转发的 `FORWARD_GONE`、`PEER_GONE`；运行结束时不发 `*_GONE`，`NPF_EV_STOPPED` 之后应用自行释放所有 `ctx`；
 - 回调里可以删除事件所说的对象，删除引起的事件排在本次回调之后。
 

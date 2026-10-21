@@ -186,6 +186,17 @@ static npf_t *make(const char *dir, int role, const char *ov, int typed, int fla
     return n;
 }
 
+/* npf_peer_setopt with an int, a string */
+static int seti(npf_t *n, uint32_t peer, int opt, int v)
+{
+    return npf_peer_setopt(n, peer, opt, &v, sizeof v);
+}
+
+static int sets(npf_t *n, uint32_t peer, int opt, const char *v)
+{
+    return npf_peer_setopt(n, peer, opt, v, 0);
+}
+
 static int file_has(const char *dir, const char *what)
 {
     char path[300], buf[16384];
@@ -365,8 +376,16 @@ int main(void)
     check(k >= 0 && evs[k].ctx == &ctx_fwd, "FORWARD up, its ctx");
     npf_forward_info_init(&fi);
     ok = npf_forward_get(b, fwd, &fi) == NPF_OK && fi.state == NPF_FWD_UP && fi.listen_port && fi.peer == peer
-         && strcmp(fi.listen_host, "127.0.0.1") == 0 && fi.target_port == echo;
-    check(ok, "forward get: up, the port the system picked");
+         && strcmp(fi.listen_host, "127.0.0.1") == 0 && fi.target_port == echo && fi.ctx == &ctx_fwd;
+    check(ok, "forward get: up, the port the system picked, its ctx");
+    {
+        int other_ctx;
+        npf_forward_info f2;
+        npf_forward_info_init(&f2);
+        check(npf_forward_setopt(b, fwd, NPF_FWD_OPT_CTX, &other_ctx, 0) == NPF_OK && npf_forward_get(b, fwd, &f2) == NPF_OK
+              && f2.ctx == &other_ctx && npf_forward_setopt(b, fwd, NPF_FWD_OPT_CTX, &ctx_fwd, sizeof(void *)) == NPF_EINVAL
+              && npf_forward_setopt(b, fwd, NPF_FWD_OPT_CTX, &ctx_fwd, 0) == NPF_OK, "forward setopt CTX; a len: NPF_EINVAL");
+    }
     check(ok && echoes(fi.listen_port), "through it to A's echo service");
     {
         npf_session_info si;
@@ -387,10 +406,23 @@ int main(void)
     check(socks_connect(fi.listen_port, echo) == 0, "and the published one still goes");
 
     /* names, flags, saving */
-    check(npf_peer_set_names(b, peer, "bb", "a nick") == NPF_OK && npf_peer_get(b, peer, &pi) == NPF_OK
-          && strcmp(pi.name, "bb") == 0 && strcmp(pi.nick, "a nick") == 0, "set names");
-    check(npf_peer_set_flags(b, peer, NPF_PERSIST) == NPF_OK && file_has(db, "\"save\": true"),
-          "set_flags: saved now");
+    check(sets(b, peer, NPF_PEER_OPT_NAME, "bb") == NPF_OK && sets(b, peer, NPF_PEER_OPT_NICK, "a nick") == NPF_OK
+          && npf_peer_get(b, peer, &pi) == NPF_OK && strcmp(pi.name, "bb") == 0 && strcmp(pi.nick, "a nick") == 0
+          && pi.ctx == &ctx_peer, "setopt NAME, NICK; the ctx in the info");
+    {
+        int v = 1;
+        char nick[NPF_NICK_MAX + 2];
+        memset(nick, 'x', sizeof nick - 1);
+        nick[sizeof nick - 1] = 0;
+        check(npf_peer_setopt(b, peer, NPF_PEER_OPT_PERSIST, &v, 1) == NPF_EINVAL
+              && npf_peer_setopt(b, peer, NPF_PEER_OPT_NAME, "dd", 3) == NPF_EINVAL
+              && npf_peer_setopt(b, peer, 99, &v, sizeof v) == NPF_EINVAL && seti(b, peer, NPF_PEER_OPT_PERSIST, 2) == NPF_EINVAL
+              && sets(b, peer, NPF_PEER_OPT_NICK, nick) == NPF_EINVAL && seti(b, peer, NPF_PEER_OPT_IDLE_MS, -1) == NPF_EINVAL
+              && npf_peer_get(b, peer, &pi) == NPF_OK && strcmp(pi.name, "bb") == 0 && strcmp(pi.nick, "a nick") == 0
+              && !(pi.flags & NPF_PERSIST), "setopt: a wrong len, option, value or length: NPF_EINVAL, unchanged");
+    }
+    check(seti(b, peer, NPF_PEER_OPT_PERSIST, 1) == NPF_OK && file_has(db, "\"save\": true"),
+          "setopt PERSIST 1: saved now");
     npf_forward_opt_init(&fo);
     fo.kind = NPF_FWD_LOCAL;
     fo.listen.port = 0;
@@ -404,7 +436,7 @@ int main(void)
     chmod(db, 0500);
     if (access(db, W_OK) != 0) {
         npf_node_info_init(&ni);
-        check(npf_peer_set_names(b, peer, "cc", NULL) == NPF_ESAVE && npf_node_get(b, &ni) == NPF_OK && ni.unsaved
+        check(sets(b, peer, NPF_PEER_OPT_NAME, "cc") == NPF_ESAVE && npf_node_get(b, &ni) == NPF_OK && ni.unsaved
               && npf_peer_get(b, peer, &pi) == NPF_OK && !pi.saved && strcmp(pi.name, "cc") == 0,
               "a change that cannot be saved: NPF_ESAVE, in effect, unsaved");
         check(npf_save(b) == NPF_ESAVE, "npf_save while it still cannot");
@@ -445,7 +477,7 @@ int main(void)
     fo.target.host = "127.0.0.1";
     fo.target.port = 1;
     check(npf_forward_create(b, peer, &fo, &other, err, sizeof err) == NPF_EINVAL, "a remote forward on demand: NPF_EINVAL");
-    check(npf_peer_set_flags(b, peer, 0) == NPF_EINVAL, "an on-demand peer not saved any more: NPF_EINVAL");
+    check(seti(b, peer, NPF_PEER_OPT_PERSIST, 0) == NPF_EINVAL, "an on-demand peer not saved any more: NPF_EINVAL");
     npf_stop(b);
     i = wait_ev(0, NPF_EV_STOPPED, -1, 5000);
     npf_destroy(b);
@@ -460,18 +492,20 @@ int main(void)
          && pi.port == dport;
     check(ok, "after a restart: the saved peer back, on demand");
     if (b) {
-        check(npf_peer_set_ctx(b, ids[0], &ctx_peer) == NPF_OK && npf_start(b) == NPF_OK
+        check(npf_peer_setopt(b, ids[0], NPF_PEER_OPT_CTX, &ctx_peer, 0) == NPF_OK && npf_start(b) == NPF_OK
               && npf_peer_connect_now(b, ids[0]) == NPF_OK, "its ctx set before the start, woken");
         i = wait_ev(0, NPF_EV_SESSION_UP, -1, 10000);
         check(i >= 0 && evs[i].ctx == &ctx_peer, "its events carry that ctx");
         /* the way it connects, changed while it runs */
-        check(npf_peer_set_connect(b, ids[0], NPF_CONNECT_ONCE, 0) == NPF_EINVAL, "a saved peer ONCE: NPF_EINVAL");
-        check(npf_peer_set_connect(b, ids[0], NPF_CONNECT_KEEP, 0) == NPF_OK && !file_has(db, "on_demand")
+        check(seti(b, ids[0], NPF_PEER_OPT_CONNECT, NPF_CONNECT_ONCE) == NPF_EINVAL, "a saved peer ONCE: NPF_EINVAL");
+        check(seti(b, ids[0], NPF_PEER_OPT_CONNECT, NPF_CONNECT_KEEP) == NPF_OK && !file_has(db, "on_demand")
               && npf_peer_get(b, ids[0], &pi) == NPF_OK && pi.connect == NPF_CONNECT_KEEP && pi.session,
-              "set_connect KEEP: saved, its session goes on");
+              "setopt CONNECT KEEP: saved, its session goes on");
         j = ev_count();
-        check(npf_peer_set_connect(b, ids[0], NPF_CONNECT_ON_DEMAND, 1500) == NPF_OK && file_has(db, "on_demand")
-              && file_has(db, "\"idle_ms\": 1500"), "set_connect ON_DEMAND, 1.5 s: saved");
+        check(seti(b, ids[0], NPF_PEER_OPT_IDLE_MS, 1500) == NPF_OK && file_has(db, "\"idle_ms\": 1500")
+              && !file_has(db, "on_demand"), "setopt IDLE_MS while kept: saved for later, still kept");
+        check(seti(b, ids[0], NPF_PEER_OPT_CONNECT, NPF_CONNECT_ON_DEMAND) == NPF_OK && file_has(db, "on_demand")
+              && file_has(db, "\"idle_ms\": 1500"), "setopt CONNECT ON_DEMAND (1.5 s): saved");
         i = wait_ev(j, NPF_EV_SESSION_DOWN, -1, 20000);    /* idle checks every 5 s: two of them */
         check(i >= 0 && evs[i].peer == ids[0], "on demand: the session ends once idle");
         npf_peer_opt_init(&po);
@@ -480,8 +514,8 @@ int main(void)
         po.port = (uint16_t)dport;
         po.psk = key;
         check(npf_peer_create(b, &po, &other, err, sizeof err) == NPF_OK
-              && npf_peer_set_connect(b, other, NPF_CONNECT_ON_DEMAND, 0) == NPF_EINVAL
-              && npf_peer_set_connect(b, other, NPF_CONNECT_ONCE, 0) == NPF_OK
+              && seti(b, other, NPF_PEER_OPT_CONNECT, NPF_CONNECT_ON_DEMAND) == NPF_EINVAL
+              && seti(b, other, NPF_PEER_OPT_CONNECT, NPF_CONNECT_ONCE) == NPF_OK
               && npf_peer_get(b, other, &pi) == NPF_OK && pi.connect == NPF_CONNECT_ONCE,
               "a temporary peer: not on demand (NPF_EINVAL), ONCE");
         npf_destroy(b);
@@ -500,8 +534,8 @@ int main(void)
         po.flags = NPF_PERSIST;
         check(npf_peer_create(c, &po, &peer, err, sizeof err) == NPF_EUNAVAIL && !peer, "a saved peer: NPF_EUNAVAIL");
         po.flags = 0;
-        check(npf_peer_create(c, &po, &peer, err, sizeof err) == NPF_OK && npf_peer_set_flags(c, peer, NPF_PERSIST) == NPF_EUNAVAIL
-              && npf_peer_set_names(c, peer, "here", NULL) == NPF_OK && !file_has(dc, "here"),
+        check(npf_peer_create(c, &po, &peer, err, sizeof err) == NPF_OK && seti(c, peer, NPF_PEER_OPT_PERSIST, 1) == NPF_EUNAVAIL
+              && sets(c, peer, NPF_PEER_OPT_NAME, "here") == NPF_OK && !file_has(dc, "here"),
               "a temporary one: no saving, names only here");
         npf_resource_init(&r);
         r.type = NPF_RES_TCP;

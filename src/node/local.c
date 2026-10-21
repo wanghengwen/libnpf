@@ -516,11 +516,10 @@ int npf_local_save(npf_local *l)
         if (d->save) {
             npf_out_printf(&o, "%s\n      \"save\": true", f3 ? "" : ",");
             f3 = 0;
-            if (d->on_demand) {
+            if (d->on_demand)
                 kstr(&o, &f3, "      ", "connect", "on_demand");
-                if (d->idle_ms)
-                    npf_out_printf(&o, ",\n      \"idle_ms\": %d", d->idle_ms);
-            }
+            if (d->idle_ms)                 /* on demand, or for when it is */
+                npf_out_printf(&o, ",\n      \"idle_ms\": %d", d->idle_ms);
         }
         if (d->psk_file[0])
             kstr(&o, &f3, "      ", "psk_file", d->psk_file);

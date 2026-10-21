@@ -171,7 +171,7 @@ int npf_ops_record(npf_t *n, npf_peer *p, int save, const char *psk_file)
         return save ? NPF_EBUSY : NPF_OK;
     d->save = save;
     d->on_demand = save && npf_peer_connect_mode(p) == NPF_CONNECT_ON_DEMAND;
-    d->idle_ms = d->on_demand ? npf_peer_idle_asked(p) : 0;
+    d->idle_ms = save ? npf_peer_idle_asked(p) : 0;   /* NPF_PEER_OPT_IDLE_MS: kept for on demand */
     npf_local_fwd_clear(d);
     if (!save) {
         d->psk_file[0] = d->psk[0] = 0;
@@ -513,6 +513,7 @@ static int peer_get_run(npf_t *n, void *arg)
         if (npf_peer_forward_state(p, k, &st) == 0)
             i.nforwards++;
     }
+    i.ctx = npf_peer_ctx(p);
     return copy_out(x->out, &i, sizeof i) < 0 ? NPF_EINVAL : NPF_OK;
 }
 
@@ -522,101 +523,6 @@ int npf_peer_get(npf_t *n, uint32_t peer, npf_peer_info *out)
     if (!out)
         return NPF_EINVAL;
     return npf_api_op(n, peer_get_run, &x);
-}
-
-static int peer_password_run(npf_t *n, void *arg)
-{
-    pid_arg *x = arg;
-    npf_peer *p = peer_of(n, x->id);
-    if (!p)
-        return NPF_ENOENT;
-    if (npf_ops_flags(n, p) & NPF_PLATFORM)
-        return NPF_EINVAL;                  /* let in through the account: no password */
-    if (npf_peer_number(p) == 0)
-        return NPF_EINVAL;                  /* a direct peer has its key */
-    return npf_peer_password_try(p, x->a) < 0 ? NPF_EINVAL : NPF_OK;
-}
-
-int npf_peer_give_password(npf_t *n, uint32_t peer, const char *password)
-{
-    pid_arg x = {peer, 0, password, NULL, NULL, NULL, NULL, 0};
-    if (!password || !*password || strlen(password) > NPF_PASSWORD_MAX)
-        return NPF_EINVAL;
-    return npf_api_op(n, peer_password_run, &x);
-}
-
-static int peer_names_run(npf_t *n, void *arg)
-{
-    pid_arg *x = arg;
-    npf_peer *p = peer_of(n, x->id);
-    int rc;
-    if (!p)
-        return NPF_ENOENT;
-    if (x->a && (rc = name_ok(n, p, x->a, npf_peer_name(p), NULL, 0)) != NPF_OK)
-        return rc;
-    if (x->b && !npf_nick_valid(x->b))
-        return NPF_EINVAL;
-    return names_put(n, p, x->a, x->b);
-}
-
-int npf_peer_set_names(npf_t *n, uint32_t peer, const char *name, const char *nick)
-{
-    pid_arg x = {peer, 0, name, nick, NULL, NULL, NULL, 0};
-    if ((name && strlen(name) > NPF_NAME_MAX) || (nick && strlen(nick) > NPF_NICK_MAX))
-        return NPF_EINVAL;
-    return npf_api_op(n, peer_names_run, &x);
-}
-
-static int peer_flags_run(npf_t *n, void *arg)
-{
-    pid_arg *x = arg;
-    npf_peer *p = peer_of(n, x->id);
-    uint32_t f;
-    int on = (x->flags & NPF_PERSIST) != 0, k;
-    if (!p)
-        return NPF_ENOENT;
-    if (x->flags & ~NPF_PERSIST)
-        return NPF_EINVAL;
-    f = npf_ops_flags(n, p);
-    if (f & NPF_PLATFORM)
-        return NPF_EREADONLY;
-    if (npf_peer_connect_mode(p) == NPF_CONNECT_ONCE)
-        return NPF_EINVAL;
-    if (!on && npf_peer_connect_mode(p) == NPF_CONNECT_ON_DEMAND)
-        return NPF_EINVAL;                  /* on demand is for saved peers: remove it and make it anew */
-    if (on && no_saved_objects(n))
-        return NPF_EUNAVAIL;
-    if (!on && no_saved_objects(n))
-        return NPF_OK;
-    if (on == !!(f & NPF_PERSIST))
-        return NPF_OK;
-    npf_peer_set_tag(p, on ? PEER_SAVED : PEER_TEMP);
-    for (k = 0; k < npf_peer_nfwd(p); k++)
-        if (!npf_peer_forward_ext(p, k))
-            npf_peer_forward_perm_set(p, k, on);
-    return npf_ops_record(n, p, on, NULL);
-}
-
-int npf_peer_set_flags(npf_t *n, uint32_t peer, int flags)
-{
-    pid_arg x = {peer, flags, NULL, NULL, NULL, NULL, NULL, 0};
-    return npf_api_op(n, peer_flags_run, &x);
-}
-
-static int peer_ctx_run(npf_t *n, void *arg)
-{
-    pid_arg *x = arg;
-    npf_peer *p = peer_of(n, x->id);
-    if (!p)
-        return NPF_ENOENT;
-    npf_peer_ctx_put(p, x->ctx);
-    return NPF_OK;
-}
-
-int npf_peer_set_ctx(npf_t *n, uint32_t peer, void *ctx)
-{
-    pid_arg x = {peer, 0, NULL, NULL, ctx, NULL, NULL, 0};
-    return npf_api_op(n, peer_ctx_run, &x);
 }
 
 static int peer_connect_run(npf_t *n, void *arg)
@@ -639,40 +545,142 @@ int npf_peer_connect_now(npf_t *n, uint32_t peer)
     return npf_api_op(n, peer_connect_run, &x);
 }
 
-static int peer_set_connect_run(npf_t *n, void *arg)
+/* ---- npf_peer_setopt ---- */
+
+typedef struct so_arg {
+    uint32_t    id;
+    int         opt;
+    int         iv;                 /* an int option's value */
+    const char *sv;                 /* a string option's */
+    void       *ctx;
+} so_arg;
+
+/* NPF_PEER_OPT_CONNECT: KEEP connects now, ON_DEMAND needs NPF_PERSIST and no
+ * remote forward, ONCE ends with the current session (not for a persisted peer) */
+static int opt_connect(npf_t *n, npf_peer *p, uint32_t f, int mode)
 {
-    pid_arg *x = arg;
-    npf_peer *p = peer_of(n, x->id);
-    int mode = x->flags, idle = (int)x->errcap, k;
-    uint32_t f;
-    if (!p)
-        return NPF_ENOENT;
-    f = npf_ops_flags(n, p);
-    if (f & NPF_PLATFORM)
-        return NPF_EREADONLY;
-    if ((mode != NPF_CONNECT_KEEP && mode != NPF_CONNECT_ONCE && mode != NPF_CONNECT_ON_DEMAND) || idle < 0
+    npf_fwd_state st;
+    int k;
+    if ((mode != NPF_CONNECT_KEEP && mode != NPF_CONNECT_ONCE && mode != NPF_CONNECT_ON_DEMAND)
         || (mode == NPF_CONNECT_ONCE && (f & NPF_PERSIST)))
         return NPF_EINVAL;
     if (mode == NPF_CONNECT_ON_DEMAND) {
-        npf_fwd_state st;
         if (!(f & NPF_PERSIST))
             return NPF_EINVAL;              /* on demand is for saved peers */
         for (k = 0; k < npf_peer_nfwd(p); k++)
             if (npf_peer_forward_state(p, k, &st) == 0 && st.opt == 'R')
                 return NPF_EINVAL;          /* the other side may use a -R at any time */
     }
-    if (mode == npf_peer_connect_mode(p) && (mode != NPF_CONNECT_ON_DEMAND || idle == npf_peer_idle_asked(p)))
+    if (mode == npf_peer_connect_mode(p))
         return NPF_OK;
-    npf_peer_connect_put(p, mode, idle, n->started);
+    npf_peer_connect_put(p, mode, npf_peer_idle_asked(p), n->started);
     return (f & NPF_PERSIST) ? npf_ops_record(n, p, 1, NULL) : NPF_OK;
 }
 
-int npf_peer_set_connect(npf_t *n, uint32_t peer, int connect, int idle_ms)
+/* NPF_PEER_OPT_PERSIST: on, saved now with its forwards; off, not brought
+ * back at the next start (its pinned key, names and the rest stay) */
+static int opt_persist(npf_t *n, npf_peer *p, uint32_t f, int on)
 {
-    pid_arg x = {peer, connect, NULL, NULL, NULL, NULL, NULL, (size_t)(idle_ms < 0 ? 0 : idle_ms)};
-    if (idle_ms < 0)
+    int k;
+    if (on != 0 && on != 1)
         return NPF_EINVAL;
-    return npf_api_op(n, peer_set_connect_run, &x);
+    if (on && npf_peer_connect_mode(p) == NPF_CONNECT_ONCE)
+        return NPF_EINVAL;
+    if (!on && npf_peer_connect_mode(p) == NPF_CONNECT_ON_DEMAND)
+        return NPF_EINVAL;                  /* on demand is for saved peers */
+    if (on && no_saved_objects(n))
+        return NPF_EUNAVAIL;
+    if (!on && no_saved_objects(n))
+        return NPF_OK;
+    if (on == !!(f & NPF_PERSIST))
+        return NPF_OK;
+    npf_peer_set_tag(p, on ? PEER_SAVED : PEER_TEMP);
+    for (k = 0; k < npf_peer_nfwd(p); k++)
+        if (!npf_peer_forward_ext(p, k))
+            npf_peer_forward_perm_set(p, k, on);
+    return npf_ops_record(n, p, on, NULL);
+}
+
+static int peer_setopt_run(npf_t *n, void *arg)
+{
+    so_arg *x = arg;
+    npf_peer *p = peer_of(n, x->id);
+    uint32_t f;
+    int rc;
+    if (!p)
+        return NPF_ENOENT;
+    f = npf_ops_flags(n, p);
+    if ((f & NPF_PLATFORM)
+        && (x->opt == NPF_PEER_OPT_CONNECT || x->opt == NPF_PEER_OPT_IDLE_MS || x->opt == NPF_PEER_OPT_PERSIST))
+        return NPF_EREADONLY;               /* its module keeps it */
+    switch (x->opt) {
+    case NPF_PEER_OPT_CONNECT:
+        return opt_connect(n, p, f, x->iv);
+    case NPF_PEER_OPT_IDLE_MS:
+        if (x->iv == npf_peer_idle_asked(p))
+            return NPF_OK;
+        npf_peer_idle_put(p, x->iv);
+        return (f & NPF_PERSIST) ? npf_ops_record(n, p, 1, NULL) : NPF_OK;
+    case NPF_PEER_OPT_PERSIST:
+        return opt_persist(n, p, f, x->iv);
+    case NPF_PEER_OPT_NAME:
+        if (*x->sv && (rc = name_ok(n, p, x->sv, npf_peer_name(p), NULL, 0)) != NPF_OK)
+            return rc;
+        return names_put(n, p, x->sv, NULL);
+    case NPF_PEER_OPT_NICK:
+        if (*x->sv && !npf_nick_valid(x->sv))
+            return NPF_EINVAL;
+        return names_put(n, p, NULL, x->sv);
+    case NPF_PEER_OPT_CTX:
+        npf_peer_ctx_put(p, x->ctx);
+        return NPF_OK;
+    case NPF_PEER_OPT_PASSWORD:             /* not paired yet, or refused: tried at once, not kept */
+        if ((f & NPF_PLATFORM) || npf_peer_number(p) == 0)
+            return NPF_EINVAL;              /* let in through the account / a direct peer has its key */
+        return npf_peer_password_try(p, x->sv) < 0 ? NPF_EINVAL : NPF_OK;
+    }
+    return NPF_EINVAL;
+}
+
+/* the value as the option takes it: an int (len sizeof(int)), a string
+ * (NUL-terminated, len 0, at most max bytes), or the pointer itself (CTX) */
+static int opt_value(int opt, const void *val, size_t len, so_arg *x)
+{
+    size_t max;
+    switch (opt) {
+    case NPF_PEER_OPT_CONNECT:
+    case NPF_PEER_OPT_IDLE_MS:
+    case NPF_PEER_OPT_PERSIST:
+        if (!val || len != sizeof(int))
+            return -1;
+        memcpy(&x->iv, val, sizeof(int));
+        return opt == NPF_PEER_OPT_IDLE_MS && (x->iv < 0 || x->iv > 86400000) ? -1 : 0;
+    case NPF_PEER_OPT_NAME:
+    case NPF_PEER_OPT_NICK:
+    case NPF_PEER_OPT_PASSWORD:
+        max = opt == NPF_PEER_OPT_NAME ? NPF_NAME_MAX : opt == NPF_PEER_OPT_NICK ? NPF_NICK_MAX : NPF_PASSWORD_MAX;
+        if (!val || len != 0 || strlen(val) > max || (opt == NPF_PEER_OPT_PASSWORD && !*(const char *)val))
+            return -1;
+        x->sv = val;
+        return 0;
+    case NPF_PEER_OPT_CTX:
+        if (len != 0)
+            return -1;
+        x->ctx = (void *)val;
+        return 0;
+    }
+    return -1;
+}
+
+int npf_peer_setopt(npf_t *n, uint32_t peer, int opt, const void *val, size_t len)
+{
+    so_arg x;
+    memset(&x, 0, sizeof x);
+    x.id = peer;
+    x.opt = opt;
+    if (opt_value(opt, val, len, &x) < 0)
+        return NPF_EINVAL;
+    return npf_api_op(n, peer_setopt_run, &x);
 }
 
 /* ---- forwards ---- */
@@ -864,6 +872,7 @@ static int fwd_get_run(npf_t *n, void *arg)
     fi.conns = st.conns;
     fi.refused = st.refused;
     snprintf(fi.refused_why, sizeof fi.refused_why, "%s", st.refused_why);
+    fi.ctx = st.ctx;
     return copy_out(x->out, &fi, sizeof fi) < 0 ? NPF_EINVAL : NPF_OK;
 }
 
@@ -875,9 +884,9 @@ int npf_forward_get(npf_t *n, uint32_t fwd, npf_forward_info *out)
     return npf_api_op(n, fwd_get_run, &x);
 }
 
-static int fwd_ctx_run(npf_t *n, void *arg)
+static int fwd_setopt_run(npf_t *n, void *arg)
 {
-    pid_arg *x = arg;
+    so_arg *x = arg;
     int i;
     npf_peer *p = n->peers ? npf_peers_fwd_find(n->peers, (int)x->id, &i) : NULL;
     if (!p)
@@ -886,10 +895,16 @@ static int fwd_ctx_run(npf_t *n, void *arg)
     return NPF_OK;
 }
 
-int npf_forward_set_ctx(npf_t *n, uint32_t fwd, void *ctx)
+int npf_forward_setopt(npf_t *n, uint32_t fwd, int opt, const void *val, size_t len)
 {
-    pid_arg x = {fwd, 0, NULL, NULL, ctx, NULL, NULL, 0};
-    return npf_api_op(n, fwd_ctx_run, &x);
+    so_arg x;
+    if (opt != NPF_FWD_OPT_CTX || len != 0)
+        return NPF_EINVAL;
+    memset(&x, 0, sizeof x);
+    x.id = fwd;
+    x.opt = opt;
+    x.ctx = (void *)val;
+    return npf_api_op(n, fwd_setopt_run, &x);
 }
 
 /* ---- resources ---- */

@@ -64,7 +64,7 @@ typedef struct pfwd {
     int       nconns;               /* public: its open connections (waiting ones too) */
     int       suspended;            /* drained: not listening until the quota is back */
     int       idx;                  /* its slot in p->fwds */
-    void     *ctx;                  /* the application's (npf_forward_set_ctx) */
+    void     *ctx;                  /* the application's (NPF_FWD_OPT_CTX) */
     int       lport;                /* the port in use (-L / -D: bound here; -R: rport), 0 none */
     int       why_code;             /* NPF_FWD_WHY_* of the last failure */
     int       open;                 /* connections open now (sublinks in the session) */
@@ -78,7 +78,7 @@ struct npf_peer {
     npf_peer  *next;
     npf_peers *ps;
     uint32_t   id;                  /* its number (npf_peer_id) */
-    void      *ctx;                 /* the application's (npf_peer_set_ctx) */
+    void      *ctx;                 /* the application's (NPF_PEER_OPT_CTX) */
     int        connect;             /* NPF_CONNECT_* */
     int        idle_req;            /* on demand: the idle time it was made with, 0 the default */
     char       nick_here[NPF_NICK_MAX + 1];   /* a nick of this run only */
@@ -1775,8 +1775,8 @@ npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, siz
         snprintf(p->password, sizeof p->password, "%s", pn->password);
     p->connect = pn->connect;
     p->keep = pn->connect != NPF_CONNECT_ONCE;
+    p->idle_req = pn->idle_ms > 0 ? pn->idle_ms : 0;     /* kept for on demand, whatever the way now */
     if (pn->connect == NPF_CONNECT_ON_DEMAND) {
-        p->idle_req = pn->idle_ms > 0 ? pn->idle_ms : 0;
         p->idle_ms = p->idle_req ? p->idle_req : ps->default_idle_ms;
         if (!p->idle_ms)
             p->idle_ms = 300000;
@@ -2063,7 +2063,7 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
         peer_changed(p);
         return;
     }
-    p->idle_req = p->idle_ms = 0;
+    p->idle_ms = 0;                         /* idle_req stays: the time asked for on demand */
     p->connect = connect;
     p->keep = connect != NPF_CONNECT_ONCE;
     if (connect == NPF_CONNECT_KEEP) {
@@ -2078,6 +2078,17 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
         }
         finish(p, p->last_why[0] ? p->last_why : "local");
     }
+    peer_changed(p);
+}
+
+void npf_peer_idle_put(npf_peer *p, int idle_ms)
+{
+    p->idle_req = idle_ms > 0 ? idle_ms : 0;
+    if (p->connect != NPF_CONNECT_ON_DEMAND)
+        return;                             /* used once it is on demand */
+    p->idle_ms = p->idle_req ? p->idle_req : p->ps->default_idle_ms;
+    if (!p->idle_ms)
+        p->idle_ms = 300000;
     peer_changed(p);
 }
 
