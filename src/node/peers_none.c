@@ -121,6 +121,12 @@ int npf_peer_forward_add_parts(npf_peer *p, const npf_fwd_new *fn, int perm, uin
     return -1;
 }
 
+const char *npf_peers_kind_norm(npf_peers *ps, char opt, const char *spec, char *buf, size_t cap)
+{
+    (void)ps, (void)opt, (void)buf, (void)cap;
+    return spec;
+}
+
 int npf_peer_forward_add_kind(npf_peer *p, char opt, const char *spec, int perm, char *err, size_t errcap)
 {
     (void)p, (void)opt, (void)spec, (void)perm;

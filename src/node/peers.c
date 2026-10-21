@@ -2220,6 +2220,15 @@ int npf_peer_forward_add_parts(npf_peer *p, const npf_fwd_new *fn, int perm, uin
     return fwd_put(p, &tmp, perm, ext, err, errcap);
 }
 
+const char *npf_peers_kind_norm(npf_peers *ps, char opt, const char *spec, char *buf, size_t cap)
+{
+    const struct kind_reg *r = kind_of(ps, opt);
+    char why[160];
+    if (!r || r->k->parse(r->arg, spec, buf, cap, why, sizeof why) < 0)
+        return spec;
+    return buf;
+}
+
 int npf_peer_forward_add_kind(npf_peer *p, char opt, const char *spec, int perm, char *err, size_t errcap)
 {
     const struct kind_reg *kind = kind_of(p->ps, opt);
