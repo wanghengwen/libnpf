@@ -1,10 +1,10 @@
 # 打洞模块设计
 
-状态：草案 v0.9（2026-10-04，中转改为 UDP 中转为主、WS 中转兜底，6.2 增加中转报文类型 7~9，6.6、10.2 相应修改，详见 [data-channel.md](../protocol/data-channel.md)；v0.8 2026-10-04，新增 PCP/NAT-PMP 端口映射与 IPv6 打洞支持，见 12.5；打洞 S1/S3 跨服务器实测见 12.4；NAT 探测见 4.4；v0.5 2026-09-29）：地址探测借鉴 STUN 的机制，但改用私有的加密报文格式，避免被识别和屏蔽；探测服务器自行实现，部署在至少两台不同 IP 的机器上；提名报文改用两端 E2E 协商的密钥（见 [security.md](security.md) 9.5）
+状态：v1.0（2026-10-21，针对对称型 NAT 的改进：NAT 探测增加过滤行为的测试（4.2）；两侧都是难侧时新增策略 S4（一方的过滤是 EIF / ADF，7.5）、S2B（双方都是顺序分配，7.6）、S5（双方都是小端口块，7.7），都不满足时直接留在中转（7.1）；从前几轮观察到的行为修正后面的轮次（7.8）。v0.9 2026-10-04，中转改为 UDP 中转为主、WS 中转兜底，6.2 增加中转报文类型 7~9，6.6、10.2 相应修改，详见 [data-channel.md](../protocol/data-channel.md)；v0.8 2026-10-04，新增 PCP/NAT-PMP 端口映射与 IPv6 打洞支持，见 12.5；打洞 S1/S3 跨服务器实测见 12.4；NAT 探测见 4.4；v0.5 2026-09-29）：地址探测借鉴 STUN 的机制，但改用私有的加密报文格式，避免被识别和屏蔽；探测服务器自行实现，部署在至少两台不同 IP 的机器上；提名报文改用两端 E2E 协商的密钥（见 [security.md](security.md) 9.5）
 
 **用语**：本文的"设备"泛指运行打洞模块的一端，可以是节点（NAS 设备端、控制台节点），也可以是纯客户端；一次呼叫中两端的角色称为主叫与被叫（[security.md](security.md) 8.5）。
 
-本文描述 NPF 的 NAT 穿透（打洞）模块：不依赖 libjuice，自行实现 NAT 探测、候选收集、同时打洞与暴力打洞，成功后把 UDP 路径交给 AnLiu。不使用 libjuice 的原因：libjuice（截至 v1.7.4）每个 agent 只有一个 UDP socket，候选上限 30 个，无法实现暴力打洞。
+本文描述 NPF 的 NAT 穿透（打洞）模块：NAT 探测、候选收集、同时打洞与暴力打洞，成功后把 UDP 路径交给 AnLiu。
 
 ---
 
@@ -147,7 +147,7 @@ typedef struct npf_nat_profile {
 
 ### 4.4 实现与实测（2026-10-03）
 
-- **代码**：设备端 `src/crypto/siv.c`（SIV 封装）、`src/ice/bind.c`（报文编解码）、`src/ice/natprobe.c`（探测与判定，仅 IPv4；节点在事件循环上运行 `npf_natprobe_start`，主 socket 上探测服务器的应答由节点的数据报分发交给它；调试工具用同步的 `npf_natprobe_run`）；调试工具 `client/tools/npf-natprobe`；服务器端 `server/internal/natprobe` 与独立程序 `server/cmd/npf-probe`（`serve` / `key` / `ticket` / `gen-secrets`）。C 与 Go 的加密实现共用一组已知答案（含跨语言向量）；
+- **代码**：设备端 `src/crypto/siv.c`（SIV 封装）、`src/ice/bind.c`（报文编解码）、`src/ice/natprobe.c`（探测与判定，仅 IPv4；节点在事件循环上运行 `npf_natprobe_start`，主 socket 上探测服务器的应答由节点的数据报分发交给它；调试工具用同步的 `npf_natprobe_run`）；探测服务器在平台一侧，两侧的加密实现共用一组已知答案（含跨语言向量）；
 - **端口分配的区间按环形计算**：实测阿里云 NAT 网关的映射端口分布在 [约 60000, 65535] ∪ [1024, 约 10000]，是跨过 65535 的一整段。区间取"覆盖全部样本的最小环形区间"，`block_lo > block_hi` 表示跨越；
 - **多 IP 主机要按 IP 分别监听**：监听通配地址时，内核可能用另一个地址作为回复的源地址，设备会因"回复来源与请求目标不一致"而丢弃。云主机通常只有一个地址，不受影响；
 - **实测**（两台探测服务器 A、B，UDP 9910 / 9911）：
@@ -173,7 +173,7 @@ typedef struct npf_nat_profile {
 
 说明：
 
-- **端口映射**：设备端启动时尝试 PCP → NAT-PMP（**不支持 UPnP**，见下），成功后定期续期（租期 1 小时，提前 10 分钟续期），退出时删除。NAS 大多在家庭路由器后面，这一项往往直接解决问题。已实现于 `ice/portmap.c`：PCP（RFC 6887）与 NAT-PMP（RFC 6886），都向默认网关 UDP 5351 发送，先试 PCP（较新、直接返回外部地址、支持 IPv6）再退回 NAT-PMP；网关从 `/proc/net/route` 读取。工具 `client/tools/npf-portmap`；
+- **端口映射**：设备端启动时尝试 PCP → NAT-PMP（**不支持 UPnP**，见下），成功后定期续期（租期 1 小时，提前 10 分钟续期），退出时删除。NAS 大多在家庭路由器后面，这一项往往直接解决问题。已实现于 `src/ice/portmap.c`：PCP（RFC 6887）与 NAT-PMP（RFC 6886），都向默认网关 UDP 5351 发送，先试 PCP（较新、直接返回外部地址、支持 IPv6）再退回 NAT-PMP；网关从 `/proc/net/route` 读取；
 - **只收集必要的 host 地址**：排除回环、链路本地、docker/虚拟网卡（按网卡名与地址段过滤，可配置）；
 - 候选中的地址经信令发给对端，对端能看到本端的内网地址。这是 ICE 的通常做法；有顾虑时可以只发送私网地址的哈希，由对端判断是否可能同网段，作为可选项。
 
@@ -537,7 +537,7 @@ void  npf_punch_release(npf_punch_t *p);
 
 ## 12. 测试
 
-### 12.1 NAT 模拟（`tests/natlab`）
+### 12.1 NAT 模拟
 
 Linux 内核 NAT 的行为不能完整覆盖上面的分类（MASQUERADE 默认尽量保持端口，`--random-fully` 可以模拟随机分配，但没有干净的 EIM + EIF 实现）。因此分两层：
 
@@ -563,7 +563,7 @@ Linux 内核 NAT 的行为不能完整覆盖上面的分类（MASQUERADE 默认�
 
 ### 12.4 跨服务器实测（2026-10-04）
 
-- **代码**：打洞模块 `src/punch/punch.c`（S1 同时打洞、S3 生日悖论暴力打洞，同步 poll 实现，仅 IPv4）；测试会合服务器 `server/internal/rendezvous` + `server/cmd/npf-punchd`；测试工具 `client/tools/npf-punch`。S1 先在本机回环联通，再在真实服务器间测试；
+- **代码**：打洞模块 `src/punch/punch.c`（S1 同时打洞、S3 生日悖论暴力打洞，同步 poll 实现，仅 IPv4）；跨服务器测试时用平台一侧的测试会合服务器和打洞测试工具。S1 先在本机回环联通，再在真实服务器间测试；
 - **会合通道**：测试机只开放 UDP 9800–9999，TCP 被过滤，`npf-punchd`（TCP 9920）连不通。因此测试工具增加了 `--manual` 模式：画像与 srflx 已知时直接用命令行下发打洞计划，由本机经 SSH 驱动两端，不经会合服务器。正式环境的会合走 WSS，不受此限；
 - **实测结果**（探测服务器 E1、E2 在一台服务器上，E3 在另一台）：
 

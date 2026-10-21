@@ -62,7 +62,7 @@ static void test_kat(void)
     CHECK(memcmp(tag, exp, 16) == 0, "siphash128 len 1");
 }
 
-/* fixed vector shared with the Go implementation (server/internal/natprobe) */
+/* fixed vector shared with the platform's Go implementation (the probe server) */
 static void test_probe_vector(void)
 {
     npf_siv_keys keys;

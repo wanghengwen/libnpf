@@ -506,7 +506,7 @@ const char *npf_cmd_get(npf_t *c, const char *k, char *buf, size_t cap)
         snprintf(buf, cap, "%s", n->cfg.secure ? "secure" : "p2p");
     else if (strcmp(k, "peer_idle") == 0)
         snprintf(buf, cap, "%d", npf_peers_idle(c->peers) / 1000);
-    else if (strcmp(k, "keep_awake") == 0)  /* the program's (client/app: Windows) */
+    else if (strcmp(k, "keep_awake") == 0)  /* the program's (Windows: keep the computer awake) */
         snprintf(buf, cap, "%s", npf_conf_get(&c->conf, k, "busy"));
     else
         snprintf(buf, cap, "%s", npf_conf_get(&c->conf, k, ""));

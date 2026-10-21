@@ -5,8 +5,8 @@
  *   sig  = Ed25519(issuer, "npf-cert-v1" | everything before sig)
  *   issuer_key_id = BLAKE2b-256(issuer sign_pub)[0..3]
  *
- * The C side only parses and verifies; signing happens on the platform (Go,
- * server/internal/npfcrypto). */
+ * The C side only parses and verifies; signing happens on the platform (its
+ * Go implementation). */
 #ifndef NPF_CERT_H
 #define NPF_CERT_H
 
