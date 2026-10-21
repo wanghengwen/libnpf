@@ -485,7 +485,7 @@ static void on_enrolled(npf_node *node, uint64_t number, void *arg)
     npf_t *n = arg;
     (void)node;
     if (npf_become_node(n, number, NULL) == 0)
-        npf_log("enrolled: number %llu, default password in %s (npf show)", (unsigned long long)number, n->node_path);
+        npf_log("enrolled: number %llu, default password in %s (show)", (unsigned long long)number, n->node_path);
 }
 
 static void on_enroll_failed(npf_node *node, const char *error, const char *reason, int retry_s, void *arg)
@@ -531,11 +531,37 @@ static void on_udp_ready(npf_node *node, void *arg)
     npf_peers_on_login(n->peers);
 }
 
-/* a platform event (mappings_changed, devices_changed, quota ...): the modules' */
+/* a platform event (signaling.md): to the modules, and to the application
+ * as "platform" {"type", "data"} (data as the platform sent it) */
 static void on_event(npf_node *node, const char *type, const npf_json *j, int d, void *arg)
 {
+    npf_t *n = arg;
+    const char *s;
+    char *buf;
+    size_t len, i, cap;
     (void)node;
-    npf_mods_event(arg, type, j, d);
+    npf_mods_event(n, type, j, d);
+    if (!n->cb.event)
+        return;
+    for (i = 0; type[i]; i++)               /* a name of the protocol: nothing to escape */
+        if (!((type[i] >= 'a' && type[i] <= 'z') || (type[i] >= '0' && type[i] <= '9') || type[i] == '_'))
+            return;
+    if (!i || i > 64)
+        return;
+    if (d >= 0) {
+        int str = j->tok[d].type == NPF_JT_STRING;
+        s = j->s + j->tok[d].start - (str ? 1 : 0);     /* a string with its quotes */
+        len = j->tok[d].end - j->tok[d].start + (str ? 2 : 0);
+    } else {
+        s = "null";
+        len = 4;
+    }
+    cap = len + i + 32;
+    if (!(buf = malloc(cap)))
+        return;
+    snprintf(buf, cap, "{\"type\":\"%s\",\"data\":%.*s}", type, (int)len, s);
+    n->cb.event(n->cb.user, "platform", buf);
+    free(buf);
 }
 
 static void on_paired(npf_node *node, uint64_t number, const uint8_t pub[32], void *arg)
@@ -942,17 +968,30 @@ int npf_app_ver_valid(const char *s)
     return 1;
 }
 
-void npf_options_init(npf_options *o)
+/* the defaults d (sizeof d bytes) into the application's s of size bytes:
+ * what both know, zeros past this build's structure */
+void npf_init_sized(void *s, size_t size, const void *d, size_t dsize)
 {
-    memset(o, 0, sizeof *o);
-    o->size = sizeof *o;
-    o->log_level = -1;
+    if (!s || size < sizeof(size_t))
+        return;
+    memset(s, 0, size);
+    memcpy(s, d, size < dsize ? size : dsize);
+    memcpy(s, &size, sizeof size);          /* the first field: size */
 }
 
-void npf_callbacks_init(npf_callbacks *cb)
+void npf_options_init_size(npf_options *o, size_t size)
 {
-    memset(cb, 0, sizeof *cb);
-    cb->size = sizeof *cb;
+    npf_options d;
+    memset(&d, 0, sizeof d);
+    d.log_level = -1;
+    npf_init_sized(o, size, &d, sizeof d);
+}
+
+void npf_callbacks_init_size(npf_callbacks *cb, size_t size)
+{
+    npf_callbacks d;
+    memset(&d, 0, sizeof d);
+    npf_init_sized(cb, size, &d, sizeof d);
 }
 
 int npf_api_version(void)

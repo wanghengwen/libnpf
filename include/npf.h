@@ -83,7 +83,9 @@ enum {
     NPF_ETOOBIG = -5,
     NPF_ENOMEM = -6,
     NPF_EFAIL = -7,         /* other: the message in err */
-    NPF_EBUSY = -8          /* too many media streams at once */
+    NPF_EBUSY = -8,         /* too many media streams at once */
+    NPF_ESAVE = -9          /* done, but local.json could not be written: it is with the next change
+                               saved, a restart before that loses it; the message in err */
 };
 
 enum { NPF_ROLE_NODE = 0, NPF_ROLE_CLIENT = 1, NPF_ROLE_DIRECT = 2 };
@@ -118,10 +120,11 @@ typedef struct npf_callbacks {
      * or null}, "peer_done" {peer, why}, "forward" {peer, spec, up, why},
      * "network" {why} (the process was suspended or the addresses changed:
      * libnpf checks its connections and mends them by itself),
-     * "stopped" {} (the run has ended: npf_stop, or the stop command); and a
-     * program's modules' (npf/module.h), e.g. "mappings_changed" {},
-     * "devices_changed" {}, "quota" {state, level, plan, quota, used,
-     * period_end} (the account's monthly traffic) */
+     * "stopped" {} (the run has ended: npf_stop, or the stop command),
+     * "platform" {type, data} (an event the platform sent, data as it came:
+     * docs/protocol/signaling.md), "resources" {session, resources} (the
+     * peer's published list); and those of the program's modules
+     * (npf/module.h) */
     void (*event)(void *user, const char *name, const char *json);
     /* a session came up (up 1; info: {"peer", "path", "direction", "call_id"})
      * or ended (up 0, info: {"why"}); its media streams end with it */
@@ -166,8 +169,12 @@ typedef struct npf_options {
 
 NPF_API const char *npf_version(void);
 NPF_API int         npf_api_version(void);
-NPF_API void        npf_options_init(npf_options *o);
-NPF_API void        npf_callbacks_init(npf_callbacks *cb);
+/* the defaults, for size bytes (the application's sizeof: the macros give
+ * it), so a library with larger structures never writes past them */
+NPF_API void        npf_options_init_size(npf_options *o, size_t size);
+NPF_API void        npf_callbacks_init_size(npf_callbacks *cb, size_t size);
+#define npf_options_init(o)    npf_options_init_size((o), sizeof *(o))
+#define npf_callbacks_init(cb) npf_callbacks_init_size((cb), sizeof *(cb))
 
 /* Reads the configuration and the identity (makes data_dir and an identity
  * when there is none). NPF_OK, or an error with the message in err. */
@@ -275,7 +282,8 @@ typedef struct npf_media_stats {
     int      capacity_short;    /* the path is slower than the media */
 } npf_media_stats;
 
-NPF_API void npf_media_opt_default(npf_media_opt *o);
+NPF_API void npf_media_opt_default_size(npf_media_opt *o, size_t size);
+#define npf_media_opt_default(o) npf_media_opt_default_size((o), sizeof *(o))
 /* a stream of frames to the peer of a session (any path); returns the
  * stream number, 0 with *err: NPF_ESTATE (the session is not up), NPF_EBUSY
  * (64 streams per instance, or 30 outgoing streams per AnLiu session). Opening and closing

@@ -215,7 +215,8 @@ int test_policy(void)
     }
 
     /* forward specs: empty fields kept, IPv6 in brackets; an empty or "*"
-     * address is every address (as ssh) */
+     * address is every address (as ssh); none without peers (NPF_PEERS=OFF) */
+#ifndef NPF_NO_PEERS
     {
         char s[128], *v[4];
         int n;
@@ -237,6 +238,7 @@ int test_policy(void)
         snprintf(s, sizeof s, "1:2:3:4:5");
         CHECK(npf_fwd_split(s, v, 4) == -1, "too many fields");
     }
+#endif
 
     /* UDP (data-channel.md 15): only "udp" resources let it through; "lan"
      * and "*" (net, socks) are TCP only, and a udp resource opens no TCP */

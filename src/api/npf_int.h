@@ -100,6 +100,7 @@ struct npf {
      * the end, and the state of each */
     const struct npf_module *mods[NPF_MOD_MAX + 1];
     void         *mod_state[NPF_MOD_MAX];
+    int           mods_created;     /* the first ones made (their create done): only they end and are destroyed */
     int           mods_made;        /* npf_mods_create done: the hooks are called from then on */
     /* what a hosted client's tunnels may spend (its account's quota; a
      * module keeps it filled) */
@@ -116,6 +117,8 @@ void npf_api_unlock(npf_t *n);
 /* engine.c */
 int  npf_app_name_valid(const char *s);
 int  npf_app_ver_valid(const char *s);
+/* a public structure's defaults into the application's size bytes (engine.c) */
+void npf_init_sized(void *s, size_t size, const void *d, size_t dsize);
 void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 #ifdef __GNUC__
     __attribute__((format(printf, 3, 4)))
@@ -146,9 +149,13 @@ void npf_runtime_leave(npf_runtime *rt, int slot);
 npf_loop *npf_engine_loop(npf_t *n);
 void npf_engine_free(npf_t *n);
 
-/* cmd.c: a command (argv[0] = its name); 0.. the exit code with the text in o,
- * or -1 when it answers later through cb */
+/* cmd.c: a command (argv[0] = its name); the exit code with the text in o
+ * (0 done, 1 failed, 2 a bad command, NPF_CMD_UNSAVED done but local.json
+ * not written: it is with the next change saved), or -1 when it answers
+ * later through cb. libnpf's own commands come before the modules' */
+#define NPF_CMD_UNSAVED 3
 int  npf_cmd_run(npf_t *n, int argc, char **argv, npf_out *o, npf_text_cb cb, void *user);
+int  npf_cmd_builtin(const char *name);     /* one of libnpf's own commands? */
 void npf_cmd_status_json(npf_t *n, npf_out *o);
 void npf_cmd_config_json(npf_t *n, npf_out *o);
 int  npf_cmd_peer_add(npf_t *n, int argc, char **argv, int flags, npf_out *o);

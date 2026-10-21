@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "npf_int.h"
+#include "npf/conf.h"
 #include "npf/module.h"
 
 #ifdef _WIN32
@@ -22,15 +23,62 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 /* the modules registered, NULL at the end: an instance takes them at npf_create */
 static const npf_module *g_mods[NPF_MOD_MAX + 1];
 
+static int has_cmd(const npf_module *m, const char *name)
+{
+    const npf_mod_cmd *c;
+    for (c = m->cmds; c && c->name; c++)
+        if (strcmp(c->name, name) == 0)
+            return 1;
+    return 0;
+}
+
+static int has_key(const npf_module *m, const char *k)
+{
+    const char *const *kk;
+    for (kk = m->keys; kk && *kk; kk++)
+        if (strcmp(*kk, k) == 0)
+            return 1;
+    return 0;
+}
+
+/* m's name, commands and keys clash with none of libnpf's and of the
+ * modules registered (count of them)? */
+static int fits(const npf_module *m, int count)
+{
+    const npf_mod_cmd *c;
+    const char *const *kk;
+    int i;
+    if (!m->name || !*m->name)
+        return 0;
+    for (i = 0; i < count; i++)
+        if (strcmp(g_mods[i]->name, m->name) == 0)
+            return 0;
+    for (c = m->cmds; c && c->name; c++) {
+        if (!c->run || npf_cmd_builtin(c->name))
+            return 0;
+        for (i = 0; i < count; i++)
+            if (has_cmd(g_mods[i], c->name))
+                return 0;
+    }
+    for (kk = m->keys; kk && *kk; kk++) {
+        if (npf_conf_known(*kk))
+            return 0;
+        for (i = 0; i < count; i++)
+            if (has_key(g_mods[i], *kk))
+                return 0;
+    }
+    return 1;
+}
+
 int npf_register_module(const npf_module *m)
 {
     int i, r = -1;
     if (!m)
         return -1;
     LOCK();
-    for (i = 0; i < NPF_MOD_MAX && g_mods[i] && g_mods[i] != m; i++)
+    for (i = 0; i < NPF_MOD_MAX && g_mods[i]; i++)
         ;
-    if (i < NPF_MOD_MAX && !g_mods[i]) {
+    if (i < NPF_MOD_MAX && fits(m, i)) {
         g_mods[i] = m;
         r = 0;
     }
@@ -78,49 +126,54 @@ void npf_mod_jkey(npf_out *o, int *first, const char *k)
 int npf_mod_key_known(npf_t *n, const char *k)
 {
     const npf_module *m;
-    EACH(m) {
-        const char *const *kk;
-        for (kk = m->keys; kk && *kk; kk++)
-            if (strcmp(*kk, k) == 0)
-                return 1;
-    }
+    EACH(m) if (has_key(m, k)) return 1;
     return 0;
 }
 
+/* in order; one that fails cleans up after itself, and only those made
+ * before it are ended and destroyed */
 int npf_mods_create(npf_t *n, char *err, size_t errcap)
 {
-    const npf_module *m;
-    EACH(m)
-        if (m->create && m->create(n, err, errcap) < 0)
+    int i;
+    for (i = 0; n->mods[i]; i++) {
+        if (n->mods[i]->create && n->mods[i]->create(n, err, errcap) < 0)
             return -1;
+        n->mods_created = i + 1;
+    }
     n->mods_made = 1;
     return 0;
 }
 
-/* a hook of every module, once they are all made (a module's own end and
- * destroy also after a failed npf_create: they look at their state) */
+/* a hook of every module, once they are all made */
 #define CALL(hook, ...)                                                                                              \
     do {                                                                                                             \
         const npf_module *m;                                                                                         \
         if (n->mods_made)                                                                                            \
             EACH(m) if (m->hook) m->hook(__VA_ARGS__);                                                               \
     } while (0)
-#define CALL_ALWAYS(hook, ...)                                                                                       \
-    do {                                                                                                             \
-        const npf_module *m;                                                                                         \
-        EACH(m) if (m->hook) m->hook(__VA_ARGS__);                                                                   \
-    } while (0)
 
 void npf_mods_begin(npf_t *n) { CALL(begin, n); }
 
+/* the modules made (also after a failed npf_create) */
 int npf_mods_end(npf_t *n, int step)
 {
-    const npf_module *m;
-    int ms = 0, r;
-    EACH(m) if (m->end && (r = m->end(n, step)) > ms) ms = r;
+    int i, ms = 0, r;
+    for (i = 0; i < n->mods_created; i++)
+        if (n->mods[i]->end && (r = n->mods[i]->end(n, step)) > ms)
+            ms = r;
     return ms;
 }
-void npf_mods_destroy(npf_t *n) { CALL_ALWAYS(destroy, n); }
+
+/* the modules made, the last first */
+void npf_mods_destroy(npf_t *n)
+{
+    int i;
+    for (i = n->mods_created; i-- > 0;)
+        if (n->mods[i]->destroy)
+            n->mods[i]->destroy(n);
+    n->mods_created = 0;
+    n->mods_made = 0;
+}
 void npf_mods_login(npf_t *n) { CALL(login, n); }
 void npf_mods_event(npf_t *n, const char *type, const npf_json *j, int d) { CALL(event, n, type, j, d); }
 void npf_mods_account(npf_t *n, int on) { CALL(account, n, on); }

@@ -1,6 +1,5 @@
-/* libnpf: requests to the platform (npf_request), for the command line and
- * the web console; the console's commands are in platform_console.c. Replies
- * come back through the caller's callback on the library thread. */
+/* libnpf: requests to the platform (npf_request). Replies come back through
+ * the caller's callback on the library thread. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif

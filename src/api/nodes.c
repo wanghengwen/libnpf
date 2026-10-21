@@ -89,7 +89,7 @@ int npf_cmd_nodes(npf_t *c, int argc, char **argv, npf_text_cb cb, void *user, n
             return rc;
         npf_nodes_header(o);
         if (!npf_nodes_local(c, o, NULL, NULL))
-            npf_out_printf(o, "(no nodes yet: npf node add NUMBER)\n");
+            npf_out_printf(o, "(no nodes yet: node add NUMBER)\n");
         return 0;
     }
     target = npf_peers_resolve(c->peers, argv[1], tbuf, sizeof tbuf);

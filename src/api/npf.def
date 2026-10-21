@@ -2,8 +2,8 @@
 EXPORTS
     npf_version
     npf_api_version
-    npf_options_init
-    npf_callbacks_init
+    npf_options_init_size
+    npf_callbacks_init_size
     npf_create
     npf_start
     npf_run
@@ -27,7 +27,7 @@ EXPORTS
     npf_sessions_json
     npf_public_json
     npf_session_send
-    npf_media_opt_default
+    npf_media_opt_default_size
     npf_media_open
     npf_media_send
     npf_media_stats_get

@@ -3311,13 +3311,13 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
         npf_logw("call %s: rejected (%s)", c->call_id_s, err);
         if (strcmp(err, "no_path") == 0)
             npf_log("UDP is unusable here and only callers logged in to an account get a relay: "
-                    "npf account login, or check that UDP is not blocked");
+                    "log in to an account, or check that UDP is not blocked");
         else if (strcmp(err, "secure_plan") == 0)
             npf_log("connect_mode secure on one side: relays only, which takes a caller's account with a paid plan "
-                    "(npf set connect_mode p2p allows direct paths)");
+                    "(set connect_mode p2p allows direct paths)");
         else if (strcmp(err, "quota") == 0)
-            npf_log("this month's traffic of the account is used up: no relay, and no direct path either "
-                    "(npf account show)");
+            npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
+                    "until next month or a larger plan");
         c->ended = 1;
         set_state(c, NPF_CALL_CLOSED, err);
         npf_timer_add(n->loop, 0, free_later, c);
@@ -3683,7 +3683,7 @@ int npf_direct_psk(const char *key, const char *file, uint8_t psk[32])
     if (key) {
         r = npf_b64url_decode(key, strlen(key), psk, 32) == 32 ? 0 : -1;
         if (r < 0)
-            npf_log("direct: the key must be 32 bytes in Base64url (npf genpsk)");
+            npf_log("direct: the key must be 32 random bytes in Base64url");
         return r;
     }
     if (!file)
@@ -3703,7 +3703,7 @@ int npf_direct_psk(const char *key, const char *file, uint8_t psk[32])
     npf_wipe(s, (size_t)n);
     free(s);
     if (r < 0)
-        npf_log("direct: %s does not hold a 32-byte Base64url key (npf genpsk)", file);
+        npf_log("direct: %s does not hold 32 random bytes in Base64url", file);
     return r;
 }
 

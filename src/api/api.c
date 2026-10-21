@@ -715,7 +715,7 @@ static int action(npf_t *n, a_arg *x, char *err, size_t errcap)
     if (x->rc && err && errcap)
         snprintf(err, errcap, "%s", x->o.p ? x->o.p : "failed");
     npf_out_free(&x->o);
-    return x->rc == 0 ? x->live : x->rc == 2 ? NPF_EINVAL : NPF_EFAIL;
+    return x->rc == 0 ? x->live : x->rc == 2 ? NPF_EINVAL : x->rc == NPF_CMD_UNSAVED ? NPF_ESAVE : NPF_EFAIL;
 }
 
 static int npf_config_get_impl(npf_t *n, const char *key, char *out, size_t cap)
@@ -959,14 +959,15 @@ static int npf_session_send_impl(npf_t *n, uint32_t session, const void *buf, si
     return x.rc;
 }
 
-void npf_media_opt_default(npf_media_opt *o)
+void npf_media_opt_default_size(npf_media_opt *o, size_t size)
 {
-    memset(o, 0, sizeof *o);
-    o->size = sizeof *o;
-    o->prio = 1;
-    o->max_age_ms = 500;
-    o->fec = -1;
-    o->rcv_deadline_ms = -1;
+    npf_media_opt d;
+    memset(&d, 0, sizeof d);
+    d.prio = 1;
+    d.max_age_ms = 500;
+    d.fec = -1;
+    d.rcv_deadline_ms = -1;
+    npf_init_sized(o, size, &d, sizeof d);
 }
 
 typedef struct m_open {

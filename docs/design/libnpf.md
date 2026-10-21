@@ -53,7 +53,7 @@ cc app.c $(PKG_CONFIG_PATH="$PWD/install/lib/pkgconfig" pkg-config --cflags --li
 
 - `NPF_API_VERSION` 为 1，soname 为 `libnpf.so.1`；不兼容的修改会提高 soname；
 - 调用方分配的结构体第一个字段都是 `size`：`npf_options`、`npf_callbacks`、`npf_media_opt`、`npf_media_stats`。库只读调用方编译时就有的部分，其余用默认值；以后只在末尾增加字段；
-- 用 `npf_options_init`、`npf_callbacks_init`、`npf_media_opt_default` 初始化，`npf_media_stats` 由调用方填 `size`。
+- 用 `npf_options_init`、`npf_callbacks_init`、`npf_media_opt_default` 初始化。它们是宏，把调用方的 `sizeof` 传给库（`npf_options_init_size` 等），库只写这么多字节：旧程序配新库时不会越界，新程序配旧库时多出的字段为 0；`npf_media_stats` 由调用方填 `size`。
 
 ## 3. 快速上手
 
@@ -248,9 +248,11 @@ npf_peer_add(cli, "318204776 -p 8fK2mQ7v -L 127.0.0.1:8080:127.0.0.1:5000", NPF_
 | 应用数据 | `npf_session_send` |
 | 音视频 | `npf_media_open`、`npf_media_send`、`npf_media_stats_get`、`npf_media_close`，回调 `media_open`、`media_frame`、`media_closed` |
 
-返回码：`NPF_OK`（0）、`NPF_EINVAL`、`NPF_ENOENT`、`NPF_ESTATE`（还没启动、不在线、会话没建立）、`NPF_EUNAVAIL`、`NPF_ETOOBIG`、`NPF_ENOMEM`、`NPF_EFAIL`（原因在 `err` 里）、`NPF_EBUSY`。
+返回码：`NPF_OK`（0）、`NPF_EINVAL`、`NPF_ENOENT`、`NPF_ESTATE`（还没启动、不在线、会话没建立）、`NPF_EUNAVAIL`、`NPF_ETOOBIG`、`NPF_ENOMEM`、`NPF_EFAIL`（原因在 `err` 里）、`NPF_EBUSY`、`NPF_ESAVE`。
 
-**命令**（`npf_command`，参数按词给出）：
+`NPF_ESAVE`：操作已经完成并且生效，但 local.json 没能写入（磁盘满、目录只读等），原因在 `err` 里。库不撤销这次修改：下一次成功的保存会把它一起写入，在那之前重启就会丢失。应用可以提示用户，或者稍后再做一次保存类的操作。`npf_config_set`（保存时）、`npf_peer_add`（`NPF_PEER_SAVE`）、`npf_forward_add` / `npf_forward_del`（保存的转发）会返回它。
+
+**命令**（`npf_command`，参数按词给出）。回调里的退出码：0 完成，1 失败，2 命令或参数不对，3 已完成但 local.json 没写入（同 `NPF_ESAVE`）。库自己的命令优先于模块的命令：
 
 | 命令 | 作用 |
 |---|---|
@@ -282,6 +284,8 @@ npf_peer_add(cli, "318204776 -p 8fK2mQ7v -L 127.0.0.1:8080:127.0.0.1:5000", NPF_
 | `forward` | `{peer, spec, up, why}`：一条转发建立或失败（会自己重试） |
 | `network` | `{why}`：进程被挂起过、本机地址变了；libnpf 已经在检查并修复连接，应用不需要做什么 |
 | `stopped` | `{}`：运行结束 |
+| `resources` | `{session, resources}`：会话对端发布的资源列表（建立时和变化时） |
+| `platform` | `{type, data}`：平台推送的事件（`docs/protocol/signaling.md`），`data` 原样转发；未知的 `type` 忽略即可 |
 
 扩展模块（第 11 节）可以发出自己的事件。
 
@@ -338,7 +342,8 @@ int main(void)
 ```
 
 - 实例在 `npf_create` 时取当时已注册的全部模块，按注册的顺序调用；之后再注册的模块只对之后创建的实例生效，所以通常在程序启动时、创建任何实例之前注册；
-- 最多 8 个模块；`NULL`、重复注册、超过 8 个时返回 -1；可以在任何线程调用；
+- 最多 8 个模块；可以在任何线程调用。以下情况返回 -1：`NULL`、没有名字、重复注册，名字与已注册的模块相同，命令与库自己的命令或其他模块的命令同名，配置键与库的配置键或其他模块的配置键相同。所以模块不能覆盖库的命令和配置；
+- 创建实例时按顺序调用各模块的 `create`；某个模块失败时实例创建失败，失败的模块自己清理已分配的资源，库只对排在它前面、已经创建成功的模块调用 `end` / `destroy`，按相反顺序销毁；
 - 模块结构体归应用所有，要比用到它的实例活得久（通常是静态常量）；
 - 没有注册任何模块时，库只有自己的命令和配置键。
 
@@ -402,7 +407,8 @@ target_link_libraries(acme-app PRIVATE npf_common)     # 模块用到库的内�
 - 钩子都在实例的线程上调用，都是可选的：创建、开始、分步结束、销毁，登录、平台事件、账户会话、会话状态，对端的建立 / 结束 / 转发，命令、`node` 列表，状态 JSON 与文字，配置键及其检查（`check`：返回 0 接受，否则是退出码，原因写进输出）；
 - 一种新的转发：在 `create` 钩子里用 `npf_peers_add_kind` 登记一个 `npf_fwd_kind`（选项字母，以及解析、检查、建立、撤销的回调），对端会像 `-L` 一样保存、重试、随对端删除；`npf_peers_fwd_call` 给出这条转发所在的会话；
 - 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`），库原样保留；
-- `tests/api/test_module.c` 是一个完整的例子：注册（含重复与上限）、命令、配置键、状态字段、销毁，以及注册之前创建的实例。
+- 状态 JSON 里模块的字段和库的字段在同一个对象里，模块应使用带自己前缀的键名，避免与库现有或以后的字段重名；
+- `tests/api/test_module.c` 是一个完整的例子：注册（重复、冲突、上限）、命令、配置键、状态字段、销毁、创建失败时的清理，以及注册之前创建的实例。
 
 ## 12. 日志与排查
 

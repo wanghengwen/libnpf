@@ -80,7 +80,7 @@ static int forward_one(npf_t *c, npf_peer *p, int add, const char *opt, const ch
 int npf_cmd_peer_add(npf_t *c, int argc, char **argv, int flags, npf_out *o)
 {
     int save = flags & NPF_PEER_SAVE;
-    int start = 0, i, added = 0, seen = 0, rc = 0;
+    int start = 0, i, added = 0, seen = 0, rc = 0, unsaved = 0;
     for (i = 0; i <= argc && !rc; i++) {
         char err[300], line[1024];
         npf_peer *p;
@@ -151,17 +151,21 @@ int npf_cmd_peer_add(npf_t *c, int argc, char **argv, int flags, npf_out *o)
                  * ones stay temporary */
                 npf_peer_set_tag(p, PEER_SAVED);
                 npf_peer_set_persist(p, 1);
-                if (save_peer(c, p, i - start, argv + start, 0) < 0)
-                    npf_out_printf(o, "%s: cannot save it in %s\n", npf_peer_shown(p), c->local_path);
-                else
+                if (save_peer(c, p, i - start, argv + start, 0) < 0) {
+                    npf_out_printf(o, "%s: saved, but cannot write %s yet\n", npf_peer_shown(p), c->local_path);
+                    unsaved = 1;
+                } else
                     npf_out_printf(o, "%s: saved\n", npf_peer_shown(p));
                 npf_log("peer %s saved", npf_peer_shown(p));
             }
             for (k = start + 1; k + 1 < i; k++) {
                 if (npf_fwd_opt(argv[k])) {
-                    if (forward_one(c, p, 1, argv[k], argv[k + 1], save && npf_peer_tag(p) == PEER_SAVED, o))
+                    int r = forward_one(c, p, 1, argv[k], argv[k + 1], save && npf_peer_tag(p) == PEER_SAVED, o);
+                    if (r == NPF_CMD_UNSAVED)
+                        unsaved = 1;
+                    else if (r)
                         rc = 1;
-                    else if (hl < sizeof how)
+                    if ((!r || r == NPF_CMD_UNSAVED) && hl < sizeof how)
                         hl += (size_t)snprintf(how + hl, sizeof how - hl, " %s %s", argv[k], argv[k + 1]);
                     nf++;
                     k++;
@@ -170,9 +174,9 @@ int npf_cmd_peer_add(npf_t *c, int argc, char **argv, int flags, npf_out *o)
                 }
             }
             if (hl)
-                npf_out_printf(o, "(the same as: npf forward %s add%s)\n", npf_peer_shown(p), how);
+                npf_out_printf(o, "(the same as: forward %s add%s)\n", npf_peer_shown(p), how);
             else if (!nf)
-                npf_out_printf(o, "(add forwards to it with: npf forward %s add -L|-D|-R SPEC)\n", npf_peer_shown(p));
+                npf_out_printf(o, "(add forwards to it with: forward %s add -L|-D|-R SPEC)\n", npf_peer_shown(p));
             start = i + 1;
             continue;
         }
@@ -188,9 +192,12 @@ int npf_cmd_peer_add(npf_t *c, int argc, char **argv, int flags, npf_out *o)
         npf_peer_set_tag(p, save ? PEER_SAVED : PEER_TEMP);
         npf_peer_set_persist(p, save);      /* saved: tried for ever, also when not paired yet */
         npf_peer_forward_mark(p, save);
-        if (save && save_peer(c, p, i - start, argv + start, 1) < 0)
-            npf_out_printf(o, "%s: cannot save it in %s\n", npf_peer_shown(p), c->local_path);
-        npf_out_printf(o, "%s: connecting%s\n", npf_peer_shown(p), save ? " (saved)" : "");
+        if (save && save_peer(c, p, i - start, argv + start, 1) < 0) {
+            npf_out_printf(o, "%s: connecting, but cannot write %s yet\n", npf_peer_shown(p), c->local_path);
+            unsaved = 1;
+        } else {
+            npf_out_printf(o, "%s: connecting%s\n", npf_peer_shown(p), save ? " (saved)" : "");
+        }
         npf_log("peer %s added%s", npf_peer_shown(p), save ? " and saved" : "");
         added++;
         start = i + 1;
@@ -201,7 +208,7 @@ int npf_cmd_peer_add(npf_t *c, int argc, char **argv, int flags, npf_out *o)
         npf_out_printf(o, "no peer given\n");
         rc = 2;
     }
-    return rc;
+    return rc ? rc : unsaved ? NPF_CMD_UNSAVED : 0;
 }
 
 /* not saved any more: not connected at the next start, no saved forwards
@@ -224,11 +231,11 @@ int npf_cmd_peer_remove(npf_t *c, const char *name, int unsave, npf_out *o)
     npf_peer *p = npf_peers_find(c->peers, name);
     int saved, pm;
     if (!p) {
-        npf_out_printf(o, "%s: not a node npf connects to\n", name);
+        npf_out_printf(o, "%s: not a node this one connects to\n", name);
         return 1;
     }
     if (npf_peer_tag(p) == PEER_PLATFORM) {
-        npf_out_printf(o, "%s: opened for port mappings saved on the platform (npf mapping del ID)\n", npf_peer_shown(p));
+        npf_out_printf(o, "%s: opened for port mappings saved on the platform (removed there)\n", npf_peer_shown(p));
         return 1;
     }
     pm = npf_mods_peer_removing(c, p);      /* its platform mappings: back after (a module's) */
@@ -305,6 +312,12 @@ static int is_number(const char *s)
     return 1;
 }
 
+/* two exit codes as one: a failure over a change not saved over success */
+static int merge_rc(int rc, int r)
+{
+    return !r || (rc && rc != NPF_CMD_UNSAVED) ? rc : r;
+}
+
 static int forward_one(npf_t *c, npf_peer *p, int add, const char *opt, const char *spec, int perm, npf_out *o)
 {
     char err[300], nb[300];
@@ -319,21 +332,29 @@ static int forward_one(npf_t *c, npf_peer *p, int add, const char *opt, const ch
             npf_out_printf(o, "%s\n", err);
             return 2;
         }
-        if (perm && conf_peer_mapping(c, p, opt, spec, 1) < 0)
-            npf_out_printf(o, "%s: cannot save it in %s\n", npf_peer_shown(p), c->local_path);
+        if (perm && conf_peer_mapping(c, p, opt, spec, 1) < 0) {
+            npf_out_printf(o, "%s: %s %s added, but cannot write %s yet\n", npf_peer_shown(p), opt, spec,
+                           c->local_path);
+            npf_logw("%s: mapping %s %s added, %s not written", npf_peer_shown(p), opt, spec, c->local_path);
+            return NPF_CMD_UNSAVED;
+        }
         npf_out_printf(o, "%s: %s %s added%s\n", npf_peer_shown(p), opt, spec, perm ? " (saved)" : "");
         npf_log("%s: mapping %s %s added%s", npf_peer_shown(p), opt, spec, perm ? " and saved" : "");
         return 0;
     }
     if ((i = npf_peer_forward_del(p, opt, spec, &saved)) < 0) {
         if (i == -2)
-            npf_out_printf(o, "%s: %s %s is saved on the platform (npf mapping del ID)\n", npf_peer_shown(p), opt, spec);
+            npf_out_printf(o, "%s: %s %s is saved on the platform (removed there)\n", npf_peer_shown(p), opt, spec);
         else
             npf_out_printf(o, "%s: no mapping %s %s\n", npf_peer_shown(p), opt, spec);
         return 1;
     }
-    if (saved && conf_peer_mapping(c, p, opt, spec, 0) < 0)
-        npf_out_printf(o, "%s: cannot remove it from %s\n", npf_peer_shown(p), c->local_path);
+    if (saved && conf_peer_mapping(c, p, opt, spec, 0) < 0) {
+        npf_out_printf(o, "%s: %s %s removed, but cannot write %s yet\n",
+                       npf_peer_shown(p), opt, spec, c->local_path);
+        npf_logw("%s: mapping %s %s removed, %s not written", npf_peer_shown(p), opt, spec, c->local_path);
+        return NPF_CMD_UNSAVED;
+    }
     npf_out_printf(o, "%s: %s %s removed%s\n", npf_peer_shown(p), opt, spec, saved ? " (also from the configuration)" : "");
     npf_log("%s: mapping %s %s removed", npf_peer_shown(p), opt, spec);
     return 0;
@@ -351,19 +372,19 @@ int npf_cmd_forward(npf_t *c, int argc, char **argv, npf_out *o)
             const char *sp;
             int r;
             if (!is_number(argv[i]) || !(p = forward_of(c, atoi(argv[i]), opt, &sp))) {
-                npf_out_printf(o, "no forward number %s (npf forward lists them)\n", argv[i]);
-                rc = rc ? rc : 1;
+                npf_out_printf(o, "no forward number %s (forward lists them)\n", argv[i]);
+                rc = merge_rc(rc, 1);
                 continue;
             }
             snprintf(spec, sizeof spec, "%s", sp);
-            if ((r = forward_one(c, p, 0, opt, spec, 0, o)) && !rc)
-                rc = r;
+            r = forward_one(c, p, 0, opt, spec, 0, o);
+            rc = merge_rc(rc, r);
             platform_peer_idle(c, p);
         }
         return rc;
     }
     if (argc > 0 && (strcmp(argv[0], "add") == 0 || strcmp(argv[0], "del") == 0)) {
-        npf_out_printf(o, "the node comes first: npf forward NODE %s ...\n", argv[0]);
+        npf_out_printf(o, "the node comes first: forward NODE %s ...\n", argv[0]);
         return 2;
     }
     if (argc <= 1) {                        /* [PEER]: the forwards */
@@ -403,13 +424,13 @@ int npf_cmd_forward(npf_t *c, int argc, char **argv, npf_out *o)
         return 1;
     }
     if (perm && npf_peer_tag(p) == PEER_FIXED) {
-        npf_out_printf(o, "%s is defined in %s (read-only): save mappings with a node of npf node add\n",
+        npf_out_printf(o, "%s is defined in %s (read-only): save mappings with a node of node add\n",
                        npf_peer_shown(p), c->conf.path);
         return 2;
     }
     if (perm && npf_peer_tag(p) != PEER_SAVED) {
         npf_out_printf(o, "%s is a temporary peer: its mappings are temporary too "
-                          "(npf node add keeps it)\n", npf_peer_shown(p));
+                          "(node add keeps it)\n", npf_peer_shown(p));
         return 2;
     }
     for (i = 2; i < argc; i++) {
@@ -420,19 +441,18 @@ int npf_cmd_forward(npf_t *c, int argc, char **argv, npf_out *o)
             char opt[3], spec[300];
             const char *sp;
             if (forward_of(c, atoi(argv[i]), opt, &sp) != p) {
-                npf_out_printf(o, "%s: no forward number %s (npf forward %s lists them)\n", npf_peer_shown(p), argv[i],
+                npf_out_printf(o, "%s: no forward number %s (forward %s lists them)\n", npf_peer_shown(p), argv[i],
                                npf_peer_shown(p));
-                rc = rc ? rc : 1;
+                rc = merge_rc(rc, 1);
                 continue;
             }
             snprintf(spec, sizeof spec, "%s", sp);
-            if ((r = forward_one(c, p, 0, opt, spec, 0, o)) && !rc)
-                rc = r;
+            r = forward_one(c, p, 0, opt, spec, 0, o);
+            rc = merge_rc(rc, r);
             continue;
         }
         r = forward_one(c, p, add, argv[i], argv[i + 1], perm, o);
-        if (r && !rc)
-            rc = r;
+        rc = merge_rc(rc, r);
         i++;
     }
     if (!add)
@@ -477,7 +497,7 @@ static int node_del(npf_t *c, int argc, char **argv, npf_out *o)
             if (npf_cmd_peer_remove(c, argv[i], 1, o) != 0)
                 rc = 1;
         } else if (!npf_local_dev(&c->lc, target, 0)) {
-            npf_out_printf(o, "%s: not a node here (npf node lists them)\n", argv[i]);
+            npf_out_printf(o, "%s: not a node here (node lists them)\n", argv[i]);
             rc = 1;
             continue;
         } else if (!forget) {

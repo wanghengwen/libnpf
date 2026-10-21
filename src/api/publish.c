@@ -40,7 +40,7 @@ int npf_pub_load(npf_t *n, char *err, size_t errcap)
     n->nres = 0;
     if (npf_conf_get(&n->conf, "allow", NULL) || npf_conf_get(&n->conf, "allow_all", NULL))
         npf_logw("config: allow / allow_all are gone: what callers may reach is what this node publishes "
-                 "(resource lines, npf resource; npf help resource)");
+                 "(resource lines, the resource command)");
     for (i = 0; (line = npf_conf_get_n(&n->conf, "resource", i)); i++) {
         if (n->nres >= NPF_RES_MAX) {
             snprintf(err, errcap, "config: at most %d resources", NPF_RES_MAX);
@@ -151,17 +151,32 @@ static int pub_save(npf_t *n)
 }
 
 /* the list changed: policy, local.json, the callers */
-static int pub_changed(npf_t *n, npf_out *o)
+/* the list as it was (pub_changed puts it back) */
+static npf_res *pub_snapshot(npf_t *n)
+{
+    npf_res *was = malloc(NPF_RES_MAX * sizeof *was);
+    if (was)
+        memcpy(was, n->res, (size_t)n->nres * sizeof *was);
+    return was;
+}
+
+/* the list changed (was: as it was, nwas of them): the policy, the callers,
+ * local.json. 0; 1: not changed (the list back as it was); NPF_CMD_UNSAVED:
+ * in effect and told to the callers, local.json not written yet */
+static int pub_changed(npf_t *n, const npf_res *was, int nwas, npf_out *o)
 {
     if (npf_pub_apply(n) < 0) {
+        memcpy(n->res, was, (size_t)nwas * sizeof *was);
+        n->nres = nwas;
+        npf_pub_apply(n);                   /* what it was: it fitted */
         npf_out_printf(o, "too many targets for the policy table\n");
         return 1;
     }
-    if (pub_save(n) < 0) {
-        npf_out_printf(o, "cannot write %s\n", n->local_path);
-        return 1;
-    }
     pub_push(n);
+    if (pub_save(n) < 0) {
+        npf_out_printf(o, "in effect now, but cannot write %s yet\n", n->local_path);
+        return NPF_CMD_UNSAVED;
+    }
     return 0;
 }
 
@@ -169,7 +184,7 @@ static void list_text(npf_out *o, const npf_res *r, int n, int mine)
 {
     int i;
     if (!n) {
-        npf_out_printf(o, mine ? "no resources: whoever connects here reaches nothing (npf resource add)\n"
+        npf_out_printf(o, mine ? "no resources: whoever connects here reaches nothing (resource add)\n"
                                : "no resources published\n");
         return;
     }
@@ -256,8 +271,12 @@ int npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o)
             return 2;
         }
         {   /* the whole list must still fit the event */
-            npf_res keep = k < n->nres ? n->res[k] : r;
+            npf_res keep = k < n->nres ? n->res[k] : r, *was;
             int had = n->nres;
+            if (!(was = pub_snapshot(n))) {
+                npf_out_printf(o, "no memory\n");
+                return 1;
+            }
             n->res[k] = r;
             if (k == n->nres)
                 n->nres++;
@@ -266,20 +285,28 @@ int npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o)
                 n->res[k] = keep;
                 n->nres = had;
                 npf_out_free(&t);
+                free(was);
                 npf_out_printf(o, "the list would be too long (descriptions take room)\n");
                 return 2;
             }
             npf_out_free(&t);
+            i = pub_changed(n, was, had, o);
+            free(was);
+            if (i == 1)
+                return 1;
         }
-        if ((i = pub_changed(n, o)) != 0)
-            return i;
         npf_log("resource %s: %s%s%s %s%s", r.name, r.type, r.svc[0] ? "/" : "", r.svc, r.target, r.path);
         npf_out_printf(o, "%s: published (%s%s%s %s%s)\n", r.name, r.type, r.svc[0] ? "/" : "", r.svc, r.target,
                        r.path);
-        return 0;
+        return i;
     }
     if (strcmp(sub, "del") == 0 && argc > 2) {
-        int all = strcmp(argv[2], "all") == 0, m = 0, gone = 0;
+        int all = strcmp(argv[2], "all") == 0, m = 0, gone = 0, had = n->nres;
+        npf_res *was = pub_snapshot(n);
+        if (!was) {
+            npf_out_printf(o, "no memory\n");
+            return 1;
+        }
         for (i = 0; i < n->nres; i++) {
             if (!n->res[i].fixed && (all || strcmp(n->res[i].name, argv[2]) == 0)) {
                 gone++;
@@ -288,15 +315,18 @@ int npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o)
             n->res[m++] = n->res[i];
         }
         if (!gone) {
+            free(was);
             npf_out_printf(o, "%s: %s\n", argv[2], all ? "nothing to delete" : "no such resource added here");
             return 1;
         }
         n->nres = m;
-        if ((i = pub_changed(n, o)) != 0)
-            return i;
+        i = pub_changed(n, was, had, o);
+        free(was);
+        if (i == 1)
+            return 1;
         npf_log("resource %s deleted", argv[2]);
         npf_out_printf(o, "%s: deleted\n", argv[2]);
-        return 0;
+        return i;
     }
     npf_out_printf(o, "resource [ls [NODE]] | add TYPE[/SERVICE] TARGET NAME [--desc TEXT] | del NAME|all\n");
     return 2;

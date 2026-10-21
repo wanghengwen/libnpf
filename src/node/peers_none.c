@@ -1,6 +1,5 @@
-/* npf without sessions of its own to other nodes (NPF_PEERS=OFF: a device
- * that is only called): the peers.h interface with no
- * peer ever. Adding one fails with an error, so "peer =" lines, run --node
+/* libnpf without sessions of its own to other nodes (NPF_PEERS=OFF: a
+ * device that is only called): the peers.h interface with no peer ever. Adding one fails with an error, so "peer =" lines, run --node
  * and node add say it is not built in; the rest is never reached. */
 #include "npf/sys.h"
 #include <stdio.h>
@@ -13,7 +12,7 @@ struct npf_peers {
     int idle_ms;
 };
 
-static const char not_built[] = "sessions to other nodes are not built into this npf (NPF_PEERS=OFF)";
+static const char not_built[] = "sessions to other nodes are not in this build (NPF_PEERS=OFF)";
 
 int npf_fwd_split(char *s, char **parts, int max)
 {
@@ -195,3 +194,8 @@ npf_call *npf_peer_call(const npf_peer *p) { (void)p; return NULL; }
 uint64_t npf_peer_number(const npf_peer *p) { (void)p; return 0; }
 const char *npf_peer_name(const npf_peer *p) { (void)p; return ""; }
 int npf_peer_nfwd(const npf_peer *p) { (void)p; return 0; }
+
+int npf_peer_needs_password(const npf_peer *p) { (void)p; return 0; }
+int npf_peer_password_wrong(const npf_peer *p) { (void)p; return 0; }
+int npf_peer_pairing_lost(const npf_peer *p) { (void)p; return 0; }
+int npf_peer_needs_account(const npf_peer *p) { (void)p; return 0; }

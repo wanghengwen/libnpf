@@ -431,7 +431,7 @@ static void status_text(npf_t *c, npf_out *o)
                        human_bytes(i.rx_bytes, t2, sizeof t2), i.sublinks, who);
     }
     if (!ns)
-        npf_out_printf(o, "\nno sessions (npf node lists the nodes)\n");
+        npf_out_printf(o, "\nno sessions (node lists the nodes)\n");
     npf_mods_status_text(c, o);
 }
 
@@ -566,7 +566,7 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
     int live = is_settable(k), r;
     const char *shown = is_secret(k) ? "(hidden)" : v;
     if (strcmp(k, "node") == 0 || strcmp(k, "cred") == 0) {
-        npf_out_printf(o, "%s: cannot be set this way%s\n", k, strcmp(k, "node") == 0 ? " (npf node add)" : "");
+        npf_out_printf(o, "%s: cannot be set this way%s\n", k, strcmp(k, "node") == 0 ? " (node add)" : "");
         return 2;
     }
     /* where the writable directory and its files are: read before local.json */
@@ -584,9 +584,11 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
         return r;
     if (save) {
         npf_conf_set(&c->lc.settings, k, v);
-        if (npf_local_save(&c->lc) < 0) {
-            npf_out_printf(o, "cannot write %s\n", c->local_path);
-            return 1;
+        if (npf_local_save(&c->lc) < 0) {   /* written with the next change saved */
+            npf_conf_set(&c->conf, k, v);   /* as get says */
+            npf_out_printf(o, "%s = %s%s, but cannot write %s yet\n", k, shown,
+                           live ? ": in effect now" : " (takes effect after a restart)", c->local_path);
+            return NPF_CMD_UNSAVED;
         }
     }
     npf_conf_set(&c->conf, k, v);
@@ -607,12 +609,30 @@ static void stop_timer(npf_loop *loop, void *arg)
 
 
 
+/* libnpf's own commands (npf_cmd_run below): no module takes these names */
+static const char *const builtin_cmds[] = {"id", "status", "forward", "resource", "node", "get", "set", "log",
+                                           "netcheck", "dump", "stop", "show", "passwd", "unpair", "owner-reset",
+                                           NULL};
+
+int npf_cmd_builtin(const char *name)
+{
+    int i;
+    for (i = 0; builtin_cmds[i]; i++)
+        if (strcmp(builtin_cmds[i], name) == 0)
+            return 1;
+    return 0;
+}
+
 int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, void *user)
 {
     const char *cmd = argv[0];
     int rc;
-    if (npf_mods_cmd(c, argc, argv, cb, user, o, &rc))
-        return rc;                          /* a module's (mapping, bind, enroll, app ...) */
+    if (!npf_cmd_builtin(cmd)) {
+        if (npf_mods_cmd(c, argc, argv, cb, user, o, &rc))
+            return rc;                      /* a module's */
+        npf_out_printf(o, "unknown command %s\n", cmd);
+        return 2;
+    }
     if (strcmp(cmd, "id") == 0) {
         npf_out_printf(o, "client_id: %016llx\n", (unsigned long long)npf_fp(c->id.dh_pub));
         if (c->has_number)
@@ -690,13 +710,13 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
         || strcmp(cmd, "owner-reset") == 0) {
         int r;
         if (!c->has_number) {
-            npf_out_printf(o, "this identity has no number yet (npf enroll, or a device credential)\n");
+            npf_out_printf(o, "this identity has no number yet (enrolment, or a device credential)\n");
             return 1;
         }
         r = npf_callee_cmd(c->callee, cmd, argc - 1, argv + 1, o);
         return r == -2 ? 2 : r;
     }
-    npf_out_printf(o, "unknown command %s\n", cmd);
+    npf_out_printf(o, "%s: not in this build\n", cmd);
     return 2;
 }
 

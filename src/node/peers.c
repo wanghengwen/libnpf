@@ -1469,7 +1469,7 @@ const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap)
     else if (p->call || p->waiting)
         snprintf(buf, cap, "connecting");
     else if (p->idle_ms && !p->finished)
-        snprintf(buf, cap, "on demand"); /* a connection (or npf node wake) starts the session */
+        snprintf(buf, cap, "on demand"); /* a connection (or node wake) starts the session */
     else if (p->t_retry) {
         int64_t s = (p->retry_at - npf_mono_ms() + 999) / 1000;
         snprintf(buf, cap, "retry in %lld s (%s)", (long long)(s > 0 ? s : 0), p->last_why);

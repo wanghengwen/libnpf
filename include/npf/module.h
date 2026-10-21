@@ -34,7 +34,8 @@ typedef struct npf_mod_cmd {
 typedef struct npf_module {
     const char *name;
     /* npf_create, once the node and its peers are there: the module's state
-     * (npf_mod_set_state); 0, or -1 with err (the instance is not made) */
+     * (npf_mod_set_state); 0, or -1 with err (the instance is not made: this
+     * module frees what it made, the modules made before it are destroyed) */
     int  (*create)(npf_t *n, char *err, size_t errcap);
     /* the run begins (the node started) */
     void (*begin)(npf_t *n);
@@ -43,7 +44,8 @@ typedef struct npf_module {
      * off, before the peers go). How long the loop should go on before the
      * next step (ms), 0 for no need */
     int  (*end)(npf_t *n, int step);
-    /* npf_destroy (also of an instance never run): its state freed */
+    /* npf_destroy (also of an instance never run), the last module first:
+     * its state freed; only for the modules whose create succeeded */
     void (*destroy)(npf_t *n);
 
     /* signaling: logged in; a platform event (mappings_changed ...); keep
@@ -95,7 +97,8 @@ typedef struct npf_module {
 /* Registers a module with libnpf: the instances created from then on have it
  * (an instance takes the modules registered at its npf_create). Any thread;
  * the module stays the program's and must outlive the instances. 0, or -1:
- * NULL, registered already, or 8 registered. */
+ * NULL, no name, registered already, 8 registered, or a name, command or
+ * configuration key that libnpf or a module registered before has. */
 int   npf_register_module(const npf_module *m);
 
 /* each module's state in an instance */

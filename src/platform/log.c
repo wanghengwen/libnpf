@@ -53,7 +53,7 @@ static NPF_THREAD_LOCAL npf_log_ctx *t_ctx;
 #define LOAD(v)     __atomic_load_n(&(v), __ATOMIC_RELAXED)
 #define STORE(v, x) __atomic_store_n(&(v), (x), __ATOMIC_RELAXED)
 
-#define RING NPF_LOG_RING             /* recent lines for `npf log` */
+#define RING NPF_LOG_RING             /* recent lines for the log command */
 static char   g_ring[RING];
 static size_t g_ring_pos, g_ring_len;
 
