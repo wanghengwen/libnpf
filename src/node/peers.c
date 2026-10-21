@@ -10,6 +10,7 @@
 #include "npf/crypto.h"
 #include "npf/peers.h"
 #include "npf/tunnel.h"
+#include "npf.h"
 #include "npf/platform.h"
 #include "udpfwd.h"
 
@@ -63,11 +64,26 @@ typedef struct pfwd {
     int       nconns;               /* public: its open connections (waiting ones too) */
     int       suspended;            /* drained: not listening until the quota is back */
     int       idx;                  /* its slot in p->fwds */
+    void     *ctx;                  /* the application's (npf_forward_set_ctx) */
+    int       lport;                /* the port in use (-L / -D: bound here; -R: rport), 0 none */
+    int       why_code;             /* NPF_FWD_WHY_* of the last failure */
+    int       open;                 /* connections open now (sublinks in the session) */
+    uint32_t  nrefused;             /* connections the peer refused (its resources) */
+    char      refused_why[64];
+    int64_t   refused_told;         /* when fwd_refused was called last (ms) */
+    int       told_state, told_port, told_why;   /* what the application was told last (fwd_changed) */
 } pfwd;
 
 struct npf_peer {
     npf_peer  *next;
     npf_peers *ps;
+    uint32_t   id;                  /* its number (npf_peer_id) */
+    void      *ctx;                 /* the application's (npf_peer_set_ctx) */
+    int        connect;             /* NPF_CONNECT_* */
+    int        idle_req;            /* on demand: the idle time it was made with, 0 the default */
+    char       nick_here[NPF_NICK_MAX + 1];   /* a nick of this run only */
+    int        has_nick_here;
+    int        told_state, told_needs;        /* what the application was told last (peer_changed) */
     char       name[300];           /* number or HOST:PORT */
     char       label[33];           /* the name people gave it (local.json), "" none */
     uint64_t   number;              /* platform peer */
@@ -78,8 +94,7 @@ struct npf_peer {
     pfwd      *fwds[NPF_PEER_MAX_FWD];  /* 0 .. nfwd-1 allocated; a slot is never moved */
     int        nfwd;
     int        listening;
-    int        keep;
-    int        persist;             /* kept for good: tried for ever, never finished */
+    int        keep;                /* NPF_CONNECT_KEEP: reconnect (a one-off is done when its session ends) */
     int64_t    up_since;            /* the session's start (ms), for STABLE_MS */
     int        backoff;             /* ms */
     npf_timer *t_retry;
@@ -94,7 +109,6 @@ struct npf_peer {
     /* on demand (a hosted client): the listeners are up without a session;
      * a connection starts one, which ends idle_ms after the last connection */
     int        idle_ms;             /* 0: not on demand */
-    int        idle_auto;           /* on demand by the node's rule (npf_peers_set_idle), not the application's */
     struct { int fd, slot; int64_t at; uint64_t conn; } pend[DEMAND_PENDING];
     int        npend;
     /* UDP datagrams waiting for the session (a UDP forward of a peer on demand) */
@@ -143,7 +157,15 @@ struct npf_peers {
     ipent        *ips;
     int           lim_mapping, lim_address, lim_rate;
     int           closing;          /* npf_peers_public_json(close): public ports stay closed */
-    int           auto_idle_ms;     /* npf_peers_set_idle: kept platform peers on demand, 0: not */
+    int           default_idle_ms;  /* npf_peers_set_idle: on-demand peers made without an idle time */
+    int           no_cache;         /* local.json keeps no peer's resources (NPF_OPT_NO_SAVED_OBJECTS) */
+    uint32_t      peer_seq;         /* the peers' numbers */
+    struct psub {                   /* the forwards' connections in their sessions (counts, refusals) */
+        npf_call *call;
+        uint32_t  sid;
+        int       fid;
+    } *subs;
+    int           nsubs, capsubs;
     uint8_t      *ubuf;             /* a datagram read from a UDP forward */
     struct kind_reg {               /* the modules' kinds of forward */
         const npf_fwd_kind *k;
@@ -181,28 +203,8 @@ static void known_put(npf_peers *ps, uint64_t number, const uint8_t pub[32])
 
 /* ---- forwards ---- */
 
-int npf_fwd_split(char *s, char **parts, int max)
-{
-    int n = 0;
-    for (;;) {
-        char *end;
-        if (n == max)
-            return -1;
-        if (*s == '[' && (end = strchr(s, ']')) && (end[1] == ':' || !end[1])) {
-            parts[n++] = s + 1;
-            *end = 0;
-            s = end + 1;
-        } else {
-            parts[n++] = s;
-            s += strcspn(s, ":");
-        }
-        if (!*s)
-            return n;
-        *s++ = 0;                           /* the colon */
-    }
-}
-
-const char *npf_fwd_bind(const char *s)
+/* the listening address as given: empty or "*" is every address */
+static const char *bind_of(const char *s)
 {
     return !*s || strcmp(s, "*") == 0 ? "0.0.0.0" : s;
 }
@@ -233,44 +235,58 @@ static void fwds_free(npf_peer *p)
     p->nfwd = 0;
 }
 
-static int parse_fwd(pfwd *f, const char *spec, int socks)
+/* f from its parts, checked; its spec (for the log) written from them */
+static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
 {
-    char buf[512], *parts[4];
-    size_t sl;
-    int n;
-    snprintf(buf, sizeof buf, "%s", spec);
-    sl = strlen(buf);                       /* PORT:HOST:HOSTPORT/udp: a UDP forward; /tcp the usual */
-    f->udp = sl > 4 && strcmp(buf + sl - 4, "/udp") == 0;
-    if (f->udp || (sl > 4 && strcmp(buf + sl - 4, "/tcp") == 0)) {
-        if (socks)
-            return -1;
-        buf[sl - 4] = 0;
-    }
-    n = npf_fwd_split(buf, parts, 4);
-    f->socks = socks;
-    f->fd = -1;
-    f->used = 1;
-    snprintf(f->spec, sizeof f->spec, "%s", spec);
-    strcpy(f->bind, "127.0.0.1");
-    if (socks) {
-        if (n == 1) f->port = atoi(parts[0]);
-        else if (n == 2) { snprintf(f->bind, sizeof f->bind, "%s", npf_fwd_bind(parts[0])); f->port = atoi(parts[1]); }
-        else return -1;
-        return f->port > 0 && f->port < 65536 ? 0 : -1;
-    }
-    if (n == 3) {
-        f->port = atoi(parts[0]);
-        snprintf(f->host, sizeof f->host, "%s", parts[1]);
-        f->hostport = atoi(parts[2]);
-    } else if (n == 4) {
-        snprintf(f->bind, sizeof f->bind, "%s", npf_fwd_bind(parts[0]));
-        f->port = atoi(parts[1]);
-        snprintf(f->host, sizeof f->host, "%s", parts[2]);
-        f->hostport = atoi(parts[3]);
-    } else {
+    const char *bind = fn->bind ? bind_of(fn->bind) : "127.0.0.1";
+    int socks = fn->opt == 'D';
+    if (strcmp(bind, "localhost") == 0)
+        bind = "127.0.0.1";                 /* as the callee takes it: the spec and the state stay the same */
+    if (fn->opt != 'L' && fn->opt != 'D' && fn->opt != 'R') {
+        snprintf(err, errcap, "-L, -D or -R");
         return -1;
     }
-    return f->port > 0 && f->port < 65536 && f->hostport > 0 && f->hostport < 65536 ? 0 : -1;
+    if (fn->port < 0 || fn->port > 65535 || strlen(bind) >= sizeof f->bind) {
+        snprintf(err, errcap, "bad listening port or address");
+        return -1;
+    }
+    if (!socks && (!fn->host || !*fn->host || strlen(fn->host) >= sizeof f->host || strchr(fn->host, ' ')
+                   || fn->hostport <= 0 || fn->hostport > 65535)) {
+        snprintf(err, errcap, "the target needs a host and a port");
+        return -1;
+    }
+    if (fn->udp && socks) {
+        snprintf(err, errcap, "UDP forwards are -L or -R, not -D");
+        return -1;
+    }
+    f->opt = fn->opt;
+    f->socks = socks;
+    f->reverse = fn->opt == 'R';
+    f->udp = fn->udp;
+    f->fd = -1;
+    f->used = 1;
+    snprintf(f->bind, sizeof f->bind, "%s", bind);
+    f->port = fn->port;
+    snprintf(f->host, sizeof f->host, "%s", socks ? "" : fn->host);
+    f->hostport = socks ? 0 : fn->hostport;
+    {                                       /* what it is, for people (the logs, the status) */
+        int b6 = strchr(f->bind, ':') != NULL, h6 = strchr(f->host, ':') != NULL, o;
+        o = snprintf(f->spec, sizeof f->spec, "%s%s %s%s%s:%d", f->reverse ? "remote" : socks ? "socks" : "local",
+                     f->udp ? " udp" : "", b6 ? "[" : "", f->bind, b6 ? "]" : "", f->port);
+        if (!socks)
+            snprintf(f->spec + o, sizeof f->spec - (size_t)o, " -> %s%s%s:%d", h6 ? "[" : "", f->host, h6 ? "]" : "",
+                     f->hostport);
+    }
+    return 0;
+}
+
+/* the same forward, however it was written */
+static int fwd_same(const pfwd *a, const pfwd *b)
+{
+    if (a->kind || b->kind)
+        return a->kind == b->kind && strcmp(a->spec, b->spec) == 0;
+    return a->opt == b->opt && a->udp == b->udp && a->port == b->port && a->hostport == b->hostport
+        && strcmp(a->bind, b->bind) == 0 && strcmp(a->host, b->host) == 0;
 }
 
 /* ---- the modules' kinds of forward ---- */
@@ -325,30 +341,19 @@ static int kind_check(const pfwd *f, char *err, size_t errcap)
     return f->kind->k->check ? f->kind->k->check(f->kind->arg, f->spec, err, errcap) : 0;
 }
 
-const char *npf_peers_fwd_norm(npf_peers *ps, const char *opt, const char *spec, char *buf, size_t cap)
-{
-    const struct kind_reg *r = opt && opt[0] == '-' ? kind_of(ps, opt[1]) : NULL;
-    char why[160];
-    if (!r || r->k->parse(r->arg, spec, buf, cap, why, sizeof why) < 0)
-        return spec;
-    return buf;
-}
-
-/* -R: the device listens on its own loopback address, or on every address
- * (for its LAN too: its reverse resource must say "lan:"; data-channel.md 7.1) */
-static int rev_bind_ok(const pfwd *f)
-{
-    return strcmp(f->bind, "127.0.0.1") == 0 || strcmp(f->bind, "localhost") == 0 || strcmp(f->bind, "::1") == 0
-        || strcmp(f->bind, "0.0.0.0") == 0;
-}
-
-#define UDP_ONLY_L "%s: UDP forwards are -L or -R (-L PORT:HOST:HOSTPORT/udp), not -D"
-#define REV_BIND_ERR "-R %s: the device listens on its own loopback address (-R PORT:HOST:HOSTPORT) " \
-                     "or, for its LAN too, on every address (-R *:PORT:HOST:HOSTPORT)"
-
 static int jitter(int ms)
 {
     return ms * 3 / 4 + (int)npf_rand_range(0, (size_t)ms / 2 + 1);
+}
+
+/* a forward for the log: what it is, or a module's kind in its form */
+static const char *fwd_label(const pfwd *f, char *b, size_t cap)
+{
+    if (f->kind)
+        snprintf(b, cap, "-%c %s", f->opt, f->spec);
+    else
+        snprintf(b, cap, "%s", f->spec);
+    return b;
 }
 
 static void demand_wait(pfwd *f, int fd, uint64_t cid);
@@ -411,7 +416,7 @@ static void fwd_start(pfwd *f);
 static void fwd_stop(pfwd *f);
 static void start_call(npf_peer *p);
 static void demand_tick(npf_loop *loop, void *arg);
-static void demand_auto(npf_peer *p);
+static void peer_changed(npf_peer *p);
 
 static void demand_timer(npf_peer *p)
 {
@@ -425,7 +430,7 @@ static void demand_wait(pfwd *f, int fd, uint64_t cid)
     npf_peer *p = f->p;
     if (p->npend == DEMAND_PENDING) {
         npf_sock_close(fd);
-        npf_logw("%s: -L %s: too many connections waiting for the session, refused", p->name, f->spec);
+        npf_logw("%s: %s: too many connections waiting for the session, refused", p->name, f->spec);
         conn_gone(p->ps, cid, "no_session");
         return;
     }
@@ -710,7 +715,7 @@ static void conn_refused(pfwd *f, const struct sockaddr_storage *from, const cha
 {
     npf_peers *ps = f->p->ps;
     char a[80];
-    npf_logd("%s: -L %s: connection from %s refused (%s)", f->p->name, f->spec, npf_addr_str(from, a, sizeof a), why);
+    npf_logd("%s: %s: connection from %s refused (%s)", f->p->name, f->spec, npf_addr_str(from, a, sizeof a), why);
     if (ps->cbs.refused)
         ps->cbs.refused(f->p, f->ext, f->port, from, why, 0, ps->arg);
 }
@@ -772,16 +777,85 @@ static void conn_gone(npf_peers *ps, uint64_t cid, const char *why)
         }
 }
 
-/* the session's sublink of a public connection ended */
+static pfwd *fwd_by_id(const npf_peers *ps, int id);
+
+/* a forward's connection is in its session now: counted until it ends */
+static void sub_add(npf_peers *ps, npf_call *c, uint32_t sid, int fid)
+{
+    pfwd *f;
+    if (ps->nsubs == ps->capsubs) {
+        int n = ps->capsubs ? ps->capsubs * 2 : 32;
+        struct psub *ns = realloc(ps->subs, (size_t)n * sizeof *ns);
+        if (!ns)
+            return;
+        ps->subs = ns;
+        ps->capsubs = n;
+    }
+    ps->subs[ps->nsubs].call = c;
+    ps->subs[ps->nsubs].sid = sid;
+    ps->subs[ps->nsubs].fid = fid;
+    ps->nsubs++;
+    if ((f = fwd_by_id(ps, fid)))
+        f->open++;
+}
+
+/* a forward's connection ended; refused by the peer's policy: counted, and
+ * the application told at most once a second */
+static void sub_done(npf_peers *ps, npf_call *c, uint32_t sid, const npf_sublink_stats *st)
+{
+    int k;
+    for (k = 0; k < ps->nsubs; k++)
+        if (ps->subs[k].call == c && ps->subs[k].sid == sid) {
+            pfwd *f = fwd_by_id(ps, ps->subs[k].fid);
+            ps->subs[k] = ps->subs[--ps->nsubs];
+            if (!f)
+                return;
+            if (f->open > 0)
+                f->open--;
+            if (st && st->end && strcmp(st->end, "target_refused") == 0) {
+                int64_t now = npf_mono_ms();
+                f->nrefused++;
+                if (f->socks)
+                    snprintf(f->refused_why, sizeof f->refused_why, "a target not published by the peer");
+                else
+                    snprintf(f->refused_why, sizeof f->refused_why, "%.24s:%d not published by the peer", f->host,
+                             f->hostport);
+                if (ps->cbs.fwd_refused && now - f->refused_told >= 1000) {
+                    f->refused_told = now;
+                    ps->cbs.fwd_refused(f->p, f->idx, ps->arg);
+                }
+            }
+            return;
+        }
+}
+
+/* a session's sublink opened here ended: a public connection's, a forward's */
 static void conn_sublink_done(npf_call *c, uint32_t sid, const npf_sublink_stats *st, void *arg)
 {
     npf_peers *ps = arg;
     int k;
+    sub_done(ps, c, sid, st);
     for (k = 0; k < ps->nconns; k++)
         if (ps->conns[k].call == c && ps->conns[k].sid == sid) {
             conn_end(ps, k, st, NULL);
             return;
         }
+}
+
+/* the session ended: its connections are no longer counted */
+static void subs_call_gone(npf_peers *ps, npf_call *c)
+{
+    int k;
+    for (k = 0; k < ps->nsubs;) {
+        if (ps->subs[k].call == c) {
+            pfwd *f = fwd_by_id(ps, ps->subs[k].fid);
+            if (f && f->open > 0)
+                f->open--;
+            ps->subs[k] = ps->subs[--ps->nsubs];
+        } else {
+            k++;
+        }
+    }
 }
 
 /* into the session (fd is its now) */
@@ -805,11 +879,13 @@ static void conn_open(pfwd *f, int fd, uint64_t cid)
         conn_gone(p->ps, cid, full ? "session_full" : "no_session");
         return;
     }
+    if (!f->udp && !f->kind)
+        sub_add(p->ps, p->call, (uint32_t)sid, f->id);
+    npf_call_on_sublink_done(p->call, conn_sublink_done, p->ps);
     for (k = 0; cid && k < p->ps->nconns; k++)
         if (p->ps->conns[k].id == cid) {
             p->ps->conns[k].call = p->call;
             p->ps->conns[k].sid = (uint32_t)sid;
-            npf_call_on_sublink_done(p->call, conn_sublink_done, p->ps);
             break;
         }
 }
@@ -830,7 +906,7 @@ void npf_peers_public_json(npf_peers *ps, int close, npf_out *o)
                 continue;
             if (ps->closing && (f->fd >= 0 || f->t_retry)) {
                 fwd_stop(f);
-                npf_log("%s: -L %s: closed (stopping)", p->name, f->spec);
+                npf_log("%s: %s: closed (stopping)", p->name, f->spec);
             }
             npf_out_printf(o, "%s{\"mapping_id\":\"%llu\",\"port\":%d,\"listening\":%s,\"conns\":%d}", first ? "" : ",",
                            (unsigned long long)f->ext, f->port, f->fd >= 0 ? "true" : "false", f->nconns);
@@ -846,12 +922,54 @@ void npf_peers_set_limits(npf_peers *ps, int per_mapping, int per_address, int p
     ps->lim_rate = per_address_minute > 0 ? per_address_minute : 0;
 }
 
+static int fwd_state_of(const pfwd *f)
+{
+    if (f->up)
+        return NPF_FWD_UP;
+    if (f->t_retry || f->refused)
+        return NPF_FWD_FAILED;
+    return NPF_FWD_WAITING;
+}
+
+/* the why code of a failure's text */
+static int fwd_why_code(const pfwd *f, const char *why)
+{
+    if (f->refused)
+        return NPF_FWD_WHY_FORBIDDEN;
+    if (!why)
+        return NPF_FWD_WHY_NONE;
+    if (strstr(why, "in use") || strstr(why, "taken"))
+        return NPF_FWD_WHY_PORT_IN_USE;
+    if (strstr(why, "cannot listen") || strstr(why, "bind"))
+        return NPF_FWD_WHY_BIND;
+    if (strstr(why, "too many") || strstr(why, "limit"))
+        return NPF_FWD_WHY_TOO_MANY;
+    if (f->reverse)
+        return NPF_FWD_WHY_REQUEST;
+    return NPF_FWD_WHY_OTHER;
+}
+
+/* tell the application when the state, the port in use or the failure changed */
+static void fwd_changed(pfwd *f)
+{
+    npf_peers *ps = f->p->ps;
+    int st = fwd_state_of(f);
+    if (st == f->told_state && f->lport == f->told_port && f->why_code == f->told_why)
+        return;
+    f->told_state = st;
+    f->told_port = f->lport;
+    f->told_why = f->why_code;
+    if (ps->cbs.fwd)
+        ps->cbs.fwd(f->p, f->idx, st == NPF_FWD_UP, st == NPF_FWD_UP ? NULL : f->why, ps->arg);
+}
+
 /* tell the application: the mapping is up, or failed (why) */
 static void fwd_report(pfwd *f, int up, const char *why)
 {
-    npf_peers *ps = f->p->ps;
-    if (ps->cbs.fwd)
-        ps->cbs.fwd(f->p, f->idx, up, why, ps->arg);
+    if (!up && why && why != f->why)
+        snprintf(f->why, sizeof f->why, "%s", why);
+    f->why_code = up ? NPF_FWD_WHY_NONE : fwd_why_code(f, why);
+    fwd_changed(f);
 }
 
 static void fwd_retry_cb(npf_loop *loop, void *arg)
@@ -872,7 +990,10 @@ static void fwd_retry(pfwd *f, const char *why)
     d = jitter(f->backoff);
     snprintf(f->why, sizeof f->why, "%s", why);
     f->retry_at = npf_mono_ms() + d;
-    npf_logw("%s: -%c %s: %s, again in %d s", f->p->name, f->opt, f->spec, why, (d + 999) / 1000);
+    {
+        char lb[320];
+        npf_logw("%s: %s: %s, again in %d s", f->p->name, fwd_label(f, lb, sizeof lb), why, (d + 999) / 1000);
+    }
     f->t_retry = npf_timer_add(f->p->ps->n->loop, d, fwd_retry_cb, f);
     fwd_report(f, 0, why);
 }
@@ -896,6 +1017,8 @@ static void fwd_stop(pfwd *f)
         f->fd = -1;
     }
     f->up = 0;
+    if (!f->reverse)
+        f->lport = 0;
 }
 
 static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *err, void *arg)
@@ -912,7 +1035,7 @@ static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *e
         f->refused = 1;
         snprintf(f->why, sizeof f->why, strcmp(f->bind, "0.0.0.0") == 0
                  ? "refused by the device (port or LAN not allowed)" : "refused by the device (its policy)");
-        npf_logw("%s: -R %s: refused by the device's policy", f->p->name, f->spec);
+        npf_logw("%s: %s: refused by the device's policy", f->p->name, f->spec);
         fwd_report(f, 0, f->why);
         return;
     }
@@ -923,6 +1046,7 @@ static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *e
     f->up = 1;
     f->rev_id = listen_id;
     f->rport = port;
+    f->lport = port;
     f->backoff = 0;
     npf_log("%s: reverse mapping: callee %s:%d -> %s:%d here", f->p->name, f->bind, port, f->host, f->hostport);
     fwd_report(f, 1, NULL);
@@ -1025,7 +1149,7 @@ static void fwd_start(pfwd *f)
     }
     if ((f->fd = listen_on(f->bind, f->port, type, why, sizeof why, &in_use)) < 0 && !in_use && strcmp(f->bind, "::") == 0) {
         /* no IPv6 on this host: IPv4 only (a port taken is not that) */
-        npf_logw("%s: -%c %s: no IPv6 here (%s), listening on IPv4 only", p->name, f->opt, f->spec, why);
+        npf_logw("%s: %s: no IPv6 here (%s), listening on IPv4 only", p->name, f->spec, why);
         snprintf(f->bind, sizeof f->bind, "0.0.0.0");
         f->fd = listen_on(f->bind, f->port, type, why, sizeof why, &in_use);
     }
@@ -1035,14 +1159,22 @@ static void fwd_start(pfwd *f)
     }
     npf_set_nonblock(f->fd);
     npf_loop_add(p->ps->n->loop, f->fd, NPF_EV_READ, f->udp ? udp_cb : accept_cb, f);
+    {                                       /* the port in use (0 asked: the system's choice) */
+        struct sockaddr_storage ss;
+        socklen_t sl = sizeof ss;
+        f->lport = f->port;
+        if (getsockname(f->fd, (struct sockaddr *)&ss, &sl) == 0)
+            f->lport = ss.ss_family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&ss)->sin6_port)
+                                                : ntohs(((struct sockaddr_in *)&ss)->sin_port);
+    }
     f->up = 1;
     f->backoff = 0;
     if (f->socks)
-        npf_log("%s: SOCKS5 proxy on %s:%d", p->name, f->bind, f->port);
+        npf_log("%s: SOCKS5 proxy on %s:%d", p->name, f->bind, f->lport);
     else if (f->udp)
-        npf_log("%s: forwarding UDP %s:%d -> %s:%d on the callee", p->name, f->bind, f->port, f->host, f->hostport);
+        npf_log("%s: forwarding UDP %s:%d -> %s:%d on the callee", p->name, f->bind, f->lport, f->host, f->hostport);
     else
-        npf_log("%s: forwarding %s:%d -> %s:%d on the callee", p->name, f->bind, f->port, f->host, f->hostport);
+        npf_log("%s: forwarding %s:%d -> %s:%d on the callee", p->name, f->bind, f->lport, f->host, f->hostport);
     fwd_report(f, 1, NULL);
 }
 
@@ -1073,6 +1205,9 @@ static void forwards_session_gone(npf_peer *p)
                 npf_timer_cancel(p->ps->n->loop, f->t_retry);
             f->t_retry = NULL;
             f->up = f->asked = 0;
+            f->lport = 0;
+            if (f->used)
+                fwd_changed(f);             /* waiting for the next session */
         }
     }
 }
@@ -1081,6 +1216,7 @@ static void forwards_session_gone(npf_peer *p)
 
 static void start_call(npf_peer *p);
 
+/* the peer gives up (it stays, finished, until removed or tried again) */
 static void finish(npf_peer *p, const char *why)
 {
     if (p->finished)
@@ -1090,6 +1226,20 @@ static void finish(npf_peer *p, const char *why)
     snprintf(p->last_why, sizeof p->last_why, "%s", why);
     if (p->ps->cbs.done)
         p->ps->cbs.done(p, why, p->ps->arg);
+    peer_changed(p);
+}
+
+/* a need of a finished peer that an account session may meet */
+static int account_may_help(const npf_peer *p)
+{
+    return strcmp(p->last_why, "no_account") == 0 || strcmp(p->last_why, "not_paired") == 0;
+}
+
+/* a finished peer tries again, as it was made */
+static void unfinish(npf_peer *p)
+{
+    p->finished = 0;
+    p->backoff = 0;
 }
 
 static void retry_cb(npf_loop *loop, void *arg)
@@ -1103,13 +1253,20 @@ static void retry_cb(npf_loop *loop, void *arg)
 void npf_peers_retry_now(npf_peers *ps)
 {
     npf_peer *p;
-    for (p = ps ? ps->list : NULL; p; p = p->next)
-        if (p->t_retry && !p->idle_ms && !p->direct && !p->call && !p->waiting && !p->finished) {
+    for (p = ps ? ps->list : NULL; p; p = p->next) {
+        if (p->direct || p->call || p->waiting)
+            continue;
+        if (p->finished && account_may_help(p)) {
+            npf_log("%s: an account session: trying again", p->name);
+            unfinish(p);
+            start_call(p);
+        } else if (p->t_retry && !p->idle_ms && !p->finished) {
             npf_timer_cancel(ps->n->loop, p->t_retry);
             p->t_retry = NULL;
             npf_log("%s: retrying now", p->name);
             start_call(p);
         }
+    }
 }
 
 void npf_peers_net_changed(npf_peers *ps)
@@ -1136,6 +1293,7 @@ static void again(npf_peer *p, const char *why)
     if (p->idle_ms) {                       /* on demand: the next connection tries again */
         demand_drop(p, why);
         snprintf(p->last_why, sizeof p->last_why, "%s", why);
+        peer_changed(p);
         return;
     }
     if (strcmp(why, "udp_back") == 0) {    /* not an end: the session starts again over UDP */
@@ -1158,6 +1316,7 @@ static void again(npf_peer *p, const char *why)
         p->retry_at = npf_mono_ms() + d;
         npf_log("%s: reconnecting in %d s", p->name, (d + 999) / 1000);
         p->t_retry = npf_timer_add(p->ps->n->loop, d, retry_cb, p);
+        peer_changed(p);
     }
 }
 
@@ -1191,7 +1350,7 @@ static void grant_got(npf_node *n, const npf_json *j, int ok, void *arg)
         if (strcmp(err, "unavailable") == 0) {  /* the account neither owns it nor was given it */
             p->by_account = 0;
             npf_logw("%s: not paired yet, and the account has no access to it: give its password (-p)", p->name);
-            again(p, unpaired_why(p));
+            finish(p, unpaired_why(p));     /* a password tries again */
         } else {
             npf_logw("%s: the account's grant refused (%s)", p->name, err);
             again(p, err);
@@ -1270,6 +1429,8 @@ static void start_call(npf_peer *p)
         p->call = npf_direct_connect(n, &p->to, p->psk);
         if (!p->call)
             again(p, "error");
+        else
+            peer_changed(p);
         return;
     }
     if (!n->online) {
@@ -1285,33 +1446,34 @@ static void start_call(npf_peer *p)
     pinned = !n->cfg.hosted_exec && known_get(p->ps, p->number, pub);
     if (pinned && p->pin_refused && !p->password[0]) {
         /* paired by password: never the account's grant instead (security.md 9.6) */
-        again(p, "pairing_lost");
+        finish(p, "pairing_lost");          /* a new password tries again */
         return;
     }
     if (!pinned && !p->password[0]) {
         if (n->account_id) {
             char data[64];
             snprintf(data, sizeof data, "{\"callee\":\"%llu\"}", (unsigned long long)p->number);
-            if (npf_node_request(n, "grant_get", data, grant_got, p) == 0)
+            if (npf_node_request(n, "grant_get", data, grant_got, p) == 0) {
                 p->waiting = 1;
-            else
+                peer_changed(p);
+            } else {
                 again(p, "error");
+            }
             return;
         }
         if (p->by_account)
             npf_logw("%s: the account is logged out (its session expired or was revoked): log in again", p->name);
         else
             npf_log("%s: not paired yet: give its password (-p)", p->name);
-        if (p->persist)
-            again(p, no_account_why(p));    /* kept for good: an account login or a pairing may come */
-        else
-            finish(p, no_account_why(p));
+        finish(p, no_account_why(p));       /* a password or an account session tries again */
         return;
     }
     p->call_pinned = pinned && !p->password[0];
     p->call = npf_call_start(n, p->number, pinned && !p->password[0] ? NULL : p->password, pinned ? pub : NULL);
     if (!p->call)
         again(p, "error");
+    else
+        peer_changed(p);
 }
 
 /* ---- public ---- */
@@ -1384,7 +1546,7 @@ int npf_peer_resources_set(npf_peer *p, const char *json)
     p->resources = s;
     /* its local.json record keeps the last one (shown while it is away);
      * a peer without a record gets none for it */
-    if (d && (!d->resources || strcmp(d->resources, json) != 0)) {
+    if (d && !p->ps->no_cache && (!d->resources || strcmp(d->resources, json) != 0)) {
         char *k = strdup(json);
         if (!k)
             return -1;
@@ -1429,6 +1591,8 @@ static void peer_drop(npf_peer *p)
     close_listeners(p);
 }
 
+/* the order of what the application hears: the session's end (peer_drop),
+ * each forward, the peer */
 void npf_peers_remove(npf_peers *ps, npf_peer *p)
 {
     npf_peer **pp;
@@ -1441,18 +1605,44 @@ void npf_peers_remove(npf_peers *ps, npf_peer *p)
             *pp = p->next;
             break;
         }
+    if (p->call)
+        subs_call_gone(ps, p->call);
     peer_drop(p);
+    for (k = 0; k < p->nfwd; k++)
+        if (p->fwds[k]->used && ps->cbs.fwd_gone)
+            ps->cbs.fwd_gone(p, k, ps->arg);
+    if (ps->cbs.gone)
+        ps->cbs.gone(p, ps->arg);
     fwds_free(p);
     npf_wipe(p, sizeof *p);
     free(p);
+}
+
+/* HOST:PORT in its canonical form ("" when it is not one) */
+static void canon_target(const char *word, char *out, size_t cap)
+{
+    char host[300];
+    const char *colon = strrchr(word, ':');
+    out[0] = 0;
+    if (!colon || colon == word || (size_t)(colon - word) >= sizeof host)
+        return;
+    if (word[0] == '[' && colon[-1] == ']')
+        snprintf(host, sizeof host, "%.*s", (int)(colon - word - 2), word + 1);
+    else
+        snprintf(host, sizeof host, "%.*s", (int)(colon - word), word);
+    if (npf_peer_target_name(0, host, (uint16_t)atoi(colon + 1), out, cap) < 0)
+        out[0] = 0;
 }
 
 npf_peer *npf_peers_find(const npf_peers *ps, const char *name)
 {
     npf_peer *p;
     uint64_t num = npf_number_parse(name);
+    char canon[320];
+    canon_target(name, canon, sizeof canon);
     for (p = ps ? ps->list : NULL; p; p = p->next)
-        if (strcmp(p->name, name) == 0 || (num && p->number == num) || (p->label[0] && strcmp(p->label, name) == 0))
+        if (strcmp(p->name, name) == 0 || (num && p->number == num) || (canon[0] && strcmp(p->name, canon) == 0)
+            || (p->label[0] && strcmp(p->label, name) == 0))
             return p;
     return NULL;
 }
@@ -1480,33 +1670,6 @@ const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap)
     return buf;
 }
 
-const char *npf_peer_forwards(const npf_peer *p, char *buf, size_t cap)
-{
-    size_t o = 0;
-    int i;
-    buf[0] = 0;
-    for (i = 0; i < p->nfwd && o < cap; i++) {
-        const pfwd *f = p->fwds[i];
-        int n;
-        if (!f->used)
-            continue;
-        int b6 = strchr(f->bind, ':') != NULL, h6 = strchr(f->host, ':') != NULL;
-        if (f->kind)
-            n = snprintf(buf + o, cap - o, "%s-%c %s", o ? " " : "", f->opt, f->spec);
-        else if (f->socks)
-            n = snprintf(buf + o, cap - o, "%s-D %s%s%s:%d", o ? " " : "", b6 ? "[" : "", f->bind, b6 ? "]" : "",
-                         f->port);
-        else
-            n = snprintf(buf + o, cap - o, "%s-%c %s%s%s:%d:%s%s%s:%d", o ? " " : "", f->reverse ? 'R' : 'L',
-                         b6 ? "[" : "", f->bind, b6 ? "]" : "", f->port, h6 ? "[" : "", f->host, h6 ? "]" : "",
-                         f->hostport);
-        if (n < 0)
-            break;
-        o += (size_t)n;
-    }
-    return buf;
-}
-
 void npf_peers_free(npf_peers *ps)
 {
     npf_peer *p;
@@ -1529,152 +1692,106 @@ void npf_peers_free(npf_peers *ps)
     free(ps->conns);
     free(ps->ips);
     free(ps->ubuf);
+    free(ps->subs);
     free(ps);
 }
 
-npf_peer *npf_peers_add(npf_peers *ps, int argc, char **argv, int keep, char *err, size_t errcap)
+int npf_peer_target_name(uint64_t number, const char *host, uint16_t port, char *out, size_t cap)
+{
+    char h[256], a[64];
+    unsigned char bin[16];
+    size_t i;
+    int n;
+    if (number) {
+        n = snprintf(out, cap, "%llu", (unsigned long long)number);
+        return n < 0 || (size_t)n >= cap ? -1 : 0;
+    }
+    if (!host || !*host || !port || strlen(host) >= sizeof h || strchr(host, ' '))
+        return -1;
+    for (i = 0; host[i]; i++)
+        h[i] = (char)((host[i] >= 'A' && host[i] <= 'Z') ? host[i] - 'A' + 'a' : host[i]);
+    h[i] = 0;
+    if (inet_pton(AF_INET, h, bin) == 1 && inet_ntop(AF_INET, bin, a, sizeof a))
+        n = snprintf(out, cap, "%s:%u", a, (unsigned)port);
+    else if (inet_pton(AF_INET6, h, bin) == 1 && inet_ntop(AF_INET6, bin, a, sizeof a))
+        n = snprintf(out, cap, "[%s]:%u", a, (unsigned)port);
+    else if (strchr(h, ':'))
+        return -1;
+    else
+        n = snprintf(out, cap, "%s:%u", h, (unsigned)port);
+    return n < 0 || (size_t)n >= cap ? -1 : 0;
+}
+
+npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, size_t errcap, int *code)
 {
     npf_peer *p, **pp;
-    const char *psk = NULL, *psk_file = NULL, *newname = NULL, *target;
-    char tbuf[300];
-    int a;
-    if (argc < 1) {
-        snprintf(err, errcap, "peer: no target");
+    npf_ldev *d;
+    char name[320];
+    int dummy;
+    if (!code)
+        code = &dummy;
+    *code = 1;
+    if (npf_peer_target_name(pn->number, pn->host, pn->port, name, sizeof name) < 0 || strlen(name) >= sizeof p->name) {
+        snprintf(err, errcap, "peer: a number, or a host and a port");
         return NULL;
     }
-    /* a name people gave it stands for its number (or HOST:PORT) */
-    target = npf_peers_resolve(ps, argv[0], tbuf, sizeof tbuf);
-    if (target == argv[0] && !strchr(argv[0], ':') && !npf_number_parse(argv[0]) && npf_name_valid(argv[0])) {
-        snprintf(err, errcap, "%s: no device has this name (connect NUMBER --name %s gives it)", argv[0], argv[0]);
-        return NULL;
-    }
-    p = calloc(1, sizeof *p);
-    if (!p)
-        return NULL;
-    p->ps = ps;
-    p->keep = keep;
-    snprintf(p->name, sizeof p->name, "%s", target);
-    argv[0] = (char *)target;
-    if (strchr(argv[0], ':')) {
-        p->direct = 1;
-        if (npf_direct_resolve(argv[0], &p->to) < 0) {
-            snprintf(err, errcap, "peer %s: cannot resolve", argv[0]);
-            goto bad;
-        }
-    } else if (!(p->number = npf_number_parse(argv[0]))) {
-        snprintf(err, errcap, "peer %s: not a number (9 digits with a check digit) or HOST:PORT", argv[0]);
-        goto bad;
-    } else if (p->number == ps->n->cfg.number) {
+    if (pn->number && pn->number == ps->n->cfg.number) {
         snprintf(err, errcap, "%llu is this computer's own number: it cannot connect to itself",
-                 (unsigned long long)p->number);
-        goto bad;
-    } else {
-        snprintf(p->name, sizeof p->name, "%llu", (unsigned long long)p->number);
+                 (unsigned long long)pn->number);
+        return NULL;
     }
-    for (a = 1; a < argc; a++) {
-        const char *o = argv[a], *v = a + 1 < argc ? argv[a + 1] : NULL;
-        if (!v) {
-            snprintf(err, errcap, "peer %s: %s needs a value", p->name, o);
-            goto bad;
+    if (pn->password && strlen(pn->password) >= sizeof p->password) {
+        snprintf(err, errcap, "peer %s: the password is too long", name);
+        return NULL;
+    }
+    if (!pn->number && !pn->psk) {
+        snprintf(err, errcap, "peer %s: a direct peer needs its pre-shared key", name);
+        return NULL;
+    }
+    if (npf_peers_find(ps, name)) {
+        *code = 2;
+        snprintf(err, errcap, "%s is a peer already", name);
+        return NULL;
+    }
+    *code = 3;
+    if (!(p = calloc(1, sizeof *p))) {
+        snprintf(err, errcap, "no memory");
+        return NULL;
+    }
+    p->ps = ps;
+    memcpy(p->name, name, strlen(name) + 1);        /* it fits: checked above */
+    p->number = pn->number;
+    if (!pn->number) {
+        p->direct = 1;
+        if (npf_direct_resolve(name, &p->to) < 0) {
+            *code = 1;
+            snprintf(err, errcap, "peer %s: cannot resolve", name);
+            free(p);
+            return NULL;
         }
-        a++;
-        if (strcmp(o, "-p") == 0 && !p->direct) {
-            snprintf(p->password, sizeof p->password, "%s", v);
-        } else if (strcmp(o, "--nick") == 0) {
-            /* the engine's: kept in local.json (devices.c) */
-        } else if (strcmp(o, "--name") == 0) {
-            if (!npf_name_valid(v)) {
-                snprintf(err, errcap, "%s: a name is letters, digits, '.', '_', '-' (at most 32), not only digits", v);
-                goto bad;
-            }
-            newname = v;
-        } else if (strcmp(o, "--psk") == 0 && p->direct) {
-            psk = v;
-        } else if (strcmp(o, "--psk-file") == 0 && p->direct) {
-            psk_file = v;
-        } else if (npf_fwd_opt(o) && kind_of(ps, o[1]) && p->nfwd < NPF_PEER_MAX_FWD) {
-            pfwd *f = fwd_slot(p);
-            if (!f) {
-                snprintf(err, errcap, "no memory");
-                goto bad;
-            }
-            if (parse_kind(f, kind_of(ps, o[1]), v, err, errcap) < 0 || kind_taken(ps, f, err, errcap)
-                || kind_check(f, err, errcap) < 0)
-                goto bad;
-            f->p = p;
-            f->opt = o[1];
-            f->id = ++ps->fwd_seq;
-            p->nfwd++;
-        } else if ((strcmp(o, "-L") == 0 || strcmp(o, "-D") == 0 || strcmp(o, "-R") == 0) && p->nfwd < NPF_PEER_MAX_FWD) {
-            pfwd *f = fwd_slot(p);
-            if (!f) {
-                snprintf(err, errcap, "no memory");
-                goto bad;
-            }
-            if (parse_fwd(f, v, o[1] == 'D') < 0) {
-                snprintf(err, errcap, "peer %s: bad forward %s %s", p->name, o, v);
-                goto bad;
-            }
-            f->p = p;
-            f->opt = o[1];
-            f->reverse = o[1] == 'R';
-            if (f->reverse && !rev_bind_ok(f)) {
-                snprintf(err, errcap, REV_BIND_ERR, v);
-                goto bad;
-            }
-            if (f->udp && o[1] == 'D') {
-                snprintf(err, errcap, UDP_ONLY_L, v);
-                goto bad;
-            }
-            f->id = ++ps->fwd_seq;
-            p->nfwd++;
-        } else {
-            snprintf(err, errcap, "peer %s: unknown option %s", p->name, o);
-            goto bad;
-        }
+        memcpy(p->psk, pn->psk, 32);
     }
-    if (p->direct && npf_direct_psk(psk, psk_file, p->psk) < 0) {
-        snprintf(err, errcap, "peer %s: needs --psk-file F (or --psk KEY)", p->name);
-        goto bad;
+    if (pn->password)
+        snprintf(p->password, sizeof p->password, "%s", pn->password);
+    p->connect = pn->connect;
+    p->keep = pn->connect != NPF_CONNECT_ONCE;
+    if (pn->connect == NPF_CONNECT_ON_DEMAND) {
+        p->idle_req = pn->idle_ms > 0 ? pn->idle_ms : 0;
+        p->idle_ms = p->idle_req ? p->idle_req : ps->default_idle_ms;
+        if (!p->idle_ms)
+            p->idle_ms = 300000;
     }
-    if (newname && npf_peers_name_set(ps, newname, p->name, err, errcap) < 0)
-        goto bad;
-    if (newname)
-        snprintf(p->label, sizeof p->label, "%s", newname);
-    else {
-        npf_ldev *d = ps->lc ? npf_local_dev(ps->lc, p->name, 0) : NULL;
-        if (d)
-            snprintf(p->label, sizeof p->label, "%s", d->name);
-    }
+    d = ps->lc ? npf_local_dev(ps->lc, p->name, 0) : NULL;
+    if (d)
+        snprintf(p->label, sizeof p->label, "%s", d->name);
+    p->id = ++ps->peer_seq;
+    p->told_state = -1;
     for (pp = &ps->list; *pp; pp = &(*pp)->next)
         ;
     *pp = p;
-    demand_auto(p);
+    if (p->idle_ms)
+        start_forwards(p);                  /* on demand: listening, a connection starts the session */
     return p;
-bad:
-    fwds_free(p);
-    npf_wipe(p, sizeof *p);
-    free(p);
-    return NULL;
-}
-
-npf_peer *npf_peers_add_line(npf_peers *ps, const char *line, int keep, const char *base_dir, char *err, size_t errcap)
-{
-    char buf[1024], *argv[64], *t, *save, path[1100];
-    int argc = 0, i;
-    if (strlen(line) >= sizeof buf) {
-        snprintf(err, errcap, "peer line too long");
-        return NULL;
-    }
-    strcpy(buf, line);
-    for (t = strtok_r(buf, " \t", &save); t && argc < 64; t = strtok_r(NULL, " \t", &save))
-        argv[argc++] = t;
-    for (i = 1; i + 1 < argc; i++)
-        if (strcmp(argv[i], "--psk-file") == 0 && base_dir && base_dir[0] && !npf_path_is_abs(argv[i + 1])) {
-            snprintf(path, sizeof path, "%s/%s", base_dir, argv[i + 1]);
-            argv[i + 1] = path;
-        }
-    return npf_peers_add(ps, argc, argv, keep, err, errcap);
 }
 
 int npf_peers_count(const npf_peers *ps)
@@ -1747,9 +1864,11 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
             demand_timer(p);
         if (p->ps->cbs.up)
             p->ps->cbs.up(p, c, p->ps->arg);
+        peer_changed(p);
     } else if (st == NPF_CALL_CLOSED) {
         npf_log("%s: session closed (%s)", p->name, why ? why : "");
         p->call = NULL;
+        subs_call_gone(p->ps, c);
         if (why && strcmp(why, "auth_failed") == 0 && p->password[0] && !p->up_since) {
             /* the device refused the password: not tried again (each try counts
              * against it there, security.md 8.3); the user gives it anew */
@@ -1772,14 +1891,21 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         if (p->up_since && npf_mono_ms() - p->up_since >= STABLE_MS)
             p->backoff = 0;             /* it was up long enough: start from 1 s again */
         p->up_since = 0;
+        if (strcmp(why ? why : "", "wrong_password") == 0 || strcmp(why ? why : "", "pairing_lost") == 0) {
+            finish(p, why);                 /* a new password tries again */
+            return 1;
+        }
         if (p->idle_ms) {
             /* on demand: no reconnecting; the connections that waited for this
              * session go, a new connection starts the next one */
             demand_drop(p, why ? why : "closed");
             snprintf(p->last_why, sizeof p->last_why, "%s", why ? why : "closed");
+            peer_changed(p);
             return 1;
         }
         again(p, why ? why : "closed");
+        if (!p->finished && !p->t_retry)
+            peer_changed(p);                /* waiting for the server, or started again at once */
     }
     return 1;
 }
@@ -1807,56 +1933,112 @@ const char *npf_peer_name(const npf_peer *p) { return p->name; }
 const char *npf_peer_label(const npf_peer *p) { return p->label; }
 const char *npf_peer_shown(const npf_peer *p) { return p->label[0] ? p->label : p->name; }
 int         npf_peer_nfwd(const npf_peer *p) { return p->nfwd; }
-void        npf_peer_set_persist(npf_peer *p, int on) { p->persist = on; }
+uint32_t    npf_peer_id(const npf_peer *p) { return p->id; }
+void       *npf_peer_ctx(const npf_peer *p) { return p->ctx; }
+void        npf_peer_ctx_put(npf_peer *p, void *ctx) { p->ctx = ctx; }
+int         npf_peer_connect_mode(const npf_peer *p) { return p->connect; }
+int         npf_peer_idle_asked(const npf_peer *p) { return p->idle_req; }
+int         npf_peer_finished(const npf_peer *p) { return p->finished; }
+const char *npf_peer_last_why(const npf_peer *p) { return p->last_why; }
 
-void npf_peer_set_on_demand(npf_peer *p, int idle_ms)
+npf_peer *npf_peers_by_id(const npf_peers *ps, uint32_t id)
 {
-    p->idle_ms = idle_ms > 0 ? idle_ms : 0;
-    p->idle_auto = 0;
-    if (p->idle_ms && !p->listening)
-        start_forwards(p);                  /* listening now, the session when a connection comes */
+    npf_peer *p;
+    for (p = ps && id ? ps->list : NULL; p; p = p->next)
+        if (p->id == id)
+            return p;
+    return NULL;
 }
 
-static int has_reverse(const npf_peer *p)
+int npf_peer_direct_target(const npf_peer *p, const char **host, uint16_t *port)
 {
-    int i;
-    for (i = 0; i < p->nfwd; i++)
-        if (p->fwds[i]->used && p->fwds[i]->reverse)
-            return 1;
+    static char h[300];
+    const char *colon;
+    if (!p->direct)
+        return -1;
+    colon = strrchr(p->name, ':');
+    if (p->name[0] == '[') {
+        snprintf(h, sizeof h, "%.*s", (int)(colon - p->name - 2), p->name + 1);
+    } else {
+        snprintf(h, sizeof h, "%.*s", (int)(colon - p->name), p->name);
+    }
+    *host = h;
+    *port = (uint16_t)atoi(colon + 1);
     return 0;
 }
 
-/* the node's rule (a phone: sessions cost the carrier NAT's ports, punches
- * hundreds of them, and keepalives the battery): a kept platform peer goes on
- * demand, its listeners up, a session while its forwards are used; not with
- * a -R mapping (the other side connects to it at any time), not a direct
- * peer; the application's own choice (npf_peer_set_on_demand) stays */
-static void demand_auto(npf_peer *p)
+void npf_peer_set_nick_here(npf_peer *p, const char *nick)
 {
-    npf_peers *ps = p->ps;
-    int want = ps->auto_idle_ms > 0 && p->keep && !p->direct && p->number && !has_reverse(p);
-    if (p->idle_ms && !p->idle_auto)
-        return;
-    if (want) {
-        int was = p->idle_ms;
-        p->idle_ms = ps->auto_idle_ms;
-        p->idle_auto = 1;
-        if (was)
-            return;
-        if (p->t_retry) {                   /* no reconnecting: a connection starts the next one */
-            npf_timer_cancel(ps->n->loop, p->t_retry);
-            p->t_retry = NULL;
-        }
-        if (!p->listening)
-            start_forwards(p);
-        if (p->call)
-            demand_timer(p);                /* ends idle_ms after its last connection */
-    } else if (p->idle_ms) {
-        p->idle_ms = 0;
-        p->idle_auto = 0;
-        if (!p->call && !p->waiting && !p->finished)
-            start_call(p);                  /* kept again (no login yet: the login starts it) */
+    p->has_nick_here = nick != NULL;
+    snprintf(p->nick_here, sizeof p->nick_here, "%s", nick ? nick : "");
+}
+
+void npf_peer_set_label(npf_peer *p, const char *name)
+{
+    snprintf(p->label, sizeof p->label, "%s", name ? name : "");
+}
+
+int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
+{
+    int nd = 0, st;
+    if (retry_in_ms)
+        *retry_in_ms = 0;
+    if (!p->call && !p->password[0]) {
+        if (strcmp(p->last_why, "not_paired") == 0)
+            nd = NPF_NEED_PASSWORD;
+        else if (strcmp(p->last_why, "wrong_password") == 0)
+            nd = NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG;
+        else if (strcmp(p->last_why, "pairing_lost") == 0)
+            nd = NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST;
+        else if (strcmp(p->last_why, "no_account") == 0)
+            nd = NPF_NEED_ACCOUNT;
     }
+    if (p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
+        st = NPF_PEER_CONNECTED;
+    else if (p->call || p->waiting)
+        st = NPF_PEER_CONNECTING;
+    else if (p->finished)
+        st = NPF_PEER_ENDED;
+    else if (p->idle_ms)
+        st = NPF_PEER_IDLE;
+    else if (p->t_retry && strcmp(p->last_why, "starting") != 0) {
+        int64_t ms = p->retry_at - npf_mono_ms();
+        st = NPF_PEER_RETRY;
+        if (retry_in_ms)
+            *retry_in_ms = ms > 0 ? (int)ms : 0;
+    } else
+        st = NPF_PEER_WAITING;
+    if (needs)
+        *needs = st == NPF_PEER_CONNECTED || st == NPF_PEER_CONNECTING ? 0 : nd;
+    return st;
+}
+
+/* tell the application when the state or the needs changed */
+static void peer_changed(npf_peer *p)
+{
+    int needs, st = npf_peer_state(p, &needs, NULL);
+    if (st == p->told_state && needs == p->told_needs && st != NPF_PEER_RETRY)
+        return;
+    p->told_state = st;
+    p->told_needs = needs;
+    if (p->ps->cbs.changed)
+        p->ps->cbs.changed(p, p->ps->arg);
+}
+
+void npf_peer_set_on_demand(npf_peer *p, int idle_ms)
+{
+    p->idle_req = idle_ms > 0 ? idle_ms : 0;
+    p->idle_ms = p->idle_req ? p->idle_req : p->ps->default_idle_ms;
+    p->connect = p->idle_ms ? NPF_CONNECT_ON_DEMAND : NPF_CONNECT_KEEP;
+    if (p->idle_ms && p->t_retry) {         /* no reconnecting: a connection starts the next one */
+        npf_timer_cancel(p->ps->n->loop, p->t_retry);
+        p->t_retry = NULL;
+    }
+    if (p->idle_ms && !p->listening)
+        start_forwards(p);                  /* listening now, the session when a connection comes */
+    if (p->idle_ms && p->call)
+        demand_timer(p);
+    peer_changed(p);
 }
 
 void npf_peers_set_idle(npf_peers *ps, int idle_ms)
@@ -1864,12 +2046,14 @@ void npf_peers_set_idle(npf_peers *ps, int idle_ms)
     npf_peer *p;
     if (!ps)
         return;
-    ps->auto_idle_ms = idle_ms > 0 ? idle_ms : 0;
+    ps->default_idle_ms = idle_ms > 0 ? idle_ms : 0;
     for (p = ps->list; p; p = p->next)
-        demand_auto(p);
+        if (p->connect == NPF_CONNECT_ON_DEMAND && !p->idle_req && ps->default_idle_ms)
+            p->idle_ms = ps->default_idle_ms;
 }
 
-int npf_peers_idle(const npf_peers *ps) { return ps ? ps->auto_idle_ms : 0; }
+int npf_peers_idle(const npf_peers *ps) { return ps ? ps->default_idle_ms : 0; }
+void npf_peers_no_cache(npf_peers *ps) { ps->no_cache = 1; }
 int npf_peer_on_demand(const npf_peer *p) { return p->idle_ms > 0; }
 
 int npf_peer_needs_password(const npf_peer *p)
@@ -1894,24 +2078,36 @@ int npf_peer_password_wrong(const npf_peer *p)
     return npf_peer_needs_password(p) && strcmp(p->last_why, "wrong_password") == 0;
 }
 
-int npf_peer_set_password(npf_peer *p, const char *password)
+int npf_peer_password_try(npf_peer *p, const char *password)
 {
-    if (p->finished || !password[0] || strlen(password) >= sizeof p->password)
+    if (!password[0] || strlen(password) >= sizeof p->password)
         return -1;
     snprintf(p->password, sizeof p->password, "%s", password);
     if (strcmp(p->last_why, "not_paired") == 0 || strcmp(p->last_why, "wrong_password") == 0
         || strcmp(p->last_why, "no_account") == 0 || strcmp(p->last_why, "pairing_lost") == 0)
         p->last_why[0] = 0;
     npf_log("%s: password given", p->name);
-    return npf_peer_wake(p) < 0 ? -1 : 0;
+    npf_peer_wake_now(p);
+    return 0;
 }
 
-int npf_peer_wake(npf_peer *p)
+int npf_peer_wake_now(npf_peer *p)
 {
     if (p->call || p->waiting)
         return 1;
-    if (p->finished)
-        return -1;
+    if (p->finished) {
+        npf_log("%s: trying again", p->name);
+        unfinish(p);
+        if (p->t_retry) {
+            npf_timer_cancel(p->ps->n->loop, p->t_retry);
+            p->t_retry = NULL;
+        }
+        start_call(p);
+        if (p->idle_ms && (p->call || p->waiting))
+            demand_timer(p);
+        peer_changed(p);
+        return 0;
+    }
     if (p->idle_ms) {
         npf_log("%s: woken: starting the session", p->name);
         start_call(p);
@@ -1925,21 +2121,6 @@ int npf_peer_wake(npf_peer *p)
         start_call(p);
     }
     return 0;
-}
-int         npf_peer_persist(const npf_peer *p) { return p->persist; }
-
-static pfwd *fwd_find(npf_peer *p, char opt, const char *spec)
-{
-    int i;
-    for (i = 0; i < p->nfwd; i++)
-        if (p->fwds[i]->used && p->fwds[i]->opt == opt && strcmp(p->fwds[i]->spec, spec) == 0)
-            return p->fwds[i];
-    return NULL;
-}
-
-int npf_peer_forward_add(npf_peer *p, const char *opt, const char *spec, int perm, char *err, size_t errcap)
-{
-    return npf_peer_forward_add_ext(p, opt, spec, perm, 0, err, errcap);
 }
 
 /* two listeners on one port: the same address, or one of them on every address */
@@ -1961,6 +2142,8 @@ static const pfwd *port_taken(const npf_peers *ps, const pfwd *f, const npf_peer
 {
     const npf_peer *q;
     int i;
+    if (!f->port)
+        return NULL;                        /* the system picks one */
     for (q = ps->list; q; q = q->next)
         for (i = 0; i < q->nfwd; i++) {
             const pfwd *g = q->fwds[i];
@@ -1973,49 +2156,32 @@ static const pfwd *port_taken(const npf_peers *ps, const pfwd *f, const npf_peer
     return NULL;
 }
 
-int npf_peer_forward_add_ext(npf_peer *p, const char *opt, const char *spec, int perm, uint64_t ext, char *err,
-                             size_t errcap)
+/* f (parsed, its parts in tmp) into a slot of p: its index, or -1 bad, -2 full, -3 other */
+static int fwd_put(npf_peer *p, pfwd *tmp, int perm, uint64_t ext, char *err, size_t errcap)
 {
     const npf_peer *owner = NULL;
     const pfwd *taken;
-    pfwd tmp, *f = NULL;
+    pfwd *f = NULL;
     int i;
-    char o = opt && opt[0] == '-' ? opt[1] : 0;
-    const struct kind_reg *kind = o ? kind_of(p->ps, o) : NULL;
-    if (o != 'L' && o != 'D' && o != 'R' && !kind) {
-        snprintf(err, errcap, "%s: -L, -D or -R%s", p->name, p->ps->nkinds ? " (or a module's kind)" : "");
-        return -1;
-    }
-    memset(&tmp, 0, sizeof tmp);
-    if (kind) {
-        if (parse_kind(&tmp, kind, spec, err, errcap) < 0)
+    char o = tmp->opt;
+    for (i = 0; i < p->nfwd; i++)
+        if (p->fwds[i]->used && fwd_same(p->fwds[i], tmp)) {
+            snprintf(err, errcap, "%s: forward #%d is that one already (%s)", p->name, p->fwds[i]->id, p->fwds[i]->spec);
             return -1;
-        spec = tmp.spec;                    /* as the kind keeps it */
-    }
-    if (fwd_find(p, o, spec)) {
-        snprintf(err, errcap, "%s: -%c %s is there already", p->name, o, spec);
-        return -1;
-    }
-    if (kind) {
-        if (kind_taken(p->ps, &tmp, err, errcap) || kind_check(&tmp, err, errcap) < 0)
+        }
+    if (tmp->kind) {
+        if (kind_taken(p->ps, tmp, err, errcap) || kind_check(tmp, err, errcap) < 0)
             return -1;
-    } else if (parse_fwd(&tmp, spec, o == 'D') < 0) {
-        snprintf(err, errcap, "%s: bad mapping -%c %s", p->name, o, spec);
-        return -1;
     }
-    if (o == 'R' && !rev_bind_ok(&tmp)) {
-        snprintf(err, errcap, REV_BIND_ERR, spec);
-        return -1;
-    }
-    if (tmp.udp && o == 'D') {
-        snprintf(err, errcap, UDP_ONLY_L, spec);
+    if (o == 'R' && p->idle_ms && !ext) {
+        snprintf(err, errcap, "%s: an on-demand node cannot have a reverse forward", p->name);
         return -1;
     }
     /* the platform's mappings report a taken port themselves */
-    if (o != 'R' && !ext && (taken = port_taken(p->ps, &tmp, &owner))) {
-        snprintf(err, errcap, "%s: port %d is taken by mapping #%d (%s -%c %s)", p->name, tmp.port, taken->id,
-                 owner->name, taken->opt, taken->spec);
-        return -1;
+    if (o != 'R' && !ext && (taken = port_taken(p->ps, tmp, &owner))) {
+        snprintf(err, errcap, "%s: port %d is taken by forward #%d (%s: %s)", p->name, tmp->port, taken->id,
+                 owner->name, taken->spec);
+        return -3;
     }
     for (i = 0; i < p->nfwd && !f; i++)
         if (!p->fwds[i]->used)
@@ -2023,27 +2189,104 @@ int npf_peer_forward_add_ext(npf_peer *p, const char *opt, const char *spec, int
     if (!f) {
         if (p->nfwd >= NPF_PEER_MAX_FWD) {
             snprintf(err, errcap, "%s: at most %d mappings", p->name, NPF_PEER_MAX_FWD);
-            return -1;
+            return -2;
         }
         if (!(f = fwd_slot(p))) {
             snprintf(err, errcap, "no memory");
-            return -1;
+            return -3;
         }
         p->nfwd++;
     }
-    tmp.idx = f->idx;
-    *f = tmp;
+    tmp->idx = f->idx;
+    *f = *tmp;
     f->p = p;
-    f->opt = o;
-    f->reverse = o == 'R';
     f->id = ++p->ps->fwd_seq;
     f->perm = perm;
     f->ext = ext;                           /* before it starts: its state callback names it */
+    f->told_state = -1;
     if (p->listening || p->call)
         fwd_start(f);
-    if (f->reverse)
-        demand_auto(p);                     /* kept connected from now on */
+    else
+        fwd_changed(f);                     /* waiting */
     return f->idx;
+}
+
+int npf_peer_forward_add_parts(npf_peer *p, const npf_fwd_new *fn, int perm, uint64_t ext, char *err, size_t errcap)
+{
+    pfwd tmp;
+    memset(&tmp, 0, sizeof tmp);
+    if (fwd_fill(&tmp, fn, err, errcap) < 0)
+        return -1;
+    return fwd_put(p, &tmp, perm, ext, err, errcap);
+}
+
+int npf_peer_forward_add_kind(npf_peer *p, char opt, const char *spec, int perm, char *err, size_t errcap)
+{
+    const struct kind_reg *kind = kind_of(p->ps, opt);
+    pfwd tmp;
+    if (!kind) {
+        snprintf(err, errcap, "%s: no kind of forward -%c here", p->name, opt);
+        return -1;
+    }
+    memset(&tmp, 0, sizeof tmp);
+    if (parse_kind(&tmp, kind, spec, err, errcap) < 0)
+        return -1;
+    tmp.opt = opt;
+    return fwd_put(p, &tmp, perm, 0, err, errcap);
+}
+
+static pfwd *fwd_by_id(const npf_peers *ps, int id)
+{
+    int i;
+    npf_peer *p = npf_peers_fwd_find(ps, id, &i);
+    return p ? p->fwds[i] : NULL;
+}
+
+npf_peer *npf_peers_fwd_find(const npf_peers *ps, int id, int *idx)
+{
+    npf_peer *p;
+    int i;
+    for (p = ps && id ? ps->list : NULL; p; p = p->next)
+        for (i = 0; i < p->nfwd; i++)
+            if (p->fwds[i]->used && p->fwds[i]->id == id) {
+                if (idx)
+                    *idx = i;
+                return p;
+            }
+    return NULL;
+}
+
+int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
+{
+    const pfwd *f;
+    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
+        return -1;
+    f = p->fwds[i];
+    memset(st, 0, sizeof *st);
+    st->opt = f->opt;
+    st->udp = f->udp;
+    st->perm = f->perm;
+    snprintf(st->bind, sizeof st->bind, "%s", f->bind);
+    st->port = f->port;
+    st->lport = f->up ? (f->reverse ? f->rport : f->lport) : 0;
+    snprintf(st->host, sizeof st->host, "%s", f->host);
+    st->hostport = f->hostport;
+    st->state = fwd_state_of(f);
+    st->why_code = st->state == NPF_FWD_FAILED ? f->why_code : NPF_FWD_WHY_NONE;
+    snprintf(st->why, sizeof st->why, "%s", st->state == NPF_FWD_UP ? "" : f->why);
+    st->conns = f->open;
+    st->refused = f->nrefused;
+    snprintf(st->refused_why, sizeof st->refused_why, "%s", f->refused_why);
+    st->ctx = f->ctx;
+    st->ext = f->ext;
+    snprintf(st->spec, sizeof st->spec, "%s", f->spec);
+    return 0;
+}
+
+void npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx)
+{
+    if (i >= 0 && i < p->nfwd && p->fwds[i]->used)
+        p->fwds[i]->ctx = ctx;
 }
 
 int npf_peer_forward_id(const npf_peer *p, int i)
@@ -2060,28 +2303,6 @@ int npf_peer_forward_by_id(const npf_peer *p, int id)
     return -1;
 }
 
-int npf_peer_forward_del(npf_peer *p, const char *opt, const char *spec, int *perm)
-{
-    pfwd *f;
-    char nb[300];
-    spec = npf_peers_fwd_norm(p->ps, opt, spec, nb, sizeof nb);    /* as it was kept */
-    f = fwd_find(p, opt && opt[0] == '-' ? opt[1] : 0, spec);
-    if (!f)
-        return -1;
-    if (f->ext)
-        return -2;                  /* the application's (a platform mapping) */
-    if (perm)
-        *perm = f->perm;
-    if (f->reverse && f->up && p->call)
-        npf_call_reverse_close(p->call, f->rev_id);
-    fwd_stop(f);
-    f->used = 0;                    /* a reply still on its way finds the slot unused */
-    f->ext = 0;
-    if (f->reverse)
-        demand_auto(p);             /* the last -R gone: on demand again */
-    return 0;
-}
-
 int npf_peer_forward_del_at(npf_peer *p, int i)
 {
     pfwd *f;
@@ -2093,17 +2314,18 @@ int npf_peer_forward_del_at(npf_peer *p, int i)
     /* a public mapping taken off (turned off, expired, deleted): its open
      * connections end with it */
     if (f->pub && p->call && npf_call_group_reset(p->call, (uint32_t)f->id, "mapping_closed") > 0)
-        npf_log("%s: -L %s: closed, its open connections ended", p->name, f->spec);
+        npf_log("%s: %s: closed, its open connections ended", p->name, f->spec);
     fwd_stop(f);
-    f->used = 0;
+    if (p->ps->cbs.fwd_gone)
+        p->ps->cbs.fwd_gone(p, i, p->ps->arg);
+    f->used = 0;                    /* a reply still on its way finds the slot unused */
     f->ext = 0;
+    f->ctx = NULL;
     free(f->acl);
     f->acl = NULL;
     f->nacl = 0;
     f->rate = 0;
     f->pub = f->draining = f->suspended = 0;
-    if (f->reverse)
-        demand_auto(p);
     return 0;
 }
 
@@ -2134,7 +2356,7 @@ int npf_peer_forward_drained(npf_peer *p, int i)
     if (f->draining && !f->suspended && (!p->call || npf_call_group_count(p->call, (uint32_t)f->id) == 0)) {
         fwd_stop(f);                        /* its connections have ended: the port closes */
         f->suspended = 1;
-        npf_log("%s: -L %s: closed (quota)", p->name, f->spec);
+        npf_log("%s: %s: closed (quota)", p->name, f->spec);
     }
     return f->suspended;
 }
@@ -2200,6 +2422,12 @@ int npf_peer_forward_used(const npf_peer *p)
     for (i = 0; i < p->nfwd; i++)
         n += p->fwds[i]->used;
     return n;
+}
+
+void npf_peer_forward_perm_set(npf_peer *p, int i, int perm)
+{
+    if (i >= 0 && i < p->nfwd && p->fwds[i]->used)
+        p->fwds[i]->perm = perm;
 }
 
 void npf_peer_forward_mark(npf_peer *p, int perm)

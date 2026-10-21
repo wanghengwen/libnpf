@@ -130,6 +130,8 @@ typedef struct npf_node_hooks {
      * reason of signaling.md "enroll", "" from an older server); the
      * node tries again in about retry_s seconds */
     void (*on_enroll_failed)(npf_node *n, const char *error, const char *reason, int retry_s, void *arg);
+    /* the signaling connection was lost after a login (why); it logs in again by itself */
+    void (*on_offline)(npf_node *n, const char *why, void *arg);
 } npf_node_hooks;
 
 /* npf_node.enroll_state */

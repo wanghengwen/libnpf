@@ -53,9 +53,29 @@ int test_local(void)
     snprintf(d->name, sizeof d->name, "dev");
     snprintf(d->nick, sizeof d->nick, "上海 \"测试\" 机");
     d->save = 1;
-    npf_local_fwd_add(d, "-L", "28290:127.0.0.1:28290");
-    npf_local_fwd_add(d, "-D", ":1088");
-    npf_local_fwd_add(d, "-D", ":1088");                /* no duplicate */
+    d->on_demand = 1;
+    d->idle_ms = 60000;
+    {
+        npf_lfwd a, b, k;
+        memset(&a, 0, sizeof a);
+        a.opt = 'L';
+        snprintf(a.bind, sizeof a.bind, "127.0.0.1");
+        a.port = 28290;
+        snprintf(a.host, sizeof a.host, "::1");
+        a.hostport = 28290;
+        a.udp = 1;
+        memset(&b, 0, sizeof b);
+        b.opt = 'D';
+        snprintf(b.bind, sizeof b.bind, "0.0.0.0");
+        b.port = 0;                                     /* picked: kept as 0 */
+        memset(&k, 0, sizeof k);
+        k.opt = 'T';
+        snprintf(k.spec, sizeof k.spec, "10.77.0.0/24");
+        npf_local_fwd_add(d, &a);
+        npf_local_fwd_add(d, &b);
+        npf_local_fwd_add(d, &b);                       /* no duplicate */
+        npf_local_fwd_add(d, &k);
+    }
     /* the modules' keys: kept as they are (a string, an array), one removed */
     CHECK(npf_local_ext_set(d, "nick_synced", "\"\"") == 0
           && npf_local_ext_set(d, "apps", "[{\"name\": \"管理 \\\"页面\\\"\", \"forward\": \"-L 28290:127.0.0.1:28290\"}]") == 0
@@ -71,16 +91,23 @@ int test_local(void)
     npf_local_free(&l);
     CHECK(npf_local_load(&m, dir, err, sizeof err) == 0, "load: %s", err);
     d = npf_local_dev(&m, "611631552", 0);
-    CHECK(d && strcmp(d->name, "dev") == 0 && strcmp(d->nick, "上海 \"测试\" 机") == 0 && d->save && d->nfwd == 2 && strcmp(d->fwd[1], "-D :1088") == 0 && d->has_key && d->key[31] == 7,
-          "the device record back");
+    CHECK(d && strcmp(d->name, "dev") == 0 && strcmp(d->nick, "上海 \"测试\" 机") == 0 && d->save && d->nfwd == 3
+          && d->fwd[0].opt == 'L' && d->fwd[0].udp && d->fwd[0].port == 28290 && strcmp(d->fwd[0].host, "::1") == 0
+          && d->fwd[1].opt == 'D' && d->fwd[1].port == 0 && strcmp(d->fwd[1].bind, "0.0.0.0") == 0
+          && d->fwd[2].opt == 'T' && strcmp(d->fwd[2].spec, "10.77.0.0/24") == 0 && d->has_key && d->key[31] == 7,
+          "the device record back (forwards as records, port 0 kept, a module's kind in its form)");
+    CHECK(d && d->on_demand && d->idle_ms == 60000, "a saved peer on demand");
     CHECK(npf_local_by_name(&m, "dev") == d && !npf_local_by_name(&m, "nas"), "by name");
     CHECK(d->next == 2 && npf_local_ext(d, "nick_synced") && strcmp(npf_local_ext(d, "nick_synced"), "\"\"") == 0
           && npf_local_ext(d, "apps")
           && strcmp(npf_local_ext(d, "apps"),
                     "[{\"name\": \"管理 \\\"页面\\\"\", \"forward\": \"-L 28290:127.0.0.1:28290\"}]") == 0,
           "the modules' keys back as they were");
-    CHECK(npf_local_fwd_del(d, "-D", ":1088") == 0 && d->nfwd == 1 && npf_local_fwd_del(d, "-D", ":1088") == -1, "fwd del");
-    CHECK(npf_local_fwd_del(d, "-L", "28290:127.0.0.1:28290") == 0 && d->nfwd == 0, "the last forward deleted");
+    {
+        npf_lfwd b = d->fwd[1], a = d->fwd[0], k = d->fwd[2];
+        CHECK(npf_local_fwd_del(d, &b) == 0 && d->nfwd == 2 && npf_local_fwd_del(d, &b) == -1, "fwd del");
+        CHECK(npf_local_fwd_del(d, &a) == 0 && npf_local_fwd_del(d, &k) == 0 && d->nfwd == 0, "the last forward deleted");
+    }
     CHECK(npf_local_dev(&m, "203.0.113.5:9850", 0) && strcmp(npf_local_dev(&m, "203.0.113.5:9850", 0)->psk_file, "key") == 0,
           "a direct peer");
     CHECK(!npf_local_dev(&m, "123456789", 0), "an empty record is dropped");
@@ -104,7 +131,7 @@ int test_local(void)
     put(dir, "known", "611631552 BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\n280604799 BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\n");
     CHECK(npf_local_load(&m, dir, err, sizeof err) == 0, "convert: %s", err);
     d = npf_local_dev(&m, "611631552", 0);
-    CHECK(d && d->save && d->nfwd == 1 && strcmp(d->fwd[0], "-L 1:127.0.0.1:2") == 0 && d->has_key, "converted peer");
+    CHECK(d && d->save && d->nfwd == 0 && d->has_key, "converted peer (its forwards are not carried over)");
     CHECK(npf_local_dev(&m, "280604799", 0) && npf_local_dev(&m, "280604799", 0)->has_key
           && !npf_local_dev(&m, "280604799", 0)->save, "converted key");
     CHECK(npf_local_dev(&m, "10.0.0.1:9", 0) && strcmp(npf_local_dev(&m, "10.0.0.1:9", 0)->psk_file, "k") == 0, "direct");

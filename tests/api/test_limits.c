@@ -7,7 +7,7 @@ int main(void)
 {
     side s[4] = {{0}};
     npf_t *n[4] = {0};
-    char dirs[4][64], ov[256], spec[256], err[300], path[128];
+    char dirs[4][64], ov[256], err[300], path[128];
     const char *key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     uint32_t sessions[3], media[64], replacement;
     npf_media_opt mo;
@@ -25,8 +25,14 @@ int main(void)
         if (!n[i] || npf_start(n[i])) return 2;
     }
     for (i = 0; i < 3; i++) {
-        snprintf(spec, sizeof spec, "127.0.0.1:%d --psk %s", port + i + 1, key);
-        say("add a session for the aggregate limit", npf_peer_add(n[0], spec, 0, err, sizeof err) == NPF_OK);
+        static const uint8_t zero[32];      /* the key: 32 zero bytes */
+        npf_peer_opt po;
+        npf_peer_opt_init(&po);
+        po.target = NPF_TARGET_DIRECT;
+        po.host = "127.0.0.1";
+        po.port = (uint16_t)(port + i + 1);
+        po.psk = zero;
+        say("add a session for the aggregate limit", npf_peer_create(n[0], &po, NULL, err, sizeof err) == NPF_OK);
         say("session up", wait_for(&s[0], &s[0].up, i + 1, 10000));
         pthread_mutex_lock(&s[0].mu);
         sessions[i] = s[0].session;

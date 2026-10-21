@@ -53,6 +53,12 @@ void npf_callee_attach(npf_callee *d, npf_node *n);
 void npf_callee_on_login(npf_callee *d);
 struct npf_out;
 void npf_callee_show(npf_callee *d, struct npf_out *o);
+/* the pairing password (8 .. 127 bytes): 0, -1 too short or long, -2 not saved */
+int  npf_callee_password_set(npf_callee *d, const char *password);
+/* the caller with this key unpaired (NULL: all): 0, -1 none, -2 not saved */
+int  npf_callee_unpair_key(npf_callee *d, const uint8_t *key);
+/* the owner forgotten, the platform told at the next login: 0, -2 not saved */
+int  npf_callee_owner_reset(npf_callee *d);
 /* show / passwd / unpair / owner-reset: exit code, or -2 for other commands */
 int  npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, struct npf_out *o);
 

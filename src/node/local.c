@@ -155,47 +155,42 @@ int npf_local_ext_set(npf_ldev *d, const char *key, const char *json)
 }
 
 /* one forward "-L SPEC" more, unless it is there */
-static int fwd_push(npf_ldev *d, const char *f)
+int npf_local_fwd_same(const npf_lfwd *a, const npf_lfwd *b)
 {
-    char **a, *s;
+    if (a->opt != b->opt)
+        return 0;
+    if (a->opt != 'L' && a->opt != 'D' && a->opt != 'R')
+        return strcmp(a->spec, b->spec) == 0;
+    return a->udp == b->udp && a->port == b->port && a->hostport == b->hostport && strcmp(a->bind, b->bind) == 0
+        && strcmp(a->host, b->host) == 0;
+}
+
+int npf_local_fwd_add(npf_ldev *d, const npf_lfwd *f)
+{
+    npf_lfwd *a;
     int i;
     for (i = 0; i < d->nfwd; i++)
-        if (strcmp(d->fwd[i], f) == 0)
+        if (npf_local_fwd_same(&d->fwd[i], f))
             return 0;
     if (d->nfwd >= NPF_LOCAL_MAX_FWD || !(a = realloc(d->fwd, (size_t)(d->nfwd + 1) * sizeof *a)))
         return -1;
     d->fwd = a;
-    if (!(s = strdup(f)))
-        return -1;
-    d->fwd[d->nfwd++] = s;
+    d->fwd[d->nfwd++] = *f;
     return 0;
-}
-
-int npf_local_fwd_add(npf_ldev *d, const char *opt, const char *spec)
-{
-    char f[320];
-    snprintf(f, sizeof f, "%s %s", opt, spec);
-    return fwd_push(d, f);
 }
 
 void npf_local_fwd_clear(npf_ldev *d)
 {
-    int i;
-    for (i = 0; i < d->nfwd; i++)
-        free(d->fwd[i]);
     free(d->fwd);
     d->fwd = NULL;
     d->nfwd = 0;
 }
 
-int npf_local_fwd_del(npf_ldev *d, const char *opt, const char *spec)
+int npf_local_fwd_del(npf_ldev *d, const npf_lfwd *f)
 {
-    char f[320];
     int i;
-    snprintf(f, sizeof f, "%s %s", opt, spec);
     for (i = 0; i < d->nfwd; i++)
-        if (strcmp(d->fwd[i], f) == 0) {
-            free(d->fwd[i]);
+        if (npf_local_fwd_same(&d->fwd[i], f)) {
             memmove(&d->fwd[i], &d->fwd[i + 1], (size_t)(d->nfwd - i - 1) * sizeof d->fwd[0]);
             d->nfwd--;
             return 0;
@@ -226,9 +221,7 @@ static void dev_from_words(npf_local *l, char *line)
         return;
     d->save = 1;
     for (i = 1; i + 1 < n; i += 2) {
-        if (npf_fwd_opt(w[i]))
-            npf_local_fwd_add(d, w[i], w[i + 1]);
-        else if (strcmp(w[i], "--psk-file") == 0)
+        if (strcmp(w[i], "--psk-file") == 0)    /* (their forwards are not carried over) */
             snprintf(d->psk_file, sizeof d->psk_file, "%s", w[i + 1]);
         else if (strcmp(w[i], "--psk") == 0)
             snprintf(d->psk, sizeof d->psk, "%s", w[i + 1]);
@@ -292,7 +285,8 @@ static void get_str(const npf_json *j, int obj, const char *k, char *buf, size_t
 /* the keys of a device's record read above */
 static int core_key(const char *k)
 {
-    static const char *const keys[] = {"name", "nick", "save", "psk_file", "psk", "forwards", "key", "resources", NULL};
+    static const char *const keys[] = {"name", "nick", "save", "connect", "idle_ms", "psk_file", "psk", "forwards", "key",
+                                       "resources", NULL};
     int i;
     for (i = 0; keys[i]; i++)
         if (strcmp(keys[i], k) == 0)
@@ -338,12 +332,39 @@ static int parse(npf_local *l, const char *s, size_t len)
             get_str(&j, v, "nick", d->nick, sizeof d->nick);
             if ((f = npf_json_get(&j, v, "save")) >= 0 && npf_json_bool(&j, f, &d->save) < 0)
                 d->save = 0;
+            d->on_demand = npf_json_eq(&j, npf_json_get(&j, v, "connect"), "on_demand");
+            {
+                int64_t ms;
+                if (npf_json_get_int(&j, v, "idle_ms", 0, 86400000, &ms) == 0)
+                    d->idle_ms = (int)ms;
+            }
             get_str(&j, v, "psk_file", d->psk_file, sizeof d->psk_file);
             get_str(&j, v, "psk", d->psk, sizeof d->psk);
             if ((f = npf_json_get(&j, v, "forwards")) >= 0 && j.tok[f].type == NPF_JT_ARRAY)
                 for (n = 0; n < j.tok[f].size && d->nfwd < NPF_LOCAL_MAX_FWD; n++) {
-                    char fw[320];
-                    if (npf_json_str(&j, npf_json_item(&j, f, n), fw, sizeof fw) > 0 && fwd_push(d, fw) < 0)
+                    int e = npf_json_item(&j, f, n);
+                    npf_lfwd lf;
+                    char kind[16] = "", proto[8] = "";
+                    int64_t x;
+                    if (e < 0 || j.tok[e].type != NPF_JT_OBJECT)
+                        continue;           /* an earlier version's text: not carried over */
+                    memset(&lf, 0, sizeof lf);
+                    npf_json_get_str(&j, e, "kind", kind, sizeof kind);
+                    npf_json_get_str(&j, e, "proto", proto, sizeof proto);
+                    lf.opt = strcmp(kind, "local") == 0 ? 'L' : strcmp(kind, "socks") == 0 ? 'D'
+                           : strcmp(kind, "remote") == 0 ? 'R'
+                           : kind[0] >= 'A' && kind[0] <= 'Z' && !kind[1] ? kind[0] : 0;
+                    if (!lf.opt)
+                        continue;
+                    lf.udp = strcmp(proto, "udp") == 0;
+                    get_str(&j, e, "listen", lf.bind, sizeof lf.bind);
+                    get_str(&j, e, "host", lf.host, sizeof lf.host);
+                    get_str(&j, e, "spec", lf.spec, sizeof lf.spec);
+                    if (npf_json_get_int(&j, e, "port", 0, 65535, &x) == 0)
+                        lf.port = (int)x;
+                    if (npf_json_get_int(&j, e, "hostport", 0, 65535, &x) == 0)
+                        lf.hostport = (int)x;
+                    if (npf_local_fwd_add(d, &lf) < 0)
                         goto out;
                 }
             if (npf_json_get_str(&j, v, "key", b, sizeof b) > 0 && npf_b64url_decode(b, strlen(b), d->key, 32) == 32)
@@ -455,7 +476,7 @@ static void kstr(npf_out *o, int *first, const char *ind, const char *k, const c
     npf_out_json_str(o, v, strlen(v));
 }
 
-int npf_local_save(const npf_local *l)
+int npf_local_save(npf_local *l)
 {
     npf_out o = {0};
     int i, k, first = 1, f2, rc;
@@ -495,6 +516,11 @@ int npf_local_save(const npf_local *l)
         if (d->save) {
             npf_out_printf(&o, "%s\n      \"save\": true", f3 ? "" : ",");
             f3 = 0;
+            if (d->on_demand) {
+                kstr(&o, &f3, "      ", "connect", "on_demand");
+                if (d->idle_ms)
+                    npf_out_printf(&o, ",\n      \"idle_ms\": %d", d->idle_ms);
+            }
         }
         if (d->psk_file[0])
             kstr(&o, &f3, "      ", "psk_file", d->psk_file);
@@ -504,8 +530,23 @@ int npf_local_save(const npf_local *l)
             npf_out_printf(&o, "%s\n      \"forwards\": [", f3 ? "" : ",");
             f3 = 0;
             for (k = 0; k < d->nfwd; k++) {
-                npf_out_printf(&o, "%s", k ? ", " : "");
-                npf_out_json_str(&o, d->fwd[k], strlen(d->fwd[k]));
+                const npf_lfwd *lf = &d->fwd[k];
+                npf_out_printf(&o, "%s\n        {\"kind\": ", k ? "," : "");
+                if (lf->opt == 'L' || lf->opt == 'D' || lf->opt == 'R') {
+                    npf_out_printf(&o, "\"%s\", \"proto\": \"%s\", \"listen\": ",
+                                   lf->opt == 'L' ? "local" : lf->opt == 'D' ? "socks" : "remote", lf->udp ? "udp" : "tcp");
+                    npf_out_json_str(&o, lf->bind, strlen(lf->bind));
+                    npf_out_printf(&o, ", \"port\": %d", lf->port);
+                    if (lf->opt != 'D') {
+                        npf_out_printf(&o, ", \"host\": ");
+                        npf_out_json_str(&o, lf->host, strlen(lf->host));
+                        npf_out_printf(&o, ", \"hostport\": %d", lf->hostport);
+                    }
+                } else {
+                    npf_out_printf(&o, "\"%c\", \"spec\": ", lf->opt);
+                    npf_out_json_str(&o, lf->spec, strlen(lf->spec));
+                }
+                npf_out_printf(&o, "}");
             }
             npf_out_printf(&o, "]");
         }
@@ -532,5 +573,6 @@ int npf_local_save(const npf_local *l)
     npf_out_printf(&o, "\n}\n");
     rc = o.failed || o.len > NPF_JSON_MAX_FILE ? -1 : npf_file_write(l->path, o.p, o.len, 0600);
     npf_out_free(&o);
+    l->unsaved = rc < 0;
     return rc;
 }

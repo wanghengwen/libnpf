@@ -142,12 +142,6 @@ static void cb_log(void *user, int level, const char *line)
     }
 }
 
-static void cb_text(void *user, int code, const char *text)
-{
-    (void)text;
-    *(int *)user = code;
-}
-
 static int cb_media_open(void *user, uint32_t session, uint32_t media, int tag)
 {
     side *s = user;
@@ -249,7 +243,7 @@ static int send_frames(npf_t *n, uint32_t media, int tag, int count, size_t size
 int main(int argc, char **argv)
 {
     static side a, b, c;
-    char da[] = "/tmp/npf-api-a-XXXXXX", db[] = "/tmp/npf-api-b-XXXXXX", ov[256], spec[256];
+    char da[] = "/tmp/npf-api-a-XXXXXX", db[] = "/tmp/npf-api-b-XXXXXX", ov[256];
     const char *key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";   /* 32 zero bytes */
     int port = argc > 1 ? atoi(argv[1]) : 47960 + (int)(getpid() % 30), i, t, ok, opened, e;
     npf_t *na, *nb;
@@ -278,8 +272,17 @@ int main(int argc, char **argv)
     if (!na || !nb)
         return 1;
     say("start", npf_start(na) == NPF_OK && npf_start(nb) == NPF_OK);
-    snprintf(spec, sizeof spec, "127.0.0.1:%d --psk %s", port, key);
-    say("peer add", npf_peer_add(nb, spec, 0, err, sizeof err) == NPF_OK);
+    {
+        static const uint8_t zero[32];      /* key: 32 zero bytes */
+        npf_peer_opt po;
+        uint32_t id = 0;
+        npf_peer_opt_init(&po);
+        po.target = NPF_TARGET_DIRECT;
+        po.host = "127.0.0.1";
+        po.port = (uint16_t)port;
+        po.psk = zero;
+        say("peer create", npf_peer_create(nb, &po, &id, err, sizeof err) == NPF_OK && id);
+    }
     say("sessions up on both sides", wait_for(&a, &a.up, 1, 10000) && wait_for(&b, &b.up, 1, 10000));
 
     /* application data, both ways */
@@ -446,16 +449,12 @@ int main(int argc, char **argv)
         say("config_get into a small buffer: NPF_ETOOBIG", npf_config_get(na, "max_calls", v, 2) == NPF_ETOOBIG);
     }
 
-    /* a third instance: a command whose options come out of argv; a peer
-     * as words with a space in one; three instances in one process */
+        /* a third instance: a log callback calling the API before the start;
+     * a one-off direct peer; three instances in one process at once */
     {
-        char dc[] = "/tmp/npf-api-c-XXXXXX", kf[300];
-        const char *w1[] = {"node", "add", "--once", "127.0.0.1:1", "--psk", key};
-        const char *w2[] = {"node", "add", "127.0.0.1:2", "--once", "--psk", key};
-        const char *w3[] = {"node", "add", "127.0.0.1:3", "--psk", key, "--once"};
-        const char *pw[3];
-        FILE *f;
-        int code = -1;
+        static const uint8_t zero[32];
+        char dc[] = "/tmp/npf-api-c-XXXXXX", rm[300];
+        npf_peer_opt po;
         npf_t *nc;
         if (!mkdtemp(dc))
             return 2;
@@ -463,41 +462,26 @@ int main(int argc, char **argv)
         ok = nc != NULL;
         if (rt)
             say("runtime: npf_run refused", nc && npf_run(nc) == NPF_ESTATE);
-        code = -1;
-        ok = ok && npf_command(nc, 6, w1, cb_text, &code) == NPF_OK && code == 0;
-        code = -1;
-        ok = ok && npf_command(nc, 6, w2, cb_text, &code) == NPF_OK && code == 0;
-        code = -1;
-        ok = ok && npf_command(nc, 6, w3, cb_text, &code) == NPF_OK && code == 0;
-        say("npf_command: options anywhere in argv (node add --once)", ok);
         pthread_mutex_lock(&c.mu);
         c.reenter = 1;                      /* not running: the caller's thread executes */
         pthread_mutex_unlock(&c.mu);
         npf_config_set(nc, "log_level", "info", 0, err, sizeof err);   /* logged at info */
         say("a log callback calling the API before the start (no deadlock)", c.reentered);
-        npf_destroy(nc);
-        c.up = 0;
-        snprintf(kf, sizeof kf, "%s/key file", dc);
-        f = fopen(kf, "w");
-        if (f) {
-            fprintf(f, "%s\n", key);
-            fclose(f);
-            chmod(kf, 0600);                /* a key file readable by others is refused */
-        }
-        nc = make(&c, dc, "udp_port = 0\n");
-        pw[0] = spec;
-        snprintf(spec, sizeof spec, "127.0.0.1:%d", port);
-        pw[1] = "--psk-file";
-        pw[2] = kf;
+        npf_peer_opt_init(&po);
+        po.target = NPF_TARGET_DIRECT;
+        po.host = "127.0.0.1";
+        po.port = (uint16_t)port;
+        po.psk = zero;
+        po.connect = NPF_CONNECT_ONCE;
         err[0] = 0;
-        ok = nc && npf_start(nc) == NPF_OK && npf_peer_add_argv(nc, 3, pw, NPF_PEER_ONCE, err, sizeof err) == NPF_OK;
+        ok = ok && npf_peer_create(nc, &po, NULL, err, sizeof err) == NPF_OK && npf_start(nc) == NPF_OK;
         if (!ok)
-            printf("     peer_add_argv: %s\n", err);
-        say("npf_peer_add_argv: a key file with a space in its path; three instances at once",
+            printf("     peer_create: %s\n", err);
+        say("a peer made before the start connects with it; three instances at once",
             ok && wait_for(&c, &c.up, 1, 10000));
         npf_destroy(nc);
-        snprintf(kf, sizeof kf, "rm -rf %s", dc);
-        if (system(kf) != 0)
+        snprintf(rm, sizeof rm, "rm -rf %s", dc);
+        if (system(rm) != 0)
             fails++;
     }
 

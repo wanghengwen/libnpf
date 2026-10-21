@@ -618,6 +618,25 @@ static struct npf_policy *call_policy(npf_call *c)
 
 /* ---- reverse mapping, callee side (data-channel.md 7.1) ---- */
 
+/* an address of this host's interfaces (a -R listening on one of them) */
+static int own_addr(const char *a)
+{
+    npf_ifaddr ifs[32];
+    unsigned char b[16];
+    int fam, len, n, i;
+    if (inet_pton(AF_INET, a, b) == 1)
+        fam = AF_INET, len = 4;
+    else if (inet_pton(AF_INET6, a, b) == 1)
+        fam = AF_INET6, len = 16;
+    else
+        return 0;
+    n = npf_if_list(ifs, 32);
+    for (i = 0; i < n; i++)
+        if (ifs[i].family == fam && memcmp(ifs[i].addr, b, (size_t)len) == 0)
+            return 1;
+    return 0;
+}
+
 /* the published resources still let this listener be (a "reverse" resource
  * removed, its ports narrowed, its "lan:" taken back: no longer) */
 static int rev_allowed(struct rev_listener *l)
@@ -769,13 +788,15 @@ static void reverse_request(npf_call *c, const char *type, const npf_json *j)
         return;
     }
     /* policy: a port a "reverse" resource publishes (0, chosen by us: with
-     * "*"), on loopback, or on every address when it says "lan:"; 16 per session */
+     * "*"), on loopback; on every address, or on one of this host's own,
+     * only when it says "lan:" (and then from this host and its LAN only);
+     * 16 per session */
     if (strcmp(bind_addr, "localhost") == 0)
         strcpy(bind_addr, "127.0.0.1");
-    lan = !bind_addr[0] || strcmp(bind_addr, "*") == 0 || strcmp(bind_addr, "0.0.0.0") == 0;
-    if (lan)
+    if (!bind_addr[0] || strcmp(bind_addr, "*") == 0)
         strcpy(bind_addr, "0.0.0.0");
-    if ((!lan && strcmp(bind_addr, "127.0.0.1") != 0 && strcmp(bind_addr, "::1") != 0)
+    lan = strcmp(bind_addr, "127.0.0.1") != 0 && strcmp(bind_addr, "::1") != 0;
+    if ((lan && strcmp(bind_addr, "0.0.0.0") != 0 && strcmp(bind_addr, "::") != 0 && !own_addr(bind_addr))
         || !npf_policy_reverse_ok(call_policy(c), (int)port, lan)) {
         npf_call_ctl_reply(c, type, j, "error", "forbidden", NULL);
         return;
@@ -793,6 +814,10 @@ static void reverse_request(npf_call *c, const char *type, const npf_json *j)
         npf_json_bool(j, ut, &udp);         /* -R .../udp: a UDP socket (data-channel.md 15) */
     fd = npf_socket(ss.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0, 0);
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (fd >= 0 && strcmp(bind_addr, "::") == 0) {
+        int zero = 0;                       /* "::": IPv4 too */
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&zero, sizeof zero);
+    }
     sl = ss.ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
     if (fd < 0 || bind(fd, (struct sockaddr *)&ss, sl) < 0 || (!udp && listen(fd, 32) < 0)) {
         if (fd >= 0)

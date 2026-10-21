@@ -51,6 +51,7 @@ typedef struct sublink {
     size_t   sl;
     size_t   strip;             /* client: reply bytes still to strip (0 = unknown yet) */
     int      skip_method;       /* client (-D): bytes of the server's method reply still to drop */
+    int      socks_rep;         /* client (-D): its CONNECT reply not seen yet (REP 2: the policy) */
     int64_t  tx_credit;         /* DATA bytes we may still send */
     uint32_t rx_freed;          /* written locally since the last WINDOW */
     uint32_t rx_window;
@@ -764,8 +765,10 @@ static int client_strip(sublink *s, const uint8_t *p, size_t n, size_t *used)
             return -1;              /* method refused */
         if (s->sl < 2 + 5)
             continue;
-        if (s->sb[3] != 0)
+        if (s->sb[3] != 0) {
+            s->end = s->sb[3] == 2 ? "target_refused" : "target_failed";   /* 2: the other side's policy */
             return -1;              /* REP != 0: connection failed */
+        }
         need = 2 + 4 + (s->sb[5] == 1 ? 4 : s->sb[5] == 4 ? 16 : 1 + (size_t)s->sb[6]) + 2;
         if (s->sl < need)
             continue;
@@ -880,7 +883,8 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         if (s->state == SL_CLIENT_WAIT) {
             size_t used;
             if (client_strip(s, p, n, &used) < 0) {
-                s->end = "target_failed";   /* the other side could not reach the target */
+                if (!s->end)
+                    s->end = "target_failed";   /* the other side could not reach the target */
                 sub_reset(s, NPF_RST_LOCAL);
                 return 0;
             }
@@ -908,6 +912,12 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
             if (n == 0)
                 return 0;
         }
+        if (s->socks_rep && !s->skip_method) {     /* -D: the CONNECT reply goes to the application as it is */
+            if (p[0] == 5 && n >= 2 && p[1] == 2)
+                s->end = "target_refused";      /* not a resource the other side published */
+            if (n >= 2)
+                s->socks_rep = 0;
+        }
         if (wb_put(&s->wq, p, n) < 0) {
             sub_reset(s, NPF_RST_LIMIT);
             return 0;
@@ -934,7 +944,8 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         }
         return 0;
     case FR_RESET:
-        s->end = s->state == SL_CLIENT_WAIT ? "target_failed" : "peer_reset";
+        if (!s->end)                        /* (a refusal seen in a reply stays the reason) */
+            s->end = s->state == SL_CLIENT_WAIT ? "target_failed" : "peer_reset";
         sub_free(s, 1);
         return 0;
     case FR_WINDOW:
@@ -1076,6 +1087,7 @@ static void local_greeting(sublink *s)
     }
     s->sl = 0;
     s->skip_method = 2;
+    s->socks_rep = 1;
     s->state = SL_OPEN;
     update_ev(s);
 }

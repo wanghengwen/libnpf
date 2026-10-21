@@ -6,10 +6,15 @@
  * all of them: the platform keeps one signaling connection per identity, so
  * two processes with the same identity would push each other off.
  *
- * A peer is described like the connect command line:
- *   NUMBER [-p PASSWORD] [-L [BIND:]PORT:HOST:HOSTPORT]... [-D [BIND:]PORT]... [-R [BIND:]PORT:HOST:HOSTPORT]...
- *   HOST:PORT (--psk-file F | --psk KEY) [-L ...] [-D ...] [-R ...]
- * and in configuration files as "peer = ..." lines. */
+ * A peer and its forwards are made from their parts (npf_peers_create,
+ * npf_peer_forward_add_parts): the library has no command syntax for them
+ * (the application has its own).
+ *
+ * Each peer has a number of its own (npf_peer_id) and each forward one
+ * (npf_peer_forward_id), unique and never reused in the npf_peers' life.
+ * A peer that gives up (a one-off session ended, or a need: not paired, the
+ * account gone, the pairing lost) stays, finished, until it is removed; a
+ * need met (a password given, an account session) tries it again. */
 #ifndef NPF_PEERS_H
 #define NPF_PEERS_H
 
@@ -43,33 +48,61 @@ typedef struct npf_peers_cbs {
     /* a public connection was let in (conn or refused with opened follow
      * when it ends); optional */
     void (*opened)(npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from, void *arg);
+    /* the peer's state or needs changed (npf_peer_state); optional */
+    void (*changed)(npf_peer *p, void *arg);
+    /* forward i goes (deleted, or with its peer): before its slot is freed; optional */
+    void (*fwd_gone)(npf_peer *p, int i, void *arg);
+    /* the peer goes (npf_peers_remove): after its session and forwards, before it is freed; optional */
+    void (*gone)(npf_peer *p, void *arg);
+    /* connections of forward i were refused by the peer (its resources): at most once a second; optional */
+    void (*fwd_refused)(npf_peer *p, int i, void *arg);
 } npf_peers_cbs;
 
+/* a peer from its parts */
+typedef struct npf_peer_new {
+    uint64_t       number;          /* a platform peer, or 0 and */
+    const char    *host;            /* a direct one: an address or name (IPv6 without brackets) */
+    uint16_t       port;
+    const uint8_t *psk;             /* direct: 32 bytes */
+    const char    *password;        /* the first pairing's, NULL none */
+    int            connect;         /* NPF_CONNECT_* (npf.h) */
+    int            idle_ms;         /* NPF_CONNECT_ON_DEMAND: 0 the default (npf_peers_set_idle) */
+} npf_peer_new;
+
+/* the target's canonical name: the number, or HOST:PORT with the host in
+ * lower case and an IPv6 address as [ADDR]:PORT (as given otherwise); 0, -1 bad */
+int npf_peer_target_name(uint64_t number, const char *host, uint16_t port, char *out, size_t cap);
+/* NULL with err (and *code: 1 a bad part, 2 there is one with this target
+ * already, 3 other) */
+npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, size_t errcap, int *code);
+
+/* a forward from its parts */
+typedef struct npf_fwd_new {
+    char        opt;                /* 'L', 'D', 'R' */
+    int         udp;
+    const char *bind;               /* NULL: 127.0.0.1 ("*" and "" every address) */
+    int         port;               /* 0: picked (here by the system, -R by the peer) */
+    const char *host;               /* -L / -R: the target */
+    int         hostport;
+} npf_fwd_new;
+/* its index (>= 0), or -1 bad (err), -2 at the limit, -3 other (port taken ...);
+ * ext: the application's id (a platform mapping), 0 none */
+int npf_peer_forward_add_parts(npf_peer *p, const npf_fwd_new *fn, int perm, uint64_t ext, char *err, size_t errcap);
+/* a module's kind of forward, in its own form (npf_fwd_kind.parse) */
+int npf_peer_forward_add_kind(npf_peer *p, char opt, const char *spec, int perm, char *err, size_t errcap);
+
 /* lc: local.json, where the pinned callee keys, the names and nicks are */
-/* Split a forward like -L [BIND:]PORT:HOST:HOSTPORT at its colons, in place:
- * empty fields are kept (":1080" is an empty BIND), an IPv6 address goes in
- * brackets ([::1]:8080) which are removed. The number of fields, -1 when
- * there are more than max. */
-int npf_fwd_split(char *s, char **parts, int max);
 
 /* names people give peers (connect --name): kept in local.json (npf/local.h);
  * name "" removes it. -1 with err when the name is invalid or another's */
 int npf_peers_name_set(npf_peers *ps, const char *name, const char *target, char *err, size_t errcap);
 /* the target a name stands for, else word itself */
 const char *npf_peers_resolve(const npf_peers *ps, const char *word, char *buf, size_t cap);
-/* the listening address as written: empty or "*" is every address (as ssh) */
-const char *npf_fwd_bind(const char *s);
 
 npf_peers *npf_peers_new(npf_node *n, npf_local *lc, const npf_peers_cbs *cbs, void *arg);
 /* the session ends, listeners close; done is not called */
 void npf_peers_free(npf_peers *ps);
 
-/* add a peer from words (argv[0] is the target); keep: reconnect after the
- * session ends (1 s .. 60 s backoff). NULL and a message in err on bad input. */
-npf_peer *npf_peers_add(npf_peers *ps, int argc, char **argv, int keep, char *err, size_t errcap);
-/* the same from one line ("peer = ..." in a configuration file); a relative
- * --psk-file is taken relative to base_dir (the configuration's directory) */
-npf_peer *npf_peers_add_line(npf_peers *ps, const char *line, int keep, const char *base_dir, char *err, size_t errcap);
 int  npf_peers_count(const npf_peers *ps);
 
 /* start what can start now (direct peers); platform peers start on login */
@@ -79,8 +112,9 @@ void npf_peers_start(npf_peers *ps);
 void npf_peers_on_login(npf_peers *ps);
 int  npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why);
 void npf_peers_on_paired(npf_peers *ps, uint64_t number, const uint8_t pub[32]);
-/* an account session started: the peers waiting out a backoff (not paired
- * yet, say: the account may let them in now) try again at once */
+/* an account session started: the peers waiting out a backoff, and those
+ * that gave up for want of an account or a pairing (the account may let them
+ * in now), try again at once */
 void npf_peers_retry_now(npf_peers *ps);
 /* the network changed or the process was suspended: no peer waits out a
  * backoff, and the reverse forwards waiting to be set up again try now */
@@ -88,8 +122,23 @@ void npf_peers_net_changed(npf_peers *ps);
 
 /* end the peer's session (no done callback), close its listeners, forget it */
 void      npf_peers_remove(npf_peers *ps, npf_peer *p);
-/* by name: the number (any spelling) or HOST:PORT */
+/* by name: the number (any spelling), HOST:PORT (canonical) or the name people gave it */
 npf_peer *npf_peers_find(const npf_peers *ps, const char *name);
+npf_peer *npf_peers_by_id(const npf_peers *ps, uint32_t id);
+uint32_t  npf_peer_id(const npf_peer *p);
+void     *npf_peer_ctx(const npf_peer *p);
+void      npf_peer_ctx_put(npf_peer *p, void *ctx);
+int       npf_peer_connect_mode(const npf_peer *p);  /* NPF_CONNECT_* */
+int       npf_peer_idle_asked(const npf_peer *p);    /* the idle time it was made with, 0: the default */
+/* NPF_PEER_* (npf.h), its needs (NPF_NEED_*) and the time to its next try (ms) */
+int       npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms);
+const char *npf_peer_last_why(const npf_peer *p);     /* why the last session ended, or why it waits; "" */
+int       npf_peer_finished(const npf_peer *p);
+/* a direct peer's target as given (host without brackets, port); 0, -1 a platform peer */
+int       npf_peer_direct_target(const npf_peer *p, const char **host, uint16_t *port);
+/* a nick of this run (not in local.json; NULL: back to local.json's) */
+void      npf_peer_set_nick_here(npf_peer *p, const char *nick);
+void      npf_peer_set_label(npf_peer *p, const char *name);
 npf_peer *npf_peers_first(const npf_peers *ps);
 npf_peer *npf_peer_next(const npf_peer *p);
 void      npf_peer_set_tag(npf_peer *p, int tag);
@@ -116,22 +165,16 @@ int         npf_peer_password_wrong(const npf_peer *p);
 /* ... because the device refused the pairing it had (reset, reinstalled, the
  * pairing revoked): paired by password, it pairs anew (security.md 9.6) */
 int         npf_peer_pairing_lost(const npf_peer *p);
-/* the pairing password for a peer not connected: tried at once; -1 when it
- * ended (a one-off peer: add it again) */
-int         npf_peer_set_password(npf_peer *p, const char *password);
-/* "-L 127.0.0.1:8080:host:80 -D 127.0.0.1:1080 ..." (no secrets) */
-const char *npf_peer_forwards(const npf_peer *p, char *buf, size_t cap);
+/* the pairing password for a peer not connected: tried at once (also one
+ * that gave up); -1 a bad password */
+int         npf_peer_password_try(npf_peer *p, const char *password);
 
-/* a peer kept for good (the configuration, connect --permanent): tried for
- * ever, also while not paired yet; others give up on what retrying cannot fix */
-void        npf_peer_set_persist(npf_peer *p, int on);
 /* on demand (a hosted client's public mappings): the listeners are up
  * without a session; the first connection starts one (connections wait for
  * it, at most 30 s), and it ends idle_ms after its last connection closed;
  * no reconnecting in between. 0: off */
 void        npf_peer_set_on_demand(npf_peer *p, int idle_ms);
-/* the node's rule: every kept platform peer without a -R mapping on demand,
- * ending idle_ms after its last connection (0: kept connected, as before) */
+/* the default idle time of the peers on demand made without one */
 void        npf_peers_set_idle(npf_peers *ps, int idle_ms);
 /* A kind of forward a module adds (npf/module.h), the option -X with its
  * capital letter: the module carries such a forward's traffic itself
@@ -158,27 +201,18 @@ int         npf_peers_add_kind(npf_peers *ps, const npf_fwd_kind *k, void *arg);
 /* the session of a kind's forward id: ready, else NULL now (its peer is
  * woken: on demand, or waiting out a backoff) */
 npf_call   *npf_peers_fwd_call(npf_peers *ps, int id);
-/* SPEC as it is kept (a kind's form; others as given) */
-const char *npf_peers_fwd_norm(npf_peers *ps, const char *opt, const char *spec, char *buf, size_t cap);
 int         npf_peers_idle(const npf_peers *ps);
+/* the peers' resources are not kept in local.json (only here) */
+void        npf_peers_no_cache(npf_peers *ps);
 int         npf_peer_on_demand(const npf_peer *p);
 /* start the session now (on demand: it ends idle_ms later unless used; a
- * kept peer waiting to reconnect: at once): 1 there is one already, 0 started,
- * -1 the peer is finished */
-int         npf_peer_wake(npf_peer *p);
-int         npf_peer_persist(const npf_peer *p);
-/* port mappings at run time: opt "-L", "-D" or "-R", spec as on the command
- * line; perm marks it as part of the saved configuration (the application
- * edits the file). A mapping that cannot start (port in use, refused by the
- * callee) retries with backoff, the session goes on. Its index (>= 0) or -1 (err set) */
-int         npf_peer_forward_add(npf_peer *p, const char *opt, const char *spec, int perm, char *err, size_t errcap);
-/* 0, -1 when there is no such mapping, -2 for one with an application id
- * (a platform mapping: removed only with npf_peer_forward_del_at); *perm: was it saved */
-int         npf_peer_forward_del(npf_peer *p, const char *opt, const char *spec, int *perm);
-/* the same with the application's id (see npf_peer_forward_ext) */
-int         npf_peer_forward_add_ext(npf_peer *p, const char *opt, const char *spec, int perm, uint64_t ext, char *err,
-                                     size_t errcap);
-/* by index (what npf_peer_forward_add returned): 0 or -1 */
+ * kept peer waiting to reconnect: at once; a finished one: one more try, as
+ * it was made): 1 there is one already, 0 started */
+int         npf_peer_wake_now(npf_peer *p);
+/* port mappings at run time (npf_peer_forward_add_parts): a mapping that
+ * cannot start (port in use, refused by the callee) retries with backoff,
+ * the session goes on */
+/* by index (what npf_peer_forward_add_parts returned): 0 or -1 */
 int         npf_peer_forward_del_at(npf_peer *p, int i);
 /* a public mapping (npf-hosted): connections from the allow list only (CIDRs
  * or addresses; none: anyone), at most rate bytes per second each way (0:
@@ -217,10 +251,35 @@ int         npf_peer_forward_id(const npf_peer *p, int i);
 int         npf_peer_forward_by_id(const npf_peer *p, int id);
 /* mappings in use */
 int         npf_peer_forward_used(const npf_peer *p);
+/* mark mapping i saved or not */
+void        npf_peer_forward_perm_set(npf_peer *p, int i, int perm);
 /* mark every mapping saved or not (a peer saved or loaded from the configuration) */
 void        npf_peer_forward_mark(npf_peer *p, int perm);
+/* forward i's parts and state (npf.h's NPF_FWD_*): 0, -1 a free slot */
+typedef struct npf_fwd_state {
+    char     opt;                   /* 'L', 'D', 'R', or a module's */
+    int      udp, perm;
+    char     bind[64];
+    int      port;                  /* as asked (0: picked) */
+    int      lport;                 /* the port in use: here, or the peer's for -R; 0 not yet */
+    char     host[256];
+    int      hostport;
+    int      state, why_code;       /* NPF_FWD_*, NPF_FWD_WHY_* */
+    char     why[64];
+    int      conns;                 /* connections open now */
+    uint32_t refused;               /* connections the peer refused */
+    char     refused_why[64];
+    void    *ctx;
+    uint64_t ext;                   /* the application's id (a platform mapping), 0 none */
+    char     spec[300];             /* a module's kind: in its form; else what it is, for people */
+} npf_fwd_state;
+int         npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st);
+void        npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx);
+/* the peer of forward number id and its index there; NULL none */
+npf_peer   *npf_peers_fwd_find(const npf_peers *ps, int id, int *idx);
 /* mapping i (0 .. npf_peer_nfwd - 1): NULL for a free slot, else its state
- * ("up", "retry in N s (why)", ...) in state */
+ * ("up", "retry in N s (why)", ...) in state; *spec: what it is, for people
+ * ("local 127.0.0.1:8080 -> 127.0.0.1:80"; a module's kind: its form) */
 const char *npf_peer_forward_info(const npf_peer *p, int i, char *opt, const char **spec, int *perm, char *state,
                                   size_t cap);
 

@@ -1113,6 +1113,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
 static void sig_down(npf_sig *s, const char *why, void *arg)
 {
     npf_node *n = arg;
+    int was_online = n->online && n->sig == s;
     if (s == n->race) {             /* the second access point failed: the first one goes on */
         npf_log("signaling: second access point server %d failed (%s)", n->servers[n->race_server].id, why);
         server_failed(&n->servers[n->race_server], 1);
@@ -1163,6 +1164,8 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
     fail_pending(n);
     node_sig_lost(n);
     schedule_reconnect(n);
+    if (was_online && n->hooks.on_offline)
+        n->hooks.on_offline(n, why, n->hook_arg);
 }
 
 static void connect_server(npf_node *n)

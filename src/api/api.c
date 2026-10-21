@@ -637,7 +637,35 @@ static char *npf_log_json_impl(npf_t *n, int max) { return query(n, 2, max); }
 static char *npf_sessions_json_impl(npf_t *n) { return query(n, 3, 0); }
 static char *npf_public_json_impl(npf_t *n, int close) { return query(n, close ? 5 : 4, 0); }
 
-/* ---- settings, peers, forwards ---- */
+/* ---- the operations (ops.c) ---- */
+
+typedef struct op_job {
+    int  (*fn)(npf_t *n, void *arg);
+    void  *arg;
+    int    rc;
+} op_job;
+
+static void op_run(npf_t *n, void *arg)
+{
+    op_job *j = arg;
+    j->rc = j->fn(n, j->arg);
+}
+
+int npf_api_op(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
+{
+    op_job j;
+    int r;
+    if (!api_enter(n))
+        return n ? NPF_ESTATE : NPF_EINVAL;
+    j.fn = fn;
+    j.arg = arg;
+    j.rc = NPF_OK;
+    r = sync_call(n, op_run, &j);
+    api_leave(n);
+    return r < 0 ? r : j.rc;
+}
+
+/* ---- settings ---- */
 
 typedef struct a_arg {
     int         what, flags, rc, live, code;     /* code: an NPF_E* answer of its own */
@@ -648,15 +676,6 @@ typedef struct a_arg {
     size_t       cap;
     npf_out      o;
 } a_arg;
-
-static int split_words(char *line, char **argv, int max)
-{
-    int argc = 0;
-    char *t, *save;
-    for (t = strtok_r(line, " \t", &save); t && argc < max; t = strtok_r(NULL, " \t", &save))
-        argv[argc++] = t;
-    return argc;
-}
 
 static void a_run(npf_t *n, void *arg)
 {
@@ -673,30 +692,17 @@ static void a_run(npf_t *n, void *arg)
         x->code = l < 0 || (size_t)l >= x->cap ? NPF_ETOOBIG : NPF_OK;
         break;
     }
-    case 6:                                 /* peer_add_argv */
-        x->rc = npf_cmd_peer_add(n, x->argc, x->argv, x->flags, &x->o);
-        break;
     case 1:                                 /* config_set: 1 when it applies at the next start */
+        if (x->flags && (n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS)) {
+            x->code = NPF_EUNAVAIL;         /* the application keeps the settings */
+            break;
+        }
         x->rc = npf_cmd_set(n, x->a, x->b, x->flags, &x->o);
         if (x->rc == 0 && !npf_cmd_is_settable(x->a))
             x->live = 1;
         break;
-    case 2: {                               /* peer_add */
-        char line[1024], *argv[64];
-        int argc;
-        snprintf(line, sizeof line, "%s", x->a);
-        argc = split_words(line, argv, 64);
-        x->rc = npf_cmd_peer_add(n, argc, argv, x->flags, &x->o);
+    default:
         break;
-    }
-    case 3:                                 /* peer_remove */
-        x->rc = npf_cmd_peer_remove(n, x->a, x->flags, &x->o);
-        break;
-    default: {                              /* forward add / del */
-        char *argv[5] = {(char *)x->a, x->what == 4 ? "add" : "del", (char *)x->b, (char *)x->c, "--save"};
-        x->rc = npf_cmd_forward(n, x->what == 4 && x->flags ? 5 : 4, argv, &x->o);
-        break;
-    }
     }
 }
 
@@ -741,93 +747,6 @@ static int npf_config_set_impl(npf_t *n, const char *key, const char *value, int
     x.a = key;
     x.b = value;
     x.flags = save;
-    return action(n, &x, err, errcap);
-}
-
-static int npf_peer_add_argv_impl(npf_t *n, int argc, const char *const *argv, int flags, char *err, size_t errcap)
-{
-    a_arg x;
-    char **w;
-    int i, r = NPF_ENOMEM;
-    if (argc < 1 || argc > 256 || !argv)
-        return NPF_EINVAL;
-    if (!(w = calloc((size_t)argc + 1, sizeof *w)))
-        return NPF_ENOMEM;
-    for (i = 0; i < argc; i++)
-        if (!argv[i] || !(w[i] = strdup(argv[i])))
-            break;
-    if (i == argc) {
-        char **work = malloc(((size_t)argc + 1) * sizeof *work);    /* the command may rearrange it */
-        if (work) {
-            memcpy(work, w, ((size_t)argc + 1) * sizeof *work);
-            memset(&x, 0, sizeof x);
-            x.what = 6;
-            x.argc = argc;
-            x.argv = work;
-            x.flags = flags;
-            r = action(n, &x, err, errcap);
-            free(work);
-        }
-    } else if (!argv[i]) {
-        r = NPF_EINVAL;
-    }
-    for (i = 0; i < argc; i++) {
-        if (w[i])
-            npf_wipe(w[i], strlen(w[i]));   /* a password */
-        free(w[i]);
-    }
-    free(w);
-    return r;
-}
-
-static int npf_peer_add_impl(npf_t *n, const char *spec, int flags, char *err, size_t errcap)
-{
-    a_arg x;
-    memset(&x, 0, sizeof x);
-    if (!spec)
-        return NPF_EINVAL;
-    x.what = 2;
-    x.a = spec;
-    x.flags = flags;
-    return action(n, &x, err, errcap);
-}
-
-static int npf_peer_remove_impl(npf_t *n, const char *name, int unsave, char *err, size_t errcap)
-{
-    a_arg x;
-    memset(&x, 0, sizeof x);
-    if (!name)
-        return NPF_EINVAL;
-    x.what = 3;
-    x.a = name;
-    x.flags = unsave;
-    return action(n, &x, err, errcap);
-}
-
-static int npf_forward_add_impl(npf_t *n, const char *peer, const char *opt, const char *spec, int save, char *err, size_t errcap)
-{
-    a_arg x;
-    memset(&x, 0, sizeof x);
-    if (!peer || !opt || !spec)
-        return NPF_EINVAL;
-    x.what = 4;
-    x.a = peer;
-    x.b = opt;
-    x.c = spec;
-    x.flags = save;
-    return action(n, &x, err, errcap);
-}
-
-static int npf_forward_del_impl(npf_t *n, const char *peer, const char *opt, const char *spec, char *err, size_t errcap)
-{
-    a_arg x;
-    memset(&x, 0, sizeof x);
-    if (!peer || !opt || !spec)
-        return NPF_EINVAL;
-    x.what = 5;
-    x.a = peer;
-    x.b = opt;
-    x.c = spec;
     return action(n, &x, err, errcap);
 }
 
@@ -1306,56 +1225,6 @@ int npf_config_set(npf_t *n, const char *key, const char *value, int save, char 
     if (!api_enter(n))
         return n ? NPF_ESTATE : NPF_EINVAL;
     r = npf_config_set_impl(n, key, value, save, err, errcap);
-    api_leave(n);
-    return r;
-}
-
-int npf_peer_add_argv(npf_t *n, int argc, const char *const *argv, int flags, char *err, size_t errcap)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = npf_peer_add_argv_impl(n, argc, argv, flags, err, errcap);
-    api_leave(n);
-    return r;
-}
-
-int npf_peer_add(npf_t *n, const char *spec, int flags, char *err, size_t errcap)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = npf_peer_add_impl(n, spec, flags, err, errcap);
-    api_leave(n);
-    return r;
-}
-
-int npf_peer_remove(npf_t *n, const char *name, int unsave, char *err, size_t errcap)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = npf_peer_remove_impl(n, name, unsave, err, errcap);
-    api_leave(n);
-    return r;
-}
-
-int npf_forward_add(npf_t *n, const char *peer, const char *opt, const char *spec, int save, char *err, size_t errcap)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = npf_forward_add_impl(n, peer, opt, spec, save, err, errcap);
-    api_leave(n);
-    return r;
-}
-
-int npf_forward_del(npf_t *n, const char *peer, const char *opt, const char *spec, char *err, size_t errcap)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = npf_forward_del_impl(n, peer, opt, spec, err, errcap);
     api_leave(n);
     return r;
 }

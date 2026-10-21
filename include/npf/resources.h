@@ -48,6 +48,7 @@ typedef struct npf_res {
     char desc[NPF_RES_DESC_MAX + 1];
     char path[NPF_RES_PATH_MAX + 1]; /* a web page (tcp/http, tcp/https): the page to open, "" for "/" */
     int  fixed;                     /* npf.conf or the command line: not changed at run time ("fixed": true) */
+    int  persist;                   /* kept in local.json (NPF_PERSIST); not in its JSON */
 } npf_res;
 
 /* a service (tcp, udp) rather than addresses (net, socks) or ports (reverse) */

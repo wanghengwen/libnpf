@@ -16,6 +16,11 @@ if(NPF_BUILD_LIB AND NOT WIN32)
     target_link_libraries(npf_limits_test PRIVATE npf_shared Threads::Threads)
     npf_target_options(npf_limits_test)
     add_test(NAME limits COMMAND npf_limits_test)
+    # npf.h's objects: peers, forwards, resources, events, saving, npf_setup
+    add_executable(npf_objects_test test_objects.c)
+    target_link_libraries(npf_objects_test PRIVATE npf_shared Threads::Threads)
+    npf_target_options(npf_objects_test)
+    add_test(NAME objects COMMAND npf_objects_test)
   endif()
   # the contracts: the initialisers' sizes, changes that cannot be saved
   add_executable(npf_contract_test test_contract.c)

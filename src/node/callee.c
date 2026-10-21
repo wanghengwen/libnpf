@@ -448,6 +448,40 @@ void npf_callee_on_login(npf_callee *d)
 }
 
 /* local commands (D21); returns the exit code, or -2 if cmd is not one of them */
+int npf_callee_password_set(npf_callee *d, const char *np)
+{
+    if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
+        return -1;
+    snprintf(d->password, sizeof d->password, "%s", np);
+    d->fails = 0;
+    d->locked_until = 0;
+    d->lock_secs = 0;
+    return state_save(d) < 0 ? -2 : 0;
+}
+
+int npf_callee_unpair_key(npf_callee *d, const uint8_t *key)
+{
+    int k;
+    if (!key) {
+        d->npaired = 0;
+    } else {
+        for (k = 0; k < d->npaired && memcmp(d->paired[k].pub, key, 32) != 0; k++)
+            ;
+        if (k == d->npaired)
+            return -1;
+        memmove(&d->paired[k], &d->paired[k + 1], (size_t)(d->npaired - k - 1) * sizeof d->paired[0]);
+        d->npaired--;
+    }
+    return state_save(d) < 0 ? -2 : 0;
+}
+
+int npf_callee_owner_reset(npf_callee *d)
+{
+    d->owner = 0;
+    d->owner_reset_pending = 1;
+    return state_save(d) < 0 ? -2 : 0;
+}
+
 int npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, npf_out *o)
 {
     if (strcmp(cmd, "show") == 0) {

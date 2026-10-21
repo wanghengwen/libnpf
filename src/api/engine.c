@@ -19,16 +19,60 @@
 
 /* ---- events ---- */
 
+/* a module's event (npf/module.h): NPF_EV_MODULE under notify */
 void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 {
     char buf[1024];
     va_list ap;
+    if (!n->cb.event && !n->cb.notify)
+        return;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n->cb.notify) {
+        npf_event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = NPF_EV_MODULE;
+        ev.name = name;
+        ev.json = buf;
+        npf_ev_queue(n, &ev);
+    } else {
+        n->cb.event(n->cb.user, name, buf);
+    }
+}
+
+/* one of the library's events: typed (notify), or the legacy name and JSON */
+static void lib_event(npf_t *n, const npf_event *ev, const char *name, const char *fmt, ...)
+#ifdef __GNUC__
+    __attribute__((format(printf, 4, 5)))
+#endif
+    ;
+static void lib_event(npf_t *n, const npf_event *ev, const char *name, const char *fmt, ...)
+{
+    char buf[1024];
+    va_list ap;
+    if (n->cb.notify) {
+        npf_ev_queue(n, ev);
+        return;
+    }
     if (!n->cb.event)
         return;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof buf, fmt, ap);
     va_end(ap);
     n->cb.event(n->cb.user, name, buf);
+}
+
+void npf_ev_account(npf_t *n)
+{
+    npf_event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = NPF_EV_ACCOUNT;
+    ev.number = n->node.account_id;
+    if (n->node.account_id)
+        lib_event(n, &ev, "account", "{\"account_id\":\"%llu\"}", (unsigned long long)n->node.account_id);
+    else
+        lib_event(n, &ev, "account", "{\"account_id\":null}");
 }
 
 /* ---- sessions and media streams by number ---- */
@@ -51,6 +95,16 @@ npf_call *npf_session_call(npf_t *n, uint32_t id)
     return NULL;
 }
 
+/* the peer whose session this is (an outgoing one) */
+static npf_peer *peer_of_call(npf_t *n, npf_call *call)
+{
+    npf_peer *p;
+    for (p = n->peers ? npf_peers_first(n->peers) : NULL; p; p = npf_peer_next(p))
+        if (npf_peer_call(p) == call)
+            return p;
+    return NULL;
+}
+
 static uint32_t sess_add(npf_t *n, npf_call *call)
 {
     if (n->nsess == n->capsess) {           /* an instance has a few at a time, a node up to the limit */
@@ -67,8 +121,20 @@ static uint32_t sess_add(npf_t *n, npf_call *call)
         return 0;
     if (!++n->next_sess)
         n->next_sess = 1;
-    n->sess[n->nsess].id = n->next_sess;
-    n->sess[n->nsess].call = call;
+    {
+        npf_sess *ss = &n->sess[n->nsess];
+        npf_peer *p = peer_of_call(n, call);
+        npf_call_info ci;
+        npf_call_info_get(call, &ci);
+        memset(ss, 0, sizeof *ss);
+        ss->id = n->next_sess;
+        ss->call = call;
+        ss->peer = p ? npf_peer_id(p) : 0;
+        ss->ctx = p ? npf_peer_ctx(p) : NULL;
+        ss->number = ci.number;
+        ss->outgoing = ci.caller;
+        ss->path = npf_path_code(ci.path);
+    }
     n->nsess++;
     return n->next_sess;
 }
@@ -87,9 +153,12 @@ static void sess_end(npf_t *n, npf_call *call, const char *why)
 {
     int i;
     uint32_t id = 0;
+    npf_sess was;
+    memset(&was, 0, sizeof was);
     for (i = 0; i < n->nsess; i++)
         if (n->sess[i].call == call) {
             id = n->sess[i].id;
+            was = n->sess[i];
             n->sess[i] = n->sess[--n->nsess];
             break;
         }
@@ -103,7 +172,21 @@ static void sess_end(npf_t *n, npf_call *call, const char *why)
             i--;
         }
     }
-    if (n->cb.session) {
+    if (n->cb.notify) {                     /* its peer may be gone (removed): the end is ours then */
+        npf_event ev;
+        npf_peer *p = was.peer ? npf_peers_by_id(n->peers, was.peer) : NULL;
+        memset(&ev, 0, sizeof ev);
+        ev.type = NPF_EV_SESSION_DOWN;
+        ev.session = id;
+        ev.peer = was.peer;
+        ev.ctx = p ? npf_peer_ctx(p) : was.ctx;
+        ev.number = was.number;
+        ev.outgoing = was.outgoing;
+        ev.path = was.path;
+        ev.reason = npf_end_code(why, was.peer && !p);
+        ev.why = why ? why : "closed";
+        npf_ev_queue(n, &ev);
+    } else if (n->cb.session) {
         npf_out o = {0};
         npf_out_printf(&o, "{\"why\":");
         npf_out_json_str(&o, why ? why : "closed", strlen(why ? why : "closed"));
@@ -114,7 +197,7 @@ static void sess_end(npf_t *n, npf_call *call, const char *why)
 }
 
 /* the session's description for the session callback and npf_sessions_json */
-void npf_session_info(npf_t *n, npf_call *call, npf_out *o)
+void npf_session_info_out(npf_t *n, npf_call *call, npf_out *o)
 {
     npf_call_info i;
     char peer[40];
@@ -168,7 +251,7 @@ void npf_forget_account(npf_t *n)
     n->node.account_cert_len = 0;
     n->node.account_id = 0;
     n->account_login[0] = 0;
-    npf_emit(n, "account", "{\"account_id\":null}");
+    npf_ev_account(n);
 }
 
 static void account_got(npf_node *node, const npf_json *j, int ok, void *arg)
@@ -201,7 +284,7 @@ static void on_account_lost(npf_node *node, void *arg)
     npf_t *n = arg;
     (void)node;
     unlink(n->cert_path);
-    npf_emit(n, "account", "{\"account_id\":null}");
+    npf_ev_account(n);
 }
 
 /* ---- identity ---- */
@@ -474,7 +557,13 @@ int npf_become_node(npf_t *n, uint64_t number, char *pw_out)
     npf_callee_attach(n->callee, &n->node);
     if (pw_out)
         strcpy(pw_out, pw);
-    npf_emit(n, "enrolled", "{\"number\":\"%llu\"}", (unsigned long long)number);
+    {
+        npf_event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = NPF_EV_ENROLLED;
+        ev.number = number;
+        lib_event(n, &ev, "enrolled", "{\"number\":\"%llu\"}", (unsigned long long)number);
+    }
     return 0;
 }
 
@@ -492,7 +581,15 @@ static void on_enroll_failed(npf_node *node, const char *error, const char *reas
 {
     npf_t *n = arg;
     (void)node;
-    npf_emit(n, "enroll_failed", "{\"error\":\"%s\",\"reason\":\"%s\",\"retry_in\":%d}", error, reason, retry_s);
+    npf_event ev;
+    char why[96];
+    memset(&ev, 0, sizeof ev);
+    ev.type = NPF_EV_ENROLL_FAILED;
+    ev.retry_in_ms = retry_s * 1000;
+    snprintf(why, sizeof why, "%s%s%s", error, reason && *reason ? ": " : "", reason ? reason : "");
+    ev.why = why;
+    lib_event(n, &ev, "enroll_failed", "{\"error\":\"%s\",\"reason\":\"%s\",\"retry_in\":%d}", error, reason,
+              retry_s);
 }
 
 /* signaling on demand: a module's work not done yet keeps the connection */
@@ -510,8 +607,14 @@ static void on_login(npf_node *node, void *arg)
     npf_peers_on_login(n->peers);
     npf_mods_login(n);
     npf_account_info(n);
-    npf_emit(n, "online", "{\"server\":%d,\"account_id\":%s%llu%s}", node->server_id, node->account_id ? "\"" : "",
-             (unsigned long long)node->account_id, node->account_id ? "\"" : "");
+    {
+        npf_event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = NPF_EV_ONLINE;
+        ev.number = node->account_id;
+        lib_event(n, &ev, "online", "{\"server\":%d,\"account_id\":%s%llu%s}", node->server_id,
+                  node->account_id ? "\"" : "", (unsigned long long)node->account_id, node->account_id ? "\"" : "");
+    }
 }
 
 /* the process was suspended or the network changed (node.c's watch) */
@@ -520,7 +623,31 @@ static void on_net_change(npf_node *node, const char *why, void *arg)
     npf_t *n = arg;
     (void)node;
     npf_peers_net_changed(n->peers);
-    npf_emit(n, "network", "{\"why\":\"%s\"}", why);
+    {
+        npf_event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = NPF_EV_NETWORK;
+        ev.why = why;
+        lib_event(n, &ev, "network", "{\"why\":\"%s\"}", why);
+    }
+}
+
+/* signaling lost after a login */
+static void on_offline(npf_node *node, const char *why, void *arg)
+{
+    npf_t *n = arg;
+    npf_event ev;
+    char w[120];
+    size_t i, k = 0;
+    (void)node;
+    for (i = 0; why && why[i] && k + 1 < sizeof w; i++)     /* for the JSON: no quotes or backslashes */
+        if (why[i] != '"' && why[i] != '\\' && (unsigned char)why[i] >= 0x20)
+            w[k++] = why[i];
+    w[k] = 0;
+    memset(&ev, 0, sizeof ev);
+    ev.type = NPF_EV_OFFLINE;
+    ev.why = w;
+    lib_event(n, &ev, "offline", "{\"why\":\"%s\"}", w);
 }
 
 /* UDP on demand: the profile is there, the sessions waiting for it start */
@@ -541,7 +668,7 @@ static void on_event(npf_node *node, const char *type, const npf_json *j, int d,
     size_t len, i, cap;
     (void)node;
     npf_mods_event(n, type, j, d);
-    if (!n->cb.event)
+    if (!n->cb.event && !n->cb.notify)
         return;
     for (i = 0; type[i]; i++)               /* a name of the protocol: nothing to escape */
         if (!((type[i] >= 'a' && type[i] <= 'z') || (type[i] >= '0' && type[i] <= '9') || type[i] == '_'))
@@ -559,8 +686,18 @@ static void on_event(npf_node *node, const char *type, const npf_json *j, int d,
     cap = len + i + 32;
     if (!(buf = malloc(cap)))
         return;
-    snprintf(buf, cap, "{\"type\":\"%s\",\"data\":%.*s}", type, (int)len, s);
-    n->cb.event(n->cb.user, "platform", buf);
+    if (n->cb.notify) {
+        npf_event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = NPF_EV_PLATFORM;
+        ev.name = type;
+        snprintf(buf, cap, "%.*s", (int)len, s);
+        ev.json = buf;
+        npf_ev_queue(n, &ev);
+    } else {
+        snprintf(buf, cap, "{\"type\":\"%s\",\"data\":%.*s}", type, (int)len, s);
+        n->cb.event(n->cb.user, "platform", buf);
+    }
     free(buf);
 }
 
@@ -584,9 +721,21 @@ static void on_call_state(npf_node *node, npf_call *call, int st, const char *wh
     }
     if (st == NPF_CALL_ESTABLISHED && !npf_session_of(n, call)) {
         uint32_t id = sess_add(n, call);
-        if (id && n->cb.session) {
+        if (id && n->cb.notify) {
+            npf_sess *ss = &n->sess[n->nsess - 1];
+            npf_event ev;
+            memset(&ev, 0, sizeof ev);
+            ev.type = NPF_EV_SESSION_UP;
+            ev.session = id;
+            ev.peer = ss->peer;
+            ev.ctx = ss->ctx;
+            ev.number = ss->number;
+            ev.outgoing = ss->outgoing;
+            ev.path = ss->path;
+            npf_ev_queue(n, &ev);
+        } else if (id && n->cb.session) {
             npf_out o = {0};
-            npf_session_info(n, call, &o);
+            npf_session_info_out(n, call, &o);
             n->cb.session(n->cb.user, id, 1, o.p);
             npf_out_free(&o);
         }
@@ -623,6 +772,7 @@ static void on_app_data(npf_node *node, npf_call *call, const uint8_t *buf, size
     npf_t *n = arg;
     uint32_t id = npf_session_of(n, call);
     (void)node;
+    npf_events_flush(n);                    /* SESSION_UP before its data */
     if (id && n->cb.data)
         n->cb.data(n->cb.user, id, buf, len);
 }
@@ -632,6 +782,7 @@ static int on_media_open(npf_node *node, npf_call *call, uint32_t lid, int tag, 
     npf_t *n = arg;
     uint32_t sid = npf_session_of(n, call), id;
     (void)node;
+    npf_events_flush(n);
     if (!sid || !n->cb.media_open || !(id = npf_media_add(n, sid, call, lid)))
         return 0;
     if (!n->cb.media_open(n->cb.user, sid, id, tag)) {
@@ -733,6 +884,16 @@ static void peer_fwd(npf_peer *p, int i, int up, const char *why, void *arg)
     int perm;
     char st[160];
     npf_mods_peer_fwd(n, p, i, up, why);
+    if (n->cb.notify) {
+        npf_event ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = NPF_EV_FORWARD;
+        ev.peer = npf_peer_id(p);
+        ev.forward = (uint32_t)npf_peer_forward_id(p, i);
+        ev.why = why ? why : "";
+        npf_ev_queue(n, &ev);               /* state, reason and ctx: read when delivered */
+        return;
+    }
     if (npf_peer_forward_info(p, i, &opt, &spec, &perm, st, sizeof st)) {
         npf_out o = {0};
         char sp[320];
@@ -764,9 +925,63 @@ static void peer_done(npf_peer *p, const char *why, void *arg)
     npf_out_printf(&o, ",\"why\":");
     npf_out_json_str(&o, why, strlen(why));
     npf_out_printf(&o, "}");
-    if (n->cb.event)
+    if (n->cb.event && !n->cb.notify)       /* typed: NPF_EV_PEER (ended) */
         n->cb.event(n->cb.user, "peer_done", o.p);
     npf_out_free(&o);
+}
+
+static void peer_changed(npf_peer *p, void *arg)
+{
+    npf_t *n = arg;
+    npf_event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = NPF_EV_PEER;
+    ev.peer = npf_peer_id(p);
+    ev.why = npf_peer_last_why(p);
+    npf_ev_queue(n, &ev);                   /* its state and ctx: read when delivered */
+}
+
+static void peer_fwd_gone(npf_peer *p, int i, void *arg)
+{
+    npf_t *n = arg;
+    npf_fwd_state st;
+    npf_event ev;
+    if (npf_peer_forward_state(p, i, &st) < 0)
+        return;
+    memset(&ev, 0, sizeof ev);
+    ev.type = NPF_EV_FORWARD_GONE;
+    ev.peer = npf_peer_id(p);
+    ev.forward = (uint32_t)npf_peer_forward_id(p, i);
+    ev.ctx = st.ctx;
+    npf_ev_queue(n, &ev);
+}
+
+static void peer_gone(npf_peer *p, void *arg)
+{
+    npf_t *n = arg;
+    npf_event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = NPF_EV_PEER_GONE;
+    ev.peer = npf_peer_id(p);
+    ev.ctx = npf_peer_ctx(p);
+    ev.number = npf_peer_number(p);
+    ev.reason = NPF_END_LOCAL;
+    npf_ev_queue(n, &ev);
+}
+
+static void peer_fwd_refused(npf_peer *p, int i, void *arg)
+{
+    npf_t *n = arg;
+    npf_fwd_state st;
+    npf_event ev;
+    if (npf_peer_forward_state(p, i, &st) < 0)
+        return;
+    memset(&ev, 0, sizeof ev);
+    ev.type = NPF_EV_FORWARD_REFUSED;
+    ev.peer = npf_peer_id(p);
+    ev.forward = (uint32_t)npf_peer_forward_id(p, i);
+    ev.why = st.refused_why;
+    npf_ev_queue(n, &ev);
 }
 
 /* public connections (npf_peers_cbs): the modules' */
@@ -884,63 +1099,73 @@ static void conf_merge(npf_conf *dst, const npf_conf *src)
         npf_conf_set(dst, src->key[i], src->val[i]);
 }
 
-static void add_conf_peers(npf_t *n, const npf_conf *c, int tag, const char *base, char *err, size_t errcap, int *bad)
-{
-    const char *line;
-    int i;
-    for (i = 0; !*bad && (line = npf_conf_get_n(c, "node", i)); i++) {
-        npf_peer *p = npf_peers_add_line(n->peers, line, 1, base, err, errcap);
-        if (!p) {
-            *bad = 1;
-            return;
-        }
-        npf_peer_set_tag(p, tag);
-        npf_peer_set_persist(p, 1);         /* kept for good: tried for ever */
-        npf_peer_forward_mark(p, tag == PEER_SAVED || tag == PEER_FIXED);
-    }
-}
-
-/* the devices of local.json saved to be connected at every start (those
- * npf.conf or the overrides name already are theirs) */
-static void add_saved_peers(npf_t *n, char *err, size_t errcap, int *bad)
+/* the peers of local.json saved to be connected at every start, and their
+ * saved forwards (a record that does not make one is left out, with a
+ * warning) */
+static void add_saved_peers(npf_t *n)
 {
     int i, k;
-    for (i = 0; !*bad && i < n->lc.ndev; i++) {
+    for (i = 0; i < n->lc.ndev; i++) {
         npf_ldev *d = &n->lc.dev[i];
-        char *argv[2 * NPF_LOCAL_MAX_FWD + 8], fw[NPF_LOCAL_MAX_FWD][320], path[1600];
-        int argc = 0;
+        npf_peer_new pn;
         npf_peer *p;
+        char host[300], e[300];
+        uint8_t psk[32];
+        int code;
         if (!d->save || npf_peers_find(n->peers, d->target))
             continue;
-        argv[argc++] = d->target;
-        for (k = 0; k < d->nfwd; k++) {
-            char *sp;
-            snprintf(fw[k], sizeof fw[k], "%s", d->fwd[k]);
-            if (!(sp = strchr(fw[k], ' ')))
+        memset(&pn, 0, sizeof pn);
+        if (!(pn.number = npf_number_parse(d->target))) {
+            const char *colon = strrchr(d->target, ':');
+            char path[1600];
+            if (!colon)
                 continue;
-            *sp = 0;
-            argv[argc++] = fw[k];
-            argv[argc++] = sp + 1;
-        }
-        if (d->psk_file[0]) {
-            if (npf_path_is_abs(d->psk_file))
-                snprintf(path, sizeof path, "%s", d->psk_file);
+            if (d->target[0] == '[')
+                snprintf(host, sizeof host, "%.*s", (int)(colon - d->target - 2), d->target + 1);
             else
-                snprintf(path, sizeof path, "%s/%s", n->data_dir, d->psk_file);
-            argv[argc++] = "--psk-file";
-            argv[argc++] = path;
+                snprintf(host, sizeof host, "%.*s", (int)(colon - d->target), d->target);
+            pn.host = host;
+            pn.port = (uint16_t)atoi(colon + 1);
+            if (d->psk_file[0]) {
+                if (npf_path_is_abs(d->psk_file))
+                    snprintf(path, sizeof path, "%s", d->psk_file);
+                else
+                    snprintf(path, sizeof path, "%s/%s", n->data_dir, d->psk_file);
+            }
+            if (npf_direct_psk(d->psk[0] ? d->psk : NULL, d->psk_file[0] ? path : NULL, psk) < 0) {
+                npf_logw("local.json: %s: no key to connect with: left out", d->target);
+                continue;
+            }
+            pn.psk = psk;
         }
-        if (d->psk[0]) {
-            argv[argc++] = "--psk";
-            argv[argc++] = d->psk;
-        }
-        if (!(p = npf_peers_add(n->peers, argc, argv, 1, err, errcap))) {
-            *bad = 1;
-            return;
+        pn.connect = d->on_demand ? NPF_CONNECT_ON_DEMAND : NPF_CONNECT_KEEP;
+        pn.idle_ms = d->idle_ms;
+        p = npf_peers_create(n->peers, &pn, e, sizeof e, &code);
+        npf_wipe(psk, sizeof psk);
+        if (!p) {
+            npf_logw("local.json: %s: %s: left out", d->target, e);
+            continue;
         }
         npf_peer_set_tag(p, PEER_SAVED);
-        npf_peer_set_persist(p, 1);
-        npf_peer_forward_mark(p, 1);
+        for (k = 0; k < d->nfwd; k++) {
+            const npf_lfwd *lf = &d->fwd[k];
+            int r;
+            if (lf->opt == 'L' || lf->opt == 'D' || lf->opt == 'R') {
+                npf_fwd_new fn;
+                memset(&fn, 0, sizeof fn);
+                fn.opt = lf->opt;
+                fn.udp = lf->udp;
+                fn.bind = lf->bind[0] ? lf->bind : NULL;
+                fn.port = lf->port;
+                fn.host = lf->host;
+                fn.hostport = lf->hostport;
+                r = npf_peer_forward_add_parts(p, &fn, 1, 0, e, sizeof e);
+            } else {
+                r = npf_peer_forward_add_kind(p, lf->opt, lf->spec, 1, e, sizeof e);
+            }
+            if (r < 0)
+                npf_logw("local.json: %s: a forward left out: %s", d->target, e);
+        }
     }
 }
 
@@ -999,7 +1224,8 @@ int npf_api_version(void)
     return NPF_API_VERSION;
 }
 
-static const npf_peers_cbs k_peers_cbs = {peer_up, peer_done, peer_fwd, peer_conn, peer_refused, peer_opened};
+static const npf_peers_cbs k_peers_cbs = {peer_up,      peer_done,     peer_fwd,  peer_conn,       peer_refused,
+                                          peer_opened,  peer_changed,  peer_fwd_gone, peer_gone, peer_fwd_refused};
 
 static int create(const npf_options *o, npf_t **out, char *err, size_t errcap);
 
@@ -1040,13 +1266,20 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     uint8_t seed[32];
     npf_node_hooks hooks = {on_login, on_call_state, on_paired, on_event, on_enrolled, on_app_data, on_media_open,
                             on_media_frame, on_media_closed, sig_busy, on_resources, on_net_change,
-                            on_enroll_failed};
-    int have_conf, bad = 0;
-    char e2[300];
+                            on_enroll_failed, on_offline};
+    int have_conf, fail_rc = NPF_EFAIL;
     npf_log_ctx *prev_log;
     *out = NULL;
-    if (!o || (!o->conf_dir && !o->conf_file)) {
-        snprintf(err, errcap, "conf_dir is needed");
+    if (!o || (!o->setup && !o->conf_dir && !o->conf_file)) {
+        snprintf(err, errcap, "conf_dir (or npf_options.setup) is needed");
+        return NPF_EINVAL;
+    }
+    if (o->setup && (o->conf_dir || o->conf_file || !o->data_dir)) {
+        snprintf(err, errcap, "npf_options.setup: no conf_dir or conf_file, and a data_dir");
+        return NPF_EINVAL;
+    }
+    if (o->flags & ~(NPF_OPT_NO_SAVED_SETTINGS | NPF_OPT_NO_SAVED_OBJECTS)) {
+        snprintf(err, errcap, "npf_options.flags: unknown flags");
         return NPF_EINVAL;
     }
     if (!(n = calloc(1, sizeof *n))) {
@@ -1055,6 +1288,8 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     }
     n->role = o->role;
     n->cb = *o->cb;
+    n->opt_flags = o->flags;
+    n->from_setup = o->setup != NULL;
     npf_mods_take(n);                   /* the modules registered by now */
     if (!npf_app_name_valid(o->app_name ? o->app_name : "libnpf")
         || !npf_app_ver_valid(o->app_ver ? o->app_ver : npf_version())) {
@@ -1083,37 +1318,34 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     }
     n->logctx.level = npf_log_get_level();
     prev_log = npf_log_ctx_swap(&n->logctx);
-    /* the read-only configuration */
-    if (o->conf_file && npf_path_is_abs(o->conf_file))
-        snprintf(conf_path, sizeof conf_path, "%s", o->conf_file);
-    else
-        snprintf(conf_path, sizeof conf_path, "%s/%s", o->conf_dir ? o->conf_dir : ".",
-                 o->conf_file ? o->conf_file : "npf.conf");
-    have_conf = npf_conf_load(&n->ro, conf_path) == 0;
+    /* the read-only configuration: npf.conf, or the application's fields */
+    if (o->setup) {
+        snprintf(conf_path, sizeof conf_path, "%s/(npf_setup)", o->data_dir);
+        npf_mkdir_p(o->data_dir);
+        if (npf_setup_conf(o->setup, o->role, o->data_dir, &n->ro, err, errcap) < 0)
+            goto fail_inval;
+        snprintf(n->ro.path, sizeof n->ro.path, "%.1000s", conf_path);
+        have_conf = 1;
+    } else {
+        if (o->conf_file && npf_path_is_abs(o->conf_file))
+            snprintf(conf_path, sizeof conf_path, "%s", o->conf_file);
+        else
+            snprintf(conf_path, sizeof conf_path, "%s/%s", o->conf_dir ? o->conf_dir : ".",
+                     o->conf_file ? o->conf_file : "npf.conf");
+        have_conf = npf_conf_load(&n->ro, conf_path) == 0;
+    }
     if (!have_conf && n->role != NPF_ROLE_DIRECT) {
         snprintf(err, errcap, "cannot read %s", conf_path);
-        npf_log_ctx_swap(prev_log);
-        free_confs(n);
-        free(n->logctx.ring);
-        free(n);
-        return NPF_EFAIL;
+        goto fail;
     }
     if (!have_conf && (size_t)snprintf(n->ro.path, sizeof n->ro.path, "%s", conf_path) >= sizeof n->ro.path) {
         snprintf(err, errcap, "path too long");
-        npf_log_ctx_swap(prev_log);
-        free_confs(n);
-        free(n->logctx.ring);
-        free(n);
-        return NPF_EINVAL;
+        goto fail_inval;
     }
     if (n->ro.bad[0]) {
         snprintf(err, errcap, "%s: the value of '%s' is too long (at most %d characters)", conf_path, n->ro.bad,
                  NPF_CONF_VAL_MAX - 1);
-        npf_log_ctx_swap(prev_log);
-        free_confs(n);
-        free(n->logctx.ring);
-        free(n);
-        return NPF_EINVAL;
+        goto fail_inval;
     }
     {
         char d[1100];
@@ -1125,6 +1357,17 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     }
     if (o->overrides)
         conf_text(&n->ov, o->overrides);
+    if (npf_conf_get(&n->ro, "node", NULL) || npf_conf_get(&n->ov, "node", NULL)) {
+        snprintf(err, errcap, "config: \"node =\" lines are gone: the application makes its peers (npf_peer_create)");
+        goto fail_inval;
+    }
+    if (o->setup) {                         /* one source for each: a field, or the overrides */
+        const char *k = npf_setup_key_taken(&n->ov);
+        if (k) {
+            snprintf(err, errcap, "overrides: '%s' is a field of npf_setup", k);
+            goto fail_inval;
+        }
+    }
     /* the writable directory: the option, the configuration's "dir", conf_dir */
     if (path_set(&n->data_dir, "%s", o->data_dir                        ? o->data_dir
                                      : npf_conf_get(&n->ov, "dir", NULL) ? npf_conf_get(&n->ov, "dir", NULL)
@@ -1142,7 +1385,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
         goto fail;
     }
     conf_merge(&n->conf, &n->ov);
-    {   /* local.json: its settings over the others (its devices: below) */
+    if (!(n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS)) {   /* local.json: its settings over the others */
         int i;
         for (i = 0; i < n->lc.settings.n; i++)
             npf_conf_set(&n->conf, n->lc.settings.key[i], n->lc.settings.val[i]);
@@ -1245,25 +1488,23 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
         n->callee->hosted_trust = atoi(npf_conf_get(&n->conf, "hosted_trust", "1"));
         npf_callee_attach(n->callee, &n->node);
     }
-    /* peers: npf.conf (fixed), the overrides, local.json (saved at run time) */
+    /* peers: the application's, and those it saved in local.json */
     if (!(n->peers = npf_peers_new(&n->node, &n->lc, &k_peers_cbs, n))) {
         snprintf(err, errcap, "no memory");
         goto fail;
     }
-    /* peer_idle = S: the kept devices on demand (a phone), the session ending S s after its last connection */
-    npf_peers_set_idle(n->peers, atoi(npf_conf_get(&n->conf, "peer_idle", "0")) * 1000);
+    if (n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS)
+        npf_peers_no_cache(n->peers);
+    {   /* peer_idle = S: the peers on demand without an idle time of their own end S s after their last connection */
+        int idle = atoi(npf_conf_get(&n->conf, "peer_idle", "0"));
+        npf_peers_set_idle(n->peers, (idle > 0 ? idle : 300) * 1000);
+    }
     /* the modules, before the peers come: their forwards' callbacks go to them */
     if (npf_mods_create(n, err, errcap) < 0)
         goto fail;
-    if (n->role == NPF_ROLE_NODE) {
-        add_conf_peers(n, &n->ro, PEER_FIXED, n->conf_dir, e2, sizeof e2, &bad);
-        add_conf_peers(n, &n->ov, PEER_OPTION, NULL, e2, sizeof e2, &bad);
-        add_saved_peers(n, e2, sizeof e2, &bad);
-        if (bad) {
-            snprintf(err, errcap, "config: %s", e2);
-            goto fail;
-        }
-    }
+    /* a long-running role brings back what it saved (a client's one-off tasks do not) */
+    if (n->role != NPF_ROLE_CLIENT && !(n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS))
+        add_saved_peers(n);
     /* the file as read and the overrides were for the start: the merged conf stays */
     npf_conf_free(&n->ro);
     npf_conf_free(&n->ov);
@@ -1287,6 +1528,8 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     npf_log_ctx_swap(prev_log);
     *out = n;
     return NPF_OK;
+fail_inval:
+    fail_rc = NPF_EINVAL;
 fail:
     npf_mods_end(n, 2);                     /* the modules made: what they keep of the peers first */
     if (n->peers)
@@ -1307,12 +1550,14 @@ fail:
     npf_api_fini(n);
     free(n->logctx.ring);
     free(n);
-    return NPF_EFAIL;
+    return fail_rc;
 }
 
 /* the start of the run, on the loop's thread */
 void npf_engine_begin(npf_t *n)
 {
+    n->started_unix = npf_unix_ms() / 1000;
+    npf_events_start(n);
     if (n->role == NPF_ROLE_NODE)
         npf_log("npf %s: %s %llu, %d peer(s), UDP port %u", npf_version(), n->cfg.callable ? "node" : "client",
                 n->cfg.callable ? (unsigned long long)n->number : 0ULL, npf_peers_count(n->peers), n->node.udp_port);
@@ -1350,7 +1595,12 @@ int npf_engine_end_step(npf_t *n)
         n->dl = NULL;
         npf_node_stop(&n->node);
         n->torn_down = 1;
-        npf_emit(n, "stopped", "{}");
+        if (n->cb.notify) {
+            npf_events_stop(n);             /* NPF_EV_STOPPED, the last */
+        } else if (n->cb.event) {
+            n->cb.event(n->cb.user, "stopped", "{}");
+        }
+        n->started_unix = 0;
         return -1;
     }
 }
@@ -1384,6 +1634,7 @@ void npf_engine_free(npf_t *n)
         npf_node_stop(&n->node);
     }
     npf_mods_destroy(n);
+    npf_events_clear(n);                    /* before its loop: a timer of it */
     npf_loop_free(n->loop);
     if (n->rt)
         npf_runtime_leave(n->rt, n->rt_slot);

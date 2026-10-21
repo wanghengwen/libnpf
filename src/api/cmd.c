@@ -124,46 +124,56 @@ static const char *peer_of(const npf_call_info *i, char *buf, size_t cap)
 
 const char *npf_cmd_tag_name(int tag)
 {
-    return tag == PEER_SAVED ? "saved" : tag == PEER_FIXED ? "config" : tag == PEER_OPTION ? "--node"
-         : tag == PEER_PLATFORM ? "platform" : "temporary";
+    return tag == PEER_SAVED ? "saved" : tag == PEER_PLATFORM ? "platform" : "temporary";
 }
 
+static const char *const fwd_state_names[] = {"waiting", "up", "failed"};
 
+
+/* a peer's forwards: their parts and state (npf_forward_info's fields) */
 static void mappings_json(const npf_peer *p, npf_out *o)
 {
     int i, first = 1;
     npf_out_printf(o, "[");
     for (i = 0; i < npf_peer_nfwd(p); i++) {
-        char opt, st[120], t[4];
-        const char *spec;
+        npf_fwd_state st;
+        char t[2], text[120];
+        const char *label;
         int perm, g = 1;
-        if (!npf_peer_forward_info(p, i, &opt, &spec, &perm, st, sizeof st))
+        if (npf_peer_forward_state(p, i, &st) < 0
+            || !npf_peer_forward_info(p, i, &t[0], &label, &perm, text, sizeof text))
             continue;
         npf_out_printf(o, "%s{", first ? "" : ",");
         first = 0;
-        snprintf(t, sizeof t, "-%c", opt);
         jkint(o, &g, "id", npf_peer_forward_id(p, i));
-        jkstr(o, &g, "type", t);
-        jkstr(o, &g, "spec", spec);
-        jkstr(o, &g, "proto", npf_peer_forward_udp(p, i) ? "udp" : "tcp");
-        {                               /* its parts: the apps need not split spec ("25000:[::1]:80") */
-            int port, hport;
-            const char *host;
-            if (npf_peer_forward_ends(p, i, &port, &host, &hport) == 0) {
-                jkint(o, &g, "port", port);
-                if (host[0]) {
-                    jkstr(o, &g, "target_host", host);
-                    jkint(o, &g, "target_port", hport);
-                }
+        if (st.opt == 'L' || st.opt == 'D' || st.opt == 'R') {
+            jkstr(o, &g, "kind", st.opt == 'L' ? "local" : st.opt == 'D' ? "socks" : "remote");
+            jkstr(o, &g, "proto", st.udp ? "udp" : "tcp");
+            jkstr(o, &g, "listen_host", st.bind);
+            jkint(o, &g, "port", st.port);              /* as asked: 0 picked */
+            jkint(o, &g, "listen_port", st.lport);      /* in use, 0 not yet */
+            if (st.opt != 'D') {
+                jkstr(o, &g, "target_host", st.host);
+                jkint(o, &g, "target_port", st.hostport);
             }
+        } else {                                        /* a module's kind, in its form */
+            t[1] = 0;
+            jkstr(o, &g, "kind", t);
+            jkstr(o, &g, "spec", st.spec);
         }
         jkey(o, &g, "saved");
         npf_out_printf(o, "%s", perm ? "true" : "false");
-        if (npf_peer_forward_ext(p, i)) {
+        if (st.ext) {
             jkey(o, &g, "platform_id");
-            npf_out_printf(o, "\"%llu\"", (unsigned long long)npf_peer_forward_ext(p, i));
+            npf_out_printf(o, "\"%llu\"", (unsigned long long)st.ext);
         }
-        jkstr(o, &g, "state", st);
+        jkstr(o, &g, "state", fwd_state_names[st.state]);
+        jkstr(o, &g, "status", text);                   /* for people: "up", "retry in N s (why)" */
+        jkint(o, &g, "conns", st.conns);
+        if (st.refused) {
+            jkint(o, &g, "refused", st.refused);
+            jkstr(o, &g, "refused_why", st.refused_why);
+        }
         npf_out_printf(o, "}");
     }
     npf_out_printf(o, "]");
@@ -303,7 +313,10 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
         jkstr(o, &g, "label", npf_peer_label(p)[0] ? npf_peer_label(p) : NULL);
         jkstr(o, &g, "nick", npf_peer_nick(p)[0] ? npf_peer_nick(p) : NULL);
         jkey(o, &g, "saved");
-        npf_out_printf(o, "%s", npf_peer_tag(p) == PEER_SAVED || npf_peer_tag(p) == PEER_FIXED ? "true" : "false");
+        npf_out_printf(o, "%s", npf_peer_tag(p) == PEER_SAVED ? "true" : "false");
+        jkint(o, &g, "peer_id", npf_peer_id(p));
+        jkstr(o, &g, "connect", npf_peer_connect_mode(p) == NPF_CONNECT_ON_DEMAND ? "on_demand"
+                              : npf_peer_connect_mode(p) == NPF_CONNECT_ONCE ? "once" : "keep");
         jkstr(o, &g, "source", npf_cmd_tag_name(npf_peer_tag(p)));
         jkstr(o, &g, "status", npf_peer_status(p, b, sizeof b));
         if (npf_peer_needs_password(p)) {   /* not paired: the console asks for its password */
@@ -323,7 +336,6 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
             npf_out_printf(o, "true");
         }
         jkstr(o, &g, "path", npf_peer_call(p) ? npf_call_path(npf_peer_call(p)) : NULL);
-        jkstr(o, &g, "forwards", npf_peer_forwards(p, b, sizeof b));
         jkey(o, &g, "mappings");
         mappings_json(p, o);
         if (npf_peer_resources(p)) {        /* what it published, as last heard */
@@ -610,7 +622,7 @@ static void stop_timer(npf_loop *loop, void *arg)
 
 
 /* libnpf's own commands (npf_cmd_run below): no module takes these names */
-static const char *const builtin_cmds[] = {"id", "status", "forward", "resource", "node", "get", "set", "log",
+static const char *const builtin_cmds[] = {"id", "status", "resource", "get", "set", "log",
                                            "netcheck", "dump", "stop", "show", "passwd", "unpair", "owner-reset",
                                            NULL};
 
@@ -647,12 +659,8 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
             status_text(c, o);
         return 0;
     }
-    if (strcmp(cmd, "forward") == 0)
-        return npf_cmd_forward(c, argc - 1, argv + 1, o);
     if (strcmp(cmd, "resource") == 0)
         return npf_cmd_resource(c, argc, argv, o);
-    if (strcmp(cmd, "node") == 0)
-        return npf_cmd_node(c, argc, argv, cb, user, o);
     if (strcmp(cmd, "get") == 0) {
         char b[600];
         int i;
@@ -739,7 +747,7 @@ void npf_cmd_sessions_json(npf_t *c, npf_out *o)
     for (i = 0; i < c->nsess; i++) {
         if (i)
             npf_out_printf(o, ",");
-        npf_session_info(c, c->sess[i].call, o);
+        npf_session_info_out(c, c->sess[i].call, o);
     }
     npf_out_printf(o, "]\n");
 }

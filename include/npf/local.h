@@ -7,7 +7,11 @@
  *        "name": "dev",                                npf connect/devices --name: stands for the number
  *        "nick": "上海测试机",                         --nick: a note to remember it by
  *        "save": true,                                 connect --save: connected at every start
- *        "forwards": ["-L 28290:127.0.0.1:28290"],     its saved forwards
+ *        "connect": "on_demand", "idle_ms": 300000,     a saved peer on demand (npf_peer_opt.connect)
+ *        "forwards": [{"kind": "local", "proto": "tcp", "listen": "127.0.0.1",
+ *                      "port": 28290, "host": "127.0.0.1", "hostport": 28290}],
+ *                                                      its saved forwards (kind local, socks,
+ *                                                      remote; a module's: its letter and "spec")
  *        "psk_file": "key", "psk": "...",              a direct peer's key
  *        "key": "<base64url>",                         the pinned public key (pairing)
  *        "resources": [...],                           what it published, as last heard (resources.h)
@@ -31,15 +35,28 @@
 #define NPF_LOCAL_MAX_EXT   8       /* the modules' keys, per device */
 #define NPF_NICK_MAX        128     /* bytes of UTF-8 (the platform takes 128) */
 
+/* a saved forward */
+typedef struct npf_lfwd {
+    char opt;                       /* 'L', 'D', 'R', or a module's kind (its capital letter) */
+    int  udp;
+    char bind[64];
+    int  port;                      /* as asked: 0 picked */
+    char host[256];
+    int  hostport;
+    char spec[300];                 /* a module's kind: in its own form */
+} npf_lfwd;
+
 typedef struct npf_ldev {
     char    target[300];            /* a number, or HOST:PORT */
     char    name[33];
     char    nick[NPF_NICK_MAX + 1];
     int     save;
+    int     on_demand;              /* a saved peer's connect: NPF_CONNECT_ON_DEMAND (else KEEP) */
+    int     idle_ms;                /* ... its idle time, 0: the instance's */
     char    psk_file[512];
     char    psk[64];
     int     nfwd;
-    char  **fwd;                    /* nfwd of "-L SPEC", at most NPF_LOCAL_MAX_FWD (npf_local_fwd_*) */
+    npf_lfwd *fwd;                  /* nfwd saved forwards, at most NPF_LOCAL_MAX_FWD (npf_local_fwd_*) */
     int     has_key;
     uint8_t key[32];
     char   *resources;              /* its resources as last heard: a JSON array (npf_res_normalize), or NULL */
@@ -55,13 +72,16 @@ typedef struct npf_local {
     int       ndev, cap;
     npf_ldev *dev;                  /* grown as needed, at most NPF_LOCAL_MAX_DEV */
     char     *resources;            /* what this node publishes: a JSON array, or NULL (none) */
+    int       unsaved;              /* the last save failed: what is in memory is not in the file yet */
 } npf_local;
 
 /* local.json in dir (converting the files of earlier versions once). A
  * missing file is an empty record. Returns 0, or -1 with err (unreadable,
  * not our JSON). */
 int  npf_local_load(npf_local *l, const char *dir, char *err, size_t errcap);
-int  npf_local_save(const npf_local *l);
+/* the whole record into the file (atomically); 0, or -1 (l->unsaved set
+ * until a save succeeds) */
+int  npf_local_save(npf_local *l);
 /* frees what the record holds (settings, start options, devices); l is empty after */
 void npf_local_free(npf_local *l);
 /* the start options: one more (0, -1 full or out of memory), or none */
@@ -82,8 +102,9 @@ npf_ldev *npf_local_dev(npf_local *l, const char *target, int create);
 npf_ldev *npf_local_by_name(npf_local *l, const char *name);
 /* forget a device: its record goes (name, nick, saved forwards, key); 0, -1 none */
 int  npf_local_drop(npf_local *l, const char *target);
-int  npf_local_fwd_add(npf_ldev *d, const char *opt, const char *spec);   /* 0, -1 full */
-int  npf_local_fwd_del(npf_ldev *d, const char *opt, const char *spec);   /* 0, -1 none */
+int  npf_local_fwd_add(npf_ldev *d, const npf_lfwd *f);    /* 0 (there already too), -1 full */
+int  npf_local_fwd_del(npf_ldev *d, const npf_lfwd *f);    /* 0, -1 none */
+int  npf_local_fwd_same(const npf_lfwd *a, const npf_lfwd *b);
 void npf_local_fwd_clear(npf_ldev *d);
 /* a module's key in the device's record (a key of its own, not one of the
  * above): its value as JSON text, NULL none; set (json NULL: removed) 0, or

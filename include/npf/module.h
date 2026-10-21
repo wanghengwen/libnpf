@@ -78,10 +78,8 @@ typedef struct npf_module {
      * the module keeps of them in the record goes with them */
     void (*fwds_saved)(npf_t *n, npf_ldev *d);
 
-    /* the command line: commands of its own; "node" without arguments (the
-     * nodes known): 1 when the module answers (cb), 0 for the local list */
+    /* the command line (npf_command): commands of its own */
     const npf_mod_cmd *cmds;
-    int  (*node_list)(npf_t *n, npf_text_cb cb, void *user, npf_out *o, int *rc);
 
     /* the status: keys of its own in the JSON object (npf_mod_jkey for each,
      * first as there), lines of its own in the text */
@@ -137,7 +135,6 @@ void npf_mods_nick_set(npf_t *n, const char *target, const char *nick);
 void npf_mods_fwds_saved(npf_t *n, npf_ldev *d);
 /* a module's command: 1 found (*rc its result), 0 none of that name */
 int  npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o, int *rc);
-int  npf_mods_node_list(npf_t *n, npf_text_cb cb, void *user, npf_out *o, int *rc);
 void npf_mods_status_json(npf_t *n, npf_out *o, int *first);
 void npf_mods_status_text(npf_t *n, npf_out *o);
 /* -1: not a module's key; else check's result */

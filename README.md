@@ -30,7 +30,7 @@ cmake --install build --prefix "$PWD/install"     # libnpf.so / libnpf.a、npf.h
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
 | `NPF_BUILD_TESTS` | ON | 单元测试、API 测试、模糊测试 |
-| `NPF_BUILD_EXAMPLES` | ON | `examples/device.c` |
+| `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`、`examples/client.c` |
 | `NPF_PEERS` | ON | 本节点主动连接别的节点；只被连接的设备可以关掉 |
 | `NPF_WITH_TLS` | ON | `wss://`、`https://`（mbedTLS 3.6） |
 | `NPF_USE_OPENSSL` | OFF | 用 OpenSSL 3 代替 mbedTLS（服务器上用） |
@@ -45,33 +45,38 @@ Linux 上的 `libnpf.a` 是一个可重定位目标，除 `npf.h` 的函数外�
 ```c
 #include "npf.h"
 
+npf_setup su;
 npf_options o;
 npf_callbacks cb;
 npf_t *n;
 char err[256];
 
-npf_options_init(&o);
+npf_setup_init(&su);
+su.roots = roots;               /* 平台的根公钥（字节） */
+su.nroots = 1;
+su.serverlist = list;           /* 签名的服务器列表（字节） */
+su.serverlist_len = list_len;
 npf_callbacks_init(&cb);
-cb.event = on_event;            /* "online"、"enrolled"、"stopped" ... */
-cb.session = on_session;        /* 会话建立、结束 */
+cb.notify = on_notify;          /* 类型化的事件：上线、会话、对端、转发 ... */
 cb.data = on_data;              /* 对端发来的应用数据 */
-o.conf_dir = conf_dir;          /* 应用决定的目录，只读：npf.conf、根公钥、服务器列表 */
+npf_options_init(&o);
+o.setup = &su;                  /* 不需要配置文件 */
 o.data_dir = data_dir;          /* 可写：身份、编号、配对状态 */
 o.role = NPF_ROLE_NODE;
 o.cb = &cb;
 if (npf_create(&o, &n, err, sizeof err) != NPF_OK || npf_start(n) != NPF_OK)
     return 1;
-/* ... npf_peer_add、npf_forward_add、npf_session_send、npf_media_open ... */
+/* ... npf_peer_create、npf_forward_create、npf_resource_put、npf_session_send、npf_media_open ... */
 npf_destroy(n);
 ```
 
-完整的设备示例见 `examples/device.c`：用型号凭证自动注册、保持在线、把对端发来的数据原样发回。
+完整的示例见 `examples/device.c`（用型号凭证自动注册、发布一个网页、保持在线、把对端发来的数据原样发回）和 `examples/client.c`（按编号和口令连接设备，建一条本地转发）。对端、转发、资源都是类型化的对象，库里没有它们的命令语法。
 
 不经平台也能用：`NPF_ROLE_DIRECT` 加预共享密钥（Noise_NNpsk0），两端直接 UDP + AnLiu。
 
 ## 模块
 
-程序可以在 libnpf 之外加自己的功能，而不改库本身：`include/npf/module.h` 定义了模块的钩子（登录、平台事件、会话状态、对端的转发、自己的命令和配置键、状态里的字段），`npf/peers.h` 的 `npf_fwd_kind` 让模块增加一种转发。模块是程序自己的代码，在程序自己的构建里编译（链接静态目标 `npf_common`），运行时用 `npf_register_module` 注册，库本身不用改、也不用重新配置；见 `docs/design/libnpf.md` 第 11 节。
+程序可以在 libnpf 之外加自己的功能，而不改库本身：`include/npf/module.h` 定义了模块的钩子（登录、平台事件、会话状态、对端的转发、自己的命令和配置键、状态里的字段），`npf/peers.h` 的 `npf_fwd_kind` 让模块增加一种转发。模块是程序自己的代码，在程序自己的构建里编译（链接静态目标 `npf_common`），运行时用 `npf_register_module` 注册，库本身不用改、也不用重新配置；见 `docs/design/libnpf.md` 第 12 节。
 
 ## 目录
 

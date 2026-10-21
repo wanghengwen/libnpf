@@ -107,7 +107,8 @@ typedef struct npf_sublink_stats {
     int         connect_ms;         /* from the open to the other side's CONNECT reply: the target reached; -1 never */
     int         first_byte_ms;      /* from the open to the first byte written to the local socket; -1 none */
     const char *end;                /* local_closed / peer_closed (who closed first), target_failed (the
-                                     * other side could not reach the target), peer_reset, local_reset,
+                                     * other side could not reach the target), target_refused (its policy:
+                                     * not a resource it published), peer_reset, local_reset,
                                      * session_ended */
 } npf_sublink_stats;
 

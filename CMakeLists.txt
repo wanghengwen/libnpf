@@ -146,19 +146,21 @@ add_library(npf_common STATIC
   # the library: npf.h, the engine, the commands, published resources, modules
   src/api/engine.c
   src/api/cmd.c
-  src/api/nodes.c
   src/api/publish.c
   src/api/platform.c
   src/api/module.c
+  src/api/ops.c
+  src/api/events.c
+  src/api/setup.c
   src/api/api.c
 )
 # the version (npf_version, the installers' names): the program's project(), else libnpf's
 target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
 # the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)
 if(NPF_HAS_PEERS)
-  target_sources(npf_common PRIVATE src/node/peers.c src/api/cmd_peers.c)
+  target_sources(npf_common PRIVATE src/node/peers.c)
 else()
-  target_sources(npf_common PRIVATE src/node/peers_none.c src/api/cmd_peers_none.c)
+  target_sources(npf_common PRIVATE src/node/peers_none.c)
   target_compile_definitions(npf_common PUBLIC NPF_NO_PEERS)
 endif()
 # src/api: the internals (npf_int.h), for a program's modules too

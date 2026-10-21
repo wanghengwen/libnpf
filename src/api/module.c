@@ -240,15 +240,6 @@ int npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, np
     return 0;
 }
 
-int npf_mods_node_list(npf_t *n, npf_text_cb cb, void *user, npf_out *o, int *rc)
-{
-    const npf_module *m;
-    if (!n->mods_made)
-        return 0;
-    EACH(m) if (m->node_list && m->node_list(n, cb, user, o, rc)) return 1;
-    return 0;
-}
-
 int npf_mods_check(npf_t *n, const char *k, const char *v, npf_out *o)
 {
     const npf_module *m;

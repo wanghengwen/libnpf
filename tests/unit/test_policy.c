@@ -214,31 +214,6 @@ int test_policy(void)
         }
     }
 
-    /* forward specs: empty fields kept, IPv6 in brackets; an empty or "*"
-     * address is every address (as ssh); none without peers (NPF_PEERS=OFF) */
-#ifndef NPF_NO_PEERS
-    {
-        char s[128], *v[4];
-        int n;
-        snprintf(s, sizeof s, ":1089");
-        n = npf_fwd_split(s, v, 4);
-        CHECK(n == 2 && !*v[0] && strcmp(v[1], "1089") == 0 && strcmp(npf_fwd_bind(v[0]), "0.0.0.0") == 0,
-              "-D :1089 binds every address");
-        snprintf(s, sizeof s, "*:8080:127.0.0.1:80");
-        n = npf_fwd_split(s, v, 4);
-        CHECK(n == 4 && strcmp(npf_fwd_bind(v[0]), "0.0.0.0") == 0 && strcmp(v[2], "127.0.0.1") == 0, "*:8080:...");
-        snprintf(s, sizeof s, "8080:[::1]:80");
-        n = npf_fwd_split(s, v, 4);
-        CHECK(n == 3 && strcmp(v[1], "::1") == 0 && strcmp(v[2], "80") == 0, "an IPv6 target in brackets");
-        snprintf(s, sizeof s, "[::]:1080");
-        n = npf_fwd_split(s, v, 4);
-        CHECK(n == 2 && strcmp(npf_fwd_bind(v[0]), "::") == 0 && strcmp(v[1], "1080") == 0, "an IPv6 bind address");
-        snprintf(s, sizeof s, "1080");
-        CHECK(npf_fwd_split(s, v, 4) == 1, "a port alone");
-        snprintf(s, sizeof s, "1:2:3:4:5");
-        CHECK(npf_fwd_split(s, v, 4) == -1, "too many fields");
-    }
-#endif
 
     /* UDP (data-channel.md 15): only "udp" resources let it through; "lan"
      * and "*" (net, socks) are TCP only, and a udp resource opens no TCP */

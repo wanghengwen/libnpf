@@ -86,7 +86,7 @@ static void relay_apply(npf_t *c, const char *type, const npf_json *j)
         npf_mods_account(c, 1);             /* its mappings saved on the platform, its devices' nicks */
         npf_peers_retry_now(c->peers);      /* its devices let them in now */
         npf_account_info(c);
-        npf_emit(c, "account", "{\"account_id\":\"%llu\"}", (unsigned long long)n->account_id);
+        npf_ev_account(c);
     } else if (strcmp(type, "account_logout") == 0 || strcmp(type, "account_delete") == 0) {
         npf_log("account %llu: %s", (unsigned long long)n->account_id, type[8] == 'l' ? "logged out" : "deleted");
         npf_forget_account(c);

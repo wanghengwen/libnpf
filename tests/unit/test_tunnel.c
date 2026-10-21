@@ -443,8 +443,8 @@ int test_tunnel(void)
     close(sp2[1]);
     for (i = 0; i < 40; i++)
         npf_loop_once(loop, 5);
-    CHECK(strcmp(done_end, "target_failed") == 0 && done_st.connect_ms < 0 && done_st.first_byte_ms < 0,
-          "sublink_done of the refused target: ended %s (target reached %d ms)", done_end, done_st.connect_ms);
+    CHECK(strcmp(done_end, "target_refused") == 0 && done_st.connect_ms < 0 && done_st.first_byte_ms < 0,
+          "sublink_done of the refused target: ended %s (the policy: target_refused) (target reached %d ms)", done_end, done_st.connect_ms);
 
     /* a rate group: 3 MB at 2 MB/s (1 s of burst) takes about a second */
     {

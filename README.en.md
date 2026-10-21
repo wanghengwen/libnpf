@@ -30,7 +30,7 @@ cmake --install build --prefix "$PWD/install"     # libnpf.so / libnpf.a, npf.h,
 | Option | Default | |
 | --- | --- | --- |
 | `NPF_BUILD_TESTS` | ON | unit tests, API tests, fuzzing |
-| `NPF_BUILD_EXAMPLES` | ON | `examples/device.c` |
+| `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`, `examples/client.c` |
 | `NPF_PEERS` | ON | sessions this node starts to other nodes; off for a device that is only called |
 | `NPF_WITH_TLS` | ON | `wss://`, `https://` (mbedTLS 3.6) |
 | `NPF_USE_OPENSSL` | OFF | OpenSSL 3 instead of mbedTLS (servers) |
@@ -45,33 +45,38 @@ The public interface is `include/npf.h` alone; the developer's guide is [docs/de
 ```c
 #include "npf.h"
 
+npf_setup su;
 npf_options o;
 npf_callbacks cb;
 npf_t *n;
 char err[256];
 
-npf_options_init(&o);
+npf_setup_init(&su);
+su.roots = roots;               /* the platform's root keys (bytes) */
+su.nroots = 1;
+su.serverlist = list;           /* its signed server list (bytes) */
+su.serverlist_len = list_len;
 npf_callbacks_init(&cb);
-cb.event = on_event;            /* "online", "enrolled", "stopped" ... */
-cb.session = on_session;        /* a session up, down */
-cb.data = on_data;              /* the peer's application data */
-o.conf_dir = conf_dir;          /* the application's directory, read only: npf.conf, the root key, the server list */
+cb.notify = on_notify;          /* typed events: online, sessions, peers, forwards ... */
+cb.data = on_data;              /* application data from a peer */
+npf_options_init(&o);
+o.setup = &su;                  /* no configuration file needed */
 o.data_dir = data_dir;          /* writable: identity, number, pairing state */
 o.role = NPF_ROLE_NODE;
 o.cb = &cb;
 if (npf_create(&o, &n, err, sizeof err) != NPF_OK || npf_start(n) != NPF_OK)
     return 1;
-/* ... npf_peer_add, npf_forward_add, npf_session_send, npf_media_open ... */
+/* ... npf_peer_create, npf_forward_create, npf_resource_put, npf_session_send, npf_media_open ... */
 npf_destroy(n);
 ```
 
-`examples/device.c` is a whole device: it enrols with its model credential, stays online, and sends back what a peer sends it.
+`examples/device.c` is a whole device (it enrols with its model credential, publishes a web page, stays online and sends back what a peer sends it), and `examples/client.c` a client (it connects to a device by its number and password and opens a local forward to it). Peers, forwards and resources are typed objects: the library has no command syntax for them.
 
 Without the platform: `NPF_ROLE_DIRECT` with a pre-shared key (Noise_NNpsk0), UDP and AnLiu straight between the two ends.
 
 ## Modules
 
-A program can add features of its own without changing the library: `include/npf/module.h` defines a module's hooks (login, the platform's events, the sessions' states, the peers' forwards, commands and configuration keys of its own, keys in the status), and `npf_fwd_kind` in `npf/peers.h` adds a kind of forward. Modules are the program's own code, built in its own build (linking the static target `npf_common`) and registered at run time with `npf_register_module` before the instances are created; the library itself is neither changed nor configured for them (`docs/design/libnpf.md`, section 11).
+A program can add features of its own without changing the library: `include/npf/module.h` defines a module's hooks (login, the platform's events, the sessions' states, the peers' forwards, commands and configuration keys of its own, keys in the status), and `npf_fwd_kind` in `npf/peers.h` adds a kind of forward. Modules are the program's own code, built in its own build (linking the static target `npf_common`) and registered at run time with `npf_register_module` before the instances are created; the library itself is neither changed nor configured for them (`docs/design/libnpf.md`, section 12).
 
 ## Layout
 

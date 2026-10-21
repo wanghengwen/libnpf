@@ -42,7 +42,7 @@ static void on_wake(npf_loop *l, void *arg) { (void)l; (void)arg; woken++; }
 static int init_side(side *s, npf_loop *loop)
 {
     npf_node_cfg cfg;
-    npf_node_hooks hooks = {NULL, on_state, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    npf_node_hooks hooks = {NULL, on_state, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
     npf_identity id;
     uint8_t seed[32];
     memset(s, 0, sizeof *s);
