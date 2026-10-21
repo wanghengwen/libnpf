@@ -397,8 +397,8 @@ int main(void)
     fo.target.host = "127.0.0.1";
     fo.target.port = (uint16_t)echo;
     fo.flags = NPF_PERSIST;
-    fo.listen.host = "127.0.0.2";
-    check(npf_forward_create(b, peer, &fo, &other, err, sizeof err) == NPF_OK && file_has(db, "\"listen\": \"127.0.0.2\""),
+    fo.listen.host = "0.0.0.0";        /* every address (macOS has 127.0.0.1 alone on lo0) */
+    check(npf_forward_create(b, peer, &fo, &other, err, sizeof err) == NPF_OK && file_has(db, "\"listen\": \"0.0.0.0\""),
           "a saved forward: in local.json as a record");
     check(file_has(db, "\"port\": 0"), "its port as asked: 0");
     chmod(db, 0500);
