@@ -1016,6 +1016,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     }
     n->role = o->role;
     n->cb = *o->cb;
+    npf_mods_take(n);                   /* the modules registered by now */
     if (!npf_app_name_valid(o->app_name ? o->app_name : "libnpf")
         || !npf_app_ver_valid(o->app_ver ? o->app_ver : npf_version())) {
         snprintf(err, errcap, "app_name: 1..32 of a-z 0-9 . _ -; app_ver: up to 32 printable characters");

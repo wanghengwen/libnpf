@@ -18,5 +18,10 @@ if(NPF_BUILD_LIB AND NOT WIN32)
   target_link_libraries(npf_lifecycle_test PRIVATE npf_common Threads::Threads)
   npf_target_options(npf_lifecycle_test)
   add_test(NAME lifecycle COMMAND npf_lifecycle_test)
+  # a program's module (npf/module.h): its own code on the internals
+  add_executable(npf_module_test test_module.c)
+  target_link_libraries(npf_module_test PRIVATE npf_common Threads::Threads)
+  npf_target_options(npf_module_test)
+  add_test(NAME module COMMAND npf_module_test)
 endif()
 

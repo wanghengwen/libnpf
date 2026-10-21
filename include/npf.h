@@ -217,9 +217,9 @@ NPF_API int npf_forward_del(npf_t *n, const char *peer, const char *opt, const c
 
 /* ---- commands and platform requests ---- */
 
-/* A command of the npf command line (status, connect, disconnect, peer,
- * forward, get, set, log, show, passwd, unpair, owner-reset, mapping,
- * bind, enroll, id): the exit code and output text come to cb, at once or
+/* A command of the command line (status, node, forward, resource, get,
+ * set, log, show, passwd, unpair, owner-reset, netcheck, id, ..., and the
+ * modules' own): the exit code and output text come to cb, at once or
  * when the platform has answered. NPF_OK when it runs. */
 typedef void (*npf_text_cb)(void *user, int code, const char *text);
 NPF_API int npf_command(npf_t *n, int argc, const char *const *argv, npf_text_cb cb, void *user);

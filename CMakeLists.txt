@@ -1,6 +1,7 @@
 # libnpf: P2P networking for devices behind NAT (include/npf.h). Built on its
 # own (cmake -S . -B build), or in a program's tree (add_subdirectory): the
-# program's settings then, and its modules (NPF_MODULE_SOURCES below).
+# program's settings then. A program's modules (include/npf/module.h) are its
+# own code: they link npf_common and are registered at npf_create.
 cmake_minimum_required(VERSION 3.16)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   project(libnpf VERSION 0.1.2 LANGUAGES C)
@@ -153,18 +154,6 @@ add_library(npf_common STATIC
 )
 # the version (npf_version, the installers' names): the program's project(), else libnpf's
 target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
-# the modules a program builds in (include/npf/module.h): its sources, one of
-# them defining the table npf_modules; none by default. A program sets
-# before add_subdirectory: NPF_MODULE_SOURCES, NPF_MODULE_INCLUDES (their
-# include directories), NPF_MODULE_LIBS (the static libraries they need,
-# CMake targets: in libnpf.a too)
-if(NPF_MODULE_SOURCES)
-  target_sources(npf_common PRIVATE ${NPF_MODULE_SOURCES})
-  target_include_directories(npf_common PRIVATE ${NPF_MODULE_INCLUDES})
-  target_link_libraries(npf_common PUBLIC ${NPF_MODULE_LIBS})
-else()
-  target_sources(npf_common PRIVATE src/api/modules_none.c)
-endif()
 # the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)
 if(NPF_HAS_PEERS)
   target_sources(npf_common PRIVATE src/node/peers.c src/api/cmd_peers.c)
@@ -172,8 +161,8 @@ else()
   target_sources(npf_common PRIVATE src/node/peers_none.c src/api/cmd_peers_none.c)
   target_compile_definitions(npf_common PUBLIC NPF_NO_PEERS)
 endif()
-target_include_directories(npf_common PUBLIC include PRIVATE third_party/log src/api)
-# (src/api: the internals, npf_int.h, for the modules)
+# src/api: the internals (npf_int.h), for a program's modules too
+target_include_directories(npf_common PUBLIC include src/api PRIVATE third_party/log)
 target_link_libraries(npf_common PUBLIC anliu monocypher)
 if(NPF_USE_OPENSSL)
   target_compile_definitions(npf_common PRIVATE NPF_USE_OPENSSL)
@@ -235,9 +224,6 @@ if(NPF_BUILD_LIB)
     if(NPF_WITH_TLS AND NOT NPF_USE_OPENSSL)
       list(APPEND _npf_parts $<TARGET_FILE:npf_mbedtls>)
     endif()
-    foreach(_l ${NPF_MODULE_LIBS})
-      list(APPEND _npf_parts $<TARGET_FILE:${_l}>)
-    endforeach()
     add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/libnpf.a
       COMMAND ${CMAKE_LINKER} -r -o npf_all.o --whole-archive ${_npf_parts} --no-whole-archive
       COMMAND ${CMAKE_OBJCOPY} --localize-hidden npf_all.o
@@ -245,7 +231,6 @@ if(NPF_BUILD_LIB)
       COMMAND ${CMAKE_AR} rcs libnpf.a npf_all.o
       COMMAND ${CMAKE_COMMAND} -E rm -f npf_all.o
       DEPENDS npf_common anliu monocypher $<$<AND:$<BOOL:${NPF_WITH_TLS}>,$<NOT:$<BOOL:${NPF_USE_OPENSSL}>>>:npf_mbedtls>
-              ${NPF_MODULE_LIBS}
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
       COMMENT "libnpf.a: one object, internals local"
       VERBATIM)

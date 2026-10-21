@@ -665,7 +665,7 @@ static void a_run(npf_t *n, void *arg)
     case 0: {                               /* config_get */
         char buf[600];
         int l;
-        if (!npf_conf_known(x->a) && !npf_mod_key_known(x->a)) {
+        if (!npf_conf_known(x->a) && !npf_mod_key_known(n, x->a)) {
             x->code = NPF_ENOENT;
             break;
         }

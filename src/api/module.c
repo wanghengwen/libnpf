@@ -1,4 +1,5 @@
-/* The modules' hooks (npf/module.h): each module in the table's order. */
+/* The modules (npf/module.h): their registration, and the hooks of an
+ * instance's modules in the order they were registered. */
 #include "npf/sys.h"
 #include <stdio.h>
 #include <string.h>
@@ -6,26 +7,64 @@
 #include "npf_int.h"
 #include "npf/module.h"
 
-#define EACH(m) for (const npf_module *const *mp_ = npf_modules; ((m) = *mp_) != NULL; mp_++)
+#ifdef _WIN32
+#include <windows.h>
+static SRWLOCK g_mu = SRWLOCK_INIT;
+#define LOCK()   AcquireSRWLockExclusive(&g_mu)
+#define UNLOCK() ReleaseSRWLockExclusive(&g_mu)
+#else
+#include <pthread.h>
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
+#define LOCK()   pthread_mutex_lock(&g_mu)
+#define UNLOCK() pthread_mutex_unlock(&g_mu)
+#endif
 
-static int slot_of(const npf_module *m)
+/* the modules registered, NULL at the end: an instance takes them at npf_create */
+static const npf_module *g_mods[NPF_MOD_MAX + 1];
+
+int npf_register_module(const npf_module *m)
+{
+    int i, r = -1;
+    if (!m)
+        return -1;
+    LOCK();
+    for (i = 0; i < NPF_MOD_MAX && g_mods[i] && g_mods[i] != m; i++)
+        ;
+    if (i < NPF_MOD_MAX && !g_mods[i]) {
+        g_mods[i] = m;
+        r = 0;
+    }
+    UNLOCK();
+    return r;
+}
+
+void npf_mods_take(npf_t *n)
+{
+    LOCK();
+    memcpy(n->mods, g_mods, sizeof n->mods);
+    UNLOCK();
+}
+
+#define EACH(m) for (const npf_module *const *mp_ = n->mods; ((m) = *mp_) != NULL; mp_++)
+
+static int slot_of(const npf_t *n, const npf_module *m)
 {
     int i;
-    for (i = 0; i < NPF_MOD_MAX && npf_modules[i]; i++)
-        if (npf_modules[i] == m)
+    for (i = 0; i < NPF_MOD_MAX && n->mods[i]; i++)
+        if (n->mods[i] == m)
             return i;
     return -1;
 }
 
 void *npf_mod_state(npf_t *n, const npf_module *m)
 {
-    int i = slot_of(m);
+    int i = slot_of(n, m);
     return i >= 0 ? n->mod_state[i] : NULL;
 }
 
 void npf_mod_set_state(npf_t *n, const npf_module *m, void *state)
 {
-    int i = slot_of(m);
+    int i = slot_of(n, m);
     if (i >= 0)
         n->mod_state[i] = state;
 }
@@ -36,7 +75,7 @@ void npf_mod_jkey(npf_out *o, int *first, const char *k)
     *first = 0;
 }
 
-int npf_mod_key_known(const char *k)
+int npf_mod_key_known(npf_t *n, const char *k)
 {
     const npf_module *m;
     EACH(m) {
@@ -51,15 +90,9 @@ int npf_mod_key_known(const char *k)
 int npf_mods_create(npf_t *n, char *err, size_t errcap)
 {
     const npf_module *m;
-    int i = 0;
-    EACH(m) {
-        if (++i > NPF_MOD_MAX) {
-            snprintf(err, errcap, "more than %d modules", NPF_MOD_MAX);
-            return -1;
-        }
+    EACH(m)
         if (m->create && m->create(n, err, errcap) < 0)
             return -1;
-    }
     n->mods_made = 1;
     return 0;
 }

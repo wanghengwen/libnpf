@@ -1,12 +1,15 @@
-/* Modules: parts a program builds into libnpf beside its core (a console's
- * account features, a hosted client's reports, more kinds of forwards).
- * libnpf calls each module's hooks on the library thread; a module sees the
- * internals (src/api/npf_int.h) and keeps its state per instance
+/* Modules: features a program adds to libnpf without changing it (commands
+ * and settings of its own, the platform's events, keys in the status, more
+ * kinds of forwards). The modules are the program's own code: it registers
+ * them (npf_register_module) before it creates instances, and libnpf calls
+ * their hooks on each instance's thread, in the order they were registered.
+ * Every hook is optional; a module keeps its state per instance
  * (npf_mod_state).
  *
- * The program names its modules in the table npf_modules, a source file it
- * gives libnpf's build (NPF_MODULE_SOURCES in CMake); without one there are
- * none (src/api/modules_none.c). Every hook is optional. */
+ * A module uses libnpf's internal interface (this header, the others in
+ * include/npf/, src/api/npf_int.h): it links the static library target
+ * npf_common, not the installed libnpf, and is built again with each
+ * version of libnpf. */
 #ifndef NPF_MODULE_H
 #define NPF_MODULE_H
 
@@ -89,8 +92,11 @@ typedef struct npf_module {
     int  (*check)(npf_t *n, const char *k, const char *v, npf_out *o);
 } npf_module;
 
-/* the program's modules, NULL at the end */
-extern const npf_module *const npf_modules[];
+/* Registers a module with libnpf: the instances created from then on have it
+ * (an instance takes the modules registered at its npf_create). Any thread;
+ * the module stays the program's and must outlive the instances. 0, or -1:
+ * NULL, registered already, or 8 registered. */
+int   npf_register_module(const npf_module *m);
 
 /* each module's state in an instance */
 void *npf_mod_state(npf_t *n, const npf_module *m);
@@ -99,10 +105,11 @@ void  npf_mod_set_state(npf_t *n, const npf_module *m, void *state);
 /* a key of the status JSON object: the comma before it unless it is the first */
 void npf_mod_jkey(npf_out *o, int *first, const char *k);
 
-/* one of the modules' configuration keys? */
-int  npf_mod_key_known(const char *k);
+/* one of the instance's modules' configuration keys? */
+int  npf_mod_key_known(npf_t *n, const char *k);
 
 /* ---- what libnpf calls (module.c) ---- */
+void npf_mods_take(npf_t *n);              /* the modules registered by now */
 int  npf_mods_create(npf_t *n, char *err, size_t errcap);
 void npf_mods_begin(npf_t *n);
 int  npf_mods_end(npf_t *n, int step);      /* the longest wait asked for */

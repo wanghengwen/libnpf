@@ -71,7 +71,7 @@ npf_destroy(n);
 
 ## 模块
 
-程序可以在 libnpf 之外加自己的功能，而不改库本身：`include/npf/module.h` 定义了模块的钩子（登录、平台事件、会话状态、对端的转发、自己的命令和配置键、状态里的字段），`npf/peers.h` 的 `npf_fwd_kind` 让模块增加一种转发。程序在 CMake 里用 `NPF_MODULE_SOURCES` 给出模块源文件和模块表 `npf_modules`，没有时就是空表。
+程序可以在 libnpf 之外加自己的功能，而不改库本身：`include/npf/module.h` 定义了模块的钩子（登录、平台事件、会话状态、对端的转发、自己的命令和配置键、状态里的字段），`npf/peers.h` 的 `npf_fwd_kind` 让模块增加一种转发。模块是程序自己的代码，在程序自己的构建里编译（链接静态目标 `npf_common`），运行时用 `npf_register_module` 注册，库本身不用改、也不用重新配置；见 `docs/design/libnpf.md` 第 11 节。
 
 ## 目录
 

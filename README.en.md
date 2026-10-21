@@ -71,7 +71,7 @@ Without the platform: `NPF_ROLE_DIRECT` with a pre-shared key (Noise_NNpsk0), UD
 
 ## Modules
 
-A program can add features of its own without changing the library: `include/npf/module.h` defines a module's hooks (login, the platform's events, the sessions' states, the peers' forwards, commands and configuration keys of its own, keys in the status), and `npf_fwd_kind` in `npf/peers.h` adds a kind of forward. The program names its module sources and their table `npf_modules` in CMake with `NPF_MODULE_SOURCES`; without them the table is empty.
+A program can add features of its own without changing the library: `include/npf/module.h` defines a module's hooks (login, the platform's events, the sessions' states, the peers' forwards, commands and configuration keys of its own, keys in the status), and `npf_fwd_kind` in `npf/peers.h` adds a kind of forward. Modules are the program's own code, built in its own build (linking the static target `npf_common`) and registered at run time with `npf_register_module` before the instances are created; the library itself is neither changed nor configured for them (`docs/design/libnpf.md`, section 11).
 
 ## Layout
 

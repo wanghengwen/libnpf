@@ -528,7 +528,7 @@ static int is_secret(const char *k)
 }
 
 /* 0, or the exit code with the reason in o */
-static int check_value(const char *k, const char *v, npf_out *o)
+static int check_value(npf_t *n, const char *k, const char *v, npf_out *o)
 {
     size_t i;
     int r;
@@ -536,7 +536,7 @@ static int check_value(const char *k, const char *v, npf_out *o)
         npf_out_printf(o, "%s: the value must be one line without '#' (and under 1000 bytes)\n", k);
         return 2;
     }
-    if ((r = npf_mods_check(NULL, k, v, o)) >= 0)
+    if ((r = npf_mods_check(n, k, v, o)) >= 0)
         return r;                           /* a module's key */
     if (strcmp(k, "connect_mode") == 0 && strcmp(v, "p2p") != 0 && strcmp(v, "secure") != 0) {
         npf_out_printf(o, "connect_mode: p2p (direct paths first) or secure (relays only)\n");
@@ -550,8 +550,8 @@ static int check_value(const char *k, const char *v, npf_out *o)
     for (i = 0; i < sizeof int_keys / sizeof int_keys[0]; i++)
         if (strcmp(int_keys[i].key, k) == 0) {
             char *e;
-            long n = strtol(v, &e, 10);
-            if (!*v || *e || n < int_keys[i].lo || n > int_keys[i].hi) {
+            long x = strtol(v, &e, 10);
+            if (!*v || *e || x < int_keys[i].lo || x > int_keys[i].hi) {
                 npf_out_printf(o, "%s: a number from %ld to %ld\n", k, int_keys[i].lo, int_keys[i].hi);
                 return 2;
             }
@@ -574,11 +574,11 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
         npf_out_printf(o, "%s: only in npf.conf (it says where local.json is)\n", k);
         return 2;
     }
-    if (!npf_conf_known(k) && !npf_mod_key_known(k)) {   /* libnpf's or a module's */
+    if (!npf_conf_known(k) && !npf_mod_key_known(c, k)) {   /* libnpf's or a module's */
         npf_out_printf(o, "%s: not a configuration key\n", k);
         return 2;
     }
-    if ((r = check_value(k, v, o)) != 0)
+    if ((r = check_value(c, k, v, o)) != 0)
         return r;
     if (live && (r = apply_setting(c, k, v, o)) != 0)
         return r;

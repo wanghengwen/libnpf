@@ -320,40 +320,89 @@ npf_peer_add(cli, "318204776 -p 8fK2mQ7v -L 127.0.0.1:8080:127.0.0.1:5000", NPF_
 
 ## 11. 扩展：模块
 
-产品需要库之外的功能（自己的命令、配置键、平台事件的处理、状态里的字段、一种新的转发）时，可以写成模块编进 libnpf，不必修改库的代码。模块看得到库的内部接口（`include/npf/*.h` 与 `src/api/npf_int.h`），不属于 npf.h 的稳定 ABI，升级库时要随之重新编译。
+产品需要库之外的功能（自己的命令、配置键、平台事件的处理、状态里的字段、一种新的转发）时，写成模块。模块是应用自己的代码，在应用自己的构建里编译，运行时用 `npf_register_module` 注册给 libnpf；libnpf 的代码和构建都不用改。
+
+**注册**
 
 ```c
+#include "npf/module.h"
+
+extern const npf_module acme_module;               /* acme.c */
+
+int main(void)
+{
+    if (npf_register_module(&acme_module) != 0)    /* 在创建实例之前 */
+        return 1;
+    /* ... npf_options_init、npf_create、npf_start，同第 3 节 ... */
+}
+```
+
+- 实例在 `npf_create` 时取当时已注册的全部模块，按注册的顺序调用；之后再注册的模块只对之后创建的实例生效，所以通常在程序启动时、创建任何实例之前注册；
+- 最多 8 个模块；`NULL`、重复注册、超过 8 个时返回 -1；可以在任何线程调用；
+- 模块结构体归应用所有，要比用到它的实例活得久（通常是静态常量）；
+- 没有注册任何模块时，库只有自己的命令和配置键。
+
+**编写模块**
+
+```c
+/* acme.c */
+#include <stdio.h>
+#include <stdlib.h>
 #include "npf_int.h"
 #include "npf/module.h"
 
+extern const npf_module acme_module;
+typedef struct acme { int hellos; } acme;
+
+static int acme_create(npf_t *n, char *err, size_t errcap)
+{
+    acme *a = calloc(1, sizeof *a);
+    if (!a) { snprintf(err, errcap, "acme: no memory"); return -1; }   /* 实例创建失败 */
+    npf_mod_set_state(n, &acme_module, a);                             /* 每个实例一份状态 */
+    return 0;
+}
+static void acme_destroy(npf_t *n) { free(npf_mod_state(n, &acme_module)); }
+
 static int hello(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o)
 {
-    (void)n, (void)argc, (void)argv, (void)cb, (void)user;
-    npf_out_printf(o, "hello\n");
+    acme *a = npf_mod_state(n, &acme_module);
+    (void)argc, (void)argv, (void)cb, (void)user;
+    npf_out_printf(o, "hello %d\n", ++a->hellos);
     return 0;                           /* 退出码；-1 表示稍后经 cb 应答 */
 }
 
 static void on_login(npf_t *n) { npf_log("acme: online as %llu", (unsigned long long)n->number); }
 
-static const npf_mod_cmd cmds[] = {{"hello", hello}, {NULL, NULL}};
-const npf_module acme_module = {.name = "acme", .login = on_login, .cmds = cmds};
+static void status(npf_t *n, npf_out *o, int *first)       /* 状态 JSON 里的 "acme" */
+{
+    acme *a = npf_mod_state(n, &acme_module);
+    npf_mod_jkey(o, first, "acme");
+    npf_out_printf(o, "{\"hellos\":%d}", a->hellos);
+}
 
-const npf_module *const npf_modules[] = {&acme_module, NULL};     /* 模块表 */
+static const npf_mod_cmd cmds[] = {{"hello", hello}, {NULL, NULL}};
+static const char *const keys[] = {"acme_mode", NULL};    /* npf.conf、npf_config_set 认的键 */
+
+const npf_module acme_module = {.name = "acme", .create = acme_create, .destroy = acme_destroy,
+                                .login = on_login, .cmds = cmds, .status_json = status, .keys = keys};
 ```
 
-CMake 中在 `add_subdirectory(libnpf)` 之前给出：
+**构建**
 
 ```cmake
-set(NPF_MODULE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/acme/acme.c)   # 其中一个文件定义 npf_modules
-set(NPF_MODULE_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/acme)
-set(NPF_MODULE_LIBS "")                                        # 模块需要的静态库（CMake 目标）
-add_subdirectory(libnpf)
+add_subdirectory(libnpf)                               # 不需要为模块做任何设置
+add_executable(acme-app main.c acme/acme.c)
+target_link_libraries(acme-app PRIVATE npf_common)     # 模块用到库的内部接口
 ```
 
-- 钩子都在实例的线程上调用，都是可选的：创建、开始、分步结束、销毁，登录、平台事件、账户会话、会话状态，对端的建立 / 结束 / 转发，命令、`node` 列表，状态 JSON 与文字，配置键及其检查。每个实例的模块状态用 `npf_mod_state` / `npf_mod_set_state` 存取；
+模块使用库的内部接口（`npf/module.h`、`include/npf/` 下的其他头文件、`src/api/npf_int.h`），所以链接静态目标 `npf_common`，而不是安装后的 libnpf.so / libnpf.a（那两个只导出 npf.h）。内部接口不属于 npf.h 的稳定 ABI，升级 libnpf 后模块要重新编译。只用 npf.h、不带模块的应用不受影响。
+
+**钩子与扩展点**
+
+- 钩子都在实例的线程上调用，都是可选的：创建、开始、分步结束、销毁，登录、平台事件、账户会话、会话状态，对端的建立 / 结束 / 转发，命令、`node` 列表，状态 JSON 与文字，配置键及其检查（`check`：返回 0 接受，否则是退出码，原因写进输出）；
 - 一种新的转发：在 `create` 钩子里用 `npf_peers_add_kind` 登记一个 `npf_fwd_kind`（选项字母，以及解析、检查、建立、撤销的回调），对端会像 `-L` 一样保存、重试、随对端删除；`npf_peers_fwd_call` 给出这条转发所在的会话；
 - 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`），库原样保留；
-- 没有给出 `NPF_MODULE_SOURCES` 时模块表为空。
+- `tests/api/test_module.c` 是一个完整的例子：注册（含重复与上限）、命令、配置键、状态字段、销毁，以及注册之前创建的实例。
 
 ## 12. 日志与排查
 

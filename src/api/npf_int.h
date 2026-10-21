@@ -96,7 +96,9 @@ struct npf {
     npf_med       med[NPF_MAX_MEDIA];
     int           nmed;
     uint32_t      next_med;
-    /* the modules' state (npf/module.h), in the table's order */
+    /* the modules registered when it was created (npf/module.h), NULL at
+     * the end, and the state of each */
+    const struct npf_module *mods[NPF_MOD_MAX + 1];
     void         *mod_state[NPF_MOD_MAX];
     int           mods_made;        /* npf_mods_create done: the hooks are called from then on */
     /* what a hosted client's tunnels may spend (its account's quota; a
