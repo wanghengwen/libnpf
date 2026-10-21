@@ -417,7 +417,7 @@ int main(void)
          && strcmp(fi.listen_host, "127.0.0.1") == 0 && fi.target_port == echo && fi.ctx == &ctx_fwd;
     check(ok, "forward get: up, the port the system picked, its ctx");
     {
-        int other_ctx;
+        int other_ctx = 0;
         npf_forward_info f2;
         npf_forward_info_init(&f2);
         check(npf_forward_setopt(b, fwd, NPF_FWD_OPT_CTX, &other_ctx, 0) == NPF_OK && npf_forward_get(b, fwd, &f2) == NPF_OK
