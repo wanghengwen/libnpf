@@ -3,7 +3,7 @@
 # program's settings then, and its modules (NPF_MODULE_SOURCES below).
 cmake_minimum_required(VERSION 3.16)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(libnpf VERSION 0.1.1 LANGUAGES C)
+  project(libnpf VERSION 0.1.2 LANGUAGES C)
   set(npf_VERSION ${libnpf_VERSION})
   set(CMAKE_C_STANDARD 99)
   set(CMAKE_C_STANDARD_REQUIRED ON)
