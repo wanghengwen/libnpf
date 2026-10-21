@@ -600,6 +600,8 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
             npf_conf_set(&c->conf, k, v);   /* as get says */
             npf_out_printf(o, "%s = %s%s, but cannot write %s yet\n", k, shown,
                            live ? ": in effect now" : " (takes effect after a restart)", c->local_path);
+            if (live)
+                npf_mods_conf_set(c, k, v);
             return NPF_CMD_UNSAVED;
         }
     }
@@ -607,6 +609,8 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
     npf_out_printf(o, "%s = %s%s%s\n", k, shown, live ? "" : " (takes effect after a restart)",
                    save ? "" : " (not saved)");
     npf_log("%s = %s%s", k, shown, save ? " (saved)" : "");
+    if (live)
+        npf_mods_conf_set(c, k, v);
     return 0;
 }
 

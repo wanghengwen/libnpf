@@ -240,6 +240,14 @@ int npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, np
     return 0;
 }
 
+void npf_mods_conf_set(npf_t *n, const char *k, const char *v)
+{
+    const npf_module *m;
+    EACH(m)
+        if (m->conf_set)
+            m->conf_set(n, k, v);
+}
+
 int npf_mods_check(npf_t *n, const char *k, const char *v, npf_out *o)
 {
     const npf_module *m;

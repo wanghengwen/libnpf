@@ -67,11 +67,18 @@ static int acme_check(npf_t *n, const char *k, const char *v, npf_out *o)
     return 0;
 }
 
+static char acme_set[64];           /* the last live key set: "key=value" */
+static void acme_conf_set(npf_t *n, const char *k, const char *v)
+{
+    (void)n;
+    snprintf(acme_set, sizeof acme_set, "%s=%s", k, v);
+}
+
 static const npf_mod_cmd acme_cmds[] = {{"hello", acme_hello}, {NULL, NULL}};
 static const char *const acme_keys[] = {"acme_mode", NULL};
 const npf_module acme_module = {.name = "acme", .create = acme_create, .destroy = acme_destroy,
                                 .cmds = acme_cmds, .status_json = acme_status, .keys = acme_keys,
-                                .check = acme_check};
+                                .check = acme_check, .conf_set = acme_conf_set};
 
 /* clashes: each refused */
 static const npf_mod_cmd status_cmds[] = {{"status", acme_hello}, {NULL, NULL}};
@@ -196,6 +203,8 @@ int main(void)
           "the module checks its configuration key");
     rc = npf_config_set(n, "acme_mode", "on", 0, err, sizeof err);
     check(rc >= 0 && npf_config_get(n, "acme_mode", val, sizeof val) == NPF_OK, "the module's key is known");
+    check(!acme_set[0] && npf_config_set(n, "peer_idle", "7", 0, err, sizeof err) >= 0 && strcmp(acme_set, "peer_idle=7") == 0,
+          "a live key set: the module hears it (conf_set), not its own key (not live)");
     npf_destroy(n);
     check(destroyed == 1, "the module's destroy");
 

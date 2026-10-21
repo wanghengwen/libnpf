@@ -472,7 +472,7 @@ int main(void)
         j = ev_count();
         check(npf_peer_set_connect(b, ids[0], NPF_CONNECT_ON_DEMAND, 1500) == NPF_OK && file_has(db, "on_demand")
               && file_has(db, "\"idle_ms\": 1500"), "set_connect ON_DEMAND, 1.5 s: saved");
-        i = wait_ev(j, NPF_EV_SESSION_DOWN, -1, 10000);
+        i = wait_ev(j, NPF_EV_SESSION_DOWN, -1, 20000);    /* idle checks every 5 s: two of them */
         check(i >= 0 && evs[i].peer == ids[0], "on demand: the session ends once idle");
         npf_peer_opt_init(&po);
         po.target = NPF_TARGET_DIRECT;

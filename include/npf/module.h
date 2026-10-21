@@ -90,6 +90,9 @@ typedef struct npf_module {
     const char *const *keys;
     /* a value for one of its keys: 0, or the exit code with the reason in o */
     int  (*check)(npf_t *n, const char *k, const char *v, npf_out *o);
+    /* one of libnpf's keys that change at run time (log_level, peer_idle,
+     * ...) set (npf set, npf_config_set), now in effect */
+    void (*conf_set)(npf_t *n, const char *k, const char *v);
 } npf_module;
 
 /* Registers a module with libnpf: the instances created from then on have it
@@ -139,5 +142,6 @@ void npf_mods_status_json(npf_t *n, npf_out *o, int *first);
 void npf_mods_status_text(npf_t *n, npf_out *o);
 /* -1: not a module's key; else check's result */
 int  npf_mods_check(npf_t *n, const char *k, const char *v, npf_out *o);
+void npf_mods_conf_set(npf_t *n, const char *k, const char *v);
 
 #endif
