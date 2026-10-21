@@ -757,10 +757,58 @@ static void send_failed(const struct sockaddr *to, int err)
         report(&t_send_err, level, err, now, to, "");
 }
 
+#ifdef _WIN32
+#ifndef IP_UNICAST_IF
+#define IP_UNICAST_IF 31
+#endif
+#ifndef IPV6_UNICAST_IF
+#define IPV6_UNICAST_IF 31
+#endif
+/* 127.0.0.0/8, ::1, or ::ffff:127.x */
+static int is_loopback(const struct sockaddr *sa)
+{
+    if (sa->sa_family == AF_INET)
+        return (ntohl(((const struct sockaddr_in *)sa)->sin_addr.s_addr) >> 24) == 127;
+    if (sa->sa_family == AF_INET6) {
+        const unsigned char *a = ((const struct sockaddr_in6 *)sa)->sin6_addr.s6_addr;
+        static const unsigned char one[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+        static const unsigned char mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+        return memcmp(a, one, 16) == 0 || (memcmp(a, mapped, 12) == 0 && a[12] == 127);
+    }
+    return 0;
+}
+
+/* A socket taken around a VPN (npf_vpn_bypass: IP_UNICAST_IF) sends every
+ * datagram out on the physical interface, so one to this computer's
+ * loopback (a direct peer on 127.0.0.1) never arrives: that one goes without
+ * it, the socket's interface put back right after. IP_UNICAST_IF acts on
+ * sending only: the answers come in as before. */
+static int sendto_loopback(int fd, const void *buf, size_t len, const struct sockaddr *sa)
+{
+    int v6 = sa->sa_family == AF_INET6, lvl = v6 ? IPPROTO_IPV6 : IPPROTO_IP;
+    int opt = v6 ? IPV6_UNICAST_IF : IP_UNICAST_IF, cl = (int)sizeof(DWORD), r, err;
+    DWORD cur = 0, none = 0;
+    if (getsockopt((SOCKET)fd, lvl, opt, (char *)&cur, &cl) != 0 || cur == 0
+        || setsockopt((SOCKET)fd, lvl, opt, (const char *)&none, sizeof none) != 0)
+        return sendto(fd, buf, len, MSG_DONTWAIT, sa, dst_len(sa));
+    r = sendto(fd, buf, len, MSG_DONTWAIT, sa, dst_len(sa));
+    err = WSAGetLastError();
+    setsockopt((SOCKET)fd, lvl, opt, (const char *)&cur, sizeof cur);
+    WSASetLastError(err);
+    return r;
+}
+#endif
+
 int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
 {
     const struct sockaddr *sa = to;
     int err;
+#ifdef _WIN32
+    if (npf_udp_hook_is_on() && is_loopback(sa)) {
+        if (sendto_loopback(fd, buf, len, sa) >= 0)
+            return 0;
+    } else
+#endif
     if (sendto(fd, buf, len, MSG_DONTWAIT, sa, dst_len(sa)) >= 0)
         return 0;
 #ifdef _WIN32
