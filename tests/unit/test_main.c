@@ -157,7 +157,12 @@ static void test_portmap(void)
 
 int main(void)
 {
-    CHECK(strcmp(npf_version(), "0.1.1") == 0, "version %s", npf_version());
+    {
+        unsigned a, b, c;
+        char end;
+        /* the project() version: MAJOR.MINOR.PATCH, nothing after it */
+        CHECK(sscanf(npf_version(), "%u.%u.%u%c", &a, &b, &c, &end) == 3, "version %s", npf_version());
+    }
     test_kat();
     test_probe_vector();
     test_pkt();
