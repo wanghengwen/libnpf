@@ -30,19 +30,14 @@ static void sig_down(npf_sig *s, const char *why)
     free(s);
 }
 
-/* Every WebSocket message is a text message: the Noise handshake message or
- * transport ciphertext in Base64url (security.md 7.2). */
-static int send_b64(npf_ws *ws, const uint8_t *m, size_t n)
+/* A WebSocket message is a binary message: the Noise handshake message or
+ * transport ciphertext as it is (signaling.md). Received, a text message
+ * with the same in Base64url is taken too (servers before 2026-10-22). */
+static int send_msg(npf_ws *ws, const uint8_t *m, size_t n)
 {
-    char *text;
-    size_t l;
-    int r;
-    if (n > NPF_JSON_MAX_SIZE + 64 || !(text = malloc(NPF_B64_LEN(n) + 1)))
+    if (n > NPF_JSON_MAX_SIZE + 64)
         return -1;
-    l = npf_b64url_encode(m, n, text);
-    r = npf_ws_send(ws, text, l, 0);
-    free(text);
-    return r;
+    return npf_ws_send(ws, m, n, 1);
 }
 
 static void ws_open(npf_ws *ws, void *arg)
@@ -50,37 +45,40 @@ static void ws_open(npf_ws *ws, void *arg)
     npf_sig *s = arg;
     uint8_t m[64];
     int n = npf_noise_write(&s->hs, NULL, 0, m, sizeof m);
-    if (n < 0 || send_b64(ws, m, (size_t)n) < 0)
+    if (n < 0 || send_msg(ws, m, (size_t)n) < 0)
         sig_down(s, "noise write failed");
 }
 
-static void ws_msg(npf_ws *ws, const uint8_t *text, size_t tlen, int binary, void *arg)
+static void ws_msg(npf_ws *ws, const uint8_t *msg, size_t mlen, int binary, void *arg)
 {
     npf_sig *s = arg;
-    uint8_t *raw;                       /* per message: no state shared between instances */
-    const uint8_t *data;
-    size_t len, rcap = tlen / 4 * 3 + 3;    /* each its size, not the largest's (96 KB a message
-                                               left holes in the heap of many instances) */
-    int dl;
+    uint8_t *raw = NULL;                /* a text message's bytes, per message: no state shared
+                                           between instances */
+    const uint8_t *data = msg;
+    size_t len = mlen;
     (void)ws;
-    if (binary) {
-        sig_down(s, "unexpected binary frame");
+    if (!binary) {                      /* Base64url text: a server before 2026-10-22 */
+        size_t rcap = mlen / 4 * 3 + 3; /* each its size, not the largest's (96 KB a message
+                                           left holes in the heap of many instances) */
+        int dl;
+        if (rcap > NPF_JSON_MAX_SIZE + 64)
+            rcap = NPF_JSON_MAX_SIZE + 64;
+        if (!(raw = malloc(rcap))) {
+            sig_down(s, "no memory");
+            return;
+        }
+        dl = npf_b64url_decode((const char *)msg, mlen, raw, rcap);
+        if (dl < 0) {
+            free(raw);
+            sig_down(s, "bad base64url");
+            return;
+        }
+        data = raw;
+        len = (size_t)dl;
+    } else if (len > NPF_JSON_MAX_SIZE + 64) {
+        sig_down(s, "message too large");
         return;
     }
-    if (rcap > NPF_JSON_MAX_SIZE + 64)
-        rcap = NPF_JSON_MAX_SIZE + 64;
-    if (!(raw = malloc(rcap))) {
-        sig_down(s, "no memory");
-        return;
-    }
-    data = raw;
-    dl = npf_b64url_decode((const char *)text, tlen, raw, rcap);
-    if (dl < 0) {
-        free(raw);
-        sig_down(s, "bad base64url");
-        return;
-    }
-    len = (size_t)dl;
     if (!s->ready) {
         uint8_t m[128], p[64];
         int n;
@@ -92,7 +90,7 @@ static void ws_msg(npf_ws *ws, const uint8_t *text, size_t tlen, int binary, voi
         free(raw);
         n = npf_noise_write(&s->hs, NULL, 0, m, sizeof m);
         if (n < 0 || npf_noise_split(&s->hs, &s->tx, &s->rx, NULL, NULL, s->hash) < 0
-            || send_b64(s->ws, m, (size_t)n) < 0) {
+            || send_msg(s->ws, m, (size_t)n) < 0) {
             sig_down(s, "noise handshake failed");
             return;
         }
@@ -171,7 +169,7 @@ int npf_sig_send(npf_sig *s, const char *json, size_t len)
         return -1;
     n = npf_noise_encrypt(&s->tx, NULL, 0, (const uint8_t *)json, len, out);
     if (n >= 0)
-        r = send_b64(s->ws, out, (size_t)n);
+        r = send_msg(s->ws, out, (size_t)n);
     free(out);
     return r;
 }
