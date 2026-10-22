@@ -80,13 +80,13 @@ npf_destroy(n);
 
 ## 模块
 
-在源码构建里，程序可以给 libnpf 加自己的功能，而不改库本身：`include/npf/module.h` 定义了模块的钩子（创建与销毁、登录、平台事件、账户与会话状态、对端的建立、结束与转发、平台公网映射的连接、设置变更、自己的命令和配置键、状态里的字段），`npf/peers.h` 的 `npf_fwd_kind` 让模块增加一种转发。模块是程序自己的代码，在程序自己的构建里编译（链接静态目标 `npf_common`），在创建实例之前用 `npf_register_module` 注册；这些内部头文件不在安装的 SDK 里。见 [开发者指南](docs/design/libnpf.md)第 12 节。
+安装的 SDK 只有 `npf.h`，不包含模块接口。模块是需要和 libnpf 源码一起构建的内部扩展机制（扩展命令、配置键、平台事件、状态字段和转发类型），内部头文件 `include/npf/` 不安装；只用连接、转发、应用数据或音视频时直接用 `npf.h` 即可，不需要模块。需要时见 [开发者指南](docs/design/libnpf.md)第 12 节。
 
 ## 目录
 
 ```
 include/npf.h          公开接口（安装的 SDK 只有它）
-include/npf/           内部接口（模块也用）
+include/npf/           内部接口（不安装；源码构建的模块用）
 src/api/               npf.h 的实现：对象、事件、npf_setup、命令、模块
 src/platform/          系统层、事件循环、日志、异步解析、VPN 绕行
 src/crypto/            Noise、CPace、证书、SIV

@@ -80,13 +80,13 @@ Without the platform: `NPF_ROLE_DIRECT` with a pre-shared key (Noise_NNpsk0), UD
 
 ## Modules
 
-In a source build a program can add features of its own without changing the library: `include/npf/module.h` defines a module's hooks (creation and destruction, login, the platform's events, the account's and the sessions' states, the peers' start, end and forwards, the platform's public-port connections, settings changed, commands and configuration keys of its own, keys in the status), and `npf_fwd_kind` in `npf/peers.h` adds a kind of forward. Modules are the program's own code, built in its own build (linking the static target `npf_common`) and registered with `npf_register_module` before the instances are created; these internal headers are not part of the installed SDK. See the [developer's guide](docs/design/libnpf.md), section 12.
+The installed SDK is `npf.h` alone; it has no module interface. Modules are an internal extension mechanism built together with libnpf's source (commands, configuration keys, platform events, status keys and kinds of forward of their own), and the internal headers in `include/npf/` are not installed; a program that only connects, forwards, sends application data or media uses `npf.h` and needs no module. When one is needed, see the [developer's guide](docs/design/libnpf.md), section 12.
 
 ## Layout
 
 ```
 include/npf.h          the public interface (the installed SDK has this one alone)
-include/npf/           the internal interfaces (modules use them too)
+include/npf/           the internal interfaces (not installed; for modules in a source build)
 src/api/               npf.h's implementation: objects, events, npf_setup, commands, modules
 src/platform/          system layer, event loop, logging, asynchronous resolver, the VPN bypass
 src/crypto/            Noise, CPace, certificates, SIV
