@@ -1,21 +1,23 @@
 # libnpf 开发者指南
 
-版本：2.1。更新日期：2026-10-21（对端、转发、资源改为类型化的对象接口，类型化事件，`npf_setup` 启动；2.1：对端与转发的设置合为 `npf_peer_setopt` / `npf_forward_setopt`，全文按代码核对）。
+文档版本：2.2。更新日期：2026-10-21。本版按当前公开头文件、实现和构建配置核对，并补充错误处理、事件生命周期和集成示例。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
-本文写给在自己的产品里集成 libnpf 的开发者：NAS、路由器、摄像头等设备的固件，以及连接这些设备的电脑、手机应用。公开接口只有 `include/npf.h`，本文按使用顺序说明它；协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，NAT 穿透与安全设计见同目录的 [nat-traversal.md](nat-traversal.md)、[security.md](security.md)。
+本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
+
+本文以当前公开接口及其实现为准。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)；设计背景见 [NAT 穿透](nat-traversal.md)和[安全设计](security.md)。下文文件链接均为相对路径；构建命令默认在仓库根目录执行。
 
 ## 1. 基本概念
 
 | 概念 | 说明 |
 |---|---|
-| 平台 | 信令服务器、中转服务器和地址探测服务器。节点登录平台，平台负责找到对方、协调打洞、分配中转，不转发明文。libnpf 用根公钥（`root`）认平台，用服务器列表（`serverlist`）找服务器 |
-| 实例 | 一个 `npf_t`，是平台上的一个身份。一个进程可以有多个实例 |
+| 平台 | 提供信令、中转和地址探测。信令负责发现对方、协调打洞和分配中转；会话载荷端到端加密，中转不解密载荷。libnpf 用根公钥（`root`）验证平台，用服务器列表（`serverlist`）发现服务器 |
+| 实例 | 一个 `npf_t`，持有独立的身份、配置和运行状态。一个进程可以有多个实例，直连实例不需要登录平台 |
 | 节点（`NPF_ROLE_NODE`） | 长期运行，有编号（9 位数字）时可以被连接，同时也可以主动连接别的节点 |
-| 客户端（`NPF_ROLE_CLIENT`） | 一次性任务：连接设备、账户操作，用完即停 |
+| 客户端（`NPF_ROLE_CLIENT`） | 主动连接设备或进行账户操作；生命周期由应用控制，不自动恢复保存的对端 |
 | 直连（`NPF_ROLE_DIRECT`） | 不用平台：两端用预共享密钥，经 UDP 直接连接 |
-| 编号与配对口令 | 设备的编号由平台分配。第一次连接一台设备要用它的配对口令，配对后双方记住对方的公钥，以后凭密钥连接 |
-| 会话 | 两个实例之间端到端加密的连接。先走 UDP 中转，打洞成功后无缝切到直连，直连失效时退回中转，UDP 不通时走 WebSocket 中转 |
-| 资源 | 设备发布、允许别人访问的服务或地址。没有发布的目标一律拒绝 |
+| 编号与配对口令 | 设备编号由平台分配。口令配对后双方保存公钥，后续连接可使用已保存的配对；账户授权是另一条认证路径，不一定需要口令 |
+| 会话 | 两个实例之间端到端加密的连接。平台连接支持 P2P UDP、UDP 中转和 WebSocket 中转；库选择和切换路径，应用通过会话信息读取实际路径。直接地址连接不经过平台中转 |
+| 资源 | 本端允许对方通过转发访问的服务、地址或反向监听范围；不控制应用数据和媒体回调的业务权限 |
 | 对端 | 本实例主动连接的一方（设备编号，或直连的地址与密钥），一个 `uint32_t` 编号；可以保存，下次启动时恢复 |
 | 转发 | 一个对端上的端口转发：本地（`NPF_FWD_LOCAL`，本地端口到对方的服务）、SOCKS5 代理（`NPF_FWD_SOCKS`）、反向（`NPF_FWD_REMOTE`，对方开端口连回本地），也是一个编号 |
 | 应用数据 | 会话控制通道上的消息：可靠、有序，每条不超过 16384 字节 |
@@ -23,19 +25,22 @@
 
 ## 2. 构建与集成
 
-需要 CMake 3.16 起和 C99 编译器，没有其他外部依赖（AnLiu、Monocypher、mbedTLS、rxi/log.c 都在 `third_party/`）。
+需要 CMake 3.16 或更新版本、C99 编译器和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher、mbedTLS 和 rxi/log.c；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure
-cmake --install build --prefix "$PWD/install"   # lib/libnpf.*、include/npf.h、lib/pkgconfig/npf.pc
-cc app.c $(PKG_CONFIG_PATH="$PWD/install/lib/pkgconfig" pkg-config --cflags --libs npf) -lpthread
+cmake -E chdir build ctest --output-on-failure
+cmake --install build --prefix ./install
+cc -o app app.c $(PKG_CONFIG_PATH=./install/lib/pkgconfig pkg-config --cflags --libs npf) -pthread
+LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 ```
+
+`app.c` 是应用自己的源文件。安装后得到 `install/include/npf.h`、`install/lib/` 下的库和 `install/lib/pkgconfig/npf.pc`。`pkg-config` 解决编译与链接参数；运行时仍需让系统找到共享库，上例用 `LD_LIBRARY_PATH` 指定。CMake 消费者可以用 `find_package(PkgConfig)` 和 `pkg_check_modules(... IMPORTED_TARGET npf)`；当前安装包没有提供 `find_package(npf CONFIG)` 所需的配置文件。
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
-| `NPF_BUILD_LIB` | ON | 共享库（与 Linux 上的静态库 `libnpf.a`）；`-static` 构建时关闭 |
+| `NPF_BUILD_LIB` | ON | 构建共享库；Linux 上另生成静态库 `libnpf.a`（需要链接器和 objcopy，`NPF_SANITIZE` 时不生成）。可执行文件链接选项带 `-static` 时关闭 |
 | `NPF_BUILD_TESTS` | ON | 单元测试、API 测试、模糊测试 |
 | `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`、`examples/client.c`（要 `NPF_BUILD_LIB`，Windows 上不构建） |
 | `NPF_PEERS` | ON | 本节点主动连接别的节点；只被连接的设备可以关掉，程序更小 |
@@ -49,29 +54,31 @@ cc app.c $(PKG_CONFIG_PATH="$PWD/install/lib/pkgconfig" pkg-config --cflags --li
 - 静态库：Linux 上的 `libnpf.a` 是一个可重定位目标，除 npf.h 的函数外全部符号都是局部的，内置的 AnLiu、Monocypher、mbedTLS 不会和应用自己的同名库冲突。macOS、Windows 暂不做这一步；
 - 所有目标文件都以隐藏可见性编译，导出的只有 npf.h 的 `npf_*` 函数。
 
-**平台**：Linux（glibc、musl，x86_64、ARM）、macOS、iOS、Android、Windows 10 起。交叉编译用 CMake 的工具链文件；嵌入 iOS / Android 应用时把库静态链接进应用，应用自己提供可写的 `data_dir`。
+**平台与交叉编译**：代码包含 POSIX 与 Windows 平台适配；Windows 构建以 Windows 10 为最低目标。交叉编译通过 CMake 工具链文件选择目标系统和架构。当前构建脚本只在 Linux 上生成供安装的 `libnpf.a`；iOS 等需要静态库的平台还需补充打包步骤，不能直接套用 Linux 安装产物。移动端应用应自行选择可写的 `data_dir`，并按目标平台验证构建和运行行为。
 
 **ABI**
 
 - `NPF_API_VERSION` 为 1，soname 为 `libnpf.so.1`；不兼容的修改会提高 soname；
-- 调用方分配的结构体第一个字段都是 `size`（`npf_options`、`npf_callbacks`、`npf_setup`、`npf_peer_opt`、`npf_forward_opt`、`npf_resource` 和各个 `*_info` 等）。库只读写调用方编译时就有的部分，其余用默认值；以后只在末尾增加字段；
+- 可扩展的选项和查询结构体以 `size` 开头，例如 `npf_options`、`npf_callbacks`、`npf_setup`、`npf_peer_opt`、`npf_forward_opt`、`npf_resource` 和各个对象的 `*_info`。库按双方已知的大小读写；输入缺少的尾部字段使用默认值，查询输出多出的尾部清零。`npf_endpoint`、`npf_frame_info` 等小结构没有 `size`，不能套用这一规则；
 - 用各自的 `*_init` 宏（媒体选项是 `npf_media_opt_default`）初始化。宏把调用方的 `sizeof` 传给库（`npf_options_init_size` 等），库只写这么多字节：旧程序配新库时不会越界，新程序配旧库时多出的字段为 0；`npf_media_stats` 由调用方填 `size`；
 - 结构体数组（`npf_resource_list`、`npf_pairing_list`）由宏传入元素大小，库按调用方的步长定位每个元素，只写双方都知道的部分，多出的尾部清零；
 - 事件 `npf_event` 由库分配，字段只在末尾增加：应用按 `ev->size` 判断某个字段是否存在，不认识的事件类型忽略即可。
+
+大小字段只解决结构体扩展，不保证新函数在旧库中存在。部署时仍应检查所需符号和行为；旧版头文件的兼容性应通过独立消费者验证。
 
 ## 3. 快速上手
 
 ### 3.1 设备：被别人连接
 
-完整的程序见 `examples/device.c`。启动参数全部用字段给出（`npf_setup`），不需要配置文件：
+完整程序见 [device.c](../../examples/device.c)。下面是应用初始化函数中的片段，需要包含 `<npf.h>` 和 `<stdio.h>`。`roots`、`list`、`list_len` 和 `cred` 由应用提供；`roots` 必须是真实平台根公钥，不能使用全零占位值。`on_notify`、`on_data` 由应用实现。
 
 ```c
-static uint8_t roots[1][32];        /* 平台的根公钥（字节），固件里自带 */
 npf_setup su;
 npf_callbacks cb;
 npf_options o;
-npf_t *dev;
+npf_t *dev = NULL;
 char err[256];
+int rc;
 
 npf_setup_init(&su);
 su.roots = (const uint8_t (*)[32])roots;
@@ -87,13 +94,15 @@ cb.data = on_data;                  /* 对方发来的应用数据 */
 
 npf_options_init(&o);
 o.setup = &su;
-o.data_dir = data_dir;              /* 持久化存储上的目录：身份、编号、配对状态 */
+o.data_dir = "./device-data";        /* 每个实例使用独立的持久化目录 */
 o.role = NPF_ROLE_NODE;
 o.cb = &cb;
 o.app_name = "acme-nas";            /* 1-32 个 a-z 0-9 . _ -，平台的记录里看得到 */
 o.app_ver = "2.3.0";
-if (npf_create(&o, &dev, err, sizeof err) != NPF_OK)
+if (npf_create(&o, &dev, err, sizeof err) != NPF_OK) {
+    fprintf(stderr, "npf_create: %s\n", err);
     return 1;
+}
 
 npf_resource web;                   /* 连上的人能访问什么（第 6 节） */
 npf_resource_init(&web);
@@ -103,9 +112,18 @@ web.name = "nas";
 web.service.host = "127.0.0.1";
 web.service.port = 5000;
 web.flags = NPF_PERSIST;            /* 记进 local.json，下次启动还在 */
-npf_resource_put(dev, &web, err, sizeof err);
-
-npf_start(dev);
+rc = npf_resource_put(dev, &web, err, sizeof err);
+if (rc == NPF_ESAVE) {
+    fprintf(stderr, "资源已生效，但保存失败；稍后用 npf_save 重试\n");
+} else if (rc != NPF_OK) {
+    fprintf(stderr, "npf_resource_put: %s\n", err);
+    npf_destroy(dev);
+    return 1;
+}
+if (npf_start(dev) != NPF_OK) {
+    npf_destroy(dev);
+    return 1;
+}
 /* ... 运行中 ... */
 npf_destroy(dev);                   /* 停止、等待、释放 */
 ```
@@ -114,19 +132,46 @@ npf_destroy(dev);                   /* 停止、等待、释放 */
 
 ### 3.2 客户端：连接一台设备
 
-完整的程序见 `examples/client.c`：
+完整程序见 [client.c](../../examples/client.c)。客户端仍需要平台根公钥和服务器列表，但不需要设备凭证。以下片段中的 `roots`、`list`、`list_len`、`device_number`、`pairing_password` 和 `my_device` 由应用提供；设备编号应来自实际注册结果，且包含有效校验位。
 
 ```c
-o.role = NPF_ROLE_CLIENT;           /* 其余同上；客户端不需要凭证 */
-npf_create(&o, &cli, err, sizeof err);
+npf_setup su;
+npf_callbacks cb;
+npf_options o;
+npf_t *cli = NULL;
+uint32_t peer = 0, fwd = 0;
+char err[256];
+int rc;
+
+npf_setup_init(&su);
+su.roots = (const uint8_t (*)[32])roots;
+su.nroots = 1;
+su.serverlist = list;
+su.serverlist_len = list_len;
+npf_callbacks_init(&cb);
+cb.notify = on_notify;
+npf_options_init(&o);
+o.setup = &su;
+o.data_dir = "./client-data";
+o.role = NPF_ROLE_CLIENT;
+o.cb = &cb;
+if (npf_create(&o, &cli, err, sizeof err) != NPF_OK) {
+    fprintf(stderr, "npf_create: %s\n", err);
+    return 1;
+}
 
 npf_peer_opt po;
 npf_peer_opt_init(&po);
 po.target = NPF_TARGET_NUMBER;
-po.number = 318204776;
-po.password = "8fK2mQ7v";           /* 第一次配对用；配对后可以不给 */
+po.number = device_number;
+po.password = pairing_password;    /* 首次配对的口令；已有配对时可为 NULL */
 po.ctx = &my_device;                /* 应用自己的上下文，事件里原样带回 */
-npf_peer_create(cli, &po, &peer, err, sizeof err);
+rc = npf_peer_create(cli, &po, &peer, err, sizeof err);
+if (rc != NPF_OK && rc != NPF_ESAVE) {
+    fprintf(stderr, "npf_peer_create: %s\n", err);
+    npf_destroy(cli);
+    return 1;
+}
 
 npf_forward_opt fo;
 npf_forward_opt_init(&fo);
@@ -134,9 +179,18 @@ fo.kind = NPF_FWD_LOCAL;
 fo.listen.port = 0;                 /* 0：系统分配，NPF_EV_FORWARD 之后用 npf_forward_get 查 */
 fo.target.host = "127.0.0.1";
 fo.target.port = 5000;
-npf_forward_create(cli, peer, &fo, &fwd, err, sizeof err);
-
-npf_start(cli);
+rc = npf_forward_create(cli, peer, &fo, &fwd, err, sizeof err);
+if (rc != NPF_OK && rc != NPF_ESAVE) {
+    fprintf(stderr, "npf_forward_create: %s\n", err);
+    npf_destroy(cli);
+    return 1;
+}
+if (npf_start(cli) != NPF_OK) {
+    npf_destroy(cli);
+    return 1;
+}
+/* ... 等待事件并执行业务；完成后： */
+npf_destroy(cli);
 ```
 
 - `NPF_EV_SESSION_UP` 带会话编号和对端编号；`NPF_EV_FORWARD`（`NPF_FWD_UP`）之后浏览器打开 `http://127.0.0.1:端口` 就是设备上的页面；
@@ -150,7 +204,7 @@ npf_start(cli);
 - 被连接的一方：`NPF_ROLE_DIRECT`，`npf_setup` 里给 `direct_port`（和可选的 `direct_host`）与 `direct_psk`；
 - 连接的一方：`NPF_ROLE_DIRECT`，`npf_peer_create` 的 `target = NPF_TARGET_DIRECT`，给 `host`、`port` 和 `psk`。
 
-握手为 Noise_NNpsk0，传输同样是 AnLiu，转发、应用数据和媒体流都可以用。
+`direct_port = 0` 表示不启动直连监听器，与转发的“端口 0 自动分配”不同；`direct_host = NULL` 默认监听所有地址，需要仅本机访问时显式设为 `"127.0.0.1"`。握手为 Noise_NNpsk0，传输使用 AnLiu，转发、应用数据和媒体流都可以用。
 
 ## 4. 启动、目录与配置
 
@@ -159,7 +213,9 @@ npf_start(cli);
 - **`npf_setup`**（推荐）：应用把启动参数用字段给出，`conf_dir`、`conf_file` 为 NULL，`data_dir` 必填；
 - **配置文件**：`conf_dir` 里的 `npf.conf`（或 `conf_file`），每行 `key = value`。
 
-`npf_setup` 的每个字段对应 npf.conf 的一个键（下表），含义相同；库在 `npf_create` 里把字段转成键，所以两种方式得到的实例没有区别，`npf_config_get` 也按键读出（秘密的键 `password`、`cred`、`model_cred` 读出为 `(hidden)`）。没有字段的键（`hosted_*` 中 `hosted_trust` 以外的、`sig_idle_s`、`resource` 行、模块的键等）放进 `npf_options.overrides` 的 `key = value` 行；`overrides` 里出现有字段的键是 `NPF_EINVAL`，一个参数只有一个来源；`npf_setup` 方式下 `serial_file`、`direct_psk_file` 也不能放进 `overrides`（用 `serial`、`direct_psk` 字段）。
+`npf_setup` 的字段会转换为内部配置键，再进入相同的初始化流程；`npf_config_get` 仍按键查询。秘密键 `password`、`cred`、`model_cred`、`direct_psk` 返回 `(hidden)`。两种入口的区别主要在参数来源、默认值和文件路径处理。
+
+没有对应字段的配置键，例如其他 `hosted_*` 键、`sig_idle_s`、`resource` 行和模块配置，可以写入 `npf_options.overrides`，格式为多行 `key = value`。使用 `npf_setup` 时，`overrides` 不能再包含下表对应的键，即使对应字段保持默认值也不行；冲突返回 `NPF_EINVAL`。`serial_file`、`direct_psk_file` 也不能通过该方式传入，应使用 `serial`、`direct_psk` 字段。配置文件入口没有这一字段冲突限制。
 
 | 字段 | 键 | 说明 |
 |---|---|---|
@@ -181,7 +237,9 @@ npf_start(cli);
 | `no_hosted_trust` | `hosted_trust = 0` | 不接受平台为设备所有者及其分享对象签发的授权 |
 | `peer_idle_s` | `peer_idle` | 按需连接的对端（第 7 节）默认的空闲秒数；0 为 300 |
 
-`npf_setup` 在 `npf_create` 里校验，`err` 指出字段：非直连角色没有 `roots`；`serverlist` 和 `serverlist_file` 同时给，或都没给又没有 `server_url`；`cred` 没有 `password`；`cred` 和 `model_cred` 同时给；`direct_port` 没有 `direct_psk`；数值越界。配置文件方式下另有 `serial_file`、`direct_psk_file`（密钥文件，权限 0600）、`log_level` 等键。对端不写在配置里：npf.conf 和 `overrides` 的 `node =` 行是 `NPF_EINVAL`，对端由应用用第 7 节的函数建立。
+`npf_create` 会校验 `npf_setup`，失败时在 `err` 中说明字段或配置问题。常见原因包括：非直连角色没有 `roots`；同时给出 `serverlist` 和 `serverlist_file`；两者均未给出且没有 `server_url`；给了 `server_url` 却没有 `server_pub`；`cred` 缺少 `password`；同时给出 `cred` 和 `model_cred`；非零 `direct_port` 缺少 `direct_psk`；数值越界。
+
+配置文件入口还支持 `serial_file`、`direct_psk_file` 等键。对端由应用通过第 7 节的 API 建立；npf.conf 和 `overrides` 中的 `node =` 行会返回 `NPF_EINVAL`。
 
 **两个目录**
 
@@ -190,15 +248,15 @@ npf_start(cli);
 | `conf_dir`（配置文件方式） | 只读 | `npf.conf` 及其中引用的文件 |
 | `data_dir` | 读写 | `identity`（本机密钥）、`node.json`（注册得到的编号与默认口令）、`state.json`（口令、配对、所有者）、`account.cert`、`serverlist-saved.bin`、`serverlist-builtin.bin`（`npf_setup` 以字节给出的服务器列表，每次启动写入）、`local.json` |
 
-- `data_dir` 必须在持久化存储上，丢了会重新注册；秘密（`identity`、`state.json`）各自成文件，权限 0600；直连对端的密钥保存在 `local.json` 里（也是 0600）；
-- 同一个 `data_dir` 不要同时给两个实例或两个进程用：库不检查，应用自己加锁（npf 程序在非直连角色下锁住 `identity.lock`）。
+- 需要保留身份和配对时，`data_dir` 应位于持久化存储上；丢失后的行为取决于角色和凭证，见第 5 节。POSIX 文件权限中，`identity`、`state.json`、`local.json` 等敏感文件按 0600 写入；保存的直连对端密钥也在 `local.json` 中；
+- 同一个 `data_dir` 不要同时给两个实例或两个进程用：库不提供目录独占锁，应用需要自行保证独占访问。
 
 **生效的设置**按顺序叠加，后者覆盖前者：npf.conf（或 `npf_setup` 的字段）、`npf_options.overrides`、`local.json` 的 `settings`（带保存的 `npf_config_set` 写在这里）。库从不写 npf.conf；运行时保存的设置、对端、转发和资源都写进 `data_dir/local.json`（临时文件 + rename，原子替换）。
 
 **两个开关**（`npf_options.flags`），给自己管理数据的应用：
 
 - `NPF_OPT_NO_SAVED_SETTINGS`：不应用 local.json 里的设置，带保存的 `npf_config_set` 返回 `NPF_EUNAVAIL`，`npf_command` 的 `set`（不带 `--no-save`）退出码 1；
-- `NPF_OPT_NO_SAVED_OBJECTS`：不恢复、不保存对端、转发和资源；带 `NPF_PERSIST` 的创建返回 `NPF_EUNAVAIL`，名字和备注只在这次运行有效。local.json 里已有的记录原样保留；配对后固定的公钥照样写入。
+- `NPF_OPT_NO_SAVED_OBJECTS`：不恢复、不保存对端、转发和资源；带 `NPF_PERSIST` 的创建或把 `NPF_PEER_OPT_PERSIST` 设为 1 都返回 `NPF_EUNAVAIL`。名字和备注只在本次运行有效，local.json 里原有的对象配置保留；协议需要保存的配对公钥不受此开关影响。当前按需对端要求持久化，因此不能与此开关组合使用。
 
 ## 5. 设备注册
 
@@ -231,19 +289,21 @@ npf_start(cli);
 | `bad_chain` / `bad_sig` | 凭证不是平台认可的 / 签名不对 |
 | `disabled` | 这台设备的编号已被平台停用 |
 
-**恢复出厂设置**：清空 `data_dir` 即可。下次运行重新注册，序列号相同、硬件多数项相同、原身份已离线 5 分钟以上时拿回原编号（密钥换新，已配对的一方需要重新配对）；一机一密的设备从凭证重新派生，编号、密钥、默认口令都不变。
+**重建设备身份**：先停止并销毁实例，再由应用决定是否清空 `data_dir`。这会同时移除保存的设置、资源、配对和账户状态；若目录里还放着应用提供的服务器列表等文件，也要安排重新提供。型号凭证设备下次启动会生成新身份并重新申请编号；是否取回原编号由平台的序列号、硬件和离线时间规则决定，见[注册协议](../protocol/signaling.md)。一机一密设备仍从同一凭证派生身份，编号、密钥和默认口令不变，但删除的配对等本地状态不会自动回来。
 
 **配对与所有者**（设备一侧）：`npf_pairing_password_get` / `npf_pairing_password_set`（8–127 字节）读写配对口令；`npf_pairing_list` 列出已配对的一方（公钥与时间），`npf_pairing_remove` 取消一个或全部；`npf_owner_reset` 忘记所有者账户，下次登录时告诉平台。没有编号时这些函数返回 `NPF_ESTATE`。
 
+`npf_pairing_remove(n, NULL)` 删除全部配对；`npf_owner_reset` 不删除配对。这里修改的是设备的 `state.json`：保存失败也可能返回 `NPF_ESAVE`，但 `npf_save` 只重写 local.json，不能修复此类失败。应用需要区分这两种存储结果，并在设备状态未写入时报告失败；不能仅根据 `npf_node_info.unsaved` 判断配对或所有者状态是否保存成功。
+
 ## 6. 发布资源
 
-设备只放行它发布的资源，别人连上后只能访问这些，其余一律拒绝；什么都不发布，就什么都访问不到。连上的一方在会话建立时和每次变化时收到资源列表（`NPF_EV_RESOURCES`，`npf_resource_list(n, peer, ...)` 读出）。
+资源决定 TCP/UDP 转发可以访问哪些目标，以及对方能否申请反向监听。没有发布对应资源，就不能通过这些转发访问目标；应用数据和媒体接口仍由应用自己的回调处理，不受资源列表直接控制。主叫方在会话建立时和资源更新时收到 `NPF_EV_RESOURCES`，使用事件中的对端 ID 调用 `npf_resource_list(n, peer, ...)` 查询。
 
 | 类型 | 目标 | 用途 |
 |---|---|---|
 | `NPF_RES_TCP` | `service`：IP 地址或 `localhost`，端口 | 一个服务。`svc` 说明它是什么：`http`、`https`（网页，`path` 为起始页）、`rdp`、`ssh` 等，供连接的一方决定怎么打开 |
-| `NPF_RES_UDP` | 同上 | 一个 UDP 服务（唯一放行 UDP 的类型） |
-| `NPF_RES_NET` | `rule`：`lan`、`*` 或 `ADDR[/PREFIX][:PORT[-PORT]]` | 一批地址：`lan` 为本机与直接相连的私有网段 |
+| `NPF_RES_UDP` | 同上 | 允许访问一个 UDP 目标服务；反向 UDP 监听则由 `NPF_RES_REVERSE` 授权 |
+| `NPF_RES_NET` | `rule`：`lan`、`*` 或 `ADDR[/PREFIX][:PORT[-PORT]]` | 允许访问一批 TCP 目标地址：`lan` 为本机与直接相连的私有网段，不同时放行 UDP |
 | `NPF_RES_SOCKS` | 同 `net` | 作为代理（`NPF_FWD_SOCKS`）访问，`*` 即互联网出口 |
 | `NPF_RES_REVERSE` | `rule`：`*`（1024–65535）、`PORT` 或 `PORT-PORT`，前面可加 `lan:` | 允许连接的一方在本机开端口（`NPF_FWD_REMOTE`）；默认只在回环地址上，带 `lan:` 时也可以在所有地址或本机的某个局域网地址上，只接受本机与直接相连的私有网段的连接 |
 
@@ -251,6 +311,8 @@ npf_start(cli);
 - 带 `NPF_PERSIST` 的保存在 local.json，下次启动恢复；不带的只在这次运行有效（把保存的替换成不带的，local.json 里的那条也去掉）；
 - npf.conf 或 `overrides` 里也可以写 `resource = TYPE[/SVC] TARGET NAME [| 说明]` 行，这些是固定的（`NPF_FIXED`），不能用函数修改；
 - 最多 `NPF_RESOURCES_MAX`（32）个，超出时 `NPF_EBUSY`；规则不符合语法、超长、端口越界，以及整个列表的 JSON 超过 12000 字节，都是 `NPF_EINVAL`，从不截断。
+
+查询资源和配对列表时，宏会传入数组元素大小，不需要逐个初始化元素。`count` 是实际总数；容量不足时只填前 `cap` 项并返回 `NPF_ETOOBIG`，不能用返回的总数越过数组边界。对端、转发、会话的 ID 列表也遵守这一容量规则。用 `cap = 0` 查询数量时，只要列表非空也会返回 `NPF_ETOOBIG`；之后读取列表时数量仍可能变化，需要继续处理容量不足。
 
 ## 7. 对端与转发
 
@@ -265,18 +327,37 @@ npf_start(cli);
 | `name`、`nick` | 名字（`npf_peer_find` 可以按名字找）、备注 |
 | `ctx` | 应用自己的上下文，事件里原样带回 |
 
-- 同一个目标再次创建返回 `NPF_EEXIST` 和已有的编号（编号按数值比，直连目标按小写主机名和端口比）；名字被占用也是 `NPF_EEXIST`，这时输出 0；
+- 参数通过校验后，同一个目标再次创建返回 `NPF_EEXIST` 和已有的编号，不更新已有对象的口令、配置或上下文。编号按数值比较；直连主机名转为小写，IPv6 地址规范化后再与端口一起比较。名字被其他记录占用也返回 `NPF_EEXIST`，此时输出 ID 为 0；
 - `NPF_ROLE_DIRECT` 下建编号的对端、`NPF_PEERS=OFF` 的构建里建任何对端，都是 `NPF_EUNAVAIL`；
 - `npf_peer_get` 给出状态（`NPF_PEER_WAITING`、`CONNECTING`、`CONNECTED`、`RETRY`、`IDLE`、`ENDED`）和 `needs`：`NPF_NEED_PASSWORD`（没配对，要口令；口令被拒时加 `NPF_NEED_PASSWORD_WRONG`，配对丢失时加 `NPF_NEED_PAIRING_LOST`）、`NPF_NEED_ACCOUNT`（经账户授权进入的，账户会话没了）。因为这些原因结束的对端，在条件满足时自己再试：给了口令（`NPF_PEER_OPT_PASSWORD`）、账户会话开始；`npf_peer_connect_now` 让按需的对端现在就建立会话，让在退避等待中的马上重试，也让结束了的对端再试一次（`npf_start` 之前 `NPF_ESTATE`，`NPF_PLATFORM` 的对端 `NPF_EREADONLY`）；
-- `npf_peer_setopt(n, peer, opt, val, len)` 一次改一项设置（像 `setsockopt`）：整数选项传 `int`，`len` 为 `sizeof(int)`；字符串以 NUL 结尾，`len` 为 0，`""` 删除；`NPF_PEER_OPT_CTX` 把指针本身作为 `val`，`len` 为 0。`len` 或取值不对、字符串太长、不认识的选项都是 `NPF_EINVAL`，对端不变；保存的对端改后写进记录（写不了是 `NPF_ESAVE`，改动已生效）。选项：
-  - `CONNECT`：运行中改连接方式，立即生效。改为 `KEEP` 时没有会话就马上连接；改为 `ON_DEMAND` 要已经保存、没有反向转发，当前会话继续，空闲时间从现在算；改为 `ONCE` 要不保存，当前会话结束后进入 `ENDED`（没有会话就马上）；
-  - `IDLE_MS`：按需时没有连接多久结束会话，0 用实例的 `peer_idle`；不是按需时先记下，改为按需时用。`peer_idle` 只是默认的空闲时间，改它不会切换任何对端的连接方式（应用要这样做，自己对相应的对端设 `CONNECT`）；
-  - `PERSIST`：1 现在保存，转发一起保存，直连对端连同密钥（`ONCE` 的不行：先把 `CONNECT` 改为 `KEEP`）；0 下次启动不再恢复，保存的转发离开 local.json，固定的公钥、名字和备注仍在（按需的不行）；
-  - `NAME`、`NICK`：名字为 1–32 个字母、数字、`.`、`_`、`-`，不全是数字，不能是 `all`，与别的对端和 local.json 里别的记录的名字都不能重复；备注最长 `NPF_NICK_MAX`；`CTX`：应用的上下文，之后的事件都带它；`PASSWORD`：给编号的对端口令（直连对端是 `NPF_EINVAL`），没配对或口令被拒时马上再试，用于之后的会话，不保存；
-  - `NPF_PLATFORM` 的对端：`CONNECT`、`IDLE_MS`、`PERSIST` 为 `NPF_EREADONLY`，`PASSWORD` 为 `NPF_EINVAL`，`NAME`、`NICK`、`CTX` 可以改；
 - `npf_peer_remove_id`（会话结束，转发删除，保存的记录不再恢复）；`npf_peer_get` 的 `ctx` 是应用登记的上下文；
-- 由模块打开的对端（例如为平台保存的公网映射）带 `NPF_PLATFORM`：不能删除、不能加转发、不能 `npf_peer_connect_now`（`NPF_EREADONLY`），设置见上；平台映射的转发也带 `NPF_PLATFORM`，不能删除；
+- 由模块打开的对端（例如为平台保存的公网映射）带 `NPF_PLATFORM`：不能删除、不能加转发、不能 `npf_peer_connect_now`（`NPF_EREADONLY`），可修改的选项见下表；平台映射的转发也带 `NPF_PLATFORM`，不能删除；
 - `npf_peer_list`、`npf_peer_find`；`NPF_ROLE_NODE` 和 `NPF_ROLE_DIRECT` 启动时恢复保存的对端，`NPF_ROLE_CLIENT` 不恢复。恢复的对端在 `npf_start` 之前就能枚举，这时用 `NPF_PEER_OPT_CTX` 登记上下文。
+
+**修改对端选项**：`npf_peer_setopt(n, peer, opt, val, len)` 每次修改一项。整数传变量地址，`len = sizeof(int)`；字符串传 NUL 结尾的内容，`len = 0`；上下文直接传指针本身，`len = 0`，不要传指针变量的地址。
+
+| 选项 | 值与行为 |
+|---|---|
+| `NPF_PEER_OPT_CONNECT` | 传 `int`。`KEEP` 在运行中没有会话时尝试连接；`ONCE` 要求对端未保存，已有会话结束后进入 `ENDED`，没有会话时直接进入 `ENDED`；`ON_DEMAND` 要求对端已保存且没有反向转发 |
+| `NPF_PEER_OPT_IDLE_MS` | 传 `int`，范围 0–86400000 毫秒；0 使用实例的 `peer_idle`（秒，默认 300）。非按需对端也可以先设置，切换为按需时使用；修改 `peer_idle` 不会自动改变连接方式 |
+| `NPF_PEER_OPT_PERSIST` | 传 `int`，只接受 0 或 1。1 保存对端、直连密钥和非平台转发；0 取消下次启动恢复，保留固定公钥、名字和备注。`ONCE` 不能设为 1，按需对端不能设为 0；禁用对象保存时不能设为 1 |
+| `NPF_PEER_OPT_NAME` | 名字最多 32 字节，仅含字母、数字、`.`、`_`、`-`，不能全为数字或等于 `all`，不能与其他对端或本地记录重名；空串清除名字 |
+| `NPF_PEER_OPT_NICK` | 备注最多 128 字节，不含控制字符；空串清除备注。未禁用对象保存时，名字和备注即使属于临时对端也会写入 local.json |
+| `NPF_PEER_OPT_CTX` | 设置或清除应用上下文；允许 NULL。库不释放该指针，生命周期见第 10 节 |
+| `NPF_PEER_OPT_PASSWORD` | 非空字符串，最多 127 字节；用于编号对端的后续配对，缺少口令或上次口令被拒时立即再试，不写入保存的对端配置。直连或平台对端不接受此选项 |
+
+`NPF_PLATFORM` 对端的 `CONNECT`、`IDLE_MS`、`PERSIST` 返回 `NPF_EREADONLY`，`PASSWORD` 返回 `NPF_EINVAL`；可以修改 `NAME`、`NICK`、`CTX`。参数长度或取值不合法时返回 `NPF_EINVAL`。需要保存的变更若写盘失败，返回 `NPF_ESAVE`，运行状态已经改变。
+
+例如，把一个临时对端改为持续连接并保存，应先改连接方式，再开启保存；每一步分别检查结果：
+
+```c
+int mode = NPF_CONNECT_KEEP;
+int rc = npf_peer_setopt(n, peer, NPF_PEER_OPT_CONNECT, &mode, sizeof mode);
+if (rc != NPF_OK && rc != NPF_ESAVE)
+    return rc;
+int persist = 1;
+return npf_peer_setopt(n, peer, NPF_PEER_OPT_PERSIST, &persist, sizeof persist);
+```
 
 **转发**（`npf_forward_create`）：
 
@@ -291,7 +372,9 @@ npf_start(cli);
 - 带 `NPF_PERSIST` 的转发要求对端也是保存的；local.json 里保存的是请求的端口（0 仍是 0），实际端口只是运行状态；
 - `npf_forward_remove`、`npf_forward_list(n, peer, ...)`（`peer` 为 0 列出全部）、`npf_forward_setopt`（`NPF_FWD_OPT_CTX`，同 `npf_peer_setopt` 的约定；`npf_forward_get` 的 `ctx` 读出它）。
 
-**保存失败**：写不进 local.json 时返回 `NPF_ESAVE`，修改已经生效，并记为待保存（`npf_node_get` 的 `unsaved`，对象 info 的 `saved` 为 0）。`npf_save` 重试，任何一次成功的保存都会写入全部内容；成功之前重启，新建的会丢失，删除的会回来。
+**保存结果**：`NPF_PERSIST` 表示下次启动是否自动恢复对象，不等于对象是否已经成功写盘。即使对端没有此标志，名字、备注和配对公钥也可能保存在 local.json 中；关闭 `NPF_PERSIST` 不会删除这些信息。
+
+local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以用 `npf_save` 重试。`npf_node_get` 的 `unsaved` 表示整个 local.json 有待保存内容；当前对象 info 的 `saved` 也依据这份全局状态计算，因此某个对象 `saved == 0` 不一定表示只有它的保存失败。成功保存会写入全部待保存内容；成功之前重启，新建的持久对象可能丢失，已删除的可能恢复。设备配对与所有者的保存失败另见第 5 节。
 
 库里没有对端和转发的命令语法：命令行、配置界面由应用自己实现，调用这些函数。
 
@@ -299,13 +382,13 @@ npf_start(cli);
 
 `npf_create` →（建立对端、转发、资源）→ `npf_start` 或 `npf_run` →（调用）→ `npf_stop` → 运行结束（`NPF_EV_STOPPED`，`npf_run` 返回）→ `npf_destroy`。
 
-- `npf_start` 让实例在自己的线程上运行，`npf_run` 在调用者的线程上运行；两者只能调用一次，`npf_stop` 之后也不能再调用；
-- **除 `npf_destroy` 外，所有函数都可以在任何线程、任何时候调用**：运行期间调用投递到实例的线程执行，调用方等待结果（`npf_media_send` 只排队）；不在运行时在调用者的线程上执行，同一实例一次一个；运行结束后返回 `NPF_ESTATE`；
-- **`npf_destroy`**：可以在任何线程调用，但不能在本实例的线程上（回调中）调用。它停止运行并等待结束，也等待正在进行的调用，然后释放；之后不再有回调，也不能再使用这个实例；
-- **回调**在实例的线程上执行，一次一个；可以调用本实例除 `npf_destroy` 外的任何函数，不要长时间阻塞。回调拿到的数据只在回调期间有效；函数返回的 JSON 和文本归调用方，用 `npf_free` 释放；
-- **多个实例**：各自一个线程、一把锁，日志级别、最近日志和 `log` 回调也各自独立；
+- `npf_start` 在后台线程运行实例；`npf_run` 在调用线程运行，直到结束才返回。每个实例只能成功启动一次，停止后不能重新启动。`npf_stop` 只请求停止并立即返回，不表示清理已完成；
+- **线程安全不等于任何状态下都能成功**：实例运行时，其他线程的同步调用会投递到实例线程并等待结果；实例线程内调用直接执行。启动前可配置对象、读取状态，但连接和网络检查等操作可能返回 `NPF_ESTATE`。运行结束后，返回错误码的实例操作通常返回 `NPF_ESTATE`，返回 JSON 指针的查询返回 NULL；
+- **销毁**：从实例执行线程之外调用 `npf_destroy`，它会停止运行，等待事件循环和已进入的调用结束，再释放实例。应用必须先阻止其他线程发起新的调用，不能与销毁竞争使用同一指针；不要在该实例的回调中销毁它；
+- **回调与内存**：运行期间的业务回调在实例线程串行执行，可以调用本实例允许在当前状态使用的 API，不要阻塞。回调参数只在本次调用期间有效；库函数返回的 JSON 和文本用 `npf_free` 释放。启动前的同步命令回调以及初始化、销毁期间的日志回调可能在调用线程执行，不能假定全部回调都来自后台线程；
+- **多个实例**：默认各自使用后台线程，日志级别、最近日志和 `log` 回调独立；共享运行时可以让多个实例共用线程。任何回调都应避免同步等待另一实例，以防形成循环等待；
 - **共享运行时**：实例很多时（例如服务器上为每个用户开一个），`npf_runtime_new(threads)` 建一组线程，`npf_options.runtime` 指向它，`npf_create` 时选定实例最少的线程，`npf_start` 在那里运行（这样的实例不能 `npf_run`：`NPF_ESTATE`）。回调不能阻塞，也不能同步等待另一个运行时线程上的实例；`npf_runtime_free` 在最后一个实例销毁之后调用；
-- 对端、转发、会话、媒体流都用整数编号，实例存续期间不重复使用；过时的编号只会得到 `NPF_ENOENT`。
+- 对端、转发、会话和媒体流都使用实例内的整数 ID，0 表示没有对象。ID 不能跨实例或跨重启使用；对象结束或删除后应丢弃其 ID。查询不存在的对象返回 `NPF_ENOENT`，查询仍需遵守实例运行状态限制。
 
 ## 9. 接口一览
 
@@ -318,14 +401,32 @@ npf_start(cli);
 | 资源 | `npf_resource_put`、`npf_resource_remove`、`npf_resource_list` |
 | 配对与所有者 | `npf_pairing_password_get` / `_set`、`npf_pairing_list`、`npf_pairing_remove`、`npf_owner_reset` |
 | 本机与会话 | `npf_node_get`、`npf_session_get`、`npf_session_list`、`npf_network_changed`、`npf_save` |
-| 设置 | `npf_config_get`（未知键 `NPF_ENOENT`，秘密 `password`、`cred`、`model_cred` 显示 `(hidden)`，缓冲区不够 `NPF_ETOOBIG`）、`npf_config_set`（返回 0 已生效，1 已保存、下次启动生效；模块的键都是启动时的键） |
+| 设置 | `npf_config_get`（未知键 `NPF_ENOENT`；`password`、`cred`、`model_cred`、`direct_psk` 显示 `(hidden)`；缓冲区不足 `NPF_ETOOBIG`）；`npf_config_set`（0：即时设置已应用；1：启动时设置，需保存后重启生效；模块配置键属于后者） |
 | 诊断（JSON，调用方 `npf_free`） | `npf_status_json`、`npf_config_json`（可即时修改的设置）、`npf_log_json`、`npf_sessions_json`、`npf_public_json` |
 | 命令 | `npf_command(argv)`：库自己的诊断与设备命令，结果文本和退出码交给回调 |
 | 平台请求 | `npf_request(type, data, key_proof, cb)`：账户、设备、分享等请求（信令协议的 `account_*`、`device_*`、`share_*` 等），应答 JSON 整个交给回调；库自己保存账户会话和证书 |
 | 应用数据 | `npf_session_send` |
 | 音视频 | `npf_media_open`、`npf_media_send`、`npf_media_stats_get`、`npf_media_close`，回调 `media_open`、`media_frame`、`media_closed` |
 
-**返回码**：`NPF_OK`（0）、`NPF_EINVAL`、`NPF_ENOENT`、`NPF_ESTATE`（还没启动、不在线、会话没建立）、`NPF_EUNAVAIL`、`NPF_ETOOBIG`、`NPF_ENOMEM`、`NPF_EFAIL`（原因在 `err` 里）、`NPF_EBUSY`（数量到了上限）、`NPF_ESAVE`（生效了，没写进 local.json：`npf_save` 重试）、`NPF_EEXIST`（已有：同一目标的对端、被占用的名字）、`NPF_EREADONLY`（来自 npf.conf 或平台的，不能改）。创建函数返回 `NPF_OK` 或 `NPF_ESAVE` 时输出新对象的编号，同一目标的 `NPF_EEXIST` 时输出已有的那个（名字被占用时输出 0），其他错误时输出 0 且不留下任何东西；同一对端上重复的转发是 `NPF_EINVAL`。
+**常用返回码**：
+
+| 返回码 | 调用方应如何理解 |
+|---|---|
+| `NPF_OK` | 本次操作成功；创建对端不代表会话已经建立 |
+| `NPF_EINVAL` | 参数、选项组合或格式不合法 |
+| `NPF_ENOENT` | 对象或配置键不存在 |
+| `NPF_ESTATE` | 当前状态不能执行，例如尚未启动、运行已结束或会话未建立 |
+| `NPF_EUNAVAIL` | 构建、角色或选项未提供该能力 |
+| `NPF_ETOOBIG` | 缓冲区、列表容量或消息长度不符合限制 |
+| `NPF_ENOMEM` / `NPF_EFAIL` | 内存不足或其他失败；有 `err` 参数的接口会尽可能提供说明 |
+| `NPF_EBUSY` | 对象数量或发送队列达到上限 |
+| `NPF_ESAVE` | 运行变更已发生，保存失败；local.json 可用 `npf_save` 重试，设备 state.json 的例外见第 5 节 |
+| `NPF_EEXIST` | 对端目标或名字冲突 |
+| `NPF_EREADONLY` | 操作受来源限制，例如修改固定资源、删除平台对端 |
+
+创建对端或转发返回 `NPF_OK`、`NPF_ESAVE` 时输出新 ID；同目标对端的 `NPF_EEXIST` 输出已有 ID，名字冲突输出 0。同一对端上的重复转发返回 `NPF_EINVAL`。`npf_config_set` 还可能返回正值 1；`npf_media_open` 返回 ID，失败时为 0 并通过 `err` 输出错误码，不能用同一套返回值判断代替这些接口各自的约定。
+
+`npf_config_set` 返回 1 表示该配置属于启动时设置，不表示本次已经保存。若传 `save = 0`，应用仍需另行保存或在下次创建实例时提供配置，单纯重启不会保留本次修改。
 
 **上限**：`NPF_PEER_FORWARDS_MAX`（16）、`NPF_RESOURCES_MAX`（32）、`NPF_PEERS_SAVED_MAX`（256）、`NPF_PAIRINGS_MAX`（256）、`NPF_PASSWORD_MAX`（127）、`NPF_NAME_MAX` / `NPF_NICK_MAX`（32 / 128 字节）、`NPF_ROOTS_MAX`（2）。`NPF_PEERS_SAVED_MAX` 数的是 local.json 里全部对端记录，包括只有名字或固定公钥的。
 
@@ -368,26 +469,29 @@ npf_start(cli);
 
 **规则**
 
-- `npf_start` 之前不产生事件：之前建立的对象，状态用 `npf_*_get` 读；
-- 事件在实例的线程上排队，在产生它的调用或回调之后送达，同一对象的按发生顺序；`SESSION_UP` 先于这个会话的任何 `data` 和媒体回调；
+- 类型化 `notify` 事件从实例开始运行后才产生；启动前创建或恢复的对象用 `npf_*_get` 查询，不能依赖补发创建事件。此规则不包含日志和同步命令结果回调；
+- 类型化事件在实例线程中排队，按队列顺序送达，不在产生事件的同一业务回调内嵌套调用 `notify`；跨线程调用的返回顺序见下一条。`SESSION_UP` 先于这个会话的 `data` 和媒体回调；
 - 从别的线程创建对象时，关于它的事件可能在创建函数返回之前到达：回调里只用 `ev->peer` / `ev->forward` 和创建时给的 `ctx`，`ctx` 指向的数据要在调用之前准备好；
-- `ctx`，以及 `NPF_EV_PEER`、`NPF_EV_FORWARD` 的 `state`、`reason`、`retry_in_ms`，都在送达时从对象读取，`NPF_PEER_OPT_CTX` 设好之后的回调都带新的；`*_GONE` 和 `SESSION_DOWN` 在对象移除之后发出，自带结束时的信息；
+- 对象仍存在时，交付前会更新 `ctx`；`NPF_EV_PEER` 更新当前 `state` 和 `retry_in_ms`，`NPF_EV_FORWARD` 更新当前 `state` 和失败 `reason`。因此它们是状态变化通知，不是每一次历史状态的快照；`why` 等文本也不应替代结构化查询。对象可能在排队期间已被删除，此时查询应处理 `NPF_ENOENT`；`*_GONE` 保留删除时的信息；
 - 删除对端时依次发出 `SESSION_DOWN`（`NPF_END_LOCAL`）、它每条转发的 `FORWARD_GONE`、`PEER_GONE`；运行结束时不发 `*_GONE`，`NPF_EV_STOPPED` 之后应用自行释放所有 `ctx`；
-- 回调里可以删除事件所说的对象，删除引起的事件排在本次回调之后。
+- 回调里可以删除事件所说的对象，删除引起的事件排在本次回调之后。库不负责释放 `ctx`；更换指针时还要考虑正在执行的回调和已经移除对象的排队事件，不要把设置新指针当成旧指针可以立即释放的保证。最简单的管理方式是保持对象上下文到 `*_GONE`，或整体停止、销毁完成后再释放；
+- 从未运行的实例不会产生 `STOPPED`。若创建对象后直接销毁实例，应用在 `npf_destroy` 返回后释放剩余上下文。`STOPPED` 是最后一个类型化事件，不代表后续销毁过程不会产生日志。
 
 不设 `notify` 时，库改用旧的两个回调：`event`（名称与 JSON：`online`、`offline`、`enrolled`、`enroll_failed`、`account`、`peer_done`、`forward`、`network`、`resources`、`platform`、`stopped`，以及模块的事件）和 `session`（会话建立时 `up = 1` 与 `{peer, path, direction, call_id}`，结束时 `up = 0` 与 `{why}`）。
 
+设置 `notify` 后仅替代 `event` 和 `session`；`data`、媒体回调和 `log` 仍按各自用途调用。
+
 ## 11. 应用数据与音视频
 
-**应用数据**：`npf_session_send` 在会话的控制通道上发送，可靠、有序，排在端口转发的数据前面，每条不超过 16384 字节；对方的 `data` 回调收到。适合命令、通知、小文件的分块。
+**应用数据**：`npf_session_send` 在会话控制通道上发送，可靠、有序，每条不超过 16384 字节；对方通过 `data` 回调接收。它优先于端口转发数据，适合小型业务消息和通知；持续的大流量传输应使用转发，避免占用控制通道。
 
 **媒体流**
 
 - 打开：`npf_media_open(n, session, &opt, &err)` 返回流的编号；对方的 `media_open` 回调收到 `tag`（应用自定的流类型，0–999），返回 1 接受、0 拒绝；
-- 发送：`npf_media_send(n, media, flags, frame, len)`，`flags` 可带 `NPF_FRAME_KEY`；任何线程都可以调用，帧被复制后排队，不阻塞；
+- 发送：`npf_media_send(n, media, flags, frame, len)`，`flags` 可带 `NPF_FRAME_KEY`。其他线程调用时复制帧并排队，`NPF_OK` 表示已接受入队，不保证之后一定发送；实例线程内调用直接提交帧并返回结果，不等待网络传输完成。函数返回后应用可复用输入缓冲区；
 - 接收：`media_frame` 回调收到帧和 `npf_frame_info`（`frame_no`、`flags`、`lost_before`：上一帧之后丢了几帧，可以直接驱动解码器）；
 - 关闭：`npf_media_close`；会话结束时它的流随之关闭；
-- 统计：`npf_media_stats_get` 给出 `target_rate`（编码器可以用的码率，所有流合计，字节/秒）、往返时延、丢弃与 FEC 恢复的帧数、对方报告的帧时延与抖动、`capacity_short`（路径比媒体慢）。
+- 统计：调用前设置 `npf_media_stats.size = sizeof(npf_media_stats)`。`npf_media_stats_get` 给出 `target_rate`（同一会话所有媒体流共享的建议发送速率，字节/秒）、往返时延、丢弃与 FEC 恢复统计、对方报告的帧时延与抖动、`capacity_short`（路径容量不足）。
 
 **选项**（`npf_media_opt`，用 `npf_media_opt_default` 初始化）：
 
@@ -410,7 +514,7 @@ npf_start(cli);
 
 ## 12. 扩展：模块
 
-产品需要库之外的功能（自己的命令、配置键、平台事件的处理、状态里的字段、一种新的转发）时，写成模块。模块是应用自己的代码，在应用自己的构建里编译，运行时用 `npf_register_module` 注册给 libnpf；libnpf 的代码和构建都不用改。
+模块用于扩展库内部的命令、配置键、平台事件处理、状态字段和转发类型，需要与 libnpf 源码一起构建。模块代码由应用维护，用 `npf_register_module` 注册。如果业务只需要连接、转发、消息或媒体，直接使用 `npf.h` 即可，无需编写内部模块。
 
 **注册**
 
@@ -430,7 +534,7 @@ int main(void)
 - 实例在 `npf_create` 时取当时已注册的全部模块，按注册的顺序调用；之后再注册的模块只对之后创建的实例生效，所以通常在程序启动时、创建任何实例之前注册；
 - 最多 8 个模块；可以在任何线程调用。以下情况返回 -1：`NULL`、没有名字、重复注册、某条命令没有 `run`，名字与已注册的模块相同，命令与库自己的命令或其他模块的命令同名，配置键与库的配置键或其他模块的配置键相同。所以模块不能覆盖库的命令和配置；
 - 创建实例时按顺序调用各模块的 `create`；某个模块失败时实例创建失败，失败的模块自己清理已分配的资源，库只对排在它前面、已经创建成功的模块调用 `end` / `destroy`，按相反顺序销毁；
-- 模块结构体归应用所有，要比用到它的实例活得久（通常是静态常量）；
+- 注册表在进程内保存模块指针，没有注销接口。模块结构体及其引用的命令表、键名等应在进程运行期间一直有效，通常定义为静态常量；
 - 没有注册任何模块时，库只有自己的命令和配置键。
 
 **编写模块**
@@ -480,17 +584,38 @@ const npf_module acme_module = {.name = "acme", .create = acme_create, .destroy 
 
 **构建**
 
+以下示例假定应用目录中有 `main.c`、`acme/acme.c` 和 libnpf 源码目录 `libnpf`。父项目需要提供编译选项函数和功能开关；当前不能只写 `add_subdirectory(libnpf)`。应用的 `CMakeLists.txt` 可写为：
+
 ```cmake
-add_subdirectory(libnpf)                               # 不需要为模块做任何设置
+cmake_minimum_required(VERSION 3.16)
+project(acme VERSION 1.0.0 LANGUAGES C)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+
+set(npf_VERSION ${PROJECT_VERSION})
+set(NPF_HAS_PEERS ON)
+set(NPF_BUILD_TESTS OFF)
+set(NPF_BUILD_LIB OFF)                                 # 只链接内部静态目标
+include(libnpf/cmake/NpfOptions.cmake)
+add_subdirectory(libnpf)
 add_executable(acme-app main.c acme/acme.c)
-target_link_libraries(acme-app PRIVATE npf_common)     # 模块用到库的内部接口
+target_link_libraries(acme-app PRIVATE npf_common)
 ```
 
-模块使用库的内部接口（`npf/module.h`、`include/npf/` 下的其他头文件、`src/api/npf_int.h`），所以链接静态目标 `npf_common`，而不是安装后的 libnpf.so / libnpf.a（那两个只导出 npf.h）。内部接口不属于 npf.h 的稳定 ABI，升级 libnpf 后模块要重新编译。只用 npf.h、不带模块的应用不受影响。
+在这个应用目录执行 `cmake -S . -B build` 和 `cmake --build build --parallel`。`npf_VERSION` 决定源码集成后的版本字符串，这里使用应用版本。
+
+模块使用内部头文件 `include/npf/module.h`、`src/api/npf_int.h` 等，所以链接源码构建目标 `npf_common`。安装后的库只提供 `npf.h` 中的公开接口，不能用于这个模块示例。内部接口没有独立的稳定 ABI 保证；升级 libnpf 后应核对内部接口变化并重新编译模块。
 
 **钩子与扩展点**
 
-- 钩子都是可选的；`create` 在调用 `npf_create` 的线程上、恢复保存的对端之前调用，`destroy` 在调用 `npf_destroy` 的线程上（从没运行过的实例先调一次 `end(2)`），其余都在实例的线程上：开始（`begin`）、分步结束（`end`）、登录、平台事件、按需信令（`sig_busy`：模块还有事要做时保持连接）、账户会话、会话状态，对端的建立 / 结束 / 转发（`peer_up`、`peer_done`、`peer_fwd`），平台公网映射的连接（`peer_opened`、`peer_conn`、`peer_refused`），删除对端（`peer_removing` 返回 1 表示模块会重新打开它，`peer_removed`），备注写进 local.json 之后（`nick_set`），对端保存的转发变了（`fwds_saved`），命令，状态 JSON 与文字，配置键及其检查（`check`：返回 0 接受，否则是退出码，原因写进输出），运行中改了库的可即时生效的键（`conf_set`：`log_level`、`peer_idle` 等，已生效之后）；模块的命令也经 `npf_command` 调用，应用可以用模块提供自己的命令（例如对端和转发的命令行）；
+- 钩子均可选。`create` 在 `npf_create` 的调用线程上、恢复保存的对端之前执行；正常销毁时，`destroy` 在 `npf_destroy` 的调用线程上执行。创建失败的清理在创建线程执行；从未运行的实例销毁前会调用 `end(2)`。`end` 按注册顺序执行，`destroy` 按相反顺序执行；
+- 运行中的业务钩子在实例线程执行，包括 `begin`、分步结束的 `end`、登录、平台事件、账户与会话状态等。启动前调用命令、查询或设置，也可能在调用线程触发对应钩子，不能假定所有钩子都在后台线程执行；
+- 对端钩子覆盖连接、结束、转发变化（`peer_up`、`peer_done`、`peer_fwd`），平台公网映射的连接（`peer_opened`、`peer_conn`、`peer_refused`），以及删除（`peer_removing`、`peer_removed`）。`peer_removing` 返回 1 表示模块将重新打开对端；`sig_busy` 返回非零可在模块仍有业务时保持信令连接；
+- 本地记录变更可触发 `nick_set` 和 `fwds_saved`，分别通知备注和保存的转发列表变化。这些钩子不代表磁盘写入成功；调用方仍要检查保存结果；
+- 模块命令通过 `npf_command` 调用。模块还可提供状态 JSON、状态文字和配置键；`check` 校验配置，返回 0 接受，否则返回退出码并把原因写入输出。`conf_set` 在支持即时更新的配置（如 `log_level`、`peer_idle`）生效后调用；
 - 一种新的转发：在 `create` 钩子里用 `npf_peers_add_kind` 登记一个 `npf_fwd_kind`（大写字母，以及解析、检查、建立、撤销的回调），用 `npf_peer_forward_add_kind` 加到对端上，库像本地转发一样保存、重试、随对端删除；`npf_peers_fwd_call` 给出这条转发所在的会话；
 - 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`），库原样保留；
 - 状态 JSON 里模块的字段和库的字段在同一个对象里，模块应使用带自己前缀的键名，避免与库现有或以后的字段重名；
@@ -498,12 +623,12 @@ target_link_libraries(acme-app PRIVATE npf_common)     # 模块用到库的内�
 
 ## 13. 日志与排查
 
-- 日志行为“日期 时间.毫秒 级别 消息”；有 `log` 回调时交给回调（在不持有锁时调用，可以回调 API），否则写到 stderr；`npf_log_json` / `log` 命令给出最近的日志（`no_log_ring` 可以关掉）；
+- 每条日志格式为“日期 时间.毫秒 级别 消息”。有 `log` 回调时交给回调，否则写到 stderr；`npf_log_json` / `log` 命令给出最近的日志（`no_log_ring` 可以关掉）。日志回调在产生日志的线程执行，创建和销毁阶段也可能调用；建议只做日志收集，避免在其中改变实例生命周期。业务回调的 API 调用规则见第 8 节；
 - 连不上时先看状态 JSON 的 `online`、`nat` 和对端的状态；会话的 `path` 说明走的是直连还是中转；
-- 本机开着别的 VPN 时，库会让 UDP 套接字走物理网卡，使打洞面对的是本机真实的 NAT；网络变化后调用 `npf_network_changed` 让库立即重新检查。
+- 在 `p2p` 模式下检测到 VPN 占用默认路由时，库会尝试让 UDP 套接字和信令连接使用物理网卡。是否成功取决于平台支持、可用网卡和绑定权限，不能保证绕过 VPN；网络变化后调用 `npf_network_changed` 让库立即重新检查。
 
 ## 14. 限制与后续
 
-- macOS、Windows 的静态库还没有做符号局部化，与应用自带的 mbedTLS 等同名库一起静态链接时可能冲突，可以改用共享库；
+- 当前安装规则只在满足第 2 节条件的 Linux 构建中生成合并并隐藏内部符号的 `libnpf.a`。其他平台可使用共享库，或自行集成静态目标；自行静态链接时需处理与应用自带的 mbedTLS 等库的符号冲突；
 - `rcv_deadline_ms` 暂不生效：要等 AnLiu 支持修改已打开的流的接收选项；
 - WS 中转上的媒体流没有往返时延，`target_rate` 只在积压过之后才有估计值。
