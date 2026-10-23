@@ -7,23 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "anliu.h"
-#include "npf/bind.h"
-#include "npf/cert.h"
-#include "npf/conf.h"
-#include "npf/cpace.h"
-#include "npf/natprobe.h"
-#include "npf/node.h"
-#include "npf/noise.h"
-#include "npf/platform.h"
-#include "npf/punch.h"
-#include "npf/siv.h"
-#include "npf/tunnel.h"
-#include "npf/wsrelay.h"
-
-#include "media.h"
-#include "udpfwd.h"
-#include "node_internal.h"
+#include "call_internal.h"
 
 #define NPF_TAG_TUNNEL     1
 #define ANL_MTU            1200
@@ -47,165 +31,7 @@
 #define PATH_PKT_LEN       (NPF_SIV_TAG_SIZE + 10)
 #define MAX_CALLS_DEFAULT  32        /* concurrent sessions a callee accepts (signaling.md "incoming": busy; R46) */
 
-/* short names for npf_node.h's NPF_AUTH_* */
-enum { AUTH_IK = NPF_AUTH_IK, AUTH_PAKE = NPF_AUTH_PAKE, AUTH_GRANT = NPF_AUTH_GRANT, AUTH_DIRECT = NPF_AUTH_DIRECT };
 
-typedef struct relay_c {
-    int      active;
-    int      bound;
-    uint8_t  relay_id[8];
-    uint8_t  alloc_key[32];
-    npf_siv_keys keys;
-    struct sockaddr_storage addr[4];
-    int      naddr, cur;
-    uint32_t seq;
-    int      tries;
-    npf_timer *t_bind;
-    int64_t  expires;
-    char     mode[8];
-} relay_c;
-
-struct npf_call {
-    npf_call   *next;
-    npf_call   *conv_next;          /* n->conv_tab chain while c->anl exists */
-    uint64_t    caller_number;      /* callee: the caller's number when it is a node, else 0 */
-    npf_node   *n;
-    int         caller;
-    int         state;
-    int         auth;
-    uint8_t     call_id[16];
-    char        call_id_s[32];
-    uint64_t    number;             /* the callee's number */
-    char        req_id[24];         /* callee: id of the incoming request to answer */
-    int         call_req;           /* caller: id of our call request */
-
-    npf_noise_hs hs;
-    npf_cpace   cp;
-    char        password[128];
-    uint8_t     pinned[32];
-    uint8_t     peer_pub[32];
-    int         keys_ready;
-    uint8_t     k12[64];            /* k1 | k2 */
-    uint8_t     nominate_key[32];
-
-    anl_t      *anl;
-    uint32_t    conv;
-    anl_stream_t *stream;           /* the data stream: the caller opens it, both send on it */
-    struct dmsg  *dpend;            /* callee: data messages before the stream reached us */
-    struct dmsg **dpend_tail;
-    size_t        dpend_bytes;
-    npf_tunnel *tun;
-    npf_timer  *t_anl, *t_timeout, *t_punch, *t_linger;
-    int         flush_pending;
-    int         punched;            /* a punch round has finished (either way) */
-    npf_timer  *t_ws_wait;          /* UDP relay unreachable: waiting for the punch first */
-
-    relay_c     relay;
-    int         p2p;
-    int         p2p_fd;
-    int         p2p_owned;          /* S3 socket handed over by the punch */
-    struct sockaddr_storage p2p_addr;
-    int64_t     p2p_rx_ms;
-    uint64_t    auth_fail_seen;     /* AnLiu rx_auth_fail last reported (forged datagrams with our conv) */
-    int64_t     auth_fail_at;       /* when */
-    int64_t     p2p_since;
-    int64_t     p2p_suspect;        /* direct path suspected dead since (ms); 0 = no */
-    npf_siv_keys path_keys;         /* PATH_CHECK / PATH_ECHO, from the E2E keys */
-    int         path_ready;
-    uint64_t    path_nonce;         /* of the checks in flight */
-    int64_t     path_echo_ms;       /* the last matching echo (ms) */
-    int         standby_check;      /* the check before the relay goes: echo -> release */
-    npf_timer  *t_pcheck;
-    int64_t     p2p_busy_since;     /* data in flight since (ms); 0 = nothing unacknowledged */
-    npf_punch  *punch;
-    int         punch_socks;        /* S3 hard-side sockets of the running punch (node budget) */
-    int64_t     up_ms;              /* established at (monotonic ms), 0 = not yet */
-    uint64_t    tx_bytes, rx_bytes; /* tunnel bytes (sublink frames) */
-    int         punch_round;
-    int         accepted;           /* the platform's accept arrived: t_timeout counts from it */
-    int         secure;             /* connect_mode secure on either side: relays only, no punching */
-    int         punch_retries;      /* caller: backoff step of punch_request (schedule_repunch) */
-    int         empty_rounds;       /* caller: rounds let go for want of candidates (empty_round) */
-    int         punch_requests;     /* caller: punch_request sent in this session (PUNCH_ROUNDS_MAX) */
-    int         repunch_waiting;    /* t_repunch waits for the round a punch_request asked for */
-    int         relay_retried;      /* the UDP relay tried again once after a failed punch, before the WS relay */
-    int         relay_waits_ports;  /* the UDP relay unreachable while punches held the NAT's ports: again when they end */
-    int         relay_ports_waited; /* that wait was had (once) */
-    int         sock_wait;          /* caller, hard side: a round skipped for want of S3 sockets; asked
-                                       for again when another punch gives them back */
-    npf_timer  *t_repunch, *t_standby;
-    int         relay_asked;        /* relay_switch sent, waiting for a new allocation */
-    int         ws_paired_once;     /* the WS relay worked at least once */
-    npf_punch_cfg pcfg;
-    uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
-    int         info_round;
-    int         punch_wait_keys;
-
-    /* peer data from signaling */
-    struct sockaddr_storage peer_cand[NPF_PUNCH_MAX_PEERS];
-    int         npeer_cand;
-    int         ended;
-    int         direct;             /* direct connection: no platform, fixed path */
-    struct npf_policy *policy;      /* callee: target policy of this session's sublinks */
-    uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */
-    size_t      dmsg1_len;
-    int         dtries;
-    npf_timer  *t_direct;
-    uint64_t    grant_account;      /* callee: the account of the grant that admitted the caller */
-    char        caller_app[72];     /* callee: the caller's program ("name ver", incoming caller.app) */
-    int         caller_hosted;      /* callee: the caller is a hosted client (a public mapping) */
-    int         hosted_grant;       /* callee: admitted by a hosted grant */
-    uint8_t    *targets;            /* callee: a hosted grant's targets, the only ones it may open */
-    size_t      tlen;
-    uint32_t    grant_issued;       /* callee: of the grant in effect (grant_update takes newer ones) */
-    uint64_t    rep_tx, rep_rx;     /* caller: bytes already reported (npf_call_usage_take) */
-    npf_sublink_fn sub_done;        /* a connection opened here ended (npf_call_on_sublink_done) */
-    void       *sub_arg;
-    uint8_t     grant[512];         /* caller: hosted-trust grant to present */
-    size_t      grant_len;
-    struct {                        /* control requests over the tunnel awaiting a reply */
-        int id;
-        npf_ctl_fn fn;
-        void *arg;
-    } ctl[4];
-    int         ctl_seq;
-    /* WS relay transport (data-channel.md 10) */
-    int         ws_mode;
-    npf_wsr    *wsr;
-    uint8_t     ws_ktx[32], ws_krx[32];
-    uint64_t    ws_ctr_tx, ws_ctr_rx;
-    int         ws_tx_ready, ws_rx_ready;
-    uint8_t     ws_salts[8][16];    /* the peer's salts seen in this session: no replays */
-    uint8_t     ws_pending_salt[16];/* callee: START that arrived before the handshake finished */
-    int         ws_has_pending;
-    int         ws_nsalts;
-    uint8_t    *ws_out;             /* tunnel bytes waiting to be sealed into records */
-    uint8_t    *ws_in;              /* received record bytes: channel units not yet complete */
-    size_t      ws_in_len, ws_in_cap;
-    size_t      ws_out_len, ws_out_cap;
-    uint64_t    ws_out_total;       /* all bytes ever put into ws_out (the media's rate estimate) */
-    npf_media  *media;              /* libnpf media streams (media.h), made on first use */
-    npf_udpf   *udp;                /* the UDP forwards' flows (udpfwd.h), made on first use */
-    npf_timer  *t_wsflush;
-    /* callee: reverse-mapping listeners (data-channel.md 7.1) */
-    struct rev_listener {
-        npf_call *c;
-        uint32_t id;
-        int      fd;
-        char     host[256];
-        uint16_t port;
-        int      lan;               /* on every address: this host and its LAN may connect */
-        int      want;              /* the port asked for (0: any), as the policy allowed it */
-        int64_t  refused_ms;        /* last connection from elsewhere logged */
-        int      udp;               /* a UDP socket (-R .../udp; data-channel.md 15) */
-    } rev[NPF_MAX_REVERSE];
-    int         nrev;
-    uint32_t    rev_seq;
-};
-
-static void call_free(npf_call *c);
-static npf_media *media_of(npf_call *c);
-static npf_udpf *udp_of(npf_call *c);
 
 static void grant_update(npf_call *c, const npf_json *j);
 
@@ -234,7 +60,7 @@ typedef struct dmsg {
     uint8_t      d[];
 } dmsg;
 
-static void dpend_free(npf_call *c)
+void call_dpend_free(npf_call *c)
 {
     while (c->dpend) {
         dmsg *m = c->dpend;
@@ -244,7 +70,6 @@ static void dpend_free(npf_call *c)
     c->dpend_tail = &c->dpend;
     c->dpend_bytes = 0;
 }
-static void set_state(npf_call *c, int st, const char *why);
 static void check_p2p(npf_call *c);
 static void standby_done(npf_loop *loop, void *arg);
 static void anl_schedule(npf_call *c);
@@ -252,7 +77,7 @@ static void start_punch_now(npf_call *c);
 
 /* ---- helpers ---- */
 
-static void b64_of(const uint8_t *b, size_t n, char *out)
+void call_b64_of(const uint8_t *b, size_t n, char *out)
 {
     npf_b64url_encode(b, n, out);
 }
@@ -301,14 +126,14 @@ static void parse_cands(npf_call *c, const npf_json *j, int d)
 
 /* ---- AnLiu ---- */
 
-static int udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len)
+int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len)
 {
     (void)c;
     return npf_udp_send(fd, buf, len, to);
 }
 
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
-static int relay_blocked(const char *what)
+int call_relay_blocked(const char *what)
 {
     const char *v = getenv("NPF_TEST_BLOCK_RELAY");
     return v && *what && strstr(v, what) != NULL;
@@ -317,7 +142,7 @@ static int relay_blocked(const char *what)
 static int relay_addr_blocked(const npf_call *c)
 {
     char a[64];
-    return getenv("NPF_TEST_BLOCK_RELAY") && relay_blocked(npf_addr_str(&c->relay.addr[c->relay.cur], a, sizeof a));
+    return getenv("NPF_TEST_BLOCK_RELAY") && call_relay_blocked(npf_addr_str(&c->relay.addr[c->relay.cur], a, sizeof a));
 }
 
 static void relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
@@ -333,7 +158,7 @@ static void relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
     npf_le32(p + 2, c->relay.seq++);
     memcpy(p + 6, dgram, len);
     npf_siv_seal(&c->relay.keys, 0, buf, len + 6);
-    udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], buf, len + 6 + NPF_SIV_TAG_SIZE);
+    call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], buf, len + 6 + NPF_SIV_TAG_SIZE);
 }
 
 /* tests: NPF_TEST_DROP_P2P=ms[:port] cuts the direct path that long after it
@@ -353,7 +178,7 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
     npf_call *c = user;
     (void)w;
     if (c->p2p && !p2p_cut(c))
-        udp_send(c, c->p2p_fd, &c->p2p_addr, (const uint8_t *)buf, (size_t)len);
+        call_udp_send(c, c->p2p_fd, &c->p2p_addr, (const uint8_t *)buf, (size_t)len);
     /* the relay carries the data when there is no direct path, and as a second
      * copy while the direct path is suspected (AnLiu drops the duplicates) */
     if ((!c->p2p || c->p2p_suspect) && c->relay.active)
@@ -367,12 +192,12 @@ static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user
     (void)w;
     /* the caller's UDP stream (udpfwd.h) */
     if (anl_stream_tag(s) == NPF_TAG_UDP) {
-        npf_udpf *u = c->caller ? NULL : udp_of(c);
+        npf_udpf *u = c->caller ? NULL : call_udp_of(c);
         return u ? npf_udpf_accept(u, s, opt) : -1;
     }
     /* a media stream of the peer (libnpf, media.h) */
     if ((anl_stream_tag(s) & ~NPF_MEDIA_TAG_RDK) >= NPF_TAG_MEDIA) {
-        npf_media *m = media_of(c);
+        npf_media *m = call_media_of(c);
         return m ? npf_media_accept(m, s, opt) : -1;
     }
     /* the callee takes the caller's data stream (data-channel.md 4): one,
@@ -396,8 +221,6 @@ static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user
     return 0;
 }
 
-static void ws_flush_timer(npf_loop *loop, void *arg);
-static void ws_failed(npf_call *c, const char *why);
 
 /* WS relay: both channels in one byte stream of records,
  * unit = channel(1) | len(2) | content (data-channel.md 10.2) */
@@ -422,7 +245,7 @@ static int ws_mux(npf_call *c, int ch, const uint8_t *buf, size_t len)
     c->ws_out_len += 3 + len;
     c->ws_out_total += 3 + len;
     if (!c->t_wsflush)
-        c->t_wsflush = npf_timer_add(c->n->loop, 0, ws_flush_timer, c);
+        c->t_wsflush = npf_timer_add(c->n->loop, 0, call_ws_flush_timer, c);
     return 0;
 }
 
@@ -498,10 +321,9 @@ static void tun_ready(void *arg)
     npf_call *c = arg;
     if (c->caller && c->auth == AUTH_PAKE && c->n->hooks.on_paired)
         c->n->hooks.on_paired(c->n, c->number, c->peer_pub, c->n->hook_arg);
-    set_state(c, NPF_CALL_ESTABLISHED, NULL);
+    call_set_state(c, NPF_CALL_ESTABLISHED, NULL);
 }
 
-static void reverse_request(npf_call *c, const char *type, const npf_json *j);
 
 static void tun_control(void *arg, const npf_json *j)
 {
@@ -530,7 +352,7 @@ static void tun_control(void *arg, const npf_json *j)
         return;
     }
     if (!c->caller && (strcmp(type, "reverse_listen") == 0 || strcmp(type, "reverse_close") == 0)) {
-        reverse_request(c, type, j);
+        call_reverse_request(c, type, j);
         return;
     }
     if (c->caller && strcmp(type, "reverse_closed") == 0) {
@@ -609,318 +431,13 @@ int npf_call_ctl_reply(npf_call *c, const char *type, const npf_json *req, const
 
 /* the target policy of this session's tunnel: a callee's, the published
  * resources; a caller's, none (its -R reaches what it registered, 7.1) */
-static struct npf_policy *call_policy(npf_call *c)
+struct npf_policy *call_policy(npf_call *c)
 {
     if (c->caller)
         return NULL;
     return c->policy ? c->policy : c->n->callee ? c->n->callee->policy : NULL;
 }
 
-/* ---- reverse mapping, callee side (data-channel.md 7.1) ---- */
-
-/* an address of this host's interfaces (a -R listening on one of them) */
-static int own_addr(const char *a)
-{
-    npf_ifaddr ifs[32];
-    unsigned char b[16];
-    int fam, len, n, i;
-    if (inet_pton(AF_INET, a, b) == 1)
-        fam = AF_INET, len = 4;
-    else if (inet_pton(AF_INET6, a, b) == 1)
-        fam = AF_INET6, len = 16;
-    else
-        return 0;
-    n = npf_if_list(ifs, 32);
-    for (i = 0; i < n; i++)
-        if (ifs[i].family == fam && memcmp(ifs[i].addr, b, (size_t)len) == 0)
-            return 1;
-    return 0;
-}
-
-/* the published resources still let this listener be (a "reverse" resource
- * removed, its ports narrowed, its "lan:" taken back: no longer) */
-static int rev_allowed(struct rev_listener *l)
-{
-    return npf_policy_reverse_ok(call_policy(l->c), l->want, l->lan);
-}
-
-static void rev_accept(npf_loop *loop, int lfd, unsigned ev, void *arg)
-{
-    struct rev_listener *l = arg;
-    (void)loop;
-    (void)ev;
-    for (;;) {
-        int fd = npf_accept(lfd);
-        if (fd < 0)
-            break;
-        if (!rev_allowed(l)) {          /* npf_node_reverse_recheck closes it; until then, nothing */
-            npf_sock_close(fd);
-            continue;
-        }
-        if (l->lan) {
-            /* listening on every address: from this host and its LAN only, as
-             * the reverse resource says ("lan:"), not the internet */
-            struct sockaddr_storage from;
-            socklen_t fl = sizeof from;
-            struct npf_policy *p = call_policy(l->c);
-            if (getpeername(fd, (struct sockaddr *)&from, &fl) < 0 || !p
-                || !npf_policy_lan_peer(p, (struct sockaddr *)&from)) {
-                if (npf_mono_ms() - l->refused_ms > 60000) {
-                    char a[64] = "?";
-                    npf_addr_str(&from, a, sizeof a);
-                    npf_logw("call %s: reverse mapping port: %s is not on this host's LAN, refused", l->c->call_id_s, a);
-                    l->refused_ms = npf_mono_ms();
-                }
-                npf_sock_close(fd);
-                continue;
-            }
-        }
-        /* the callee is the SOCKS5 client here: CONNECT the registered target back on the caller */
-        if (!l->c->tun || npf_tunnel_open(l->c->tun, fd, 0, l->host, l->port) < 0)
-            npf_sock_close(fd);
-    }
-}
-
-/* a datagram on a -R .../udp listener: a flow of ours (even numbers) back to
- * the caller, who sends it to the target it registered */
-static void rev_udp(npf_loop *loop, int fd, unsigned ev, void *arg)
-{
-    struct rev_listener *l = arg;
-    npf_call *c = l->c;
-    uint8_t *buf = npf_scratch(NPF_UDP_PAYLOAD_MAX + 1);
-    int k;
-    (void)loop;
-    (void)ev;
-    if (!buf)
-        return;
-    for (k = 0; k < 64; k++) {
-        struct sockaddr_storage from;
-        socklen_t fl = sizeof from;
-        ssize_t r = recvfrom(fd, buf, NPF_UDP_PAYLOAD_MAX + 1, 0, (struct sockaddr *)&from, &fl);
-        struct npf_policy *p = call_policy(c);
-        if (r < 0) {
-            if (npf_sock_again())
-                break;
-            continue;                       /* an ICMP error of an earlier reply */
-        }
-        if (r > NPF_UDP_PAYLOAD_MAX || !rev_allowed(l))
-            continue;
-        if (l->lan && (!p || !npf_policy_lan_peer(p, (struct sockaddr *)&from))) {
-            if (npf_mono_ms() - l->refused_ms > 60000) {
-                char a[64] = "?";
-                npf_addr_str(&from, a, sizeof a);
-                npf_logw("call %s: reverse mapping port (UDP): %s is not on this host's LAN, dropped", c->call_id_s, a);
-                l->refused_ms = npf_mono_ms();
-            }
-            continue;
-        }
-        if (c->state == NPF_CALL_ESTABLISHED && udp_of(c))
-            npf_udpf_send_rev(c->udp, fd, &from, fl, l->id, buf, (size_t)r);
-    }
-    npf_scratch_done(buf);
-}
-
-static void rev_close_all(npf_call *c)
-{
-    int i;
-    for (i = 0; i < c->nrev; i++) {
-        npf_loop_del(c->n->loop, c->rev[i].fd);
-        npf_sock_close(c->rev[i].fd);
-    }
-    c->nrev = 0;
-}
-
-/* close listener i; the last one takes its place */
-static void rev_close(npf_call *c, int i)
-{
-    if (c->rev[i].udp)
-        npf_udpf_forget_fd(c->udp, c->rev[i].fd);   /* its flows end */
-    npf_loop_del(c->n->loop, c->rev[i].fd);
-    npf_sock_close(c->rev[i].fd);
-    c->rev[i] = c->rev[--c->nrev];
-    if (i < c->nrev) {                  /* moved: re-register with its new address */
-        npf_loop_del(c->n->loop, c->rev[i].fd);
-        npf_loop_add(c->n->loop, c->rev[i].fd, NPF_EV_READ, c->rev[i].udp ? rev_udp : rev_accept, &c->rev[i]);
-    }
-}
-
-void npf_node_reverse_recheck(npf_node *n)
-{
-    npf_call *c;
-    int i;
-    for (c = n->calls; c; c = c->next)
-        for (i = c->nrev - 1; i >= 0; i--)
-            if (!rev_allowed(&c->rev[i])) {
-                char m[112];
-                int len = snprintf(m, sizeof m, "{\"v\":1,\"type\":\"reverse_closed\",\"data\":"
-                                   "{\"listen_id\":%u,\"reason\":\"forbidden\"}}", c->rev[i].id);
-                npf_log("call %s: reverse mapping %u closed: the published resources no longer allow it",
-                        c->call_id_s, c->rev[i].id);
-                if (c->tun && npf_tunnel_is_ready(c->tun))  /* the caller forgets it (reverse_closed) */
-                    npf_tunnel_control(c->tun, m, (size_t)len);
-                rev_close(c, i);
-            }
-}
-
-static void reverse_request(npf_call *c, const char *type, const npf_json *j)
-{
-    int d = npf_json_get(j, 0, "data"), i, fd;
-    int64_t port = 0, tport, lid;
-    char bind_addr[64] = "127.0.0.1", host[256], reply[96];
-    struct sockaddr_storage ss;
-    socklen_t sl;
-    int one = 1, lan, udp = 0, ut = npf_json_get(j, d, "udp");
-    if (strcmp(type, "reverse_close") == 0) {
-        if (npf_json_get_int(j, d, "listen_id", 1, UINT32_MAX, &lid) == 0)
-            for (i = 0; i < c->nrev; i++)
-                if (c->rev[i].id == (uint32_t)lid) {
-                    rev_close(c, i);
-                    break;
-                }
-        npf_call_ctl_reply(c, type, j, "ok", NULL, NULL);
-        return;
-    }
-    npf_json_get_str(j, d, "bind", bind_addr, sizeof bind_addr);
-    npf_json_get_int(j, d, "port", 0, 65535, &port);
-    if (npf_json_get_str(j, d, "target_host", host, sizeof host) <= 0
-        || npf_json_get_int(j, d, "target_port", 1, 65535, &tport) < 0) {
-        npf_call_ctl_reply(c, type, j, "error", "bad_request", NULL);
-        return;
-    }
-    /* policy: a port a "reverse" resource publishes (0, chosen by us: with
-     * "*"), on loopback; on every address, or on one of this host's own,
-     * only when it says "lan:" (and then from this host and its LAN only);
-     * 16 per session */
-    if (strcmp(bind_addr, "localhost") == 0)
-        strcpy(bind_addr, "127.0.0.1");
-    if (!bind_addr[0] || strcmp(bind_addr, "*") == 0)
-        strcpy(bind_addr, "0.0.0.0");
-    lan = strcmp(bind_addr, "127.0.0.1") != 0 && strcmp(bind_addr, "::1") != 0;
-    if ((lan && strcmp(bind_addr, "0.0.0.0") != 0 && strcmp(bind_addr, "::") != 0 && !own_addr(bind_addr))
-        || !npf_policy_reverse_ok(call_policy(c), (int)port, lan)) {
-        npf_call_ctl_reply(c, type, j, "error", "forbidden", NULL);
-        return;
-    }
-    if (c->nrev >= NPF_MAX_REVERSE) {
-        npf_call_ctl_reply(c, type, j, "error", "rate_limited", NULL);
-        return;
-    }
-    {
-        char a[80];
-        snprintf(a, sizeof a, strchr(bind_addr, ':') ? "[%s]:%d" : "%s:%d", bind_addr, (int)port);
-        npf_addr_parse(a, &ss);
-    }
-    if (ut >= 0)
-        npf_json_bool(j, ut, &udp);         /* -R .../udp: a UDP socket (data-channel.md 15) */
-    fd = npf_socket(ss.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0, 0);
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    if (fd >= 0 && strcmp(bind_addr, "::") == 0) {
-        int zero = 0;                       /* "::": IPv4 too */
-        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&zero, sizeof zero);
-    }
-    sl = ss.ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
-    if (fd < 0 || bind(fd, (struct sockaddr *)&ss, sl) < 0 || (!udp && listen(fd, 32) < 0)) {
-        if (fd >= 0)
-            npf_sock_close(fd);
-        npf_call_ctl_reply(c, type, j, "error", "conflict", NULL);
-        return;
-    }
-    getsockname(fd, (struct sockaddr *)&ss, &sl);
-    i = c->nrev++;
-    c->rev[i].c = c;
-    c->rev[i].id = ++c->rev_seq;
-    c->rev[i].fd = fd;
-    snprintf(c->rev[i].host, sizeof c->rev[i].host, "%s", host);
-    c->rev[i].port = (uint16_t)tport;
-    c->rev[i].lan = lan;
-    c->rev[i].want = (int)port;
-    c->rev[i].refused_ms = 0;
-    c->rev[i].udp = udp;
-    npf_loop_add(c->n->loop, fd, NPF_EV_READ, udp ? rev_udp : rev_accept, &c->rev[i]);
-    snprintf(reply, sizeof reply, "{\"listen_id\":%u,\"port\":%u}", c->rev[i].id,
-             ntohs(ss.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&ss)->sin6_port : ((struct sockaddr_in *)&ss)->sin_port));
-    npf_call_ctl_reply(c, type, j, "ok", NULL, reply);
-    npf_log("call %s: reverse mapping%s %s -> caller %s:%d", c->call_id_s, udp ? " (UDP)" : "", reply, host, (int)tport);
-}
-
-/* ---- reverse mapping, caller side ---- */
-
-typedef struct rev_req {
-    char host[256];
-    uint16_t port;
-    int udp;
-    npf_rev_fn fn;
-    void *arg;
-} rev_req;
-
-static void rev_reply(npf_call *c, const npf_json *j, int ok, void *arg)
-{
-    rev_req *r = arg;
-    int64_t id = 0, port = 0;
-    int d = npf_json_get(j, 0, "data");
-    char err[32] = "";
-    if (ok && npf_json_get_int(j, d, "listen_id", 1, UINT32_MAX, &id) == 0
-        && npf_json_get_int(j, d, "port", 1, 65535, &port) == 0 && c->tun
-        && (r->udp ? npf_udpf_rev_add(udp_of(c), (uint32_t)id, r->host, r->port)
-                   : npf_tunnel_rev_add(c->tun, (uint32_t)id, r->host, r->port)) == 0) {
-        r->fn(c, (int)port, (uint32_t)id, NULL, r->arg);
-    } else {
-        npf_json_get_str(j, 0, "error", err, sizeof err);
-        r->fn(c, -1, 0, err[0] ? err : "failed", r->arg);
-    }
-    free(r);
-}
-
-int npf_call_reverse(npf_call *c, const char *bind_addr, int port, const char *host, uint16_t hostport, int udp,
-                     npf_rev_fn fn, void *arg)
-{
-    char data[512];
-    npf_jw w;
-    rev_req *r = calloc(1, sizeof *r);
-    if (!r || strlen(host) >= sizeof r->host) {
-        free(r);
-        return -1;
-    }
-    strcpy(r->host, host);
-    r->port = hostport;
-    r->udp = udp;
-    r->fn = fn;
-    r->arg = arg;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "bind", bind_addr);
-    npf_jw_kint(&w, "port", port);
-    npf_jw_kstr(&w, "target_host", host);
-    npf_jw_kint(&w, "target_port", hostport);
-    if (udp) {
-        npf_jw_kbool(&w, "udp", 1);
-        npf_udpf_prepare(udp_of(c));        /* the stream the callee sends on */
-    }
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) < 0 || npf_call_ctl_request(c, "reverse_listen", data, rev_reply, r) < 0) {
-        free(r);
-        return -1;
-    }
-    return 0;
-}
-
-static void rev_closed(npf_call *c, const npf_json *j, int ok, void *arg)
-{
-    (void)c;
-    (void)j;
-    (void)ok;
-    (void)arg;
-}
-
-void npf_call_reverse_close(npf_call *c, uint32_t listen_id)
-{
-    char data[48];
-    if (c->tun)
-        npf_tunnel_rev_del(c->tun, listen_id);
-    npf_udpf_rev_del(c->udp, listen_id);
-    snprintf(data, sizeof data, "{\"listen_id\":%u}", listen_id);
-    npf_call_ctl_request(c, "reverse_close", data, rev_closed, NULL);
-}
 
 int npf_call_auth(const npf_call *c) { return c->auth; }
 uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
@@ -1044,7 +561,7 @@ static void conv_link(npf_call *c)
     *slot = c;
 }
 
-static void conv_unlink(npf_call *c)
+void call_conv_unlink(npf_call *c)
 {
     npf_call **pp;
     for (pp = &c->n->conv_tab[CONV_SLOT(c->conv)]; *pp; pp = &(*pp)->conv_next)
@@ -1160,7 +677,7 @@ static int m_ended(void *arg)
 static const npf_media_io media_io = {m_unit, m_ws_write, m_ws_backlog, m_kick, m_open, m_frame, m_closed, m_ended};
 
 /* the session's media streams, made on first use on its transport */
-static npf_media *media_of(npf_call *c)
+npf_media *call_media_of(npf_call *c)
 {
     if (!c->media && !c->ended && (c->ws_mode || c->anl))
         c->media = npf_media_new(c->n->loop, c->ws_mode ? NULL : c->anl, !c->caller, &media_io, c);
@@ -1196,7 +713,7 @@ static int u_allowed(void *arg)
 
 static const npf_udpf_io udp_io = {u_unit, u_ws_write, u_ws_backlog, m_kick, u_allowed};
 
-static npf_udpf *udp_of(npf_call *c)
+npf_udpf *call_udp_of(npf_call *c)
 {
     if (!c->udp && !c->ended && (c->ws_mode || c->anl))
         c->udp = npf_udpf_new(c->n->loop, c->ws_mode ? NULL : c->anl, c->caller, call_policy(c), &udp_io, c);
@@ -1207,7 +724,7 @@ static void tun_unit(void *arg, int type, const uint8_t *buf, size_t len)
 {
     npf_call *c = arg;
     if (type == NPF_CU_UDP) {
-        npf_udpf *u = udp_of(c);
+        npf_udpf *u = call_udp_of(c);
         if (u)
             npf_udpf_unit_input(u, buf, len);
         return;
@@ -1215,7 +732,7 @@ static void tun_unit(void *arg, int type, const uint8_t *buf, size_t len)
     if (type == NPF_CU_APP && c->n->hooks.on_app_data) {
         c->n->hooks.on_app_data(c->n, c, buf, len, c->n->hook_arg);
     } else if (type == NPF_CU_MEDIA) {
-        npf_media *m = media_of(c);
+        npf_media *m = call_media_of(c);
         if (m)
             npf_media_unit_input(m, buf, len);
     }
@@ -1269,11 +786,18 @@ static void tun_sublink_done(void *arg, uint32_t id, const npf_sublink_stats *st
 
 static const npf_tunnel_io tun_io = {tun_write_ctrl, tun_write_data, tun_backlog, tun_ready, tun_control, tun_broken,
                                      tun_unit, tun_target_ok, tun_sublink_done};
-static void wsr_start(npf_wsr *r, const uint8_t salt[16], void *arg);
-static void wsr_paired(npf_wsr *r, void *arg);
+/* the session's tunnel (call_start_transport, ws_reset), NULL: no memory */
+npf_tunnel *call_tunnel_new(npf_call *c)
+{
+    npf_tunnel *t = npf_tunnel_new(c->n->loop, c->caller, &tun_io, c, call_policy(c));
+    if (t && c->n->budget)
+        npf_tunnel_set_budget(t, c->n->budget);   /* a hosted client: its quota */
+    return t;
+}
+
 
 /* keys from k1 | k2 (security.md 9.5) and the AnLiu connection */
-static int start_transport(npf_call *c)
+int call_start_transport(npf_call *c)
 {
     anl_config cfg;
     uint8_t psk[32], cv[32];
@@ -1294,9 +818,9 @@ static int start_transport(npf_call *c)
     if (c->ws_mode) {   /* the tunnel starts with the START exchange */
         if (c->ws_has_pending) {
             c->ws_has_pending = 0;
-            wsr_start(c->wsr, c->ws_pending_salt, c);
+            call_wsr_start(c->wsr, c->ws_pending_salt, c);
         } else if (c->caller && c->wsr && npf_wsr_paired(c->wsr)) {
-            wsr_paired(c->wsr, c);
+            call_wsr_paired(c->wsr, c);
         }
         return 0;
     }
@@ -1320,9 +844,7 @@ static int start_transport(npf_call *c)
     anl_setoutput(c->anl, anl_out);
     anl_set_accept(c->anl, anl_accept);
     anl_update(c->anl, (uint32_t)npf_mono_ms());
-    c->tun = npf_tunnel_new(c->n->loop, c->caller, &tun_io, c, call_policy(c));
-    if (c->tun && c->n->budget)
-        npf_tunnel_set_budget(c->tun, c->n->budget);   /* a hosted client: its quota */
+    c->tun = call_tunnel_new(c);
     if (!c->tun)
         return -1;
     if (c->caller) {
@@ -1364,7 +886,7 @@ static int finish_handshake(npf_call *c)
     npf_wipe(k2, 32);
     if (c->password[0])
         npf_wipe(c->password, sizeof c->password);
-    return start_transport(c);
+    return call_start_transport(c);
 }
 
 /* a path (relay bound or direct) became usable */
@@ -1398,7 +920,7 @@ static void relay_bind_send(npf_call *c)
     len = npf_pkt_seal(&bk, 0, PKT_RELAY_BIND, txid, (uint32_t)npf_node_time(c->n), c->relay.relay_id, 8,
                        npf_rand_range(96, 200), wire);
     if (len > 0 && !relay_addr_blocked(c))
-        udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], wire, (size_t)len);
+        call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], wire, (size_t)len);
 }
 
 static int hard_punches(const npf_call *c);
@@ -1491,272 +1013,6 @@ static void relay_bind_timer(npf_loop *loop, void *arg)
     c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
 }
 
-/* ---- WS relay (data-channel.md 10.2) ----
- *   k_ws[dir] = BLAKE2b-256(key = k1 | k2, "npf ws tunnel v1" | dir | salt), dir "a2b" (caller -> callee) / "b2a"
- *   RECORD    = ChaCha20-Poly1305(k_ws[dir], nonce = 0(4) | LE64(counter), frames) */
-
-static void ws_key(npf_call *c, const char *dir, const uint8_t salt[16], uint8_t out[32])
-{
-    uint8_t msg[16 + 3 + 16];
-    memcpy(msg, "npf ws tunnel v1", 16);
-    memcpy(msg + 16, dir, 3);
-    memcpy(msg + 19, salt, 16);
-    npf_kdf(out, c->k12, 64, msg, sizeof msg);
-}
-
-static void ws_nonce(uint8_t n[12], uint64_t ctr)
-{
-    memset(n, 0, 4);
-    npf_le64(n + 4, ctr);
-}
-
-static void ws_flush_timer(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    (void)loop;
-    c->t_wsflush = NULL;
-    while (c->ws_out_len && c->wsr && c->ws_tx_ready) {
-        size_t n = c->ws_out_len > 65536 ? 65536 : c->ws_out_len;
-        uint8_t *rec = malloc(n + 16), nonce[12];
-        if (!rec)
-            return;
-        ws_nonce(nonce, c->ws_ctr_tx++);
-        if (npf_aead_seal(c->ws_ktx, nonce, NULL, 0, c->ws_out, n, rec) < 0
-            || npf_wsr_send(c->wsr, NPF_WSR_RECORD, rec, n + 16) < 0) {
-            free(rec);
-            npf_call_end(c, "transport_lost");
-            return;
-        }
-        free(rec);
-        memmove(c->ws_out, c->ws_out + n, c->ws_out_len - n);
-        c->ws_out_len -= n;
-    }
-    if (c->tun)
-        npf_tunnel_kick(c->tun);
-}
-
-/* a new round: reset the transport's sublinks and counters */
-static void ws_reset(npf_call *c)
-{
-    if (c->tun)
-        npf_tunnel_free(c->tun);
-    npf_media_free(c->media);
-    c->media = NULL;
-    npf_udpf_free(c->udp);
-    c->udp = NULL;
-    c->tun = npf_tunnel_new(c->n->loop, c->caller, &tun_io, c, call_policy(c));
-    if (c->tun && c->n->budget)
-        npf_tunnel_set_budget(c->tun, c->n->budget);   /* a hosted client: its quota */
-    c->ws_out_len = 0;
-    c->ws_in_len = 0;
-    c->ws_ctr_tx = c->ws_ctr_rx = 0;
-    c->ws_tx_ready = c->ws_rx_ready = 0;
-}
-
-static void ws_send_start(npf_call *c, const char *dir)
-{
-    uint8_t salt[16];
-    npf_random(salt, 16);
-    ws_key(c, dir, salt, c->ws_ktx);
-    npf_wsr_send(c->wsr, NPF_WSR_START, salt, 16);
-    c->ws_tx_ready = 1;
-}
-
-static void wsr_paired(npf_wsr *r, void *arg)
-{
-    npf_call *c = arg;
-    (void)r;
-    c->ws_paired_once = 1;
-    npf_log("call %s: WS relay paired", c->call_id_s);
-    if (!c->caller || !c->keys_ready)
-        return;
-    ws_reset(c);
-    ws_send_start(c, "a2b");    /* only the caller starts a round (10.2) */
-}
-
-static void wsr_start(npf_wsr *r, const uint8_t salt[16], void *arg)
-{
-    npf_call *c = arg;
-    int i;
-    (void)r;
-    if (!c->keys_ready) {
-        memcpy(c->ws_pending_salt, salt, 16);
-        c->ws_has_pending = 1;
-        return;
-    }
-    for (i = 0; i < c->ws_nsalts; i++)
-        if (memcmp(c->ws_salts[i], salt, 16) == 0) {
-            npf_log("call %s: repeated WS relay salt, ignored", c->call_id_s);
-            return;
-        }
-    if (c->ws_nsalts < 8)
-        memcpy(c->ws_salts[c->ws_nsalts++], salt, 16);
-    else
-        memcpy(c->ws_salts[i % 8], salt, 16);
-    if (c->caller) {
-        ws_key(c, "b2a", salt, c->ws_krx);
-        c->ws_rx_ready = 1;
-        return;                 /* now wait for the callee's hello */
-    }
-    ws_reset(c);
-    ws_key(c, "a2b", salt, c->ws_krx);
-    c->ws_rx_ready = 1;
-    ws_send_start(c, "b2a");
-    npf_tunnel_start(c->tun);
-}
-
-/* records -> channel units -> the tunnel's control / data input */
-static void ws_demux(npf_call *c, const uint8_t *p, size_t len)
-{
-    size_t off = 0;
-    if (c->ws_in_len + len > c->ws_in_cap) {
-        size_t cap = c->ws_in_cap ? c->ws_in_cap : 65536;
-        uint8_t *q;
-        while (cap < c->ws_in_len + len)
-            cap *= 2;
-        if (!(q = realloc(c->ws_in, cap)))
-            return;
-        c->ws_in = q;
-        c->ws_in_cap = cap;
-    }
-    memcpy(c->ws_in + c->ws_in_len, p, len);
-    c->ws_in_len += len;
-    while (c->ws_in_len - off >= 3) {
-        const uint8_t *u = c->ws_in + off;
-        size_t n = npf_rd16(u + 1);
-        int r = 0;
-        if (c->ws_in_len - off < 3 + n)
-            break;
-        if (u[0] == 2) {
-            npf_media *m = media_of(c);
-            if (m)
-                npf_media_ws_input(m, u + 3, n);
-            if (c->ended)
-                return;
-        } else if (u[0] == 3) {
-            npf_udpf *uf = udp_of(c);
-            if (uf)
-                npf_udpf_ws_input(uf, u + 3, n);
-        } else if (c->tun) {
-            r = u[0] == 0 ? npf_tunnel_input_ctrl(c->tun, u + 3, n) : u[0] == 1 ? npf_tunnel_input_data(c->tun, u + 3, n) : 0;
-        }
-        if (r < 0)
-            return;                         /* broken: the call is ending */
-        off += 3 + n;
-    }
-    memmove(c->ws_in, c->ws_in + off, c->ws_in_len - off);
-    c->ws_in_len -= off;
-}
-
-static void wsr_record(npf_wsr *r, const uint8_t *rec, size_t len, void *arg)
-{
-    npf_call *c = arg;
-    uint8_t nonce[12], *plain;
-    (void)r;
-    if (!c->ws_rx_ready || len < 16 || len > 65536 + 16)
-        return;
-    plain = malloc(len);
-    if (!plain)
-        return;
-    ws_nonce(nonce, c->ws_ctr_rx);
-    if (npf_aead_open(c->ws_krx, nonce, NULL, 0, rec, len, plain) < 0) {
-        free(plain);
-        npf_logw("call %s: WS relay record failed authentication", c->call_id_s);
-        npf_call_end(c, "transport_lost");
-        return;
-    }
-    c->ws_ctr_rx++;
-    c->rx_bytes += len - 16;
-    ws_demux(c, plain, len - 16);
-    free(plain);
-}
-
-/* The WS relay failed. Before it ever worked: the caller asks for a relay on
- * its own server (the platform's servers share the work), the callee waits for that;
- * afterwards the transport is lost. */
-static void ws_failed(npf_call *c, const char *why)
-{
-    char data[128];
-    npf_log("call %s: WS relay %s", c->call_id_s, why);
-    if (c->ended)
-        return;
-    if (c->ws_paired_once) {
-        npf_call_end(c, "transport_lost");
-        return;
-    }
-    if (c->caller && !c->relay_asked) {
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"unreachable\":true}", c->call_id_s);
-        npf_node_send(c->n, "relay_switch", 0, data);
-        c->relay_asked = 1;
-        npf_log("call %s: relay unreachable, asking for one on our own server", c->call_id_s);
-    }
-}
-
-static void wsr_gone(npf_wsr *r, const char *why, void *arg)
-{
-    npf_call *c = arg;
-    if (!r)
-        c->wsr = NULL;          /* already freed */
-    ws_failed(c, why);
-}
-
-static void wsr_drained(npf_wsr *r, void *arg)
-{
-    npf_call *c = arg;
-    (void)r;
-    if (c->ws_out_len && !c->t_wsflush)
-        c->t_wsflush = npf_timer_add(c->n->loop, 0, ws_flush_timer, c);
-    if (c->tun)
-        npf_tunnel_kick(c->tun);
-}
-
-static const npf_wsr_cbs wsr_cbs = {wsr_paired, wsr_start, wsr_record, wsr_gone, wsr_drained};
-
-static int ws_setup(npf_call *c, const npf_json *j, int r)
-{
-    int w = npf_json_get(j, r, "ws"), i;
-    int64_t sid = 0;
-    char url[256];
-    const uint8_t *pub = NULL;
-    if (w < 0 || npf_json_get_str(j, w, "url", url, sizeof url) <= 0)
-        return -1;
-    npf_json_get_int(j, w, "server_id", 0, 1 << 30, &sid);
-    for (i = 0; i < c->n->nlist; i++)
-        if (c->n->list[i].id == sid)
-            pub = c->n->list[i].dh_pub;
-    if (!pub && c->n->cfg.server_url && sid == c->n->server_id)
-        pub = c->n->cfg.server_pub;
-    if (!pub) {
-        npf_logw("call %s: WS relay server %lld not in the server list", c->call_id_s, (long long)sid);
-        return -1;
-    }
-    /* drop the AnLiu transport: the WS relay carries the sublinks itself */
-    if (c->tun) {
-        npf_tunnel_free(c->tun);
-        c->tun = NULL;
-    }
-    npf_udpf_free(c->udp);
-    c->udp = NULL;
-    if (c->anl) {
-        conv_unlink(c);
-        anl_release(c->anl);
-        c->anl = NULL;
-        c->stream = NULL;
-        dpend_free(c);
-    }
-    c->ws_mode = 1;
-    c->relay.active = 0;
-    if (c->wsr)
-        npf_wsr_close(c->wsr);
-    c->wsr = NULL;
-    if (relay_blocked(url))
-        return -1;
-    c->wsr = npf_wsr_open(c->n->loop, url, pub, &c->n->id, c->relay.relay_id, &wsr_cbs, c);
-    if (!c->wsr)
-        return -1;
-    npf_log("call %s: WS relay %s", c->call_id_s, url);
-    return 0;
-}
 
 static void relay_setup(npf_call *c, const npf_json *j, int d)
 {
@@ -1775,8 +1031,8 @@ static void relay_setup(npf_call *c, const npf_json *j, int d)
         c->t_standby = NULL;
     }
     if (strcmp(mode, "ws") == 0) {
-        if (ws_setup(c, j, r) < 0)
-            ws_failed(c, "cannot connect");
+        if (call_ws_setup(c, j, r) < 0)
+            call_ws_failed(c, "cannot connect");
         return;
     }
     if (strcmp(mode, "udp") != 0)
@@ -1803,7 +1059,7 @@ static void relay_setup(npf_call *c, const npf_json *j, int d)
     c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
 }
 
-static int same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
 {
     if (a->ss_family != b->ss_family)
         return 0;
@@ -1844,7 +1100,7 @@ static int relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct
      * caller releases the allocations on the server, and the peer may have
      * given up the direct path just after our standby ended (a path dead in
      * one direction looks fine from this side) */
-    for (i = 0; i < c->relay.naddr && !same_addr(from, &c->relay.addr[i]); i++)
+    for (i = 0; i < c->relay.naddr && !call_same_addr(from, &c->relay.addr[i]); i++)
         ;
     if (i == c->relay.naddr || len > sizeof plain + NPF_SIV_TAG_SIZE)
         return 0;
@@ -1985,7 +1241,7 @@ static void path_send(npf_call *c, int type, uint64_t nonce)
     p[1] = 0;
     npf_le64(p + 2, nonce);
     npf_siv_seal(&c->path_keys, c->caller ? 0 : 1, buf, 10);
-    udp_send(c, c->p2p_fd, &c->p2p_addr, buf, sizeof buf);
+    call_udp_send(c, c->p2p_fd, &c->p2p_addr, buf, sizeof buf);
 }
 
 /* 1 when the datagram was a path check or echo of this call */
@@ -2520,7 +1776,7 @@ static void firewall_open(npf_call *c)
     for (k = 0; k < 2; k++)
         for (i = 0; i < c->pcfg.npeers; i++)
             if (c->pcfg.peers[i].ss_family == AF_INET || c->n->udp6_fd >= 0)
-                udp_send(c, c->pcfg.peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd,
+                call_udp_send(c, c->pcfg.peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd,
                          &c->pcfg.peers[i], one, 1);
     npf_logd("call %s: firewall: flows to %d peer candidates opened before the punch", c->call_id_s, c->pcfg.npeers);
 }
@@ -2670,7 +1926,7 @@ static void handle_punch_start(npf_call *c, const npf_json *j, int d)
 
 /* ---- state ---- */
 
-static void set_state(npf_call *c, int st, const char *why)
+void call_set_state(npf_call *c, int st, const char *why)
 {
     if (c->state == st)
         return;
@@ -2709,7 +1965,7 @@ static void accept_seen(npf_call *c)
     c->t_timeout = npf_timer_add(c->n->loop, CALL_TIMEOUT_MS + 10000, timeout_cb, c);
 }
 
-static npf_call *call_new(npf_node *n, int caller)
+npf_call *call_new(npf_node *n, int caller)
 {
     npf_call *c = calloc(1, sizeof *c);
     if (!c)
@@ -2728,7 +1984,7 @@ static npf_call *call_new(npf_node *n, int caller)
     return c;
 }
 
-static void call_free(npf_call *c)
+void call_free(npf_call *c)
 {
     npf_node *n = c->n;
     npf_call **pp;
@@ -2758,14 +2014,14 @@ static void call_free(npf_call *c)
             punch_sockets_back(c->n);
         }
     }
-    rev_close_all(c);
+    call_rev_close_all(c);
     if (c->tun) npf_tunnel_free(c->tun);
     free(c->targets);
-    dpend_free(c);
+    call_dpend_free(c);
     npf_media_free(c->media);
     npf_udpf_free(c->udp);
     if (c->anl) {
-        conv_unlink(c);
+        call_conv_unlink(c);
         anl_release(c->anl);            /* releases the stream handles too */
     }
     if (c->p2p_owned && c->p2p_fd >= 0) {
@@ -2801,7 +2057,7 @@ void npf_call_end(npf_call *c, const char *reason)
     }
     if (!c->direct)
         npf_node_call_end(c->n, c->call_id_s, reason);
-    set_state(c, NPF_CALL_CLOSED, reason);
+    call_set_state(c, NPF_CALL_CLOSED, reason);
     if (c->t_anl) {
         npf_timer_cancel(c->n->loop, c->t_anl);
         c->t_anl = NULL;
@@ -2954,7 +2210,7 @@ npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, con
         return NULL;
     c->number = number;
     npf_random(c->call_id, 16);
-    b64_of(c->call_id, 16, c->call_id_s);
+    call_b64_of(c->call_id, 16, c->call_id_s);
     c->auth = password ? AUTH_PAKE : n->pending_grant ? AUTH_GRANT : AUTH_IK;
     if (n->pending_grant) {
         memcpy(c->grant, n->pending_grant, n->pending_grant_len);
@@ -2975,7 +2231,7 @@ npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, con
     len = npf_noise_write(&c->hs, NULL, 0, msg, sizeof msg);
     if (len < 0)
         goto fail;
-    b64_of(msg, (size_t)len, hs);
+    call_b64_of(msg, (size_t)len, hs);
     snprintf(num, sizeof num, "%llu", (unsigned long long)number);
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
@@ -3037,7 +2293,7 @@ static void caller_accepted(npf_call *c, const npf_json *j, int d)
             goto fail;
         {
             char b[NPF_B64_LEN(256)];
-            b64_of(out, (size_t)ol, b);
+            call_b64_of(out, (size_t)ol, b);
             snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"step\":3,\"msg\":\"%s\"}", c->call_id_s, b);
         }
         npf_node_send(c->n, "handshake", 0, data);
@@ -3047,7 +2303,7 @@ static void caller_accepted(npf_call *c, const npf_json *j, int d)
     }
     if (finish_handshake(c) < 0)
         goto fail;
-    set_state(c, NPF_CALL_CONNECTING, NULL);
+    call_set_state(c, NPF_CALL_CONNECTING, NULL);
     relay_setup(c, j, d);
     return;
 fail:
@@ -3121,7 +2377,7 @@ static void handle_incoming(npf_node *n, const npf_json *j, int d)
         call_free(c);
         return;
     }
-    b64_of(c->call_id, 16, c->call_id_s);
+    call_b64_of(c->call_id, 16, c->call_id_s);
     parse_cands(c, j, d);
     secure_of(c, j, d);
     if (strcmp(auth, "pake") == 0) {
@@ -3192,7 +2448,7 @@ static void handle_incoming(npf_node *n, const npf_json *j, int d)
         call_free(c);
         return;
     }
-    b64_of(out, (size_t)ol, hs_b);
+    call_b64_of(out, (size_t)ol, hs_b);
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
     npf_jw_kstr(&w, "hs", hs_b);
@@ -3312,7 +2568,7 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
             if (x->caller && strcmp(id, rt) == 0) {
                 npf_logw("call %s: rejected by the platform (%s)", x->call_id_s, err);
                 x->ended = 1;
-                set_state(x, NPF_CALL_CLOSED, err);
+                call_set_state(x, NPF_CALL_CLOSED, err);
                 npf_timer_add(n->loop, 0, free_later, x);
                 return;
             }
@@ -3344,7 +2600,7 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
             npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
                     "until next month or a larger plan");
         c->ended = 1;
-        set_state(c, NPF_CALL_CLOSED, err);
+        call_set_state(c, NPF_CALL_CLOSED, err);
         npf_timer_add(n->loop, 0, free_later, c);
     } else if (strcmp(type, "handshake") == 0) {
         handle_handshake(c, j, d);
@@ -3360,7 +2616,7 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
         npf_json_get_str(j, d, "reason", r, sizeof r);
         npf_log("call %s: ended by the peer (%s)", c->call_id_s, r);
         c->ended = 1;
-        set_state(c, NPF_CALL_CLOSED, r);
+        call_set_state(c, NPF_CALL_CLOSED, r);
         npf_timer_add(n->loop, 0, free_later, c);
     }
 }
@@ -3373,13 +2629,12 @@ void node_sig_lost(npf_node *n)
         next = c->next;
         if (c->state != NPF_CALL_ESTABLISHED && !c->ended) {
             c->ended = 1;
-            set_state(c, NPF_CALL_CLOSED, "signaling lost");
+            call_set_state(c, NPF_CALL_CLOSED, "signaling lost");
             npf_timer_add(n->loop, 0, free_later, c);
         }
     }
 }
 
-static int direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 
 int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
@@ -3390,7 +2645,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
         return 1;                   /* a probe server's answer to the running NAT probe */
     for (c = n->calls; c; c = c->next)
         if (!c->ended && c->direct && c->caller && !c->keys_ready && fd == n->udp_fd
-            && same_addr(from, &c->p2p_addr) && direct_reply(c, buf, len, from))
+            && call_same_addr(from, &c->p2p_addr) && call_direct_reply(c, buf, len, from))
             return 1;
     /* AnLiu first, the bulk of the traffic: the datagram names its connection
      * (conv, masked but not encrypted, DESIGN 3.4); anl_input then
@@ -3407,7 +2662,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
             if (c->ended || c->conv != conv)
                 continue;
             matched = 1;
-            on_p2p = c->p2p && same_addr(from, &c->p2p_addr);
+            on_p2p = c->p2p && call_same_addr(from, &c->p2p_addr);
             if (on_p2p && p2p_cut(c))
                 return 1;
             if (anl_feed(c, buf, len) == 0) {
@@ -3419,7 +2674,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
     }
     if (len == PATH_PKT_LEN)
         for (c = n->calls; c; c = c->next)
-            if (!c->ended && c->p2p && fd == c->p2p_fd && same_addr(from, &c->p2p_addr) && path_input(c, buf, len))
+            if (!c->ended && c->p2p && fd == c->p2p_fd && call_same_addr(from, &c->p2p_addr) && path_input(c, buf, len))
                 return 1;
     for (c = n->calls; c; c = c->next)
         if (!c->ended && relay_input(c, buf, len, from))
@@ -3432,372 +2687,6 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
     return matched;
 }
 
-/* ---- direct connections ----
- *
- *   initiator -> listener   NNpsk0 message 1: e, payload = ts_ms(8) | random padding
- *   listener  -> initiator  NNpsk0 message 2: e, ee, payload = padding (never longer than message 1)
- *
- * Both are sent as they are: no plaintext type, the listener tells them from
- * AnLiu datagrams by trying the sessions' keys first. Message 1 is accepted
- * only with the right psk, a timestamp within 60 s and an ephemeral key not
- * seen in the last 2 minutes; a retransmitted message 1 gets the same
- * message 2 again and creates no second session. */
-
-#define DIRECT_PROLOGUE   "npf-direct-v1"
-#define DIRECT_TS_WINDOW  60000
-#define DIRECT_SEEN       128
-#define DIRECT_SEEN_MS    120000
-#define DIRECT_MAX_SESS   64
-#define DIRECT_IP_RATE    5         /* handshakes per second per source IP (burst 10) */
-
-struct npf_direct {
-    npf_node   *n;
-    int         fd;
-    uint8_t     psk[32];
-    struct npf_policy *policy;
-    struct {
-        uint8_t  e[32];
-        int64_t  at;
-        struct sockaddr_storage from;
-        uint8_t  msg2[256];
-        size_t   msg2_len;
-    } seen[DIRECT_SEEN];
-    int         nseen_next;
-    struct { uint32_t ip; double tokens; int64_t last; } rate[64];
-};
-
-static npf_call *direct_call(npf_node *n, int caller, int fd, const struct sockaddr_storage *peer)
-{
-    npf_call *c = call_new(n, caller);
-    if (!c)
-        return NULL;
-    c->direct = 1;
-    c->auth = AUTH_DIRECT;
-    npf_random(c->call_id, 16);
-    b64_of(c->call_id, 16, c->call_id_s);
-    c->p2p_fd = fd;
-    c->p2p_addr = *peer;
-    c->p2p_rx_ms = c->p2p_since = npf_mono_ms();
-    return c;
-}
-
-/* keys from the handshake, then the same transport as a call */
-static int direct_up(npf_call *c)
-{
-    uint8_t k1[32], k2[32];
-    if (npf_noise_split(&c->hs, NULL, NULL, k1, k2, NULL) < 0)
-        return -1;
-    memcpy(c->k12, k1, 32);
-    memcpy(c->k12 + 32, k2, 32);
-    npf_wipe(k1, 32);
-    npf_wipe(k2, 32);
-    c->p2p = 1;
-    if (start_transport(c) < 0)
-        return -1;
-    set_state(c, NPF_CALL_CONNECTING, NULL);
-    return 0;
-}
-
-/* initiator */
-
-static void direct_retry(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    (void)loop;
-    c->t_direct = NULL;
-    if (c->keys_ready || c->ended)
-        return;
-    if (++c->dtries > 8) {
-        char a[64];
-        npf_logw("direct %s: no answer from %s (wrong key, or the port is not reachable)", c->call_id_s,
-                npf_addr_str(&c->p2p_addr, a, sizeof a));
-        npf_call_end(c, "timeout");
-        return;
-    }
-    udp_send(c, c->p2p_fd, &c->p2p_addr, c->dmsg1, c->dmsg1_len);
-    c->t_direct = npf_timer_add(c->n->loop, c->dtries < 3 ? 300LL << c->dtries : 2000, direct_retry, c);   /* ~14 s in all */
-}
-
-npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, const uint8_t psk[32])
-{
-    uint8_t pay[8 + 64];
-    size_t pl = 8 + npf_rand_range(0, 64);
-    int len;
-    char a[64];
-    npf_call *c = direct_call(n, 1, n->udp_fd, to);
-    if (!c)
-        return NULL;
-    if (npf_noise_init(&c->hs, NPF_NOISE_NNPSK0, 1, DIRECT_PROLOGUE, strlen(DIRECT_PROLOGUE), NULL, NULL, psk) < 0) {
-        call_free(c);
-        return NULL;
-    }
-    npf_le64(pay, (uint64_t)npf_unix_ms());
-    npf_random(pay + 8, pl - 8);
-    len = npf_noise_write(&c->hs, pay, pl, c->dmsg1, sizeof c->dmsg1);
-    if (len < 0) {
-        call_free(c);
-        return NULL;
-    }
-    c->dmsg1_len = (size_t)len;
-    c->state = NPF_CALL_CALLING;
-    udp_send(c, c->p2p_fd, &c->p2p_addr, c->dmsg1, c->dmsg1_len);
-    c->t_direct = npf_timer_add(n->loop, 300, direct_retry, c);
-    npf_log("direct %s: connecting to %s", c->call_id_s, npf_addr_str(to, a, sizeof a));
-    return c;
-}
-
-/* message 2 from the listener; returns 1 if consumed */
-static int direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
-{
-    uint8_t p[256];
-    npf_noise_hs hs = c->hs;               /* a failed read spoils the state: keep ours for the real one */
-    (void)from;
-    if (len > 256 || npf_noise_read(&hs, buf, len, p, sizeof p) < 0) {
-        npf_wipe(&hs, sizeof hs);
-        return 0;
-    }
-    c->hs = hs;
-    npf_wipe(&hs, sizeof hs);
-    if (c->t_direct) {
-        npf_timer_cancel(c->n->loop, c->t_direct);
-        c->t_direct = NULL;
-    }
-    if (direct_up(c) < 0) {
-        npf_call_end(c, "error");
-        return 1;
-    }
-    npf_logd("direct %s: handshake done", c->call_id_s);
-    return 1;
-}
-
-/* listener */
-
-static int direct_rate_ok(npf_direct *d, const struct sockaddr_storage *from)
-{
-    uint32_t ip = from->ss_family == AF_INET ? ((const struct sockaddr_in *)from)->sin_addr.s_addr : 0;
-    int64_t now = npf_mono_ms();
-    int i, slot = (int)(ip % 64);
-    for (i = 0; i < 64; i++)
-        if (d->rate[i].ip == ip) {
-            slot = i;
-            break;
-        }
-    if (d->rate[slot].ip != ip) {
-        d->rate[slot].ip = ip;
-        d->rate[slot].tokens = 2 * DIRECT_IP_RATE;
-        d->rate[slot].last = now;
-    }
-    d->rate[slot].tokens += (double)(now - d->rate[slot].last) * DIRECT_IP_RATE / 1000.0;
-    if (d->rate[slot].tokens > 2 * DIRECT_IP_RATE)
-        d->rate[slot].tokens = 2 * DIRECT_IP_RATE;
-    d->rate[slot].last = now;
-    if (d->rate[slot].tokens < 1)
-        return 0;
-    d->rate[slot].tokens -= 1;
-    return 1;
-}
-
-static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
-{
-    npf_node *n = d->n;
-    npf_noise_hs hs;
-    uint8_t p[256], m2[256], pad[256];
-    int pl, ml, i, sessions = 0;
-    int64_t now = npf_mono_ms(), ts;
-    npf_call *c;
-    if (len < 32 + 8 + 16 || len > 256)
-        return;
-    /* a retransmitted message 1 (same ephemeral key, same source): same answer */
-    for (i = 0; i < DIRECT_SEEN; i++)
-        if (d->seen[i].at && now - d->seen[i].at < DIRECT_SEEN_MS && memcmp(d->seen[i].e, buf, 32) == 0) {
-            if (same_addr(&d->seen[i].from, from) && d->seen[i].msg2_len)
-                (void)npf_udp_send(d->fd, d->seen[i].msg2, d->seen[i].msg2_len, from);
-            return;
-        }
-    if (!direct_rate_ok(d, from))
-        return;
-    for (c = n->calls; c; c = c->next)
-        if (c->direct && !c->caller && !c->ended)
-            sessions++;
-    if (sessions >= DIRECT_MAX_SESS)
-        return;
-    if (npf_noise_init(&hs, NPF_NOISE_NNPSK0, 0, DIRECT_PROLOGUE, strlen(DIRECT_PROLOGUE), NULL, NULL, d->psk) < 0)
-        return;
-    pl = npf_noise_read(&hs, buf, len, p, sizeof p);
-    if (pl < 8)
-        return;                             /* wrong key or garbage: silent */
-    ts = (int64_t)npf_rd64(p);
-    if (ts < npf_unix_ms() - DIRECT_TS_WINDOW || ts > npf_unix_ms() + DIRECT_TS_WINDOW) {
-        npf_logw("direct: handshake with a stale timestamp ignored (clock skew or replay)");
-        return;
-    }
-    {
-        size_t padlen = npf_rand_range(0, len - 48 < sizeof pad ? len - 48 : sizeof pad);
-        npf_random(pad, padlen);
-        ml = npf_noise_write(&hs, pad, padlen, m2, sizeof m2);
-    }
-    if (ml < 0)
-        return;
-    i = d->nseen_next++ % DIRECT_SEEN;
-    memcpy(d->seen[i].e, buf, 32);
-    d->seen[i].at = now;
-    d->seen[i].from = *from;
-    memcpy(d->seen[i].msg2, m2, (size_t)ml);
-    d->seen[i].msg2_len = (size_t)ml;
-    c = direct_call(n, 0, d->fd, from);
-    if (!c)
-        return;
-    c->policy = d->policy;
-    c->hs = hs;
-    npf_wipe(&hs, sizeof hs);
-    (void)npf_udp_send(d->fd, m2, (size_t)ml, from);
-    if (direct_up(c) < 0) {
-        npf_call_end(c, "error");
-        return;
-    }
-    {
-        char a[64];
-        npf_log("direct %s: session from %s", c->call_id_s, npf_addr_str(from, a, sizeof a));
-    }
-}
-
-static void direct_io(npf_loop *loop, int fd, unsigned ev, void *arg)
-{
-    npf_direct *d = arg;
-    (void)loop;
-    (void)ev;
-    for (;;) {
-        uint8_t buf[2048];
-        struct sockaddr_storage from;
-        socklen_t fl = sizeof from;
-        ssize_t r = recvfrom(fd, buf, sizeof buf, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
-        if (r <= 0)
-            break;
-        if (!node_udp_input(d->n, fd, buf, (size_t)r, &from))
-            direct_hello(d, buf, (size_t)r, &from);
-    }
-}
-
-int npf_direct_resolve(const char *spec, struct sockaddr_storage *out)
-{
-    char host[256];
-    const char *colon = strrchr(spec, ':');
-    struct addrinfo hints, *res;
-    int r;
-    if (!colon || (size_t)(colon - spec) >= sizeof host)
-        return -1;
-    memcpy(host, spec, (size_t)(colon - spec));
-    host[colon - spec] = 0;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;             /* the node's sockets are IPv4 */
-    hints.ai_socktype = SOCK_DGRAM;
-    if (getaddrinfo(host[0] ? host : "0.0.0.0", colon + 1, &hints, &res) != 0)
-        return -1;
-    memset(out, 0, sizeof *out);
-    memcpy(out, res->ai_addr, res->ai_addrlen);
-    r = ((struct sockaddr_in *)out)->sin_port ? 0 : -1;
-    freeaddrinfo(res);
-    return r;
-}
-
-int npf_direct_psk(const char *key, const char *file, uint8_t psk[32])
-{
-    char *s = NULL;
-    long n;
-    int r;
-    if (key) {
-        r = npf_b64url_decode(key, strlen(key), psk, 32) == 32 ? 0 : -1;
-        if (r < 0)
-            npf_log("direct: the key must be 32 random bytes in Base64url");
-        return r;
-    }
-    if (!file)
-        return -1;
-    if (npf_file_too_open(file)) {
-        npf_log("direct: %s is readable by others; chmod 600 it", file);
-        return -1;
-    }
-    n = npf_file_read(file, &s);
-    if (n < 0) {
-        npf_loge("direct: cannot read %s", file);
-        return -1;
-    }
-    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' '))
-        s[--n] = 0;
-    r = npf_b64url_decode(s, (size_t)n, psk, 32) == 32 ? 0 : -1;
-    npf_wipe(s, (size_t)n);
-    free(s);
-    if (r < 0)
-        npf_log("direct: %s does not hold 32 random bytes in Base64url", file);
-    return r;
-}
-
-void npf_direct_genpsk(char out[44])
-{
-    uint8_t k[32];
-    npf_random(k, 32);
-    npf_b64url_encode(k, 32, out);
-    npf_wipe(k, 32);
-}
-
-npf_direct *npf_direct_listen(npf_node *n, const char *spec, const uint8_t psk[32], struct npf_policy *policy)
-{
-    struct sockaddr_storage a;
-    char buf[300];
-    npf_direct *d;
-    int fd, sz = 4 << 20;
-    /* "port" alone means all interfaces */
-    if (!strchr(spec, ':'))
-        snprintf(buf, sizeof buf, "0.0.0.0:%s", spec);
-    else
-        snprintf(buf, sizeof buf, "%s", spec);
-    if (npf_direct_resolve(buf, &a) < 0)
-        return NULL;
-    fd = npf_socket(AF_INET, SOCK_DGRAM, 0, 0);
-    if (fd < 0)
-        return NULL;
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof sz);
-    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof sz);
-    if (bind(fd, (struct sockaddr *)&a, sizeof(struct sockaddr_in)) < 0) {
-        npf_sock_close(fd);
-        return NULL;
-    }
-    d = calloc(1, sizeof *d);
-    if (!d) {
-        npf_sock_close(fd);
-        return NULL;
-    }
-    d->n = n;
-    d->fd = fd;
-    d->policy = policy;
-    memcpy(d->psk, psk, 32);
-    if (npf_loop_add(n->loop, fd, NPF_EV_READ, direct_io, d) < 0) {
-        npf_sock_close(fd);
-        free(d);
-        return NULL;
-    }
-    npf_log("direct: listening on %s", npf_addr_str(&a, buf, sizeof buf));
-    return d;
-}
-
-void npf_direct_close(npf_direct *d)
-{
-    npf_call *c, *next;
-    if (!d)
-        return;
-    for (c = d->n->calls; c; c = next) {
-        next = c->next;
-        if (c->direct && c->p2p_fd == d->fd) {
-            npf_call_end(c, "closed");      /* tells the peer; freed later with the other calls */
-            c->p2p = 0;
-            c->p2p_fd = -1;
-        }
-    }
-    npf_loop_del(d->n->loop, d->fd);
-    npf_sock_close(d->fd);
-    npf_wipe(d, sizeof *d);
-    free(d);
-}
 
 void npf_node_dump(npf_node *n)
 {
@@ -3908,7 +2797,7 @@ int npf_call_udp_send(npf_call *c, int lfd, const struct sockaddr_storage *src, 
                       uint16_t port, const uint8_t *buf, size_t len)
 {
     npf_udpf *u;
-    if (c->ended || c->state != NPF_CALL_ESTABLISHED || !c->caller || !(u = udp_of(c)))
+    if (c->ended || c->state != NPF_CALL_ESTABLISHED || !c->caller || !(u = call_udp_of(c)))
         return -1;
     return npf_udpf_send(u, lfd, src, srclen, host, port, buf, len);
 }
@@ -3936,7 +2825,7 @@ int npf_call_udp_send_v(npf_call *c, void *key, void (*deliver)(void *key, const
                         const char *host, uint16_t port, const uint8_t *buf, size_t len)
 {
     npf_udpf *u;
-    if (c->ended || c->state != NPF_CALL_ESTABLISHED || !c->caller || !(u = udp_of(c)))
+    if (c->ended || c->state != NPF_CALL_ESTABLISHED || !c->caller || !(u = call_udp_of(c)))
         return -1;
     return npf_udpf_send_v(u, key, deliver, host, port, buf, len);
 }
@@ -3960,7 +2849,7 @@ int npf_call_app_send(npf_call *c, const void *buf, size_t len)
 uint32_t npf_call_media_open(npf_call *c, const npf_call_media_opt *o, int *err)
 {
     npf_media *m;
-    if (c->ended || c->state != NPF_CALL_ESTABLISHED || !(m = media_of(c))) {
+    if (c->ended || c->state != NPF_CALL_ESTABLISHED || !(m = call_media_of(c))) {
         *err = NPF_CALL_ESTATE;
         return 0;
     }
