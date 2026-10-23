@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.30。更新日期：2026-10-23。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.31。更新日期：2026-10-23。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -239,7 +239,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | `verify_begin` | 客户端到平台 | `channel`（`email` 或 `phone`）、`address`，可选 `lang`（`zh-CN` 或 `en`：界面的语言，邮件用这种语言写；不给或其他值时中英文都写）；平台发送验证码，返回 `verification_id`。邮件说明验证码的用途：没有账户会话时为注册，有账户会话时为给本账户绑定这个邮箱。验证码由短信网关或邮件网关发出后才回复；短信网关拒绝时回 `rate_limited`（号码的频控）、`bad_request`（`address`，号码无效）或 `unavailable`（`sms`：网关故障；`sms_daily_limit`：平台当天的短信总量到了上限）；邮件网关拒绝收件地址时回 `bad_request`（`address`），其他失败回 `unavailable`（`mail`），当天的邮件总量到了上限回 `unavailable`（`mail_daily_limit`） |
 | `verify_finish` | 客户端到平台 | `verification_id`、`code`；成功后该验证可在 10 分钟内被注册、绑定或找回消费一次 |
 | `account_register` | 客户端到平台 | `password`、`verification_id`（已验证的邮箱或手机号作为登录名），`name` 可选：不给时取邮箱 @ 前面的部分，或中间四位隐藏的手机号（`138****8000`；设备主人在 `share_list` 里看得到访客的名字），以后用 `account_update` 改 |
-| `account_login` | 客户端到平台 | `login`（邮箱或手机号）、`password` |
+| `account_login` | 客户端到平台 | `login`（邮箱或手机号）、`password`。账号不存在或密码不对都回 `unauthenticated`，消息为 `credentials`（不区分两者，不透露哪些地址有账户） |
 | `auth_providers` | 客户端到平台 | → `{providers}`：本平台配置了的第三方登录（`google`、`wechat`），界面据此显示按钮 |
 | `auth_begin`、`auth_status`、`auth_finish` | 客户端到平台 | Google / 微信登录事务，见下文 |
 | `account_get`、`account_update` | 客户端到平台 | 本人资料；`account_update` 只能改 `name` |
@@ -247,10 +247,10 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | `pay_ticket` | 客户端到平台 | `{level?, lang?}` → `{url}`：`subscribe_url` 加片段 `#ticket=…&level=N&lang=…`。票据一次有效、10 分钟过期，带它打开支付页不需要再登录（服务器配置 `pay_ticket_secret`，没有配置时网址不带票据）；没有支付页时回 `unavailable` |
 | `login_method_bind` | 客户端到平台 | `{method, …}` 绑定新的登录方式：`google` / `wechat` 附 `purpose = bind` 的事务 `transaction_id` 与确认码 `code`；`email` / `phone` 附 `verification_id`（已有的被替换）；`password` 附 `password`，账户还没有邮箱或手机号时同时附 `verification_id`（R28）。应答为账户资料；已属于其他账户、或该第三方方式已绑定另一个身份时 `conflict`，已有密码时 `conflict`（改密码用 `password_change`） |
 | `login_method_unbind` | 客户端到平台 | `{method}`：`password`、`google`、`wechat`、`email`、`phone`。解绑后必须还能登录（密码、Google、微信至少一种），有密码时还要留一个邮箱或手机号，否则 `conflict`；没有绑定该方式时 `not_found` |
-| `password_change` | 客户端到平台 | 旧密码、新密码；成功后吊销该账户其他客户端的证书（R34） |
-| `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：`password_reset_begin` 的字段、应答与错误同 `verify_begin`（邮件说明用途是找回密码），`verify_finish` 之后以 `verification_id` 调 `password_reset_finish` 设置新密码 |
+| `password_change` | 客户端到平台 | 旧密码、新密码；成功后吊销该账户其他客户端的证书（R34）。旧密码不对回 `forbidden`、消息 `password`；账户没有密码（第三方登录注册的）回 `forbidden`、消息 `no_password`（用 `password_reset_begin` 设一个） |
+| `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：`password_reset_begin` 的字段、应答与错误同 `verify_begin`（邮件说明用途是找回密码），`verify_finish` 之后以 `verification_id` 调 `password_reset_finish` 设置新密码；验证不成立或地址不属于任何账户都回 `forbidden`、消息 `verification` |
 | `account_logout` | 客户端到平台 | 吊销当前客户端的客户端证书 |
-| `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、撤销分享、删除公网映射、吊销全部客户端证书）。返回 `pending` 与操作号，完成后该账户的所有连接被关闭 |
+| `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、撤销分享、删除公网映射、吊销全部客户端证书）。返回 `pending` 与操作号，完成后该账户的所有连接被关闭。密码不对回 `forbidden`、消息 `password`；事务或确认码不对回 `forbidden`、消息 `verification` |
 
 - **登录的结果**：`account_login`、`auth_finish`、`account_register`、`password_reset_finish` 成功后，平台为当前连接的客户端公钥（Noise 握手中的静态公钥）签发客户端证书（安全设计 8.1，有效期 30 天），客户端之后在 `login` 中出示它；证书的续签在 `welcome` 中完成，不另设刷新消息。这些请求都带 `sign_pub`（客户端的 Ed25519 公钥）和 `key_sig = Ed25519(签名私钥, "npf-client-key-v1" | Noise 握手哈希)`：证明持有签名私钥，并把证明绑定到这条连接；应答为账户资料加 `cert`（`中间证书 | 客户端证书`）；
 - **账户不合并**（R31）：同一个邮箱、手机号或第三方身份只能属于一个账户。绑定时如果它已经属于另一个账户，返回 `conflict`；第一版不提供合并；
@@ -918,6 +918,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-23 | 0.31 | 账户请求被拒时给出原因：`account_login` 的 `credentials`，`password_change` 的 `password` / `no_password`，`account_delete` 的 `password` / `verification`，`password_reset_finish` 地址不属于任何账户时也是 `verification`（与验证码不对相同） |
 | 2026-10-23 | 0.30 | 设备自己的名称：新增 `node_name`（节点起名字或查询），设备信息增加 `name`（起的名字，没有时为登录上报的主机名），`alias` 只是账户的备注，不再用注册时的名字补位 |
 | 2026-10-23 | 0.29 | `verify_begin` / `password_reset_begin` 增加可选的 `lang`（验证码邮件的语言，不给时中英文都写）；邮件网关的错误（`bad_request` `address`、`unavailable` `mail` / `mail_daily_limit`）；`password_reset_begin` 写明与 `verify_begin` 相同，邮件据此说明用途 |
 | 2026-10-22 | 0.28 | 按库端源码修正 JSON 限额、登录与重定向、候选与打洞、中转回退、关闭及绑定行为；统一公网映射权限，区分平台约定与当前实现，清理绝对文件路径并补充相对源码链接 |

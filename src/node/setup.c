@@ -131,6 +131,11 @@ static const char *const k_err[][2] = {
     {"port_taken", "that port is already in use"},
     {"mapping_limit", "the account has as many mappings as it may have; delete one first"},
     {"device", "the account has no such device"},
+    {"credentials", "wrong email / phone number or password (forgot it? npf account reset EMAIL|PHONE)"},
+    {"password", "wrong password"},
+    {"no_password", "the account has no password (signed up with Google or WeChat): log in that way, or set one "
+                    "with npf account reset"},
+    {"verification", "the code is wrong or has expired; ask for a new one"},
     {"no reply", "the platform did not answer (no connection to it, or it timed out); try again"},
     {"unauthenticated", "not logged in to an account, or the login expired: log in again"},
     {"forbidden", "not allowed"},
