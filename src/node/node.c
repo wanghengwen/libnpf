@@ -413,6 +413,7 @@ int npf_node_send(npf_node *n, const char *type, int request, const char *data_j
 #define SIG_REPLY_MS 10000      /* a request sent: something from the server within, else a ping asks */
 #define SIG_PONG_MS  10000      /* a ping sent: its pong (or anything) within */
 static void sig_expect(npf_node *n, int ms, int probed);   /* the watch on the signaling, below */
+static void expect_stop(npf_node *n);
 
 int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_reply_fn fn, void *arg)
 {
@@ -613,11 +614,20 @@ static void expect_cb(npf_loop *loop, void *arg)
 }
 
 /* something from the server is due within ms; probed: a ping is out for it.
- * One watch at a time (the one running is the older) */
+ * One watch at a time: the one running stays, unless the server answered
+ * since it began (it is done) or this one has a ping out and it has not
+ * (a ping's pong is due sooner than a request's answer and then a ping's:
+ * a request out at login, the server frozen, kept the ping's watch off and
+ * the freeze went unnoticed for 20 s instead of 10) */
 static void sig_expect(npf_node *n, int ms, int probed)
 {
-    if (!n->sig || !n->online || n->t_expect)
+    if (!n->sig || !n->online)
         return;
+    if (n->t_expect) {
+        if (npf_sig_last_rx(n->sig) < n->expect_since && (n->expect_probed || !probed))
+            return;
+        expect_stop(n);
+    }
     n->expect_since = npf_mono_ms();
     n->expect_probed = probed;
     n->t_expect = npf_timer_add(n->loop, ms, expect_cb, n);
