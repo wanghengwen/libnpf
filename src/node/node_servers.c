@@ -191,11 +191,7 @@ void node_servers_load(npf_node *n)
         e->nws = 1;
         memcpy(e->dh_pub, n->cfg.server_pub, 32);
         e->relay = 1;
-        if (n->nservers == 0)
-            n->nservers = 1;
-        else {  /* keep the probe addresses of the list's first entry */
-            n->nservers = 1;
-        }
+        n->nservers = 1;
     }
 }
 
@@ -224,9 +220,15 @@ static int list_update(npf_node *n, const uint8_t *blob, size_t len, const char 
         return 0;
     }
     c = npf_serverlist_parse((const char *)pl, plen, tmp, NPF_MAX_SERVERS, &serial);
-    if (c <= 0 || serial <= n->sl_serial)
+    if (c <= 0)
         return 0;
     npf_serverlist_meta((const char *)pl, plen, &meta);
+    /* newer than the list in use; a full list also replaces a seed list of
+     * its own publish (the same serial: it was refused, and every login
+     * then brought it again for nothing while the node kept the seed's few
+     * servers) */
+    if (meta.full ? serial <= n->sl_full_serial || serial < n->sl_serial : serial <= n->sl_serial)
+        return 0;
     if (meta.full) {
         if (n->cfg.serverlist_saved && npf_file_write(n->cfg.serverlist_saved, blob, len, 0644) < 0)
             npf_logw("server list: cannot save %s: %s", n->cfg.serverlist_saved, strerror(errno));

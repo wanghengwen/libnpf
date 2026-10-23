@@ -85,10 +85,10 @@ int npf_node_send(npf_node *n, const char *type, int request, const char *data_j
 int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_reply_fn fn, void *arg)
 {
     int i, id;
-    for (i = 0; i < 16; i++)
+    for (i = 0; i < NPF_PENDING_MAX; i++)
         if (!n->pending[i].fn)
             break;
-    if (i == 16)
+    if (i == NPF_PENDING_MAX)
         return -1;
     id = npf_node_send(n, type, 1, data_json);
     if (id < 0)
@@ -154,7 +154,7 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason)
 void npf_node_cancel_requests(npf_node *n, void *arg)
 {
     int i;
-    for (i = 0; i < 16; i++)
+    for (i = 0; i < NPF_PENDING_MAX; i++)
         if (n->pending[i].fn && n->pending[i].arg == arg)
             n->pending[i].fn = NULL;
 }
@@ -162,7 +162,7 @@ void npf_node_cancel_requests(npf_node *n, void *arg)
 void node_sig_fail_pending(npf_node *n)
 {
     int i;
-    for (i = 0; i < 16; i++) {
+    for (i = 0; i < NPF_PENDING_MAX; i++) {
         npf_reply_fn fn = n->pending[i].fn;
         if (fn) {
             n->pending[i].fn = NULL;
@@ -234,6 +234,42 @@ void node_sig_race_drop(npf_node *n)
     n->race = NULL;
 }
 
+/* what is bound to the connection in use, which has gone (the caller closes
+ * or has closed it): offline, its ping and its watch stopped */
+void node_sig_drop(npf_node *n)
+{
+    n->sig = NULL;
+    n->online = 0;
+    if (n->t_ping)
+        npf_timer_cancel(n->loop, n->t_ping);
+    n->t_ping = NULL;
+    expect_stop(n);
+}
+
+/* after a connection went: the requests on it learn there is no answer, the
+ * calls being set up end, the next attempt is due, the application told */
+static void sig_gone(npf_node *n, const char *why, int was_online)
+{
+    node_sig_fail_pending(n);
+    node_sig_lost(n);
+    schedule_reconnect(n);
+    if (was_online && n->hooks.on_offline)
+        n->hooks.on_offline(n, why, n->hook_arg);
+}
+
+/* the platform turned this connection down (a login, an enrolment): it
+ * goes; counted against the server by weight (0: not at all), and not a
+ * failure of the network (the way around a VPN stays as it is) */
+static void sig_refused(npf_node *n, npf_sig *s, int weight)
+{
+    if (weight && n->cur_server >= 0)
+        node_server_failed(&n->servers[n->cur_server], weight);
+    node_sig_race_drop(n);
+    node_sig_drop(n);
+    npf_sig_close(s);
+    sig_gone(n, "refused", 0);
+}
+
 void node_sig_abort(npf_node *n, const char *why)
 {
     npf_sig *s = n->sig;
@@ -263,6 +299,9 @@ static void expect_cb(npf_loop *loop, void *arg)
     npf_node *n = arg;
     (void)loop;
     n->t_expect = NULL;
+    npf_logt("sig: watch due (%s, since %lld ms ago, heard %lld ms ago)", n->expect_probed ? "probed" : "a request",
+             (long long)(npf_mono_ms() - n->expect_since),
+             n->sig ? (long long)(npf_mono_ms() - npf_sig_last_rx(n->sig)) : -1LL);
     if (!n->sig || !n->online || npf_sig_last_rx(n->sig) >= n->expect_since)
         return;                     /* heard from it */
     if (!n->expect_probed) {
@@ -286,13 +325,17 @@ static void sig_expect(npf_node *n, int ms, int probed)
     if (!n->sig || !n->online)
         return;
     if (n->t_expect) {
-        if (npf_sig_last_rx(n->sig) < n->expect_since && (n->expect_probed || !probed))
+        if (npf_sig_last_rx(n->sig) < n->expect_since && (n->expect_probed || !probed)) {
+            npf_logt("sig: watch kept (%s, since %lld ms ago)", n->expect_probed ? "probed" : "a request",
+                     (long long)(npf_mono_ms() - n->expect_since));
             return;
+        }
         expect_stop(n);
     }
     n->expect_since = npf_mono_ms();
     n->expect_probed = probed;
     n->t_expect = npf_timer_add(n->loop, ms, expect_cb, n);
+    npf_logt("sig: watch %d ms (%s)", ms, probed ? "probed" : "a request");
 }
 
 static void expect_stop(npf_node *n)
@@ -318,15 +361,13 @@ static void ping_cb(npf_loop *loop, void *arg)
     n->t_ping = NULL;
     if (!n->sig)
         return;
-    /* the server answers each ping (pong) and sends its own: three
-     * intervals without a frame mean the connection is gone */
-    if (npf_mono_ms() - npf_sig_last_rx(n->sig) > 3 * (int64_t)ivl) {
-        node_sig_abort(n, "the server went silent");
-        return;
-    }
+    /* no check of its own for silence here: each ping's watch notices it
+     * within 10 s (sooner than three intervals of silence ever could: at
+     * ping_s 5 both came due at once, and the reason was either one) */
+    npf_logt("sig: ping");
     npf_sig_ping(n->sig);
     sig_expect(n, SIG_PONG_MS, 1);      /* its pong in time, else the connection goes */
-    n->t_ping = npf_timer_add(n->loop, (n->ping_s > 0 ? n->ping_s : 25) * 1000, ping_cb, n);
+    n->t_ping = npf_timer_add(n->loop, ivl, ping_cb, n);
 }
 
 static void send_login(npf_node *n)
@@ -437,7 +478,8 @@ static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
         n->enroll_at_unix_ms = npf_unix_ms();
         if (n->hooks.on_enroll_failed)
             n->hooks.on_enroll_failed(n, err, reason, n->backoff_ms / 1000, n->hook_arg);
-        node_sig_abort(n, "enrolment refused");
+        if (n->sig)                         /* the platform's answer: not the server's fault, nor the network's */
+            sig_refused(n, n->sig, 0);
         return;
     }
     n->enroll_state = NPF_ENROLL_DONE;
@@ -712,7 +754,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         int i;
         if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) > 0 && rt[0] == 'r') {
             int id = atoi(rt + 1);
-            for (i = 0; i < 16; i++) {
+            for (i = 0; i < NPF_PENDING_MAX; i++) {
                 if (n->pending[i].fn && n->pending[i].id == id) {
                     npf_reply_fn fn = n->pending[i].fn;
                     n->pending[i].fn = NULL;
@@ -729,11 +771,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
             char err[32] = "";
             npf_json_get_str(j, 0, "error", err, sizeof err);
             npf_logw("login: rejected (%s)", err);
-            if (n->cur_server >= 0)
-                node_server_failed(&n->servers[n->cur_server], 3);
-            n->sig = NULL;
-            npf_sig_close(s);
-            schedule_reconnect(n);
+            sig_refused(n, s, 3);
         }
         return;
     }
@@ -771,12 +809,17 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         if (i == n->nservers)
             return;     /* not in the signed list: ignore */
         npf_log("redirect to server %lld", (long long)sid);
-        n->cur_server = i;
-        n->sig = NULL;
-        npf_sig_close(s);
-        n->online = 0;
-        n->backoff_ms = 1000;
-        schedule_reconnect(n);
+        {   /* a disconnect like any other, not the server's failure (it kept
+             * its ping and watch running, its requests waiting, and told the
+             * application nothing) */
+            int was_online = n->online;
+            n->cur_server = i;
+            node_sig_race_drop(n);
+            node_sig_drop(n);
+            npf_sig_close(s);
+            n->backoff_ms = 1000;
+            sig_gone(n, "redirected", was_online);
+        }
         return;
     }
     node_dispatch(n, type, j, d);
@@ -811,13 +854,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         npf_log("signaling: the next attempt %s", n->sig_via_vpn ? "on the default route (through the VPN)"
                                                                 : "around the VPN");
     }
-    n->sig = NULL;
-    n->online = 0;
-    if (n->t_ping) {
-        npf_timer_cancel(n->loop, n->t_ping);
-        n->t_ping = NULL;
-    }
-    expect_stop(n);
+    node_sig_drop(n);
     if (n->replaced) {
         /* not the server's fault: the same identity logged in again elsewhere
          * (another process with these files, a copy of them on another host).
@@ -833,11 +870,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
     } else if (n->cur_server >= 0)
         node_server_failed(&n->servers[n->cur_server], 1);
     npf_log("signaling: disconnected (%s)", why);
-    node_sig_fail_pending(n);
-    node_sig_lost(n);
-    schedule_reconnect(n);
-    if (was_online && n->hooks.on_offline)
-        n->hooks.on_offline(n, why, n->hook_arg);
+    sig_gone(n, why, was_online);
 }
 
 void node_sig_connect(npf_node *n)
@@ -921,7 +954,7 @@ static int node_busy(npf_node *n)
     int i;
     if (n->calls)
         return 1;
-    for (i = 0; i < (int)(sizeof n->pending / sizeof n->pending[0]); i++)
+    for (i = 0; i < NPF_PENDING_MAX; i++)
         if (n->pending[i].fn)
             return 1;
     for (i = 0; i < NPF_ENDS_MAX; i++)

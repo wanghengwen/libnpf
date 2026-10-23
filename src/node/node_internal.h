@@ -18,6 +18,7 @@ const uint8_t *node_day_key(const npf_node *n, const npf_daykey keys[2]);
 void node_apply_keys(npf_node *n, const npf_json *j, int d);
 void node_sig_fail_pending(npf_node *n);
 void node_sig_race_drop(npf_node *n);
+void node_sig_drop(npf_node *n);
 void node_sig_abort(npf_node *n, const char *why);
 void node_sig_connect(npf_node *n);
 /* something seems lost (a call of ours timed out): ask the server with a ping;

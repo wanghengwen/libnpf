@@ -43,6 +43,8 @@ int npf_addr_parse(const char *s, struct sockaddr_storage *out)
         memcpy(host, s, (size_t)(colon - s));
         host[colon - s] = 0;
     }
+    if (colon[1] < '0' || colon[1] > '9')
+        return -1;                          /* digits only: not "1.2.3.4:", nor "+80" or " 80" */
     port = strtol(colon + 1, &end, 10);
     if (*end || port < 0 || port > 65535)
         return -1;
@@ -139,17 +141,15 @@ void npf_node_stop(npf_node *n)
     node_sig_race_drop(n);
     if (n->sig)
         npf_sig_close(n->sig);
-    n->sig = NULL;
+    node_sig_drop(n);                       /* offline, its ping and watch stopped (the watch ran on) */
     node_sig_fail_pending(n);               /* requests still waiting learn there is no reply (their memory goes) */
     if (n->t_reconnect)
         npf_timer_cancel(n->loop, n->t_reconnect);
-    if (n->t_ping)
-        npf_timer_cancel(n->loop, n->t_ping);
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
     if (n->t_login)
         npf_timer_cancel(n->loop, n->t_login);
-    n->t_reconnect = n->t_ping = n->t_login = NULL;
+    n->t_reconnect = n->t_login = NULL;
     if (n->t_idle)
         npf_timer_cancel(n->loop, n->t_idle);
     if (n->t_wake)

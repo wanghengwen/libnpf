@@ -163,8 +163,8 @@ int npf_node_udp_ready(npf_node *n)
 
 void node_udp_close_idle(npf_node *n)
 {
-    if (n->udp_fd < 0)
-        return;
+    if (n->udp_fd < 0 || n->udp_waiters)
+        return;                             /* sessions wait for its profile: they need it */
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
     n->udp_waiters = 0;
@@ -250,7 +250,7 @@ static int udp_alive(int fd, int family)
 static void udp_reopen_cb(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
-    int old4 = n->udp_fd, old6 = n->udp6_fd;
+    int old4 = n->udp_fd, old6 = n->udp6_fd, waiters = n->udp_waiters;
     uint16_t was = n->udp_port;
     (void)loop;
     n->t_udp_reopen = NULL;
@@ -271,7 +271,14 @@ static void udp_reopen_cb(npf_loop *loop, void *arg)
     n->udp_fd = n->udp6_fd = -1;
     n->udp_waiters = 0;
     if (n->cfg.udp_on_demand) {             /* the next session opens them */
-        npf_log("udp: closed until a session needs it");
+        if (!waiters) {
+            npf_log("udp: closed until a session needs it");
+            return;
+        }
+        /* sessions waited for the profile: open and measure again now, they
+         * start when it is there (they were left waiting for good) */
+        if (npf_node_udp_ready(n) && n->on_udp_ready)
+            n->on_udp_ready(n, n->hook_arg);
         return;
     }
     if (node_udp_open4(n) < 0) {
@@ -392,12 +399,15 @@ static void watch_cb(npf_loop *loop, void *arg)
 #endif
     /* a failed socket may never wake the loop (epoll forgets a descriptor
      * that is gone): asked every tick, one empty datagram each */
-    if (!n->t_udp_reopen && ((n->udp_fd >= 0 && !udp_alive(n->udp_fd, AF_INET))
-                             || (n->udp6_fd >= 0 && !udp_alive(n->udp6_fd, AF_INET6)))) {
-        n->watch_addrs = d;
-        udp_failed(n, n->udp_fd >= 0 && !udp_alive(n->udp_fd, AF_INET) ? n->udp_fd : n->udp6_fd,
-                   npf_sock_strerror());
-        return;                             /* the reopen checks the connections */
+    if (!n->t_udp_reopen) {
+        int dead = n->udp_fd >= 0 && !udp_alive(n->udp_fd, AF_INET)      ? n->udp_fd
+                   : n->udp6_fd >= 0 && !udp_alive(n->udp6_fd, AF_INET6) ? n->udp6_fd
+                                                                          : -1;
+        if (dead >= 0) {                    /* each checked once; the error of the one that failed */
+            n->watch_addrs = d;
+            udp_failed(n, dead, npf_sock_strerror());
+            return;                         /* the reopen checks the connections */
+        }
     }
     if (late >= WATCH_LATE_MS) {
         snprintf(why, sizeof why, "suspended for %lld s", (long long)(late / 1000));

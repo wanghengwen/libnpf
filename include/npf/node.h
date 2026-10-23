@@ -52,6 +52,8 @@ typedef struct npf_server_entry {
 typedef struct npf_node npf_node;
 typedef void (*npf_reply_fn)(npf_node *n, const npf_json *j, int ok, void *arg);
 
+#define NPF_PENDING_MAX 16             /* signaling requests awaiting replies at once */
+
 typedef struct npf_pending {
     int          id;
     npf_reply_fn fn;
@@ -276,7 +278,7 @@ struct npf_node {
     npf_timer    *t_idle, *t_wake;
     int           sleeps;           /* times it went dormant */
     int           req_seq;
-    npf_pending   pending[16];
+    npf_pending   pending[NPF_PENDING_MAX];
     npf_end_report ends[NPF_ENDS_MAX];  /* call_end reports not answered yet */
     uint64_t      account_id;       /* account session of this connection, 0 = none */
     void        (*on_account_lost)(npf_node *n, void *arg);   /* session certificate rejected */
