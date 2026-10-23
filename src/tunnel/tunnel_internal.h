@@ -87,6 +87,8 @@ struct npf_tunnel {
     int         nsubs, cap, last;
     uint32_t    next_id;
     uint32_t    peer_max_seen;  /* largest peer-opened id */
+    uint64_t    peer_seen[2];   /* the 128 peer ids below it (its parity: every other one), bit k
+                                   = peer_max_seen - 2(k + 1): seen (opened, or reset first) */
     uint8_t    *rb;             /* frame reassembly */
     size_t      rl, rcap;
     int         hello_sent, hello_recv;

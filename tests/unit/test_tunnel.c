@@ -500,6 +500,19 @@ int test_tunnel(void)
     for (i = 0; i < 40; i++)
         npf_loop_once(loop, 5);
 
+    /* "nc -z" through a name: the application connects and closes at once,
+     * the FIN comes while the name resolves; both ends release the sublink
+     * (the callee freed its own quietly, the caller's waited for good) */
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
+    tg.sent = 0;
+    CHECK(npf_tunnel_open(A.t, sp2[0], 0, "localhost", ntohs(a.sin_port)) > 0, "open a sublink by name to close it");
+    close(sp2[1]);
+    until = npf_mono_ms() + 5000;
+    while ((npf_tunnel_count(A.t) || npf_tunnel_count(B.t)) && npf_mono_ms() < until)
+        npf_loop_once(loop, 5);
+    CHECK(npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0, "closed while resolving: released (%d, %d)",
+          npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+
     /* a public target is refused by the default policy (D22): the application sees a close */
     socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
     fcntl(sp2[1], F_SETFL, O_NONBLOCK);
@@ -746,6 +759,34 @@ int test_tunnel(void)
         CHECK(npf_tunnel_count(B.t) == before && npf_mono_ms() - t0 >= 100,
               "released after the greeting deadline (%lld ms)", (long long)(npf_mono_ms() - t0));
         npf_tunnel_greet_ms = 10000;
+    }
+
+    /* first data out of id order (-D takes the id at accept, sends after the
+     * greeting): the smaller id still opens; a RESET that overtakes the data
+     * of an id below the largest keeps it closed too */
+    {
+        uint8_t msg[4 + 3] = {0, 0, 0, 0, 5, 1, 0}, rst[3 + 5] = {NPF_CU_RESET, 5, 0};
+        uint32_t ids[] = {3003, 3001}, k;
+        int before = npf_tunnel_count(B.t);
+        for (k = 0; k < 2; k++) {
+            npf_le32(msg, ids[k]);
+            npf_tunnel_input_data(B.t, msg, sizeof msg);
+        }
+        CHECK(npf_tunnel_count(B.t) == before + 2, "a smaller id's first data after a larger one's opens it (%d)",
+              npf_tunnel_count(B.t) - before);
+        npf_le32(rst + 3, 3007);
+        rst[7] = NPF_RST_LOCAL;
+        npf_tunnel_input_data(B.t, (npf_le32(msg, 3009), msg), sizeof msg);
+        npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
+        npf_tunnel_input_data(B.t, (npf_le32(msg, 3007), msg), sizeof msg);
+        npf_tunnel_input_data(B.t, (npf_le32(msg, 3001), msg), sizeof msg);   /* seen: no second sublink */
+        CHECK(npf_tunnel_count(B.t) == before + 3, "reset below the largest, then its data: closed (%d)",
+              npf_tunnel_count(B.t) - before);
+        for (k = 3001; k <= 3009; k += 2) {               /* the ones opened here go */
+            npf_le32(rst + 3, k);
+            npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
+        }
+        CHECK(npf_tunnel_count(B.t) == before, "released by their resets (%d)", npf_tunnel_count(B.t) - before);
     }
 
     /* a RESET on the control lane can overtake the sublink's first data: the

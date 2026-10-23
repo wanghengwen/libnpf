@@ -461,6 +461,45 @@ static int handle_control_with(npf_tunnel *t, const uint8_t *p, size_t n, npf_jt
     return 0;
 }
 
+/* the window of the peer's ids below the largest, moved n ids on */
+static void seen_shift(uint64_t w[2], uint32_t n)
+{
+    if (n >= 128) {
+        w[0] = w[1] = 0;
+    } else if (n >= 64) {
+        w[1] = w[0] << (n - 64);
+        w[0] = 0;
+    } else if (n > 0) {
+        w[1] = (w[1] << n) | (w[0] >> (64 - n));
+        w[0] <<= n;
+    }
+}
+
+/* an id the peer opens (or resets before its first data) seen now: 1 when it
+ * is new, 0 when seen already or too old (a released sublink's late frame).
+ * Not just the largest: a sublink's first data may come after a later one's
+ * (-D takes its id at accept, its first frame after the application's
+ * greeting), and a RESET on the control lane after a later id's data */
+static int peer_id_new(npf_tunnel *t, uint32_t id)
+{
+    uint32_t k;
+    if (id > t->peer_max_seen) {
+        if (t->peer_max_seen) {
+            k = (id - t->peer_max_seen) / 2;        /* the old largest: bit k - 1 */
+            seen_shift(t->peer_seen, k);
+            if (k - 1 < 128)
+                t->peer_seen[(k - 1) / 64] |= 1ULL << ((k - 1) % 64);
+        }
+        t->peer_max_seen = id;
+        return 1;
+    }
+    if (id == t->peer_max_seen || (k = (t->peer_max_seen - id) / 2 - 1) >= 128
+        || (t->peer_seen[k / 64] >> (k % 64) & 1))
+        return 0;
+    t->peer_seen[k / 64] |= 1ULL << (k % 64);
+    return 1;
+}
+
 static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, size_t n)
 {
     sublink *s;
@@ -474,17 +513,16 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
     s = find(t, id);
     if (!s) {
         int peer_opened = t->caller ? (id % 2 == 0) : (id % 2 == 1);
-        if (type == FR_RESET && peer_opened && id > t->peer_max_seen) {
+        if (type == FR_RESET && peer_opened) {
             /* reset on the fast lane before its first data arrived: that
              * data is late now (ids are never reused) */
-            t->peer_max_seen = id;
+            peer_id_new(t, id);
             return 0;
         }
         if (type != FR_DATA)
             return 0;               /* late frame of a released sublink */
-        if (!peer_opened || id <= t->peer_max_seen)
+        if (!peer_opened || !peer_id_new(t, id))
             return 0;
-        t->peer_max_seen = id;
         if (t->caller && t->nrev == 0) {
             send_reset(t, id, NPF_RST_PROTOCOL);   /* no reverse mapping registered */
             return 0;
@@ -609,9 +647,13 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
             }
             tunnel_update_ev(s);
             maybe_done(s);
-        } else if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST || s->state == SL_RESOLVING) {
-            tunnel_sub_free(s, 0);
+        } else if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
+            /* closed before its request was complete: refused, and the peer
+             * told (freed quietly, its end waited for replies for good) */
+            tunnel_sub_reset(s, NPF_RST_PROTOCOL);
         }
+        /* resolving or connecting: kept, the target's write side is shut
+         * once connected (nc -z through a name: both ends then end) */
         return 0;
     case FR_RESET:
         if (!s->end)                        /* (a refusal seen in a reply stays the reason) */
