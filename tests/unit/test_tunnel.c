@@ -239,9 +239,14 @@ static int done_n;
 static uint32_t done_id;
 static npf_sublink_stats done_st;
 static char done_end[32];
+static npf_tunnel **free_in_done;   /* the callback frees this tunnel (the session ends in it) */
 static void io_sublink_done(void *arg, uint32_t id, const npf_sublink_stats *st)
 {
     (void)arg;
+    if (free_in_done) {
+        npf_tunnel_free(*free_in_done);
+        *free_in_done = NULL;
+    }
     done_n++;
     done_id = id;
     done_st = *st;
@@ -317,6 +322,31 @@ static void room_tick(npf_loop *l, void *arg)
 }
 
 static const npf_vend_io k_vend = {v_read, v_write, v_ready, v_shutdown, v_closed};
+
+/* a virtual end that sends SEND_TOTAL pattern bytes (a POST); its owner
+ * then closes it at once (npf_tunnel_vclose, not a reset) */
+#define SEND_TOTAL 200000                /* within the first window: all of it queued at once */
+typedef struct vsend {
+    size_t sent;
+    int    closed;
+} vsend;
+
+static ssize_t vs_read(void *arg, uint8_t *buf, size_t cap)
+{
+    vsend *v = arg;
+    size_t i, n = SEND_TOTAL - v->sent < cap ? SEND_TOTAL - v->sent : cap;
+    if (n == 0)
+        return -1;                      /* nothing now */
+    for (i = 0; i < n; i++)
+        buf[i] = (uint8_t)((v->sent + i) * 7);
+    v->sent += n;
+    return (ssize_t)n;
+}
+static ssize_t vs_write(void *arg, const uint8_t *buf, size_t len) { (void)arg; (void)buf; return (ssize_t)len; }
+static unsigned vs_ready(void *arg) { return ((vsend *)arg)->sent < SEND_TOTAL ? NPF_EV_READ | NPF_EV_WRITE : NPF_EV_WRITE; }
+static void vs_shutdown(void *arg) { (void)arg; }
+static void vs_closed(void *arg, int reset) { (void)reset; ((vsend *)arg)->closed++; }
+static const npf_vend_io k_vsend = {vs_read, vs_write, vs_ready, vs_shutdown, vs_closed};
 
 /* a target that only reads: the bytes and whether they are the pattern */
 typedef struct sink {
@@ -639,6 +669,37 @@ int test_tunnel(void)
               npf_tunnel_count(A.t), npf_tunnel_count(B.t));
     }
 
+    /* a virtual end closed by its owner right after its last bytes went to
+     * the transport: they arrive, then the close (a RESET on the control
+     * lane overtook them) */
+    {
+        sink k;
+        vsend vs;
+        uint16_t kp;
+        memset(&k, 0, sizeof k);
+        memset(&vs, 0, sizeof vs);
+        k.ok = 1;
+        k.fd = -1;
+        k.lfd = listen_lo(4, &kp);
+        npf_loop_add(loop, k.lfd, NPF_EV_READ, sink_accept, &k);
+        sid = npf_tunnel_open_v(A.t, &k_vsend, &vs, "127.0.0.1", kp);
+        CHECK(sid > 0, "a sending virtual end");
+        until = npf_mono_ms() + 5000;
+        while (vs.sent < SEND_TOTAL && npf_mono_ms() < until)
+            npf_loop_once(loop, 1);
+        npf_tunnel_vclose(A.t, (uint32_t)sid, 0);
+        until = npf_mono_ms() + 5000;
+        while ((k.got < SEND_TOTAL || k.fd >= 0 || npf_tunnel_count(A.t) || npf_tunnel_count(B.t))
+               && npf_mono_ms() < until)
+            npf_loop_once(loop, 5);
+        CHECK(k.got == SEND_TOTAL && k.ok && k.fd < 0 && vs.closed == 0 && npf_tunnel_count(A.t) == 0
+                  && npf_tunnel_count(B.t) == 0,
+              "closed after its last bytes: all of them, then the target's EOF (%zu of %d; %d, %d)", k.got,
+              SEND_TOTAL, npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+        npf_loop_del(loop, k.lfd);
+        close(k.lfd);
+    }
+
     /* the order of a name's addresses: the families in turns */
     {
         struct sockaddr_storage a[5];
@@ -803,6 +864,24 @@ int test_tunnel(void)
         fails_expected = 1;
         CHECK(npf_tunnel_input_data(B.t, msg, 3) < 0, "a data message shorter than its header");
         fails_expected = 0;
+    }
+
+    /* a callback that frees the tunnel (sublink_done, inside the peer's
+     * RESET): the tunnel goes at the end of that input, nothing in it used
+     * after (ASan) */
+    {
+        uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0};
+        int sp3[2], id;
+        socketpair(AF_UNIX, SOCK_STREAM, 0, sp3);
+        id = npf_tunnel_open(A.t, sp3[0], 0, "127.0.0.1", 9);
+        CHECK(id > 0, "a sublink to reset");
+        npf_le32(rst + 3, (uint32_t)id);
+        rst[7] = NPF_RST_LOCAL;
+        free_in_done = &A.t;
+        CHECK(npf_tunnel_input_ctrl(A.t, rst, sizeof rst) < 0 && A.t == NULL,
+              "freed from its own callback: gone once the input returns");
+        free_in_done = NULL;
+        close(sp3[1]);
     }
 
     npf_tunnel_free(A.t);

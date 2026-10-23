@@ -72,6 +72,9 @@ typedef struct sublink {
     const char *end;                    /* why it ended, when not by FIN (npf_sublink_stats.end) */
     const npf_vend_io *v;               /* a virtual local end (npf_tunnel_open_v), fd -1; NULL: none */
     void    *varg;
+    int      vgone;                     /* its owner closed the virtual end (1, 2: reset): for virt_poll */
+    int      gone;                      /* closed so: the peer's data dropped until its FIN (or t_gone) */
+    npf_timer *t_gone;
 } sublink;
 
 struct npf_tunnel {
@@ -105,8 +108,11 @@ struct npf_tunnel {
     struct { uint32_t id; char host[256]; uint16_t port; } rev[NPF_MAX_REVERSE];
     int         nrev;
     npf_timer  *t_virt;         /* virtual local ends to look at (virt_poll) */
-    int         in_poll;        /* virt_poll runs: npf_tunnel_free waits for its end */
+    int         in_poll;        /* virt_poll runs (it arms itself again) */
+    int         depth;          /* calls in here that may call out (the transport, the local ends,
+                                   sublink_done): npf_tunnel_free from one waits for their end */
     int         free_later;
+    int         ngone;          /* virtual ends their owner closed, not handled yet */
 };
 
 /* tunnel.c */
