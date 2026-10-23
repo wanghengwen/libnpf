@@ -54,6 +54,7 @@ void call_ws_flush_timer(npf_loop *loop, void *arg)
 /* a new round: reset the transport's sublinks and counters */
 static void ws_reset(npf_call *c)
 {
+    call_ctl_fail_all(c);               /* the old tunnel's requests get no reply */
     if (c->tun)
         npf_tunnel_free(c->tun);
     npf_media_free(c->media);

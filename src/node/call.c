@@ -334,7 +334,7 @@ static void tun_control(void *arg, const npf_json *j)
         return;
     if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) > 0) {
         int id = atoi(rt + 1);
-        for (i = 0; i < 4; i++) {
+        for (i = 0; i < NPF_CALL_CTL_MAX; i++) {
             if (c->ctl[i].fn && c->ctl[i].id == id) {
                 npf_ctl_fn fn = c->ctl[i].fn;
                 c->ctl[i].fn = NULL;
@@ -380,14 +380,27 @@ static void tun_control(void *arg, const npf_json *j)
         npf_call_ctl_reply(c, type, j, "error", "unsupported_type", NULL);
 }
 
+/* the requests still awaiting a reply get none (the session ended, or its
+ * tunnel was replaced): each callback once, with j NULL and ok 0 */
+void call_ctl_fail_all(npf_call *c)
+{
+    int i;
+    for (i = 0; i < NPF_CALL_CTL_MAX; i++)
+        if (c->ctl[i].fn) {
+            npf_ctl_fn fn = c->ctl[i].fn;
+            c->ctl[i].fn = NULL;
+            fn(c, NULL, 0, c->ctl[i].arg);
+        }
+}
+
 int npf_call_ctl_request(npf_call *c, const char *type, const char *data_json, npf_ctl_fn fn, void *arg)
 {
     char *buf;
     int i, n, r;
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < NPF_CALL_CTL_MAX; i++)
         if (!c->ctl[i].fn)
             break;
-    if (i == 4 || c->ended || !c->tun || !npf_tunnel_is_ready(c->tun) || !(buf = npf_scratch(NPF_CTRL_MAX)))
+    if (i == NPF_CALL_CTL_MAX || c->ended || !c->tun || !npf_tunnel_is_ready(c->tun) || !(buf = npf_scratch(NPF_CTRL_MAX)))
         return -1;
     c->ctl_seq++;
     n = snprintf(buf, NPF_CTRL_MAX, "{\"v\":1,\"type\":\"%s\",\"id\":\"c%d\",\"data\":%s}", type, c->ctl_seq,
@@ -2074,6 +2087,7 @@ void npf_call_end(npf_call *c, const char *why)
     if (!c->direct)
         npf_node_call_end(c->n, c->call_id_s, reason);
     call_set_state(c, NPF_CALL_CLOSED, reason);
+    call_ctl_fail_all(c);                   /* after CLOSED: the peers know the session is gone */
     if (c->t_anl) {
         npf_timer_cancel(c->n->loop, c->t_anl);
         c->t_anl = NULL;

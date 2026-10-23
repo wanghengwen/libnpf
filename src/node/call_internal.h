@@ -40,6 +40,10 @@ typedef struct relay_c {
     char     mode[8];
 } relay_c;
 
+/* control requests awaiting a reply in a session: a reverse_listen for each
+ * -R (NPF_MAX_REVERSE) and a few more (grant_update) */
+#define NPF_CALL_CTL_MAX (NPF_MAX_REVERSE + 4)
+
 struct npf_call {
     npf_call   *next;
     npf_call   *conv_next;          /* n->conv_tab chain while c->anl exists */
@@ -144,7 +148,7 @@ struct npf_call {
         int id;
         npf_ctl_fn fn;
         void *arg;
-    } ctl[4];
+    } ctl[NPF_CALL_CTL_MAX];
     int         ctl_seq;
     /* WS relay transport (data-channel.md 10) */
     int         ws_mode;
@@ -190,6 +194,7 @@ void call_conv_unlink(npf_call *c);
 npf_media *call_media_of(npf_call *c);
 npf_udpf *call_udp_of(npf_call *c);
 npf_tunnel *call_tunnel_new(npf_call *c);
+void call_ctl_fail_all(npf_call *c);
 int call_start_transport(npf_call *c);
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
 void call_set_state(npf_call *c, int st, const char *why);

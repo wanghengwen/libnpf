@@ -252,17 +252,21 @@ static void rev_reply(npf_call *c, const npf_json *j, int ok, void *arg)
 {
     rev_req *r = arg;
     int64_t id = 0, port = 0;
-    int d = npf_json_get(j, 0, "data");
+    int d = j ? npf_json_get(j, 0, "data") : -1;
     char err[32] = "";
     if (ok && npf_json_get_int(j, d, "listen_id", 1, UINT32_MAX, &id) == 0
-        && npf_json_get_int(j, d, "port", 1, 65535, &port) == 0 && c->tun
-        && (r->udp ? npf_udpf_rev_add(call_udp_of(c), (uint32_t)id, r->host, r->port)
-                   : npf_tunnel_rev_add(c->tun, (uint32_t)id, r->host, r->port)) == 0) {
-        r->fn(c, (int)port, (uint32_t)id, NULL, r->arg);
-    } else {
+        && npf_json_get_int(j, d, "port", 1, 65535, &port) == 0) {
+        if (c->tun && (r->udp ? npf_udpf_rev_add(call_udp_of(c), (uint32_t)id, r->host, r->port)
+                              : npf_tunnel_rev_add(c->tun, (uint32_t)id, r->host, r->port)) == 0) {
+            r->fn(c, (int)port, (uint32_t)id, NULL, r->arg);
+            free(r);
+            return;
+        }
+        npf_call_reverse_close(c, (uint32_t)id);    /* listening there, not usable here: not left behind */
+    } else if (j) {
         npf_json_get_str(j, 0, "error", err, sizeof err);
-        r->fn(c, -1, 0, err[0] ? err : "failed", r->arg);
     }
+    r->fn(c, -1, 0, err[0] ? err : j ? "failed" : "no reply", r->arg);
     free(r);
 }
 
@@ -299,14 +303,6 @@ int npf_call_reverse(npf_call *c, const char *bind_addr, int port, const char *h
     return 0;
 }
 
-static void rev_closed(npf_call *c, const npf_json *j, int ok, void *arg)
-{
-    (void)c;
-    (void)j;
-    (void)ok;
-    (void)arg;
-}
-
 void npf_call_reverse_close(npf_call *c, uint32_t listen_id)
 {
     char data[48];
@@ -314,5 +310,5 @@ void npf_call_reverse_close(npf_call *c, uint32_t listen_id)
         npf_tunnel_rev_del(c->tun, listen_id);
     npf_udpf_rev_del(c->udp, listen_id);
     snprintf(data, sizeof data, "{\"listen_id\":%u}", listen_id);
-    npf_call_ctl_request(c, "reverse_close", data, rev_closed, NULL);
+    npf_call_ctl_event(c, "reverse_close", data);  /* an event: no request slot it could fail for */
 }
