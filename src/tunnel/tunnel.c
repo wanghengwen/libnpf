@@ -844,8 +844,12 @@ static void io_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         if (r > 0) {
             int w = send_data(t, s->id, m, (size_t)r);
             npf_scratch_done(m);
-            if (w < 0)
+            if (w < 0) {                /* the bytes read are lost: the stream cannot go on */
+                if (!s->end)
+                    s->end = "session_ended";   /* the transport is broken: the session goes */
+                tunnel_sub_reset(s, NPF_RST_TRANSPORT);
                 return;
+            }
             s->tx_credit -= r;
             if (t->io.backlog(t->arg) > BACKLOG_PAUSE)
                 t->paused = 1;
@@ -1132,13 +1136,50 @@ int npf_tunnel_open_v(npf_tunnel *t, const npf_vend_io *v, void *varg, const cha
     return open_sub(t, -1, v, varg, 0, host, port, 0, 0);
 }
 
+/* a port mapping's greeting and CONNECT, pipelined; -1 for a host that
+ * cannot be one */
+static int socks_request(const char *host, uint16_t port, uint8_t req[300], size_t *len)
+{
+    size_t hl = strlen(host), n = 0;
+    struct in_addr a4;
+    struct in6_addr a6;
+    req[n++] = 5; req[n++] = 1; req[n++] = 0;          /* greeting: no authentication */
+    req[n++] = 5; req[n++] = 1; req[n++] = 0;          /* CONNECT, pipelined */
+    if (inet_pton(AF_INET, host, &a4) == 1) {
+        req[n++] = 1;
+        memcpy(req + n, &a4, 4);
+        n += 4;
+    } else if (inet_pton(AF_INET6, host, &a6) == 1) {
+        req[n++] = 4;
+        memcpy(req + n, &a6, 16);
+        n += 16;
+    } else {
+        if (hl == 0 || hl > 255)
+            return -1;
+        req[n++] = 3;
+        req[n++] = (uint8_t)hl;
+        memcpy(req + n, host, hl);
+        n += hl;
+    }
+    req[n++] = (uint8_t)(port >> 8);
+    req[n++] = (uint8_t)port;
+    *len = n;
+    return 0;
+}
+
 static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int passthrough, const char *host,
                     uint16_t port, uint32_t group, uint32_t rate)
 {
     sublink *s;
     rgroup *g = NULL;
+    uint8_t req[300];
+    size_t rl = 0;
     int i;
     if (!npf_tunnel_is_ready(t) || t->nsubs >= t->peer_max || t->next_id > 0x7ffffff0u)
+        return -1;
+    /* checked first: on -1 the caller keeps its local end (a bad host freed
+     * the sublink, closing the fd the caller then closed again) */
+    if (!passthrough && socks_request(host, port, req, &rl) < 0)
         return -1;
     if (group) {                            /* rate 0: counted (npf_tunnel_group_count), not limited */
         for (i = 0; i < t->nrg && !g; i++)
@@ -1171,35 +1212,8 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
         s->state = SL_LOCAL_GREETING;       /* -D: a SOCKS5 application */
         tunnel_greet_wait(s);
     } else {
-        uint8_t req[300];
-        size_t hl = strlen(host), n = 0;
-        struct in_addr a4;
-        struct in6_addr a6;
-        req[n++] = 5; req[n++] = 1; req[n++] = 0;          /* greeting: no authentication */
-        req[n++] = 5; req[n++] = 1; req[n++] = 0;          /* CONNECT, pipelined */
-        if (inet_pton(AF_INET, host, &a4) == 1) {
-            req[n++] = 1;
-            memcpy(req + n, &a4, 4);
-            n += 4;
-        } else if (inet_pton(AF_INET6, host, &a6) == 1) {
-            req[n++] = 4;
-            memcpy(req + n, &a6, 16);
-            n += 16;
-        } else {
-            if (hl == 0 || hl > 255) {
-                s->v = NULL;            /* the caller keeps its local end */
-                tunnel_sub_free(s, 1);
-                return -1;
-            }
-            req[n++] = 3;
-            req[n++] = (uint8_t)hl;
-            memcpy(req + n, host, hl);
-            n += hl;
-        }
-        req[n++] = (uint8_t)(port >> 8);
-        req[n++] = (uint8_t)port;
-        tunnel_send_frame(t, s->id, FR_DATA, req, n);
-        s->tx_credit -= (int64_t)n;
+        tunnel_send_frame(t, s->id, FR_DATA, req, rl);
+        s->tx_credit -= (int64_t)rl;
         s->state = SL_CLIENT_WAIT;
     }
     tunnel_update_ev(s);
