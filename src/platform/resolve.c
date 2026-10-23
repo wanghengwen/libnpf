@@ -13,7 +13,10 @@
  * worker busy until the system gives up. At most RESOLVE_WORKERS run at
  * once and RESOLVE_CAPACITY requests are queued or running; a cancelled
  * request counts until its worker is done with it, so cancelling and
- * starting again cannot pile up work. Beyond that npf_resolve_start fails. */
+ * starting again cannot pile up work. Beyond that npf_resolve_start fails.
+ * The peers' lookups wait in a queue of their own, run on at most
+ * RESOLVE_PEER_WORKERS of the threads and hold at most RESOLVE_PEER_CAPACITY
+ * of the room; a worker takes the node's own first. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -57,6 +60,7 @@ struct npf_resolve {
     npf_resolve_fn fn;
     void       *arg;
     int         cancelled;          /* under the lock */
+    int         peer;               /* a peer asked for it */
     int         err;
     int         n;
     struct sockaddr_storage addrs[NPF_RESOLVE_MAX];
@@ -66,8 +70,10 @@ struct npf_resolve {
 
 /* everything below is under the lock */
 static struct {
-    npf_resolve *head, *tail;       /* waiting for a worker */
+    npf_resolve *head, *tail;       /* waiting for a worker: the node's own */
+    npf_resolve *phead, *ptail;     /* and the peers' */
     int          active;            /* queued + running */
+    int          pactive, prunning; /* the peers' of them; running now */
     int          workers;           /* threads started (they stay) */
     int          idle;              /* workers waiting for work */
     hub         *hubs;
@@ -168,21 +174,35 @@ static void worker(void)
         npf_resolve *r;
         int skip;
         LOCK();
-        while (!P.head) {
+        while (!P.head && !(P.phead && P.prunning < RESOLVE_PEER_WORKERS)) {
             P.idle++;
             WAIT();
             P.idle--;
         }
-        r = P.head;
-        P.head = r->next;
-        if (!P.head)
-            P.tail = NULL;
+        if (P.head) {                   /* the node's own first */
+            r = P.head;
+            P.head = r->next;
+            if (!P.head)
+                P.tail = NULL;
+        } else {
+            r = P.phead;
+            P.phead = r->next;
+            if (!P.phead)
+                P.ptail = NULL;
+            P.prunning++;
+        }
         skip = r->cancelled || !r->h->loop;
         UNLOCK();
         if (!skip)
             work(r);
         LOCK();
         P.active--;
+        if (r->peer) {
+            P.pactive--;
+            P.prunning--;
+            if (P.phead)
+                SIGNAL();               /* a waiting peers' lookup may run now */
+        }
         /* posted under the lock: the loop cannot be freed in between */
         if (r->cancelled || !r->h->loop || npf_loop_post_drop(r->h->loop, deliver, drop, r) < 0) {
             hub_unref(r->h);
@@ -230,8 +250,8 @@ static int spawn(void)
 }
 #endif
 
-npf_resolve *npf_resolve_start(npf_loop *loop, const char *host, uint16_t port, int socktype, npf_resolve_fn fn,
-                               void *arg)
+static npf_resolve *start(npf_loop *loop, const char *host, uint16_t port, int socktype, npf_resolve_fn fn,
+                          void *arg, int peer)
 {
     npf_resolve *r;
     hub *h;
@@ -245,8 +265,9 @@ npf_resolve *npf_resolve_start(npf_loop *loop, const char *host, uint16_t port, 
     r->socktype = socktype;
     r->fn = fn;
     r->arg = arg;
+    r->peer = peer;
     LOCK();
-    if (P.active >= RESOLVE_CAPACITY || !(h = hub_of(loop))) {
+    if (P.active >= RESOLVE_CAPACITY || (peer && P.pactive >= RESOLVE_PEER_CAPACITY) || !(h = hub_of(loop))) {
         UNLOCK();
         free(r);
         return NULL;                /* busy: the caller fails this lookup */
@@ -262,15 +283,36 @@ npf_resolve *npf_resolve_start(npf_loop *loop, const char *host, uint16_t port, 
     }
     h->refs++;
     r->h = h;
-    if (P.tail)
-        P.tail->next = r;
-    else
-        P.head = r;
-    P.tail = r;
+    if (peer) {
+        if (P.ptail)
+            P.ptail->next = r;
+        else
+            P.phead = r;
+        P.ptail = r;
+        P.pactive++;
+    } else {
+        if (P.tail)
+            P.tail->next = r;
+        else
+            P.head = r;
+        P.tail = r;
+    }
     P.active++;
     SIGNAL();
     UNLOCK();
     return r;
+}
+
+npf_resolve *npf_resolve_start(npf_loop *loop, const char *host, uint16_t port, int socktype, npf_resolve_fn fn,
+                               void *arg)
+{
+    return start(loop, host, port, socktype, fn, arg, 0);
+}
+
+npf_resolve *npf_resolve_start_peer(npf_loop *loop, const char *host, uint16_t port, int socktype, npf_resolve_fn fn,
+                                    void *arg)
+{
+    return start(loop, host, port, socktype, fn, arg, 1);
 }
 
 void npf_resolve_cancel(npf_resolve *r)
@@ -287,6 +329,15 @@ int npf_resolve_active(void)
     int n;
     LOCK();
     n = P.active;
+    UNLOCK();
+    return n;
+}
+
+int npf_resolve_active_peer(void)
+{
+    int n;
+    LOCK();
+    n = P.pactive;
     UNLOCK();
     return n;
 }

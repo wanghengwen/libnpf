@@ -524,7 +524,7 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     tick_arm(u);
     if (literal(host, port, &ss, &sl) == 0) {
         flow_connect(u, f, &ss, sl);
-    } else if (!(f->res = npf_resolve_start(u->loop, host, port, SOCK_DGRAM, resolved, f))) {
+    } else if (!(f->res = npf_resolve_start_peer(u->loop, host, port, SOCK_DGRAM, resolved, f))) {
         drop_flow(u, f, 1, NPF_UDP_R_FAILED);
         return NULL;
     }

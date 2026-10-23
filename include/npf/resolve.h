@@ -3,7 +3,11 @@
  * dead DNS server then stalls one sublink instead of every session on the
  * node. The pool is bounded (RESOLVE_WORKERS threads, RESOLVE_CAPACITY
  * requests queued or running, cancelled ones included until their worker is
- * done); a loop may be freed while lookups for it are still running. */
+ * done); a loop may be freed while lookups for it are still running.
+ * Lookups a peer asks for (a sublink's or a UDP flow's target) take at most
+ * RESOLVE_PEER_WORKERS threads and RESOLVE_PEER_CAPACITY requests: whatever
+ * peers send, the node's own (its signaling, HTTP) always find a thread and
+ * room. */
 #ifndef NPF_RESOLVE_H
 #define NPF_RESOLVE_H
 
@@ -17,6 +21,8 @@
 #define NPF_RESOLVE_MAX 8
 #define RESOLVE_WORKERS  4
 #define RESOLVE_CAPACITY 64
+#define RESOLVE_PEER_WORKERS  (RESOLVE_WORKERS - 1)
+#define RESOLVE_PEER_CAPACITY (RESOLVE_CAPACITY / 2)
 
 typedef struct npf_resolve npf_resolve;
 
@@ -29,12 +35,16 @@ typedef void (*npf_resolve_fn)(npf_resolve *r, int err, const struct sockaddr_st
  * NULL on failure, also when the pool is full. */
 npf_resolve *npf_resolve_start(npf_loop *loop, const char *host, uint16_t port, int socktype, npf_resolve_fn fn,
                                void *arg);
+/* the same for a name a peer asked for (the peers' share of the pool) */
+npf_resolve *npf_resolve_start_peer(npf_loop *loop, const char *host, uint16_t port, int socktype, npf_resolve_fn fn,
+                                    void *arg);
 /* the callback will not run; the request frees itself when the worker is
  * done (it counts against the pool until then). Not after the callback ran. */
 void npf_resolve_cancel(npf_resolve *r);
 
-/* requests queued or running (tests, status) */
+/* requests queued or running (tests, status); the peers' of them */
 int npf_resolve_active(void);
+int npf_resolve_active_peer(void);
 
 /* tests: the lookup function the workers call (getaddrinfo) */
 typedef int (*npf_resolve_gai_fn)(const char *node, const char *service, const struct addrinfo *hints,

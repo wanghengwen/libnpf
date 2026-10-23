@@ -289,7 +289,7 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
             }
         }
         s->state = SL_RESOLVING;
-        s->resolve = npf_resolve_start(s->t->loop, host, port, SOCK_STREAM, resolved, s);
+        s->resolve = npf_resolve_start_peer(s->t->loop, host, port, SOCK_STREAM, resolved, s);
         if (!s->resolve) {
             socks_fail(s, 1);       /* the resolver's budget is used up (or no memory) */
             return -1;
