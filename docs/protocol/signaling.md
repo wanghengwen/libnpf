@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.28。更新日期：2026-10-22。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.29。更新日期：2026-10-23。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -235,7 +235,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 
 | 类型 | 方向 | 主要内容 |
 |---|---|---|
-| `verify_begin` | 客户端到平台 | `channel`（`email` 或 `phone`）、`address`；平台发送验证码，返回 `verification_id`。手机号的验证码由短信网关发出后才回复；网关拒绝时回 `rate_limited`（号码的频控）、`bad_request`（`address`，号码无效）或 `unavailable`（`sms`：网关故障；`sms_daily_limit`：平台当天的短信总量到了上限） |
+| `verify_begin` | 客户端到平台 | `channel`（`email` 或 `phone`）、`address`，可选 `lang`（`zh-CN` 或 `en`：界面的语言，邮件用这种语言写；不给或其他值时中英文都写）；平台发送验证码，返回 `verification_id`。邮件说明验证码的用途：没有账户会话时为注册，有账户会话时为给本账户绑定这个邮箱。验证码由短信网关或邮件网关发出后才回复；短信网关拒绝时回 `rate_limited`（号码的频控）、`bad_request`（`address`，号码无效）或 `unavailable`（`sms`：网关故障；`sms_daily_limit`：平台当天的短信总量到了上限）；邮件网关拒绝收件地址时回 `bad_request`（`address`），其他失败回 `unavailable`（`mail`），当天的邮件总量到了上限回 `unavailable`（`mail_daily_limit`） |
 | `verify_finish` | 客户端到平台 | `verification_id`、`code`；成功后该验证可在 10 分钟内被注册、绑定或找回消费一次 |
 | `account_register` | 客户端到平台 | `password`、`verification_id`（已验证的邮箱或手机号作为登录名），`name` 可选：不给时取邮箱 @ 前面的部分，或中间四位隐藏的手机号（`138****8000`；设备主人在 `share_list` 里看得到访客的名字），以后用 `account_update` 改 |
 | `account_login` | 客户端到平台 | `login`（邮箱或手机号）、`password` |
@@ -247,7 +247,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | `login_method_bind` | 客户端到平台 | `{method, …}` 绑定新的登录方式：`google` / `wechat` 附 `purpose = bind` 的事务 `transaction_id` 与确认码 `code`；`email` / `phone` 附 `verification_id`（已有的被替换）；`password` 附 `password`，账户还没有邮箱或手机号时同时附 `verification_id`（R28）。应答为账户资料；已属于其他账户、或该第三方方式已绑定另一个身份时 `conflict`，已有密码时 `conflict`（改密码用 `password_change`） |
 | `login_method_unbind` | 客户端到平台 | `{method}`：`password`、`google`、`wechat`、`email`、`phone`。解绑后必须还能登录（密码、Google、微信至少一种），有密码时还要留一个邮箱或手机号，否则 `conflict`；没有绑定该方式时 `not_found` |
 | `password_change` | 客户端到平台 | 旧密码、新密码；成功后吊销该账户其他客户端的证书（R34） |
-| `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：先 `verify_begin`，再以 `verification_id` 设置新密码 |
+| `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：`password_reset_begin` 的字段、应答与错误同 `verify_begin`（邮件说明用途是找回密码），`verify_finish` 之后以 `verification_id` 调 `password_reset_finish` 设置新密码 |
 | `account_logout` | 客户端到平台 | 吊销当前客户端的客户端证书 |
 | `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、撤销分享、删除公网映射、吊销全部客户端证书）。返回 `pending` 与操作号，完成后该账户的所有连接被关闭 |
 
@@ -903,6 +903,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-23 | 0.29 | `verify_begin` / `password_reset_begin` 增加可选的 `lang`（验证码邮件的语言，不给时中英文都写）；邮件网关的错误（`bad_request` `address`、`unavailable` `mail` / `mail_daily_limit`）；`password_reset_begin` 写明与 `verify_begin` 相同，邮件据此说明用途 |
 | 2026-10-22 | 0.28 | 按库端源码修正 JSON 限额、登录与重定向、候选与打洞、中转回退、关闭及绑定行为；统一公网映射权限，区分平台约定与当前实现，清理绝对文件路径并补充相对源码链接 |
 | 2026-10-22 | 0.27 | 信令与服务器之间的连接改用 binary WebSocket 消息（原为 text 中的 Base64url）；过渡期服务器对节点两种都收，按节点第一条消息的形式回复；服务器之间只用 binary；被拒的 `login` / `enroll` 先收到错误应答再断开（之前应答可能被关闭抢先而丢失） |
 | 2026-10-17 | 0.26 | `hosted_stats`：托管服务每分钟报告运行情况与主机资源，应答带平台为它设的参数（`hosted_register` 的应答也带） |
