@@ -31,23 +31,30 @@ void call_ws_flush_timer(npf_loop *loop, void *arg)
     npf_call *c = arg;
     (void)loop;
     c->t_wsflush = NULL;
-    while (c->ws_out_len && c->wsr && c->ws_tx_ready) {
-        size_t n = c->ws_out_len > 65536 ? 65536 : c->ws_out_len;
-        uint8_t *rec = malloc(n + 16), nonce[12];
-        if (!rec) {
-            npf_call_end(c, "error");   /* nothing would flush it again */
-            return;
-        }
-        ws_nonce(nonce, c->ws_ctr_tx++);
-        if (npf_aead_seal(c->ws_ktx, nonce, NULL, 0, c->ws_out, n, rec) < 0
-            || npf_wsr_send(c->wsr, NPF_WSR_RECORD, rec, n + 16) < 0) {
+    {   /* records from an offset, what is left moved down once at the end
+         * (moved after each record: quadratic for a keyframe of megabytes) */
+        size_t off = 0;
+        while (off < c->ws_out_len && c->wsr && c->ws_tx_ready) {
+            size_t n = c->ws_out_len - off > 65536 ? 65536 : c->ws_out_len - off;
+            uint8_t *rec = malloc(n + 16), nonce[12];
+            if (!rec) {
+                npf_call_end(c, "error");   /* nothing would flush it again */
+                return;
+            }
+            ws_nonce(nonce, c->ws_ctr_tx++);
+            if (npf_aead_seal(c->ws_ktx, nonce, NULL, 0, c->ws_out + off, n, rec) < 0
+                || npf_wsr_send(c->wsr, NPF_WSR_RECORD, rec, n + 16) < 0) {
+                free(rec);
+                npf_call_end(c, "transport_lost");
+                return;
+            }
             free(rec);
-            npf_call_end(c, "transport_lost");
-            return;
+            off += n;
         }
-        free(rec);
-        memmove(c->ws_out, c->ws_out + n, c->ws_out_len - n);
-        c->ws_out_len -= n;
+        if (off) {
+            memmove(c->ws_out, c->ws_out + off, c->ws_out_len - off);
+            c->ws_out_len -= off;
+        }
     }
     if (c->tun)
         npf_tunnel_kick(c->tun);
@@ -291,7 +298,7 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     c->wsr = NULL;
     c->ws_round = 0;
     c->ws_has_pending = 0;              /* a START of the connection closed here is stale */
-    if (call_relay_blocked(url))
+    if (call_relay_blocked(c->n, url))
         return -1;
     c->wsr = npf_wsr_open(c->n->loop, url, pub, &c->n->id, c->relay.relay_id, &wsr_cbs, c);
     if (!c->wsr)

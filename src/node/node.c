@@ -96,6 +96,7 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
     {
         const char *v = getenv("NPF_TEST_DROP_P2P");
         n->test_cut_ms = v ? atoll(v) : -1;
+        n->test_block_relay = getenv("NPF_TEST_BLOCK_RELAY");
         n->test_cut_port = v && strchr(v, ':') ? atoi(strchr(v, ':') + 1) : 0;
     }
     n->punch_lead_ms = cfg->punch_lead_ms >= 0 ? cfg->punch_lead_ms : npf_firewall_lead_ms();

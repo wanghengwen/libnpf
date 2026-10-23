@@ -75,6 +75,7 @@ struct npf_call {
     size_t        dpend_bytes;
     npf_tunnel *tun;
     npf_timer  *t_anl, *t_timeout, *t_punch, *t_linger;
+    int64_t     anl_due;            /* when t_anl fires (monotonic ms) */
     int         flush_pending;
     int         punched;            /* a punch round has finished (either way) */
     npf_timer  *t_ws_wait;          /* UDP relay unreachable: waiting for the punch first */
@@ -189,7 +190,7 @@ struct npf_call {
 void call_dpend_free(npf_call *c);
 void call_b64_of(const uint8_t *b, size_t n, char *out);
 int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len);
-int call_relay_blocked(const char *what);
+int call_relay_blocked(const npf_node *n, const char *what);
 struct npf_policy *call_policy(npf_call *c);
 void call_conv_unlink(npf_call *c);
 npf_media *call_media_of(npf_call *c);

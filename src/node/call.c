@@ -133,16 +133,17 @@ int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const 
 }
 
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
-int call_relay_blocked(const char *what)
+int call_relay_blocked(const npf_node *n, const char *what)
 {
-    const char *v = getenv("NPF_TEST_BLOCK_RELAY");
+    const char *v = n->test_block_relay;
     return v && *what && strstr(v, what) != NULL;
 }
 
 static int relay_addr_blocked(const npf_call *c)
 {
     char a[64];
-    return getenv("NPF_TEST_BLOCK_RELAY") && call_relay_blocked(npf_addr_str(&c->relay.addr[c->relay.cur], a, sizeof a));
+    return c->n->test_block_relay
+           && call_relay_blocked(c->n, npf_addr_str(&c->relay.addr[c->relay.cur], a, sizeof a));
 }
 
 static void relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
@@ -479,10 +480,10 @@ static void anl_drain(npf_call *c)
 
 static void anl_drain_with(npf_call *c, char *buf, size_t cap)
 {
-    anl_stream_t *rd[8];
+    anl_stream_t *rd[64];                   /* every stream at once (8: the rest waited for the next datagram) */
     int n, i;
-    n = anl_readable(c->anl, rd, 8);
-    for (i = 0; i < n && i < 8; i++) {
+    n = anl_readable(c->anl, rd, 64);
+    for (i = 0; i < n && i < 64; i++) {
         int ctrl = rd[i] == anl_default_stream(c->anl);
         if (!ctrl && rd[i] != c->stream) {
             if (npf_udpf_is_stream(c->udp, rd[i])) {
@@ -560,6 +561,7 @@ static void anl_schedule(npf_call *c)
     d = (int32_t)(next - now);
     if (d < 0)
         d = 0;
+    c->anl_due = npf_mono_ms() + d;
     c->t_anl = npf_timer_add(c->n->loop, d, anl_timer, c);
 }
 
@@ -622,12 +624,19 @@ static int anl_feed(npf_call *c, const uint8_t *buf, size_t len)
     return 0;
 }
 
+/* after a datagram: the timer moved only when AnLiu wants to be called
+ * sooner than it fires (it was made again for every datagram) */
 static void anl_after_input(npf_call *c)
 {
     anl_drain(c);
     if (c->ended)
         return;
     if (c->t_anl) {
+        int64_t now = npf_mono_ms();
+        uint32_t n32 = (uint32_t)now, next = c->flush_pending ? n32 : anl_check(c->anl, n32);
+        int32_t d = (int32_t)(next - n32);
+        if (c->anl_due <= now + (d > 0 ? d : 0))
+            return;                         /* it comes first and schedules the next one */
         npf_timer_cancel(c->n->loop, c->t_anl);
         c->t_anl = NULL;
     }
@@ -2067,6 +2076,8 @@ void call_free(npf_call *c)
             *pp = c->next;
             break;
         }
+    if (n->relay_hit == c)
+        n->relay_hit = NULL;
     if (c->t_anl) npf_timer_cancel(n->loop, c->t_anl);
     if (c->t_timeout) npf_timer_cancel(n->loop, c->t_timeout);
     if (c->t_punch) npf_timer_cancel(n->loop, c->t_punch);
@@ -2792,9 +2803,15 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
         for (c = n->calls; c; c = c->next)
             if (!c->ended && c->p2p && fd == c->p2p_fd && call_same_addr(from, &c->p2p_addr) && path_input(c, buf, len))
                 return 1;
+    /* relayed: every session on one relay server comes from its address,
+     * each tried until one's keys open it; the last one first */
+    if ((c = n->relay_hit) && !c->ended && relay_input(c, buf, len, from))
+        return 1;
     for (c = n->calls; c; c = c->next)
-        if (!c->ended && relay_input(c, buf, len, from))
+        if (c != n->relay_hit && !c->ended && relay_input(c, buf, len, from)) {
+            n->relay_hit = c;
             return 1;
+        }
     for (c = n->calls; c; c = c->next)
         if (!c->ended && c->punch && npf_punch_input(c->punch, fd, buf, len, from))
             return 1;

@@ -22,14 +22,18 @@ void npf_tunnel_dump(const npf_tunnel *t);
 
 int tunnel_wb_put(wbuf *b, const void *p, size_t n)
 {
-    if (b->off && b->off + b->len + n > b->cap) {
-        memmove(b->p, b->p + b->off, b->len);   /* the room written out at the front, once */
+    /* the tail full: the room written out at the front taken back when it is
+     * as much as what stays (a byte moved for a byte written out at most;
+     * at each full tail a local end that reads slowly had about three); else
+     * the buffer grows, to twice what it holds at most (that, the window) */
+    if (b->off && b->off + b->len + n > b->cap && b->off >= b->len) {
+        memmove(b->p, b->p + b->off, b->len);
         b->off = 0;
     }
-    if (b->len + n > b->cap) {
+    if (b->off + b->len + n > b->cap) {
         size_t c = b->cap ? b->cap : 16384;
         uint8_t *q;
-        while (c < b->len + n)
+        while (c < b->off + b->len + n)
             c *= 2;
         q = realloc(b->p, c);
         if (!q)
