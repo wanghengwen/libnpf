@@ -1026,7 +1026,10 @@ static void relay_bind_timer(npf_loop *loop, void *arg)
             c->relay.cur++;
             c->relay.tries = 0;
         } else if (c->p2p) {
-            npf_log("call %s: UDP relay unreachable; the direct path carries the session", c->call_id_s);
+            /* in doubt (p2p_suspect): the verdict decides (lost: the WS
+             * relay, check_p2p); a WS relay session cannot go direct again */
+            npf_log("call %s: UDP relay unreachable; the direct path carries the session%s", c->call_id_s,
+                    c->p2p_suspect ? " while it is checked" : "");
             return;
         } else if (!c->relay_ports_waited && hard_punches(c) > 0) {
             /* a hard-side punch holds hundreds of the NAT's ports: a carrier
@@ -1370,6 +1373,13 @@ static void check_p2p(npf_call *c)
         }
         c->p2p_fd = -1;
         anl_flush(c->anl);
+        if (c->relay.active && !c->relay.bound && !c->relay.t_bind) {
+            /* the UDP relay did not bind either (binding still: it asks for
+             * the WS relay itself when it gives up) */
+            npf_logw("call %s: no UDP relay bound: the WS relay", c->call_id_s);
+            ask_ws_relay(c);
+            return;
+        }
         if (!c->relay.active && c->caller && !no_p2p(c)) {
             /* no relay to fall back on (an anonymous caller, D6): the only way
              * out is a new round now, before AnLiu's idle timeout ends the session */
@@ -1415,6 +1425,15 @@ static void p2p_suspect_start(npf_call *c, const char *why)
     timer_stop(c->n->loop, &c->t_standby);
     if (c->relay.active) {
         npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);
+        if (!c->relay.bound && !c->relay.t_bind) {
+            /* it never bound (the direct path carried the session): bound
+             * now, or the session had nothing left when the path went */
+            npf_log("call %s: the UDP relay never bound: binding it again", c->call_id_s);
+            c->relay.tries = 0;
+            c->relay.cur = 0;
+            relay_bind_send(c);
+            c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+        }
     } else if (!c->relay_asked) {
         /* the relay was released after the standby: ask for a new allocation */
         char data[96];
@@ -1502,6 +1521,14 @@ static void ws_wait_end(npf_call *c, int ok)
         return;
     npf_timer_cancel(c->n->loop, c->t_ws_wait);
     c->t_ws_wait = NULL;
+    if (!ok && !c->relay.bound && c->relay.t_bind) {
+        /* the UDP relay is being bound again (the punch gave the NAT's ports
+         * back): its answer first; when it gives up, relay_bind_timer asks
+         * for the WS relay (asked here at once, a bind about to succeed was
+         * replaced: the phone's sessions, measured) */
+        npf_log("call %s: the UDP relay is being bound: its answer before the WS relay", c->call_id_s);
+        return;
+    }
     if (!ok && !c->relay_retried && !c->relay.bound && !c->relay.t_bind) {
         /* once more first: a WS relay session cannot punch again later, and
          * the UDP relay may have been lost to a passing storm (the phone at a
