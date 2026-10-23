@@ -53,9 +53,15 @@ static int split_target(const char *t, char *host, size_t cap, int *port)
     return 0;
 }
 
+/* one service: tcp, or a udp resource of one HOST:PORT (a udp resource may
+ * also be "*" or networks with ports, like net: data-channel.md 15) */
 int npf_res_is_service(const npf_res *r)
 {
-    return strcmp(r->type, "tcp") == 0 || strcmp(r->type, "udp") == 0;
+    char host[64];
+    int port;
+    if (strcmp(r->type, "tcp") == 0)
+        return 1;
+    return strcmp(r->type, "udp") == 0 && split_target(r->target, host, sizeof host, &port) == 0;
 }
 
 int npf_res_is_web(const npf_res *r)
@@ -75,6 +81,13 @@ int npf_res_check(const npf_res *r, char *err, size_t errcap)
         if (split_target(r->target, host, sizeof host, &port) < 0) {
             snprintf(err, errcap, "%s: a %s target is HOST:PORT, HOST an IP address ([v6]) or localhost", r->name,
                      r->type);
+            return -1;
+        }
+    } else if (strcmp(r->type, "udp") == 0) {
+        npf_policy t;
+        memset(&t, 0, sizeof t);
+        if (npf_policy_add_udp(&t, r->target) < 0) {
+            snprintf(err, errcap, "%s: a udp target is HOST:PORT, *, or ADDR[/PREFIX][:PORT[-PORT]]", r->name);
             return -1;
         }
     } else if (strcmp(r->type, "net") == 0 || strcmp(r->type, "socks") == 0) {
@@ -113,8 +126,8 @@ int npf_res_check(const npf_res *r, char *err, size_t errcap)
             snprintf(err, errcap, "%s: a service is 1 to %d of a-z, 0-9 and -", r->name, NPF_RES_SVC_MAX);
             return -1;
         }
-        if (strcmp(r->type, "tcp") != 0 && strcmp(r->type, "udp") != 0) {
-            snprintf(err, errcap, "%s: a service (TYPE/SERVICE) is for tcp and udp", r->name);
+        if (!npf_res_is_service(r)) {
+            snprintf(err, errcap, "%s: a service (TYPE/SERVICE) is for tcp and for udp of one HOST:PORT", r->name);
             return -1;
         }
     }
@@ -268,7 +281,8 @@ int npf_res_rules(npf_policy *p, const npf_res *r, int n)
             continue;
         }
         if (!npf_res_is_service(&r[i])) {
-            if (npf_policy_add(p, r[i].target) < 0)
+            /* net, socks; udp of "*" or networks: rules of their own */
+            if ((strcmp(r[i].type, "udp") == 0 ? npf_policy_add_udp(p, r[i].target) : npf_policy_add(p, r[i].target)) < 0)
                 return -1;
             continue;
         }

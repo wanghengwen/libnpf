@@ -243,6 +243,42 @@ int test_policy(void)
         CHECK(q.nudp == 0 && !udp4(&q, "127.0.0.1", 53), "clear takes the udp rules too");
         memset(&q, 0, sizeof q);
         CHECK(npf_res_rules(&q, r, 1) == 0 && !allowed4(&q, "127.0.0.1", 53), "a udp resource opens no TCP");
+        /* udp "*" and networks (the global TUN mode, tun.md): every UDP target,
+         * or a network's (its ports); still no TCP, and no service type */
+        {
+            npf_res u[3];
+            char err[160];
+            memset(u, 0, sizeof u);
+            strcpy(u[0].name, "lan10");
+            strcpy(u[0].type, "udp");
+            strcpy(u[0].target, "10.1.0.0/16");
+            strcpy(u[1].name, "range");
+            strcpy(u[1].type, "udp");
+            strcpy(u[1].target, "192.0.2.9:5000-5100");
+            strcpy(u[2].name, "any");
+            strcpy(u[2].type, "udp");
+            strcpy(u[2].target, "*");
+            CHECK(npf_res_check(&u[0], err, sizeof err) == 0 && npf_res_check(&u[1], err, sizeof err) == 0
+                      && npf_res_check(&u[2], err, sizeof err) == 0, "udp networks and * are valid: %s", err);
+            CHECK(!npf_res_is_service(&u[0]) && !npf_res_is_service(&u[2]) && npf_res_is_service(&r[2]),
+                  "a udp network is not a service, one HOST:PORT is");
+            memset(&q, 0, sizeof q);
+            CHECK(npf_res_rules(&q, u, 2) == 0 && udp4(&q, "10.1.200.3", 9) && udp4(&q, "192.0.2.9", 5050)
+                      && !udp4(&q, "10.2.0.1", 9) && !udp4(&q, "192.0.2.9", 5101) && !allowed4(&q, "10.1.200.3", 9),
+                  "a udp network: its addresses and ports, UDP only");
+            memset(&q, 0, sizeof q);
+            CHECK(npf_res_rules(&q, u, 3) == 0 && q.udp_any && udp4(&q, "203.0.113.5", 443) && !allowed4(&q, "203.0.113.5", 443),
+                  "udp *: every UDP target, no TCP");
+            npf_policy_clear(&q);
+            CHECK(!q.udp_any && !udp4(&q, "203.0.113.5", 443), "clear takes udp * too");
+            strcpy(u[0].svc, "dns");
+            CHECK(npf_res_check(&u[0], err, sizeof err) < 0, "a service type is for one HOST:PORT only");
+            strcpy(u[0].svc, "");
+            strcpy(u[0].target, "lan");
+            CHECK(npf_res_check(&u[0], err, sizeof err) < 0, "udp lan: not a target");
+            strcpy(u[0].target, "10.1.0.0/40");
+            CHECK(npf_res_check(&u[0], err, sizeof err) < 0, "a bad prefix refused");
+        }
     }
 
     /* the control interface (the web console) is never a forward's target */

@@ -945,7 +945,8 @@ static int res_put_run(npf_t *n, void *arg)
     npf_resource *u = &x->r;
     npf_res r;
     const char *type = res_type_name(u->type);
-    int service = u->type == NPF_RES_TCP || u->type == NPF_RES_UDP, l;
+    /* udp: one service (service.host), or "*" / networks as a rule */
+    int service = u->type == NPF_RES_TCP || (u->type == NPF_RES_UDP && !(u->rule && *u->rule && !u->service.host)), l;
     memset(&r, 0, sizeof r);
     if (!type || !u->name || !*u->name || strlen(u->name) >= sizeof r.name || (u->flags & ~NPF_PERSIST)
         || (u->svc && strlen(u->svc) >= sizeof r.svc) || (u->desc && strlen(u->desc) >= sizeof r.desc)

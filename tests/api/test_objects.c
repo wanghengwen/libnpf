@@ -272,6 +272,19 @@ static void resources(npf_t *a, const char *da, int echo)
           "a resource without NPF_PERSIST: in effect, not in local.json");
     r.rule = "lan:70000";
     check(npf_resource_put(a, &r, err, sizeof err) == NPF_EINVAL, "a bad rule: NPF_EINVAL");
+    /* udp: "*" or networks as a rule (no service host), listed back as a rule */
+    npf_resource_init(&r);
+    r.type = NPF_RES_UDP;
+    r.name = "udp-all";
+    r.rule = "*";
+    check(npf_resource_put(a, &r, err, sizeof err) == NPF_OK && npf_resource_list(a, 0, info, 40, &count) == NPF_OK
+          && count == 3 && info[2].type == NPF_RES_UDP && strcmp(info[2].rule, "*") == 0 && !info[2].host[0],
+          "udp *: a rule");
+    r.rule = "10.1.0.0/16:5000-5100";
+    check(npf_resource_put(a, &r, err, sizeof err) == NPF_OK, "udp: a network with ports");
+    r.rule = "lan";
+    check(npf_resource_put(a, &r, err, sizeof err) == NPF_EINVAL, "udp lan: NPF_EINVAL");
+    check(npf_resource_remove(a, "udp-all") == NPF_OK, "udp rule removed");
     npf_resource_init(&r);
     r.type = NPF_RES_TCP;
     r.name = "web";

@@ -196,6 +196,10 @@ int npf_policy_add(npf_policy *p, const char *spec)
 
 int npf_policy_add_udp(npf_policy *p, const char *spec)
 {
+    if (strcmp(spec, "*") == 0) {
+        p->udp_any = 1;
+        return 0;
+    }
     if (p->nudp >= (int)(sizeof p->udp / sizeof p->udp[0]) || parse_rule(spec, &p->udp[p->nudp]) < 0)
         return -1;
     p->nudp++;
@@ -206,7 +210,7 @@ void npf_policy_clear(npf_policy *p)
 {
     p->nrules = 0;
     p->nudp = 0;
-    p->lan = p->any = 0;
+    p->lan = p->any = p->udp_any = 0;
     p->nrev = 0;
 }
 
@@ -317,7 +321,8 @@ static int dst_parts(const struct sockaddr *dst, uint8_t a[16], int *famp, uint1
     return 0;
 }
 
-/* UDP: only the "udp" resources, never "lan" or "*" (data-channel.md 15) */
+/* UDP: only the "udp" resources (theirs "*" too), never net's or socks'
+ * "lan" or "*" (data-channel.md 15) */
 int npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst)
 {
     uint8_t a[16];
@@ -325,6 +330,8 @@ int npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst)
     uint16_t port;
     if (!p || dst_parts(dst, a, &fam, &port) < 0)
         return 0;
+    if (p->udp_any)
+        return 1;
     return match(p->udp, p->nudp, fam, a, port);
 }
 

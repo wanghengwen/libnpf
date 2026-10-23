@@ -63,10 +63,12 @@ typedef struct npf_policy {
      * "lan:" (connections from this host and its LAN only); none: -R refused */
     struct { uint16_t lo, hi; uint8_t lan; } rev[16];
     int      nrev;
-    /* "udp" resources: the UDP targets (data-channel.md 15); net / socks
-     * resources ("lan", "*") cover TCP only */
+    /* "udp" resources: the UDP targets (data-channel.md 15): HOST:PORT,
+     * networks with ports, or "*" (udp_any); net / socks resources ("lan",
+     * "*") cover TCP only */
     npf_policy_rule udp[32];
     int      nudp;
+    int      udp_any;               /* a udp resource covers "*": every UDP target */
 } npf_policy;
 
 /* one target more: "10.1.0.0/16", "10.1.2.3:80-443", "[::1]:80", "lan" or
@@ -83,7 +85,8 @@ int  npf_policy_reverse_ok(const npf_policy *p, int port, int lan);
 int  npf_policy_lan_peer(npf_policy *p, const struct sockaddr *a);
 void npf_policy_refresh(npf_policy *p);
 int  npf_policy_allowed(npf_policy *p, const struct sockaddr *dst);
-/* one UDP target more: "127.0.0.1:53", "[::1]:53" (the "udp" resources); 0, -1 */
+/* one UDP target more (the "udp" resources): "127.0.0.1:53", "[::1]:53",
+ * "10.1.0.0/16", "10.1.2.3:5000-5100" or "*"; 0, -1 bad or full */
 int  npf_policy_add_udp(npf_policy *p, const char *spec);
 int  npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst);
 /* is the address (any port) in one of the rules (an allow_from list)? */

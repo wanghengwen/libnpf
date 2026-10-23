@@ -500,6 +500,7 @@ typedef struct npf_resource {
     const char  *svc;                  /* tcp / udp: "http", "https", "rdp", "ssh" ...; NULL none */
     npf_endpoint service;              /* tcp / udp: an IP address (no brackets) or localhost, and port */
     const char  *rule;                 /* net / socks: "lan", "*", ADDR[/PREFIX][:PORT[-PORT]];
+                                          udp without a service host: "*" or ADDR[/PREFIX][:PORT[-PORT]];
                                           reverse: [lan:]"*", PORT or PORT-PORT; up to 63 bytes */
     const char  *path;                 /* a web page: the page to open, NULL "/" */
     const char  *desc;                 /* NULL none, up to 256 bytes */
@@ -510,9 +511,9 @@ typedef struct npf_resource_info {
     size_t   size;
     int      type, flags, saved;       /* flags: NPF_PERSIST, NPF_FIXED */
     char     name[65], svc[16];
-    char     host[64];                 /* tcp / udp */
+    char     host[64];                 /* tcp, udp of one service */
     uint16_t port;
-    char     rule[64];                 /* net / socks / reverse */
+    char     rule[64];                 /* net / socks / reverse, udp of "*" or networks */
     char     path[129], desc[257];
 } npf_resource_info;
 
