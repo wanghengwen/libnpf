@@ -270,7 +270,7 @@ void tunnel_sub_free(sublink *s, int rst)
 {
     npf_tunnel *t = s->t;
     int i;
-    if (!s->server && !s->reverse && t->io.sublink_done) { /* one we opened (npf_tunnel_open) ends */
+    if (!s->server && t->io.sublink_done) {    /* one we opened (npf_tunnel_open) ends (reverse: a server one) */
         npf_sublink_stats st;
         st.in = s->in;
         st.out = s->out;
@@ -328,10 +328,13 @@ void tunnel_sub_reset(sublink *s, int reason)
 }
 
 /* release once both directions are finished */
-static void maybe_done(sublink *s)
+/* both sides ended and all written: the sublink goes; 1 when it went */
+static int maybe_done(sublink *s)
 {
-    if (s->local_eof && s->peer_fin && s->wq.len == 0 && s->shut_wr)
-        tunnel_sub_free(s, 0);
+    if (!(s->local_eof && s->peer_fin && s->wq.len == 0 && s->shut_wr))
+        return 0;
+    tunnel_sub_free(s, 0);
+    return 1;
 }
 
 static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
@@ -846,7 +849,6 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     sublink *s = arg;
     npf_tunnel *t = s->t;
-    uint32_t id = s->id;            /* s may be released below; ids are never reused */
     int was_paused = t->paused;
     (void)loop;
     (void)fd;
@@ -855,8 +857,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
             tunnel_sub_reset(s, NPF_RST_LOCAL);
             return;
         }
-        maybe_done(s);
-        if (!find(t, id))
+        if (maybe_done(s))
             return;
     }
     if (s->state == SL_LOCAL_GREETING) {
@@ -897,8 +898,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
                 s->fin_first = 1;
             s->local_eof = 1;
             tunnel_send_frame(t, s->id, FR_FIN, NULL, 0);
-            maybe_done(s);
-            if (!find(t, id))
+            if (maybe_done(s))
                 return;
         } else {
             int again = s->v || npf_sock_again();     /* a virtual end: -1 is "none now" */

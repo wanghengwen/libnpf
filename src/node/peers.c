@@ -760,10 +760,8 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         }
         if (p->idle_ms) {
             /* on demand: no reconnecting; the connections that waited for this
-             * session go, a new connection starts the next one */
-            peers_demand_drop(p, why ? why : "closed");
-            snprintf(p->last_why, sizeof p->last_why, "%s", why ? why : "closed");
-            peer_changed(p);
+             * session go, a new connection starts the next one (again) */
+            again(p, why ? why : "closed");
             return 1;
         }
         again(p, why ? why : "closed");

@@ -77,6 +77,14 @@ static void start_punch_now(npf_call *c);
 
 /* ---- helpers ---- */
 
+/* a timer stopped, if it runs, and forgotten */
+static void timer_stop(npf_loop *l, npf_timer **t)
+{
+    if (*t)
+        npf_timer_cancel(l, *t);
+    *t = NULL;
+}
+
 void call_b64_of(const uint8_t *b, size_t n, char *out)
 {
     npf_b64url_encode(b, n, out);
@@ -254,9 +262,7 @@ static void anl_kick(npf_call *c)
 {
     if (!c->flush_pending) {
         c->flush_pending = 1;
-        if (c->t_anl)
-            npf_timer_cancel(c->n->loop, c->t_anl);
-        c->t_anl = NULL;
+        timer_stop(c->n->loop, &c->t_anl);
         anl_schedule(c);
     }
 }
@@ -303,11 +309,17 @@ static int tun_write_data(void *arg, const uint8_t *msg, size_t len)
     return 0;
 }
 
+/* bytes on their way over the WS relay: not sealed yet, and in its queue */
+static size_t ws_queued(const npf_call *c)
+{
+    return c->ws_out_len + (c->wsr ? npf_wsr_pending(c->wsr) : 0);
+}
+
 static size_t tun_backlog(void *arg)
 {
     npf_call *c = arg;
     if (c->ws_mode) {
-        size_t b = c->ws_out_len + (c->wsr ? npf_wsr_pending(c->wsr) : 0);
+        size_t b = ws_queued(c);
         /* media streams open: the forwards keep 1/8 of the usual backlog and
          * wait while frames do (data-channel.md 14) */
         if (npf_media_count(c->media))
@@ -663,7 +675,7 @@ static int m_ws_write(void *arg, const uint8_t *buf, size_t len)
 static void m_ws_backlog(void *arg, size_t *pending, uint64_t *total)
 {
     npf_call *c = arg;
-    *pending = c->ws_out_len + (c->wsr ? npf_wsr_pending(c->wsr) : 0);
+    *pending = ws_queued(c);
     *total = c->ws_out_total;
 }
 
@@ -725,8 +737,7 @@ static int u_ws_write(void *arg, const uint8_t *buf, size_t len)
 
 static size_t u_ws_backlog(void *arg)
 {
-    npf_call *c = arg;
-    return c->ws_out_len + (c->wsr ? npf_wsr_pending(c->wsr) : 0);
+    return ws_queued(arg);
 }
 
 /* a hosted client (a public mapping) has no UDP flows (data-channel.md 15) */
@@ -817,22 +828,14 @@ static const npf_tunnel_io tun_io = {tun_write_ctrl, tun_write_data, tun_backlog
 void call_relay_leave(npf_call *c)
 {
     npf_loop *l = c->n->loop;
-    if (c->relay.t_bind)
-        npf_timer_cancel(l, c->relay.t_bind);
-    c->relay.t_bind = NULL;
+    timer_stop(l, &c->relay.t_bind);
     c->relay.bound = 0;
     c->relay_waits_ports = 0;
-    if (c->t_ws_wait)
-        npf_timer_cancel(l, c->t_ws_wait);
-    c->t_ws_wait = NULL;
-    if (c->t_pcheck)
-        npf_timer_cancel(l, c->t_pcheck);
-    c->t_pcheck = NULL;
+    timer_stop(l, &c->t_ws_wait);
+    timer_stop(l, &c->t_pcheck);
     c->p2p_suspect = 0;
     c->standby_check = 0;
-    if (c->t_punch)
-        npf_timer_cancel(l, c->t_punch);
-    c->t_punch = NULL;
+    timer_stop(l, &c->t_punch);
     c->punch_wait_keys = 0;
 }
 
@@ -948,10 +951,7 @@ static void path_up(npf_call *c)
         npf_tunnel_start(c->tun);
     anl_update(c->anl, (uint32_t)npf_mono_ms());
     anl_flush(c->anl);
-    if (c->t_anl) {
-        npf_timer_cancel(c->n->loop, c->t_anl);
-        c->t_anl = NULL;
-    }
+    timer_stop(c->n->loop, &c->t_anl);
     anl_schedule(c);
 }
 
@@ -987,10 +987,7 @@ static int no_p2p(const npf_call *c)
 static void ask_ws_relay(npf_call *c)
 {
     char data[128];
-    if (c->t_ws_wait) {
-        npf_timer_cancel(c->n->loop, c->t_ws_wait);
-        c->t_ws_wait = NULL;
-    }
+    timer_stop(c->n->loop, &c->t_ws_wait);
     if (c->ws_mode)                 /* on it already: asking again reset its sublinks */
         return;
     npf_log("call %s: asking for the WS relay", c->call_id_s);
@@ -1073,10 +1070,7 @@ static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], 
     memcpy(c->relay.alloc_key, key, 32);
     snprintf(c->relay.mode, sizeof c->relay.mode, "%s", mode);
     c->relay_asked = 0;
-    if (c->t_standby) {
-        npf_timer_cancel(c->n->loop, c->t_standby);
-        c->t_standby = NULL;
-    }
+    timer_stop(c->n->loop, &c->t_standby);
 }
 
 /* the platform's relay allocation; one that is no use leaves the relay in use
@@ -1379,9 +1373,7 @@ static void check_p2p(npf_call *c)
         if (!c->relay.active && c->caller && !no_p2p(c)) {
             /* no relay to fall back on (an anonymous caller, D6): the only way
              * out is a new round now, before AnLiu's idle timeout ends the session */
-            if (c->t_repunch)
-                npf_timer_cancel(c->n->loop, c->t_repunch);
-            c->t_repunch = NULL;
+            timer_stop(c->n->loop, &c->t_repunch);
             c->repunch_waiting = 0;
             c->punch_retries = 0;
             if (c->punch_requests < PUNCH_ROUNDS_MAX - 1)
@@ -1420,10 +1412,7 @@ static void p2p_suspect_start(npf_call *c, const char *why)
     npf_random(&c->path_nonce, sizeof c->path_nonce);
     if (!c->t_pcheck)
         path_check_timer(c->n->loop, c);
-    if (c->t_standby) {
-        npf_timer_cancel(c->n->loop, c->t_standby);
-        c->t_standby = NULL;
-    }
+    timer_stop(c->n->loop, &c->t_standby);
     if (c->relay.active) {
         npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);
     } else if (!c->relay_asked) {
@@ -1465,10 +1454,7 @@ static void standby_done(npf_loop *loop, void *arg)
     }
     c->relay.active = 0;
     c->relay.bound = 0;
-    if (c->relay.t_bind) {
-        npf_timer_cancel(c->n->loop, c->relay.t_bind);
-        c->relay.t_bind = NULL;
-    }
+    timer_stop(c->n->loop, &c->relay.t_bind);
     if (c->caller) {
         snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
         npf_node_send(c->n, "relay_release", 0, data);
@@ -1757,10 +1743,7 @@ static void start_punch_now(npf_call *c)
     memcpy(c->pcfg.plan.nominate_key, c->nominate_key, 32);
     if (c->punch) {                 /* the last round's, lingering or still running */
         int had = c->punch_socks > 0;
-        if (c->t_linger) {
-            npf_timer_cancel(c->n->loop, c->t_linger);
-            c->t_linger = NULL;
-        }
+        timer_stop(c->n->loop, &c->t_linger);
         npf_punch_free(c->punch);
         c->punch = NULL;
         c->punch_socks = 0;
@@ -2891,9 +2874,7 @@ void npf_node_repunch_now(npf_node *n)
     for (c = n->calls; c; c = c->next) {
         if (c->ended || !c->caller || c->p2p || c->ws_mode || !c->punched || c->secure)
             continue;
-        if (c->t_repunch)
-            npf_timer_cancel(n->loop, c->t_repunch);
-        c->t_repunch = NULL;
+        timer_stop(n->loop, &c->t_repunch);
         c->repunch_waiting = 0;
         c->punch_retries = 0;           /* the backoff starts over after this round */
         if (c->punch_requests >= PUNCH_ROUNDS_MAX - 1) {
