@@ -62,6 +62,8 @@ static void fwds_free(npf_peer *p)
     free(p->resources);
     p->resources = NULL;
     for (i = 0; i < NPF_PEER_MAX_FWD && p->fwds[i]; i++) {
+        if (p->fwds[i]->t_refused)
+            npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_refused);
         free(p->fwds[i]->acl);
         npf_wipe(p->fwds[i], sizeof *p->fwds[i]);
         free(p->fwds[i]);

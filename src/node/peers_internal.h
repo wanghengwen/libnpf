@@ -50,6 +50,7 @@ typedef struct pfwd {
     uint32_t  nrefused;             /* connections the peer refused (its resources) */
     char      refused_why[64];
     int64_t   refused_told;         /* when fwd_refused was called last (ms) */
+    npf_timer *t_refused;           /* the ones since, told a second after the last time */
     int       told_state, told_port, told_why;   /* what the application was told last (fwd_changed) */
 } pfwd;
 

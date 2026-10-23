@@ -735,6 +735,9 @@ int npf_peer_forward_del_at(npf_peer *p, int i)
     peers_fwd_stop(f);
     if (p->ps->cbs.fwd_gone)
         p->ps->cbs.fwd_gone(p, i, p->ps->arg);
+    if (f->t_refused)
+        npf_timer_cancel(p->ps->n->loop, f->t_refused);
+    f->t_refused = NULL;
     f->used = 0;                    /* a reply still on its way finds the slot unused */
     f->ext = 0;
     f->ctx = NULL;

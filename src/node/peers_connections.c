@@ -209,6 +209,18 @@ static void sub_add(npf_peers *ps, npf_call *c, uint32_t sid, int fid)
         f->open++;
 }
 
+/* the refusals throttled (sub_done): told now */
+static void refused_tell(npf_loop *loop, void *arg)
+{
+    pfwd *f = arg;
+    (void)loop;
+    f->t_refused = NULL;
+    if (!f->used || !f->p->ps->cbs.fwd_refused)
+        return;
+    f->refused_told = npf_mono_ms();
+    f->p->ps->cbs.fwd_refused(f->p, f->idx, f->p->ps->arg);
+}
+
 /* a forward's connection ended; refused by the peer's policy: counted, and
  * the application told at most once a second */
 static void sub_done(npf_peers *ps, npf_call *c, uint32_t sid, const npf_sublink_stats *st)
@@ -230,9 +242,13 @@ static void sub_done(npf_peers *ps, npf_call *c, uint32_t sid, const npf_sublink
                 else
                     snprintf(f->refused_why, sizeof f->refused_why, "%.24s:%d not published by the peer", f->host,
                              f->hostport);
-                if (ps->cbs.fwd_refused && now - f->refused_told >= 1000) {
+                if (ps->cbs.fwd_refused && now - f->refused_told >= 1000 && !f->t_refused) {
                     f->refused_told = now;
                     ps->cbs.fwd_refused(f->p, f->idx, ps->arg);
+                } else if (ps->cbs.fwd_refused && !f->t_refused) {
+                    /* at most one a second, and the last ones are told too
+                     * (they were not: no later refusal, no word of them) */
+                    f->t_refused = npf_timer_add(ps->n->loop, (int)(1000 - (now - f->refused_told)), refused_tell, f);
                 }
             }
             return;
