@@ -36,6 +36,16 @@ enum { NPF_RST_LOCAL = 1, NPF_RST_PROTOCOL = 2, NPF_RST_LIMIT = 3, NPF_RST_TIMEO
 #define NPF_INIT_WINDOW   (256 * 1024)
 #define NPF_MAX_WINDOW    (4 * 1024 * 1024)
 #define NPF_MAX_SUBLINKS  128
+
+/* tests: the Happy Eyeballs delay (250 ms) and the SOCKS greeting deadline
+ * of a sublink (10 s); a resolver giving a name's addresses at once (NULL,
+ * or -1 from it: the system's) */
+extern int npf_tunnel_he_ms;
+extern int npf_tunnel_greet_ms;
+extern int (*npf_tunnel_test_resolve)(const char *host, uint16_t port, struct sockaddr_storage *out,
+                                      socklen_t *lens, int max);
+/* a name's addresses in the order to try them (RFC 8305: the families in turns) */
+void npf_he_order(struct sockaddr_storage *a, socklen_t *l, int n);
 #define NPF_CTRL_MAX      16384
 #define NPF_MAX_REVERSE   16        /* reverse mappings per session (data-channel.md 7.1) */
 

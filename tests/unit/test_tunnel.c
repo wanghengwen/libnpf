@@ -1,5 +1,7 @@
 /* Two tunnels joined in memory: hello, SOCKS5 CONNECT through the callee to a
- * local TCP server, 3 MB with flow control, FIN, and a policy denial. */
+ * local TCP server, 3 MB with flow control, FIN, and a policy denial; a
+ * request with data after it in one frame, the greeting deadline, Happy
+ * Eyeballs over a name's addresses. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -7,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -315,6 +318,96 @@ static void room_tick(npf_loop *l, void *arg)
 
 static const npf_vend_io k_vend = {v_read, v_write, v_ready, v_shutdown, v_closed};
 
+/* a target that only reads: the bytes and whether they are the pattern */
+typedef struct sink {
+    int    lfd, fd;
+    size_t got;
+    uint8_t ok;
+} sink;
+
+static void sink_io(npf_loop *l, int fd, unsigned ev, void *arg)
+{
+    sink *k = arg;
+    uint8_t buf[4096];
+    ssize_t r, i;
+    (void)ev;
+    while ((r = recv(fd, buf, sizeof buf, MSG_DONTWAIT)) > 0) {
+        for (i = 0; i < r; i++)
+            if (buf[i] != (uint8_t)((k->got + (size_t)i) * 7))
+                k->ok = 0;
+        k->got += (size_t)r;
+    }
+    if (r == 0) {
+        npf_loop_del(l, fd);
+        close(fd);
+        k->fd = -1;
+    }
+}
+
+static void sink_accept(npf_loop *l, int lfd, unsigned ev, void *arg)
+{
+    sink *k = arg;
+    (void)ev;
+    k->fd = npf_accept(lfd);
+    if (k->fd >= 0)
+        npf_loop_add(l, k->fd, NPF_EV_READ, sink_io, k);
+}
+
+static int listen_lo(int backlog, uint16_t *port)
+{
+    struct sockaddr_in a;
+    socklen_t al = sizeof a;
+    int fd = npf_socket(AF_INET, SOCK_STREAM, 0, 0);
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (fd < 0 || bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(fd, backlog) < 0
+        || getsockname(fd, (struct sockaddr *)&a, &al) < 0)
+        return -1;
+    *port = ntohs(a.sin_port);
+    return fd;
+}
+
+/* the test resolver: "he.test" is a port that never answers, then the target */
+static uint16_t he_dead, he_live;
+static int he_resolve(const char *host, uint16_t port, struct sockaddr_storage *out, socklen_t *lens, int max)
+{
+    int i;
+    uint16_t ports[2] = {he_dead, he_live};
+    (void)port;
+    if (strcmp(host, "he.test") != 0 || max < 2)
+        return -1;
+    for (i = 0; i < 2; i++) {
+        struct sockaddr_in *a = (struct sockaddr_in *)&out[i];
+        memset(&out[i], 0, sizeof out[i]);
+        a->sin_family = AF_INET;
+        a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a->sin_port = htons(ports[i]);
+        lens[i] = sizeof *a;
+    }
+    return 2;
+}
+
+static void v6(struct sockaddr_storage *a, int tag)
+{
+    memset(a, 0, sizeof *a);
+    ((struct sockaddr_in6 *)a)->sin6_family = AF_INET6;
+    ((struct sockaddr_in6 *)a)->sin6_port = htons((uint16_t)tag);
+}
+
+static void v4(struct sockaddr_storage *a, int tag)
+{
+    memset(a, 0, sizeof *a);
+    ((struct sockaddr_in *)a)->sin_family = AF_INET;
+    ((struct sockaddr_in *)a)->sin_port = htons((uint16_t)tag);
+}
+
+static int tag_of(const struct sockaddr_storage *a)
+{
+    return ntohs(a->ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)a)->sin6_port
+                                          : ((const struct sockaddr_in *)a)->sin_port);
+}
+
 int test_tunnel(void)
 {
     static const npf_tunnel_io io = {io_write_ctrl, io_write_data, io_backlog, io_ready, NULL, io_broken, NULL, NULL,
@@ -531,6 +624,128 @@ int test_tunnel(void)
         CHECK(v.got >= 100000 && v.closed == 0 && npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0,
               "virtual end gone by itself: both sides released, closed not called (%d; %d, %d)", v.closed,
               npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+    }
+
+    /* the order of a name's addresses: the families in turns */
+    {
+        struct sockaddr_storage a[5];
+        socklen_t l[5] = {0};
+        v6(&a[0], 1), v6(&a[1], 2), v4(&a[2], 3), v4(&a[3], 4), v6(&a[4], 5);
+        npf_he_order(a, l, 5);
+        CHECK(tag_of(&a[0]) == 1 && tag_of(&a[1]) == 3 && tag_of(&a[2]) == 2 && tag_of(&a[3]) == 4
+                  && tag_of(&a[4]) == 5, "v6 v6 v4 v4 v6 tried as v6 v4 v6 v4 v6");
+        v4(&a[0], 1), v6(&a[1], 2), v6(&a[2], 3);
+        npf_he_order(a, l, 3);
+        CHECK(tag_of(&a[0]) == 1 && tag_of(&a[1]) == 2 && tag_of(&a[2]) == 3, "v4 v6 v6 kept");
+    }
+
+#ifdef __linux__
+    /* Happy Eyeballs: the name's first address never answers (a listener
+     * whose queue is full drops the SYN), the second is the target: reached
+     * after the delay, not after the 10 s deadline */
+    {
+        int dead, filler, el;
+        int64_t t0;
+        dead = listen_lo(0, &he_dead);
+        filler = npf_socket(AF_INET, SOCK_STREAM, 0, 0);
+        {
+            struct sockaddr_in d;
+            memset(&d, 0, sizeof d);
+            d.sin_family = AF_INET;
+            d.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            d.sin_port = htons(he_dead);
+            connect(filler, (struct sockaddr *)&d, sizeof d);   /* fills the queue (backlog 0) */
+        }
+        {
+            fd_set w;                   /* its handshake done: it is in the queue */
+            struct timeval tv = {2, 0};
+            FD_ZERO(&w);
+            FD_SET(filler, &w);
+            select(filler + 1, NULL, &w, NULL, &tv);
+        }
+
+        he_live = ntohs(a.sin_port);
+        npf_tunnel_test_resolve = he_resolve;
+        socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
+        fcntl(sp2[1], F_SETFL, O_NONBLOCK);
+        tg.sent = 0;
+        t0 = npf_mono_ms();
+        CHECK(npf_tunnel_open(A.t, sp2[0], 0, "he.test", 1) > 0, "open a sublink to he.test");
+        eof = 0;
+        got = 0;
+        ok = 1;
+        until = npf_mono_ms() + 9000;
+        while (!got && npf_mono_ms() < until) {
+            npf_loop_once(loop, 5);
+            if (app_read(sp2[1], &ok, &got, &eof) < 0)
+                break;
+        }
+        el = (int)(npf_mono_ms() - t0);
+        CHECK(got > 0 && el >= 200 && el < 3000, "Happy Eyeballs: the second address after %d ms (got %zu)", el, got);
+        close(sp2[1]);
+        npf_tunnel_test_resolve = NULL;
+        for (i = 0; i < 40; i++)
+            npf_loop_once(loop, 5);
+        close(filler);
+        close(dead);
+    }
+#endif
+
+    /* frames put straight into the callee from here on (ids above the
+     * caller's: the caller's later sublinks would look late to it) */
+    /* a request with data pipelined after it in one frame, together over the
+     * 600-byte parse buffer: the data waits for the connection, then goes */
+    {
+        sink k;
+        uint16_t kp;
+        uint8_t msg[4 + 13 + 2000];
+        int before = npf_tunnel_count(B.t);
+        memset(&k, 0, sizeof k);
+        k.ok = 1;
+        k.fd = -1;
+        k.lfd = listen_lo(4, &kp);
+        npf_loop_add(loop, k.lfd, NPF_EV_READ, sink_accept, &k);
+        npf_le32(msg, 2001);
+        memcpy(msg + 4, (const uint8_t[]){5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1}, 11);
+        msg[15] = (uint8_t)(kp >> 8);
+        msg[16] = (uint8_t)kp;
+        for (i = 0; i < 2000; i++)
+            msg[17 + i] = (uint8_t)(i * 7);
+        CHECK(npf_tunnel_input_data(B.t, msg, sizeof msg) == 0, "request and 2000 bytes in one frame: taken");
+        until = npf_mono_ms() + 3000;
+        while (k.got < 2000 && npf_mono_ms() < until)
+            npf_loop_once(loop, 5);
+        CHECK(k.got == 2000 && k.ok && npf_tunnel_count(B.t) == before + 1,
+              "the data after the request reached the target (%zu bytes, pattern %d)", k.got, k.ok);
+        npf_le32(msg, 2001);
+        npf_tunnel_input_data(B.t, msg, 4);     /* its FIN */
+        for (i = 0; i < 20; i++)
+            npf_loop_once(loop, 5);
+        npf_loop_del(loop, k.lfd);
+        close(k.lfd);
+        if (k.fd >= 0) {
+            npf_loop_del(loop, k.fd);
+            close(k.fd);
+        }
+    }
+
+    /* a greeting that never completes: the sublink goes after the deadline */
+    {
+        uint8_t msg[4 + 2];
+        int before = npf_tunnel_count(B.t);
+        int64_t t0;
+        npf_tunnel_greet_ms = 150;
+        npf_le32(msg, 2003);
+        msg[4] = 5;
+        msg[5] = 2;                         /* two methods announced, none sent */
+        CHECK(npf_tunnel_input_data(B.t, msg, sizeof msg) == 0 && npf_tunnel_count(B.t) == before + 1,
+              "a half greeting opens a sublink");
+        t0 = npf_mono_ms();
+        while (npf_tunnel_count(B.t) > before && npf_mono_ms() - t0 < 2000)
+            npf_loop_once(loop, 5);
+        CHECK(npf_tunnel_count(B.t) == before && npf_mono_ms() - t0 >= 100,
+              "released after the greeting deadline (%lld ms)", (long long)(npf_mono_ms() - t0));
+        npf_tunnel_greet_ms = 10000;
     }
 
     /* a RESET on the control lane can overtake the sublink's first data: the

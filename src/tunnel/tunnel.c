@@ -16,6 +16,8 @@
 #define BACKLOG_PAUSE  (1024 * 1024)    /* transport bytes queued before local reads pause */
 #define SOCKS_BUF      600
 #define CONNECT_MS     10000
+#define HE_DELAY_MS    250      /* Happy Eyeballs (RFC 8305): the next address after this long without an answer */
+#define GREET_MS       10000    /* a peer-opened sublink's SOCKS greeting and request, at most this long */
 #define RESOLVING_MAX  16       /* lookups of one tunnel at once: one peer cannot take the whole resolver */
 
 enum {
@@ -28,9 +30,11 @@ enum {
     SL_LOCAL_GREETING,      /* client (-D): the local application's greeting, answered here */
 };
 
+/* bytes for the local end: p[off .. off+len) (written from the front
+ * without moving the rest; moved down only when the space runs out) */
 typedef struct wbuf {
     uint8_t *p;
-    size_t   len, cap;
+    size_t   off, len, cap;
 } wbuf;
 
 /* a rate group: token buckets (1 s of burst) for each direction */
@@ -41,7 +45,6 @@ typedef struct rgroup {
 } rgroup;
 
 typedef struct sublink {
-    struct sublink *next;
     npf_tunnel *t;
     uint32_t id;
     int      fd;
@@ -62,6 +65,11 @@ typedef struct sublink {
     unsigned ev;                /* registered events */
     int      reverse;           /* caller side of a reverse mapping: target checked against rev[] */
     npf_timer *t_connect;
+    npf_timer *t_greet;         /* the SOCKS greeting and request still to come (GREET_MS) */
+    npf_timer *t_he;            /* SL_CONNECTING: the next address's turn (HE_DELAY_MS) */
+    int      cfd[NPF_RESOLVE_MAX];  /* SL_CONNECTING: the attempts under way (the winner becomes fd) */
+    int      ncfd;
+    int      last_err;          /* SL_CONNECTING: the last attempt's error */
     struct rgroup *rg;          /* its rate group, NULL: none */
     uint64_t in, out;           /* read from / written to its local socket */
     npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
@@ -82,8 +90,11 @@ struct npf_tunnel {
     npf_tunnel_io io;
     void       *arg;
     npf_policy *policy;
-    sublink    *subs;
-    int         nsubs;
+    /* the sublinks: ids[i] is subs[i]'s, looked up by a scan of ids (a few
+     * hundred at most: one cache line per 16), the last one found first */
+    sublink   **subs;
+    uint32_t   *ids;
+    int         nsubs, cap, last;
     uint32_t    next_id;
     uint32_t    peer_max_seen;  /* largest peer-opened id */
     uint8_t    *rb;             /* frame reassembly */
@@ -112,6 +123,10 @@ void npf_tunnel_dump(const npf_tunnel *t);
 
 static int wb_put(wbuf *b, const void *p, size_t n)
 {
+    if (b->off && b->off + b->len + n > b->cap) {
+        memmove(b->p, b->p + b->off, b->len);   /* the room written out at the front, once */
+        b->off = 0;
+    }
     if (b->len + n > b->cap) {
         size_t c = b->cap ? b->cap : 16384;
         uint8_t *q;
@@ -123,9 +138,18 @@ static int wb_put(wbuf *b, const void *p, size_t n)
         b->p = q;
         b->cap = c;
     }
-    memcpy(b->p + b->len, p, n);
+    memcpy(b->p + b->off + b->len, p, n);
     b->len += n;
     return 0;
+}
+
+/* the first n bytes were written */
+static void wb_take(wbuf *b, size_t n)
+{
+    b->off += n;
+    b->len -= n;
+    if (!b->len)
+        b->off = 0;
 }
 
 enum { FR_DATA = 1, FR_FIN = 2, FR_RESET = 3, FR_WINDOW = 4 };   /* what handle_frame acts on */
@@ -198,10 +222,14 @@ static void send_reset(npf_tunnel *t, uint32_t id, int reason)
 
 static sublink *find(npf_tunnel *t, uint32_t id)
 {
-    sublink *s;
-    for (s = t->subs; s; s = s->next)
-        if (s->id == id)
-            return s;
+    int i;
+    if (t->last < t->nsubs && t->ids[t->last] == id)
+        return t->subs[t->last];        /* frames come in runs of one sublink's */
+    for (i = 0; i < t->nsubs; i++)
+        if (t->ids[i] == id) {
+            t->last = i;
+            return t->subs[i];
+        }
     return NULL;
 }
 
@@ -226,15 +254,14 @@ static void rg_refill(rgroup *g)
 static void rate_tick(npf_loop *loop, void *arg)
 {
     npf_tunnel *t = arg;
-    sublink *s;
     int i;
     (void)loop;
     t->t_rate = NULL;
     for (i = 0; i < t->nrg; i++)
         rg_refill(&t->rg[i]);
-    for (s = t->subs; s; s = s->next)
-        if (s->rg || t->budget)
-            update_ev(s);
+    for (i = 0; i < t->nsubs; i++)
+        if (t->subs[i]->rg || t->budget)
+            update_ev(t->subs[i]);
 }
 
 /* a group ran dry: its sublinks wait for the next tick */
@@ -312,9 +339,7 @@ static void update_ev(sublink *s)
     unsigned ev = 0;
     if (s->fd < 0 && !s->v)
         return;
-    if (s->state == SL_CONNECTING) {
-        ev = NPF_EV_WRITE;
-    } else if (s->state == SL_LOCAL_GREETING) {
+    if (s->state == SL_LOCAL_GREETING) {
         ev = NPF_EV_READ;
     } else if (s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) {
         if (!s->local_eof && s->tx_credit > 0 && !t->paused && rate_allow(s, 1, 1))
@@ -342,7 +367,7 @@ static void update_ev(sublink *s)
 static void sub_free(sublink *s, int rst)
 {
     npf_tunnel *t = s->t;
-    sublink **pp;
+    int i;
     if (!s->server && !s->reverse && t->io.sublink_done) { /* one we opened (npf_tunnel_open) ends */
         npf_sublink_stats st;
         st.in = s->in;
@@ -352,14 +377,23 @@ static void sub_free(sublink *s, int rst)
         st.end = s->end ? s->end : !rst && s->fin_first == 2 ? "peer_closed" : !rst ? "local_closed" : "local_reset";
         t->io.sublink_done(t->arg, s->id, &st);
     }
-    for (pp = &t->subs; *pp; pp = &(*pp)->next)
-        if (*pp == s) {
-            *pp = s->next;
+    for (i = 0; i < t->nsubs; i++)
+        if (t->subs[i] == s) {          /* the last one takes its place */
+            t->nsubs--;
+            t->subs[i] = t->subs[t->nsubs];
+            t->ids[i] = t->ids[t->nsubs];
             break;
         }
-    t->nsubs--;
     if (s->t_connect)
         npf_timer_cancel(t->loop, s->t_connect);
+    if (s->t_greet)
+        npf_timer_cancel(t->loop, s->t_greet);
+    if (s->t_he)
+        npf_timer_cancel(t->loop, s->t_he);
+    for (i = 0; i < s->ncfd; i++) {
+        npf_loop_del(t->loop, s->cfd[i]);
+        npf_sock_close(s->cfd[i]);
+    }
     npf_resolve_cancel(s->resolve);
     free(s->cand);
     if (s->v) {
@@ -395,8 +429,20 @@ static void maybe_done(sublink *s)
 
 static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
 {
-    sublink *s = calloc(1, sizeof *s);
-    if (!s)
+    sublink *s;
+    if (t->nsubs == t->cap) {
+        int c = t->cap ? t->cap * 2 : 16;
+        sublink **ns = realloc(t->subs, (size_t)c * sizeof *ns);
+        uint32_t *ni;
+        if (!ns)
+            return NULL;
+        t->subs = ns;
+        if (!(ni = realloc(t->ids, (size_t)c * sizeof *ni)))
+            return NULL;
+        t->ids = ni;
+        t->cap = c;
+    }
+    if (!(s = calloc(1, sizeof *s)))
         return NULL;
     s->t = t;
     s->id = id;
@@ -404,8 +450,8 @@ static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
     s->server = server;
     s->tx_credit = t->peer_window;
     s->rx_window = NPF_INIT_WINDOW;
-    s->next = t->subs;
-    t->subs = s;
+    t->subs[t->nsubs] = s;
+    t->ids[t->nsubs] = id;
     t->nsubs++;
     return s;
 }
@@ -430,30 +476,39 @@ static void credit_back(sublink *s, size_t n)
     }
 }
 
+/* one write to the local end: the bytes it took, 0 none now (full, or the
+ * rate group's share used up: the window holds the peer), -1 an error */
+static ssize_t local_write(sublink *s, const uint8_t *p, size_t len)
+{
+    size_t n = rate_allow(s, 0, len);
+    ssize_t w;
+    if (n == 0)
+        return 0;
+    if (s->v) {
+        if ((w = s->v->write(s->varg, p, n)) < 0)
+            return -1;
+    } else if ((w = send(s->fd, p, n, MSG_NOSIGNAL | MSG_DONTWAIT)) < 0) {
+        return npf_sock_again() ? 0 : -1;
+    }
+    if (w > 0) {
+        rate_take(s, 0, (size_t)w);
+        s->t->local_out += (uint64_t)w;
+        if (!s->out)
+            s->t_first = npf_mono_ms();
+        s->out += (uint64_t)w;
+    }
+    return w;
+}
+
 static int flush_local(sublink *s)
 {
     while (s->wq.len) {
-        size_t n = rate_allow(s, 0, s->wq.len);
-        ssize_t w;
-        if (n == 0)
-            break;                      /* the rate group's share is used up: the window holds the peer */
-        if (s->v) {
-            if ((w = s->v->write(s->varg, s->wq.p, n)) < 0)
-                return -1;
-            if (w == 0)
-                break;
-        } else if ((w = send(s->fd, s->wq.p, n, MSG_NOSIGNAL | MSG_DONTWAIT)) < 0) {
-            if (npf_sock_again())
-                break;
+        ssize_t w = local_write(s, s->wq.p + s->wq.off, s->wq.len);
+        if (w < 0)
             return -1;
-        }
-        rate_take(s, 0, (size_t)w);
-        s->t->local_out += (uint64_t)w;
-        if (!s->out && w > 0)
-            s->t_first = npf_mono_ms();
-        s->out += (uint64_t)w;
-        memmove(s->wq.p, s->wq.p + w, s->wq.len - (size_t)w);
-        s->wq.len -= (size_t)w;
+        if (w == 0)
+            break;
+        wb_take(&s->wq, (size_t)w);
         credit_back(s, (size_t)w);
     }
     if (s->wq.len == 0 && s->peer_fin && !s->shut_wr) {
@@ -501,36 +556,134 @@ static int map_errno(int e)
     }
 }
 
-/* connect to the next address of the list (a name can resolve to several,
- * e.g. ::1 then 127.0.0.1 for localhost on macOS, and the target listen on
- * one of them only). Returns -1 when the sublink was released. */
-static int connect_next(sublink *s, int last_err)
+int npf_tunnel_he_ms = HE_DELAY_MS;
+int npf_tunnel_greet_ms = GREET_MS;
+int (*npf_tunnel_test_resolve)(const char *host, uint16_t port, struct sockaddr_storage *out, socklen_t *lens,
+                               int max);
+
+/* RFC 8305 4: the families taken in turns, the first address's first, each
+ * family's own order kept */
+void npf_he_order(struct sockaddr_storage *a, socklen_t *l, int n)
+{
+    struct sockaddr_storage ta[NPF_RESOLVE_MAX];
+    socklen_t tl[NPF_RESOLVE_MAX];
+    int used[NPF_RESOLVE_MAX] = {0}, k = 0, fam;
+    if (n < 3 || n > NPF_RESOLVE_MAX)
+        return;                         /* two: already in turns, or one family */
+    fam = a[0].ss_family;
+    while (k < n) {
+        int i, found = 0;
+        for (i = 0; i < n; i++)         /* the next unused of fam, else of any */
+            if (!used[i] && a[i].ss_family == fam) {
+                found = 1;
+                break;
+            }
+        if (!found)
+            for (i = 0; i < n && used[i]; i++)
+                ;
+        used[i] = 1;
+        ta[k] = a[i];
+        tl[k++] = l[i];
+        fam = fam == AF_INET6 ? AF_INET : AF_INET6;
+    }
+    memcpy(a, ta, (size_t)n * sizeof *a);
+    memcpy(l, tl, (size_t)n * sizeof *l);
+}
+
+static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
+static int connect_next(sublink *s);
+
+static void he_timer(npf_loop *loop, void *arg)
+{
+    sublink *s = arg;
+    (void)loop;
+    s->t_he = NULL;
+    connect_next(s);                    /* no answer yet: the next address too */
+}
+
+/* start the next address's attempt (Happy Eyeballs: the others keep going);
+ * the one after it follows in HE_DELAY_MS, or at once when this one fails.
+ * Returns -1 when the sublink was released (nothing left to try). */
+static int connect_next(sublink *s)
 {
     while (s->icand < s->ncand) {
         int i = s->icand++, fd, one = 1;
         fd = npf_socket(s->cand[i].ss_family, SOCK_STREAM, 0, 0);
         if (fd < 0) {
-            last_err = errno;
+            s->last_err = errno;
             continue;
         }
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         if (connect(fd, (const struct sockaddr *)&s->cand[i], s->clen[i]) < 0 && !npf_sock_inprogress()) {
-            last_err = errno;
+            s->last_err = errno;
             npf_sock_close(fd);
             continue;
         }
-        s->fd = fd;
-        s->state = SL_CONNECTING;
-        if (!s->t_connect)          /* a name: the deadline runs since the lookup began */
-            s->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
-        update_ev(s);
+        s->cfd[s->ncfd++] = fd;
+        npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s);
+        if (s->icand < s->ncand && !s->t_he)
+            s->t_he = npf_timer_add(s->t->loop, npf_tunnel_he_ms, he_timer, s);
         return 0;
     }
-    socks_fail(s, (uint8_t)map_errno(last_err));
+    if (s->ncfd)
+        return 0;                       /* the ones under way may still answer */
+    socks_fail(s, (uint8_t)map_errno(s->last_err));
     return -1;
 }
 
-/* check the policy for every address, then connect to them in order.
+/* an attempt answered: connected (the others closed, the sublink open) or
+ * failed (the next address at once, or the end when none is left) */
+static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
+{
+    sublink *s = arg;
+    int err = 0, i, k;
+    socklen_t el = sizeof err;
+    (void)ev;
+    getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&err, &el);
+    for (k = 0; k < s->ncfd && s->cfd[k] != fd; k++)
+        ;
+    if (k == s->ncfd)
+        return;
+    npf_loop_del(loop, fd);
+    s->cfd[k] = s->cfd[--s->ncfd];
+    if (err) {
+        npf_sock_close(fd);
+        s->last_err = err;
+        if (s->t_he) {                  /* its turn is now */
+            npf_timer_cancel(loop, s->t_he);
+            s->t_he = NULL;
+        }
+        connect_next(s);
+        return;
+    }
+    for (i = 0; i < s->ncfd; i++) {     /* the winner: the slower ones go */
+        npf_loop_del(loop, s->cfd[i]);
+        npf_sock_close(s->cfd[i]);
+    }
+    s->ncfd = 0;
+    if (s->t_he) {
+        npf_timer_cancel(loop, s->t_he);
+        s->t_he = NULL;
+    }
+    if (s->t_connect) {
+        npf_timer_cancel(loop, s->t_connect);
+        s->t_connect = NULL;
+    }
+    free(s->cand);
+    s->cand = NULL;
+    s->ncand = s->icand = 0;
+    s->fd = fd;
+    s->ev = 0;
+    socks_reply(s, 0);
+    s->state = SL_OPEN;
+    if (flush_local(s) < 0) {
+        sub_reset(s, NPF_RST_LOCAL);
+        return;
+    }
+    update_ev(s);
+}
+
+/* check the policy for every address, then connect to them (Happy Eyeballs).
  * Returns -1 when the sublink was released. */
 static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, const socklen_t *clen, int nc)
 {
@@ -566,9 +719,13 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
     }
     memcpy(s->cand, cand, (size_t)nc * sizeof *cand);
     memcpy(s->clen, clen, (size_t)nc * sizeof *clen);
+    npf_he_order(s->cand, s->clen, nc);
     s->ncand = nc;
     s->icand = 0;
-    return connect_next(s, 0);
+    s->state = SL_CONNECTING;
+    if (!s->t_connect)                  /* a name: the deadline runs since the lookup began */
+        s->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
+    return connect_next(s);
 }
 
 /* the worker thread's answer for a domain-name target */
@@ -621,11 +778,17 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
         char host[256];
         memcpy(host, addr, alen);
         host[alen] = 0;
+        if (npf_tunnel_test_resolve) {     /* tests: the addresses of their choosing, at once */
+            struct sockaddr_storage ta[NPF_RESOLVE_MAX];
+            socklen_t tl[NPF_RESOLVE_MAX];
+            int tn = npf_tunnel_test_resolve(host, port, ta, tl, NPF_RESOLVE_MAX);
+            if (tn >= 0)
+                return socks_connect_addrs(s, ta, tl, tn);
+        }
         {
-            sublink *o;
-            int busy = 0;
-            for (o = s->t->subs; o; o = o->next)
-                busy += o->state == SL_RESOLVING;
+            int i, busy = 0;
+            for (i = 0; i < s->t->nsubs; i++)
+                busy += s->t->subs[i]->state == SL_RESOLVING;
             if (busy >= RESOLVING_MAX) {
                 socks_fail(s, 1);
                 return -1;
@@ -644,6 +807,35 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
         return 0;
     }
     return socks_connect_addrs(s, &cand, &clen, 1);
+}
+
+/* the greeting and request did not come in time: a peer's sublink is reset
+ * (it holds one of the session's sublinks), a local application's (-D) closed
+ * (nothing went to the peer yet) */
+static void greet_timeout(npf_loop *loop, void *arg)
+{
+    sublink *s = arg;
+    (void)loop;
+    s->t_greet = NULL;
+    if (s->state == SL_LOCAL_GREETING) {
+        s->end = "greeting_timeout";
+        sub_free(s, 1);
+    } else if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
+        sub_reset(s, NPF_RST_PROTOCOL);
+    }
+}
+
+static void greet_wait(sublink *s)
+{
+    s->t_greet = npf_timer_add(s->t->loop, npf_tunnel_greet_ms, greet_timeout, s);
+}
+
+static void greet_done(sublink *s)
+{
+    if (s->t_greet) {
+        npf_timer_cancel(s->t->loop, s->t_greet);
+        s->t_greet = NULL;
+    }
 }
 
 /* parse what the client sent so far; returns -1 if the sublink was freed */
@@ -724,6 +916,7 @@ static int socks_parse(sublink *s)
             }
             s->sl = 0;
             credit_back(s, need);
+            greet_done(s);
             if (s->t->caller) {
                 /* reverse sublink: only a target this caller registered (7.1) */
                 char host[256];
@@ -863,6 +1056,7 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         if (!s)
             return -1;
         s->state = SL_SOCKS_GREETING;
+        greet_wait(s);
     }
     switch (type) {
     case FR_DATA:
@@ -873,11 +1067,23 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         if (s->wq.len + s->sl + s->rx_freed + n > s->rx_window)
             goto proto;
         if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
-            if (s->sl + n > sizeof s->sb)
-                goto proto;
-            memcpy(s->sb + s->sl, p, n);
-            s->sl += n;
-            socks_parse(s);         /* may release s */
+            /* into the parse buffer what fits (a greeting and a request are
+             * 519 bytes at most); data pipelined after the request, in this
+             * frame or later ones, is queued until the target is connected */
+            size_t take = n < sizeof s->sb - s->sl ? n : sizeof s->sb - s->sl;
+            memcpy(s->sb + s->sl, p, take);
+            s->sl += take;
+            if (socks_parse(s) < 0)
+                return 0;           /* released */
+            if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
+                if (s->sl == sizeof s->sb)
+                    goto proto;     /* full and still no request: not SOCKS5 */
+                return 0;
+            }
+            if (take < n && wb_put(&s->wq, p + take, n - take) < 0) {
+                sub_reset(s, NPF_RST_LIMIT);
+                return 0;
+            }
             return 0;
         }
         if (s->state == SL_CLIENT_WAIT) {
@@ -917,6 +1123,29 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
                 s->end = "target_refused";      /* not a resource the other side published */
             if (n >= 2)
                 s->socks_rep = 0;
+        }
+        if (s->state == SL_OPEN && s->wq.len == 0) {
+            /* nothing queued: straight from the frame to the local end, only
+             * what it cannot take now is queued (one copy less) */
+            size_t done = 0;
+            while (done < n) {
+                ssize_t w = local_write(s, p + done, n - done);
+                if (w < 0) {
+                    sub_reset(s, NPF_RST_LOCAL);
+                    return 0;
+                }
+                if (w == 0)
+                    break;
+                done += (size_t)w;
+            }
+            if (done < n && wb_put(&s->wq, p + done, n - done) < 0) {
+                sub_reset(s, NPF_RST_LIMIT);
+                return 0;
+            }
+            if (done)
+                credit_back(s, done);       /* after queueing the rest: the window grows only if all went */
+            update_ev(s);
+            return 0;
         }
         if (wb_put(&s->wq, p, n) < 0) {
             sub_reset(s, NPF_RST_LIMIT);
@@ -1089,6 +1318,7 @@ static void local_greeting(sublink *s)
     s->skip_method = 2;
     s->socks_rep = 1;
     s->state = SL_OPEN;
+    greet_done(s);
     update_ev(s);
 }
 
@@ -1099,38 +1329,6 @@ static void io_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
     uint32_t id = s->id;            /* s may be released below; ids are never reused */
     (void)loop;
     (void)fd;
-    if (s->state == SL_CONNECTING) {
-        int err = 0;
-        socklen_t el = sizeof err;
-        getsockopt(s->fd, SOL_SOCKET, SO_ERROR, &err, &el);
-        if (err && s->icand < s->ncand) {   /* the next address of the name */
-            npf_loop_del(t->loop, s->fd);
-            s->ev = 0;
-            npf_sock_close(s->fd);
-            s->fd = -1;
-            connect_next(s, err);
-            return;
-        }
-        if (s->t_connect) {
-            npf_timer_cancel(t->loop, s->t_connect);
-            s->t_connect = NULL;
-        }
-        if (err) {
-            socks_fail(s, (uint8_t)map_errno(err));
-            return;
-        }
-        free(s->cand);
-        s->cand = NULL;
-        s->ncand = s->icand = 0;
-        socks_reply(s, 0);
-        s->state = SL_OPEN;
-        if (flush_local(s) < 0) {
-            sub_reset(s, NPF_RST_LOCAL);
-            return;
-        }
-        update_ev(s);
-        return;
-    }
     if (ev & NPF_EV_WRITE) {
         if (flush_local(s) < 0) {
             sub_reset(s, NPF_RST_LOCAL);
@@ -1187,9 +1385,9 @@ static void io_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         }
     }
     if (t->paused) {
-        sublink *x;
-        for (x = t->subs; x; x = x->next)
-            update_ev(x);
+        int i;
+        for (i = 0; i < t->nsubs; i++)
+            update_ev(t->subs[i]);
     } else {
         update_ev(s);
     }
@@ -1197,12 +1395,12 @@ static void io_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 
 void npf_tunnel_kick(npf_tunnel *t)
 {
-    sublink *s;
+    int i;
     if (!t->paused || t->io.backlog(t->arg) > BACKLOG_PAUSE / 2)
         return;
     t->paused = 0;
-    for (s = t->subs; s; s = s->next)
-        update_ev(s);
+    for (i = 0; i < t->nsubs; i++)
+        update_ev(t->subs[i]);
 }
 
 /* ---- public ---- */
@@ -1235,19 +1433,17 @@ void npf_tunnel_local_bytes(const npf_tunnel *t, uint64_t *in, uint64_t *out)
 
 int npf_tunnel_group_count(const npf_tunnel *t, uint32_t group)
 {
-    const sublink *s;
-    int n = 0;
-    for (s = t->subs; s; s = s->next)
-        n += s->rg && s->rg->id == group;
+    int i, n = 0;
+    for (i = 0; i < t->nsubs; i++)
+        n += t->subs[i]->rg && t->subs[i]->rg->id == group;
     return n;
 }
 
 int npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why)
 {
-    sublink *s, *next;
-    int n = 0;
-    for (s = t->subs; s; s = next) {
-        next = s->next;
+    int i, n = 0;
+    for (i = t->nsubs - 1; i >= 0; i--) {   /* from the end: a released one's place takes one seen already */
+        sublink *s = t->subs[i];
         if (s->rg && s->rg->id == group) {
             s->end = why;
             sub_reset(s, NPF_RST_LOCAL);
@@ -1268,15 +1464,18 @@ void npf_tunnel_free(npf_tunnel *t)
         npf_timer_cancel(t->loop, t->t_virt);
     t->t_virt = NULL;
     t->dead = 1;                        /* nothing more goes to the transport */
-    while (t->subs) {
-        if (!t->subs->end)
-            t->subs->end = "session_ended";
-        sub_free(t->subs, 1);
+    while (t->nsubs) {
+        sublink *s = t->subs[t->nsubs - 1];
+        if (!s->end)
+            s->end = "session_ended";
+        sub_free(s, 1);
     }
     if (t->in_poll) {                   /* a local end's call ended the session: virt_poll frees it */
         t->free_later = 1;
         return;
     }
+    free(t->subs);
+    free(t->ids);
     free(t->rb);
     free(t);
 }
@@ -1293,11 +1492,16 @@ static void virt_poll(npf_loop *loop, void *arg)
     t->t_virt = NULL;
     t->in_poll = 1;
     for (round = 0; round < VIRT_ROUNDS && busy && !t->free_later; round++) {
-        sublink *s, *next;
+        int i;
         busy = 0;
-        for (s = t->subs; s && !t->free_later; s = next) {
+        /* from the end: io_cb releases s at most, never another, and the
+         * last one (seen already) takes its place */
+        for (i = t->nsubs - 1; i >= 0 && !t->free_later; i--) {
+            sublink *s;
             unsigned ev;
-            next = s->next;             /* io_cb releases s at most, never another */
+            if (i >= t->nsubs)
+                continue;
+            s = t->subs[i];
             if (!s->v || !(ev = s->ev & s->v->ready(s->varg)))
                 continue;
             busy = 1;
@@ -1306,6 +1510,8 @@ static void virt_poll(npf_loop *loop, void *arg)
     }
     t->in_poll = 0;
     if (t->free_later) {
+        free(t->subs);
+        free(t->ids);
         free(t->rb);
         free(t);
         return;
@@ -1384,13 +1590,15 @@ int npf_tunnel_is_ready(const npf_tunnel *t)
 
 void npf_tunnel_dump(const npf_tunnel *t)
 {
-    const sublink *s;
+    int i;
     fprintf(stderr, "  tunnel: caller=%d subs=%d paused=%d backlog=%zu peer_window=%u rbuf=%zu\n", t->caller,
             t->nsubs, t->paused, t->io.backlog(t->arg), t->peer_window, t->rl);
-    for (s = t->subs; s; s = s->next)
+    for (i = 0; i < t->nsubs; i++) {
+        const sublink *s = t->subs[i];
         fprintf(stderr, "    sub %u fd=%d state=%d credit=%lld rx_freed=%u wq=%zu sl=%zu eof=%d fin=%d shut=%d ev=%u\n",
                 s->id, s->fd, s->state, (long long)s->tx_credit, s->rx_freed, s->wq.len, s->sl, s->local_eof,
                 s->peer_fin, s->shut_wr, s->ev);
+    }
 }
 
 int npf_tunnel_rev_add(npf_tunnel *t, uint32_t listen_id, const char *host, uint16_t port)
@@ -1475,6 +1683,7 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
     t->next_id += 2;
     if (passthrough) {
         s->state = SL_LOCAL_GREETING;       /* -D: a SOCKS5 application */
+        greet_wait(s);
     } else {
         uint8_t req[300];
         size_t hl = strlen(host), n = 0;
