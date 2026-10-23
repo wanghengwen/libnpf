@@ -15,15 +15,16 @@
  * Both are sent as they are: no plaintext type, the listener tells them from
  * AnLiu datagrams by trying the sessions' keys first. Message 1 is accepted
  * only with the right psk, a timestamp within 60 s and an ephemeral key not
- * seen in the last 2 minutes; a retransmitted message 1 gets the same
- * message 2 again and creates no second session. */
+ * seen in the last 2 minutes; a retransmitted message 1 (the same bytes from
+ * the same source) gets the same message 2 again and creates no second
+ * session. */
 
 #define DIRECT_PROLOGUE   "npf-direct-v1"
 #define DIRECT_TS_WINDOW  60000
 #define DIRECT_SEEN       128
 #define DIRECT_SEEN_MS    120000
 #define DIRECT_MAX_SESS   64
-#define DIRECT_IP_RATE    5         /* handshakes per second per source IP (burst 10) */
+#define DIRECT_IP_RATE    5         /* handshakes per second per source (burst 10; a new one 2) */
 
 struct npf_direct {
     npf_node   *n;
@@ -32,13 +33,14 @@ struct npf_direct {
     struct npf_policy *policy;
     struct {
         uint8_t  e[32];
+        uint8_t  h1[32];            /* the whole message 1's hash: only that one again is a retransmission */
         int64_t  at;
         struct sockaddr_storage from;
         uint8_t  msg2[256];
         size_t   msg2_len;
     } seen[DIRECT_SEEN];
     int         nseen_next;
-    struct { uint32_t ip; double tokens; int64_t last; } rate[64];
+    struct { uint64_t src; double tokens; int64_t last; } rate[64];   /* src 0: free */
 };
 
 static npf_call *direct_call(npf_node *n, int caller, int fd, const struct sockaddr_storage *peer)
@@ -147,19 +149,43 @@ int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct 
 
 /* listener */
 
+/* a source of handshakes: an IPv4 address, an IPv6 /64 (one host has many
+ * addresses there); never 0 */
+static uint64_t direct_src(const struct sockaddr_storage *from)
+{
+    uint64_t k = 0;
+    if (from->ss_family == AF_INET)
+        k = 0x100000000ULL | npf_rd32((const uint8_t *)&((const struct sockaddr_in *)from)->sin_addr);
+    else if (from->ss_family == AF_INET6)
+        k = npf_rd64(((const struct sockaddr_in6 *)from)->sin6_addr.s6_addr) | 1;
+    return k ? k : 1;
+}
+
+/* DIRECT_IP_RATE handshakes a second for each source, a burst of twice that.
+ * A source not in the table takes the place of the one unused the longest,
+ * with only a little to spend: changing sources buys no fresh bursts (the
+ * table was by the address's first byte, a new one got a full burst) */
 static int direct_rate_ok(npf_direct *d, const struct sockaddr_storage *from)
 {
-    uint32_t ip = from->ss_family == AF_INET ? ((const struct sockaddr_in *)from)->sin_addr.s_addr : 0;
+    uint64_t src = direct_src(from);
     int64_t now = npf_mono_ms();
-    int i, slot = (int)(ip % 64);
-    for (i = 0; i < 64; i++)
-        if (d->rate[i].ip == ip) {
+    int i, slot = -1, old = 0;
+    for (i = 0; i < 64; i++) {
+        if (d->rate[i].src == src) {
             slot = i;
             break;
         }
-    if (d->rate[slot].ip != ip) {
-        d->rate[slot].ip = ip;
-        d->rate[slot].tokens = 2 * DIRECT_IP_RATE;
+        if (!d->rate[i].src) {              /* a free one before any used one */
+            if (d->rate[old].src)
+                old = i;
+        } else if (d->rate[old].src && d->rate[i].last < d->rate[old].last) {
+            old = i;
+        }
+    }
+    if (slot < 0) {
+        slot = old;
+        d->rate[slot].src = src;
+        d->rate[slot].tokens = 2;           /* a handshake and a retry */
         d->rate[slot].last = now;
     }
     d->rate[slot].tokens += (double)(now - d->rate[slot].last) * DIRECT_IP_RATE / 1000.0;
@@ -176,16 +202,19 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
 {
     npf_node *n = d->n;
     npf_noise_hs hs;
-    uint8_t p[256], m2[256], pad[256];
+    uint8_t p[256], m2[256], pad[256], h1[32];
     int pl, ml, i, sessions = 0;
     int64_t now = npf_mono_ms(), ts;
     npf_call *c;
     if (len < 32 + 8 + 16 || len > 256)
         return;
-    /* a retransmitted message 1 (same ephemeral key, same source): same answer */
+    /* a retransmitted message 1 (the same message from the same source): the
+     * same answer; anything else with a seen ephemeral key: a replay */
+    npf_kdf(h1, NULL, 0, buf, len);
     for (i = 0; i < DIRECT_SEEN; i++)
         if (d->seen[i].at && now - d->seen[i].at < DIRECT_SEEN_MS && memcmp(d->seen[i].e, buf, 32) == 0) {
-            if (call_same_addr(&d->seen[i].from, from) && d->seen[i].msg2_len)
+            if (call_same_addr(&d->seen[i].from, from) && d->seen[i].msg2_len
+                && memcmp(d->seen[i].h1, h1, sizeof h1) == 0)
                 (void)npf_udp_send(d->fd, d->seen[i].msg2, d->seen[i].msg2_len, from);
             return;
         }
@@ -196,15 +225,16 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
             sessions++;
     if (sessions >= DIRECT_MAX_SESS)
         return;
+    /* the handshake state holds what the psk gave: wiped on every way out */
     if (npf_noise_init(&hs, NPF_NOISE_NNPSK0, 0, DIRECT_PROLOGUE, strlen(DIRECT_PROLOGUE), NULL, NULL, d->psk) < 0)
-        return;
+        goto out;
     pl = npf_noise_read(&hs, buf, len, p, sizeof p);
     if (pl < 8)
-        return;                             /* wrong key or garbage: silent */
+        goto out;                           /* wrong key or garbage: silent */
     ts = (int64_t)npf_rd64(p);
     if (ts < npf_unix_ms() - DIRECT_TS_WINDOW || ts > npf_unix_ms() + DIRECT_TS_WINDOW) {
         npf_logw("direct: handshake with a stale timestamp ignored (clock skew or replay)");
-        return;
+        goto out;
     }
     {
         size_t padlen = npf_rand_range(0, len - 48 < sizeof pad ? len - 48 : sizeof pad);
@@ -212,16 +242,17 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
         ml = npf_noise_write(&hs, pad, padlen, m2, sizeof m2);
     }
     if (ml < 0)
-        return;
+        goto out;
     i = d->nseen_next++ % DIRECT_SEEN;
     memcpy(d->seen[i].e, buf, 32);
+    memcpy(d->seen[i].h1, h1, sizeof h1);
     d->seen[i].at = now;
     d->seen[i].from = *from;
     memcpy(d->seen[i].msg2, m2, (size_t)ml);
     d->seen[i].msg2_len = (size_t)ml;
     c = direct_call(n, 0, d->fd, from);
     if (!c)
-        return;
+        goto out;
     c->policy = d->policy;
     c->hs = hs;
     npf_wipe(&hs, sizeof hs);
@@ -234,6 +265,9 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
         char a[64];
         npf_log("direct %s: session from %s", c->call_id_s, npf_addr_str(from, a, sizeof a));
     }
+    return;
+out:
+    npf_wipe(&hs, sizeof hs);
 }
 
 static void direct_io(npf_loop *loop, int fd, unsigned ev, void *arg)
