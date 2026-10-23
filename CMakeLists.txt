@@ -145,6 +145,9 @@ add_library(npf_common STATIC
 
   # the library: npf.h, the engine, the commands, published resources, modules
   src/api/engine.c
+  src/api/engine_config.c
+  src/api/engine_identity.c
+  src/api/engine_events.c
   src/api/cmd.c
   src/api/publish.c
   src/api/platform.c

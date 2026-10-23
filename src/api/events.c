@@ -4,7 +4,7 @@
  * forward that is still there carries its ctx as it is when delivered. Only
  * while the instance runs: none before npf_start, none after
  * NPF_EV_STOPPED. Without notify the application has the event and session
- * callbacks instead (the legacy JSON events, engine.c). */
+ * callbacks instead (the legacy JSON events, engine_events.c). */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif

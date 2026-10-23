@@ -137,8 +137,6 @@ int  npf_end_code(const char *why, int local);
 int  npf_setup_conf(const npf_setup *s, int role, const char *data_dir, npf_conf *c, char *err, size_t errcap);
 /* a key of the overrides that is a field of npf_setup, NULL none */
 const char *npf_setup_key_taken(const npf_conf *ov);
-/* engine.c: the account session began or ended (event "account" / NPF_EV_ACCOUNT) */
-void npf_ev_account(npf_t *n);
 
 /* ops.c: the operations of npf.h's objects, shared with the command line */
 uint32_t npf_ops_flags(const npf_t *n, const npf_peer *p);  /* NPF_PERSIST, NPF_PLATFORM */
@@ -162,6 +160,18 @@ int  npf_app_name_valid(const char *s);
 int  npf_app_ver_valid(const char *s);
 /* a public structure's defaults into the application's size bytes (engine.c) */
 void npf_init_sized(void *s, size_t size, const void *d, size_t dsize);
+/* the run on the library thread: the node until npf_loop_stop, then its end */
+int  npf_engine_run(npf_t *n);
+void npf_engine_begin(npf_t *n);
+int  npf_engine_end_step(npf_t *n);
+npf_loop *npf_engine_loop(npf_t *n);
+void npf_engine_free(npf_t *n);
+/* the peers made after npf_start: start them now (the run starts the others) */
+void npf_start_peers(npf_t *n);
+
+/* engine_events.c: events, the node's and the peers' callbacks, sessions and media streams by number */
+/* the account session began or ended (event "account" / NPF_EV_ACCOUNT) */
+void npf_ev_account(npf_t *n);
 void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 #ifdef __GNUC__
     __attribute__((format(printf, 3, 4)))
@@ -169,28 +179,23 @@ void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
     ;
 uint32_t npf_session_of(npf_t *n, npf_call *call);
 npf_call *npf_session_call(npf_t *n, uint32_t id);
+/* {"session", "peer", "path", "direction", "call_id"} */
+void npf_session_info_out(npf_t *n, npf_call *call, npf_out *o);
+uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid);
+npf_med *npf_media_find(npf_t *n, uint32_t id);
+void npf_media_forget(npf_t *n, uint32_t id);
+
+/* engine_identity.c: the identity, enrolment, the account certificate */
 void npf_save_account_cert(npf_t *n);
 void npf_forget_account(npf_t *n);
 /* ask for the account's login name (status "account_login") once a session is there */
 void npf_account_info(npf_t *n);
 /* a console node got its number (node_enroll): keep it, become callable */
 int  npf_become_node(npf_t *n, uint64_t number, char *pw_out);
-void npf_start_peers(npf_t *n);
-void npf_random_password(char out[10]);
-/* {"session", "peer", "path", "direction", "call_id"} */
-void npf_session_info_out(npf_t *n, npf_call *call, npf_out *o);
-uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid);
-npf_med *npf_media_find(npf_t *n, uint32_t id);
-void npf_media_forget(npf_t *n, uint32_t id);
-/* the run on the library thread: the node until npf_loop_stop, then its end */
-int  npf_engine_run(npf_t *n);
-void npf_engine_begin(npf_t *n);
-int  npf_engine_end_step(npf_t *n);
+
 /* a shared runtime: the loop of an instance on one of its threads (api.c) */
 npf_loop *npf_runtime_child(npf_runtime *rt, int *slot);
 void npf_runtime_leave(npf_runtime *rt, int slot);
-npf_loop *npf_engine_loop(npf_t *n);
-void npf_engine_free(npf_t *n);
 
 /* cmd.c: a command (argv[0] = its name); the exit code with the text in o
  * (0 done, 1 failed, 2 a bad command, NPF_CMD_UNSAVED done but local.json
