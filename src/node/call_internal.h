@@ -186,7 +186,35 @@ struct npf_call {
     uint32_t    rev_seq;
 };
 
+/* shared by call.c, call_punch.c, call_relay.c */
+#define RELAY_BIND_TRIES   3
+#define RELAY_KEEPALIVE_MS 25000     /* RELAY_BIND refresh while the relay is in use */
+#define RELAY_STANDBY_MS   30000     /* relay kept after the direct path is up, then released */
+#define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
+#define PUNCH_LINGER_MS    10000
+#define LABEL_RBIND        "NPF-RBIND-v1"
+#define LABEL_RELAY        "NPF-RELAY-v1"
+#define PKT_RELAY_BIND     7
+#define PKT_RELAY_BIND_ACK 8
+#define PKT_RELAY_DATA     9
+#define PUNCH_ROUNDS_MAX 10
+
+/* a timer stopped, if it runs, and forgotten */
+static inline void timer_stop(npf_loop *l, npf_timer **t)
+{
+    if (*t)
+        npf_timer_cancel(l, *t);
+    *t = NULL;
+}
+
 /* call.c */
+int call_relay_addr_blocked(const npf_call *c);
+int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len);
+void call_path_up(npf_call *c);
+int call_no_p2p(const npf_call *c);
+void call_standby_done(npf_loop *loop, void *arg);
+void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
+void call_accept_seen(npf_call *c);
 void call_dpend_free(npf_call *c);
 void call_b64_of(const uint8_t *b, size_t n, char *out);
 int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len);
@@ -217,5 +245,21 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r);
 
 /* call_direct.c: direct connections (no platform) */
 int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
+
+/* call_punch.c: punching rounds, their sockets and gaps, repunching (nat-traversal.md 7) */
+void call_repunch_timer(npf_loop *loop, void *arg);
+void call_schedule_repunch(npf_call *c);
+int call_hard_punches(const npf_call *c);
+void call_punch_sockets_back(npf_node *n);
+void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
+void call_start_punch_now(npf_call *c);
+void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
+
+/* call_relay.c: the UDP relay client, the way to the WS relay (data-channel.md 9) */
+void call_ask_ws_relay(npf_call *c);
+void call_relay_rebind(npf_call *c);
+void call_relay_setup(npf_call *c, const npf_json *j, int d);
+int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
+void call_ws_wait_end(npf_call *c, int ok);
 
 #endif
