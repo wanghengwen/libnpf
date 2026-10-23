@@ -166,8 +166,8 @@ void npf_engine_begin(npf_t *n);
 int  npf_engine_end_step(npf_t *n);
 npf_loop *npf_engine_loop(npf_t *n);
 void npf_engine_free(npf_t *n);
-/* the peers made after npf_start: start them now (the run starts the others) */
-void npf_start_peers(npf_t *n);
+/* a peer made after npf_start: start it now (the run starts the others) */
+void npf_start_peer(npf_t *n, npf_peer *p);
 
 /* engine_events.c: events, the node's and the peers' callbacks, sessions and media streams by number */
 /* the account session began or ended (event "account" / NPF_EV_ACCOUNT) */

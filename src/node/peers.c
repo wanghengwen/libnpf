@@ -85,7 +85,8 @@ static void finish(npf_peer *p, const char *why)
         return;
     p->finished = 1;
     peers_demand_drop(p, why);
-    snprintf(p->last_why, sizeof p->last_why, "%s", why);
+    if (why != p->last_why)                 /* finish(p, p->last_why): no copy onto itself */
+        snprintf(p->last_why, sizeof p->last_why, "%s", why);
     if (p->ps->cbs.done)
         p->ps->cbs.done(p, why, p->ps->arg);
     peer_changed(p);
@@ -116,9 +117,9 @@ void npf_peers_retry_now(npf_peers *ps)
 {
     npf_peer *p;
     for (p = ps ? ps->list : NULL; p; p = p->next) {
-        if (p->direct || p->call || p->waiting)
+        if (p->call || p->waiting)
             continue;
-        if (p->finished && account_may_help(p)) {
+        if (!p->direct && p->finished && account_may_help(p)) {
             npf_log("%s: an account session: trying again", p->name);
             unfinish(p);
             peers_start_call(p);
@@ -236,7 +237,7 @@ static void grant_renewed(npf_node *n, const npf_json *j, int ok, void *arg)
     char data[NPF_B64_LEN(512) + 32], g64[NPF_B64_LEN(512) + 1];
     int gl;
     (void)n;
-    p->waiting = 0;
+    p->renewing = 0;
     if (!p->call || npf_call_state(p->call) != NPF_CALL_ESTABLISHED)
         return;                             /* a new session gets a new grant anyway */
     gl = ok ? npf_json_get_b64(j, npf_json_get(j, 0, "data"), "grant", grant, sizeof grant) : -1;
@@ -255,11 +256,11 @@ void npf_peer_grant_update(npf_peer *p)
 {
     npf_node *n = p->ps->n;
     char data[64];
-    if (!n->cfg.hosted_exec || !p->call || p->waiting || npf_call_state(p->call) != NPF_CALL_ESTABLISHED)
+    if (!n->cfg.hosted_exec || !p->call || p->renewing || npf_call_state(p->call) != NPF_CALL_ESTABLISHED)
         return;
     snprintf(data, sizeof data, "{\"callee\":\"%llu\"}", (unsigned long long)p->number);
     if (npf_node_request(n, "grant_get", data, grant_renewed, p) == 0)
-        p->waiting = 1;
+        p->renewing = 1;
 }
 
 void peers_start_call(npf_peer *p)
@@ -423,9 +424,9 @@ static void peer_drop(npf_peer *p)
     if (p->t_retry)
         npf_timer_cancel(p->ps->n->loop, p->t_retry);
     p->t_retry = NULL;
-    if (p->waiting)
+    if (p->waiting || p->renewing)
         npf_node_cancel_requests(p->ps->n, p);
-    p->waiting = 0;
+    p->waiting = p->renewing = 0;
     if (p->t_demand)
         npf_timer_cancel(p->ps->n->loop, p->t_demand);
     p->t_demand = NULL;
@@ -651,8 +652,26 @@ void npf_peers_start(npf_peers *ps)
 {
     npf_peer *p;
     for (p = ps ? ps->list : NULL; p; p = p->next)
-        if (p->direct)
+        if (p->direct && !p->t_retry)
             peers_start_call(p);
+}
+
+void npf_peer_start(npf_peer *p)
+{
+    if (p->direct) {
+        if (!p->t_retry)
+            peers_start_call(p);
+        return;
+    }
+    if (!p->ps->n->online)
+        return;                             /* the login starts it */
+    if (p->idle_ms) {                       /* on demand: listening; a connection starts the session */
+        if (!p->listening)
+            peers_forwards_start(p);
+        return;
+    }
+    if (!p->t_retry)
+        peers_start_call(p);
 }
 
 void npf_peers_on_login(npf_peers *ps)
@@ -913,8 +932,8 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
     if (connect == NPF_CONNECT_KEEP) {
         if (p->finished)
             unfinish(p);
-        if (running && !busy && !p->t_retry && !p->direct)
-            peers_start_call(p);            /* no session: one now */
+        if (running && !busy && !p->t_retry)
+            peers_start_call(p);            /* no session: one now (a direct one too) */
     } else if (!busy) {                     /* ONCE, no session to end first: ended now */
         if (p->t_retry) {
             npf_timer_cancel(p->ps->n->loop, p->t_retry);
@@ -1011,7 +1030,7 @@ int npf_peer_wake_now(npf_peer *p)
         peers_demand_timer(p);              /* it ends idle_ms later unless used */
         return 0;
     }
-    if (p->t_retry && !p->direct) {
+    if (p->t_retry) {                       /* a direct one too (it was left to wait out its backoff) */
         npf_timer_cancel(p->ps->n->loop, p->t_retry);
         p->t_retry = NULL;
         npf_log("%s: retrying now", p->name);

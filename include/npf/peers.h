@@ -109,6 +109,9 @@ int  npf_peers_count(const npf_peers *ps);
 
 /* start what can start now (direct peers); platform peers start on login */
 void npf_peers_start(npf_peers *ps);
+/* one peer made while the instance runs: its session now (or at the next
+ * login; on demand: its listeners) */
+void npf_peer_start(npf_peer *p);
 
 /* forward the node hooks here; on_call_state returns 1 if the call is a peer's */
 void npf_peers_on_login(npf_peers *ps);

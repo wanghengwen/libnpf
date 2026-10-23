@@ -181,7 +181,10 @@ typedef struct npf_callbacks {
      * "platform" {type, data} (an event the platform sent, data as it came:
      * docs/protocol/signaling.md), "resources" {session, resources} (the
      * peer's published list); and those of the program's modules
-     * (npf/module.h) */
+     * (npf/module.h). "peer_done" and "forward" come from inside the
+     * library's work on that peer: removing the peer there (npf_peer_remove_id)
+     * is not allowed, do it later (the typed events of notify come from a
+     * queue and have no such limit) */
     void (*event)(void *user, const char *name, const char *json);
     /* a session came up (up 1; info: {"peer", "path", "direction", "call_id"})
      * or ended (up 0, info: {"why"}); its media streams end with it */

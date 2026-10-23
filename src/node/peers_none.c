@@ -53,6 +53,7 @@ npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, siz
 
 int npf_peers_count(const npf_peers *ps) { (void)ps; return 0; }
 void npf_peers_start(npf_peers *ps) { (void)ps; }
+void npf_peer_start(npf_peer *p) { (void)p; }
 void npf_peers_on_login(npf_peers *ps) { (void)ps; }
 
 int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)

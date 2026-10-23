@@ -134,8 +134,12 @@ uint64_t peers_conn_add(pfwd *f, const struct sockaddr_storage *from, int ip)
     if (ps->nconns == ps->capconns) {
         int n = ps->capconns ? ps->capconns * 2 : 32;
         pconn *nc = realloc(ps->conns, (size_t)n * sizeof *nc);
-        if (!nc)
+        if (!nc) {                          /* not recorded: nor counted (it would never be uncounted) */
+            f->nconns--;
+            if (ip >= 0)
+                ps->ips[ip].conns--;
             return 0;
+        }
         ps->conns = nc;
         ps->capconns = n;
     }

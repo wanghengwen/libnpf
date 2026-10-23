@@ -79,7 +79,9 @@ struct npf_peer {
     npf_timer *t_retry;
     char      *resources;           /* what it published, as last heard (resources.h): a JSON array */
     npf_call  *call;
-    int        waiting;             /* a grant_get is outstanding */
+    int        waiting;             /* a grant_get is outstanding (for a session to start) */
+    int        renewing;            /* one for the session's grant (a hosted client's): apart, so
+                                       that a session ending meanwhile starts again */
     int        call_pinned;         /* the session was started on the pinned key (IK) */
     int        pin_refused;         /* the device refused the pinned key's pairing: only a password now */
     int        by_account;          /* the account's grant let it in (this run): no password asked when the account goes */
@@ -88,7 +90,7 @@ struct npf_peer {
     /* on demand (a hosted client): the listeners are up without a session;
      * a connection starts one, which ends idle_ms after the last connection */
     int        idle_ms;             /* 0: not on demand */
-    struct { int fd, slot; int64_t at; uint64_t conn; } pend[DEMAND_PENDING];
+    struct { int fd, slot, fid; int64_t at; uint64_t conn; } pend[DEMAND_PENDING];   /* fid: its forward's id */
     int        npend;
     /* UDP datagrams waiting for the session (a UDP forward of a peer on demand) */
     struct { int slot; struct sockaddr_storage src; socklen_t sl; int64_t at; size_t len; uint8_t *d; } uq[UDP_PENDING];
@@ -169,6 +171,8 @@ void peers_demand_flush(npf_peer *p);
 void peers_udp_queue_drop(npf_peer *p, int slot);
 void peers_udp_queue_flush(npf_peer *p);
 void peers_demand_drop(npf_peer *p, const char *why);
+/* the connections waiting for a forward that goes (its slot may be reused): closed, mapping_closed */
+void peers_demand_drop_slot(npf_peer *p, int slot);
 void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, const uint8_t *buf, size_t len);
 
 /* peers_connections.c */

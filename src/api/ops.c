@@ -362,7 +362,7 @@ static int peer_create_run(npf_t *n, void *arg)
     }
     *x->id = npf_peer_id(p);
     npf_log("peer %s added%s", npf_peer_shown(p), persist ? " and saved" : "");
-    npf_start_peers(n);
+    npf_start_peer(n, p);
     return rc == NPF_EBUSY ? NPF_ESAVE : rc;
 }
 

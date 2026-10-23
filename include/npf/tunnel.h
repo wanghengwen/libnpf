@@ -194,7 +194,9 @@ typedef struct npf_budget {
 void npf_tunnel_set_budget(npf_tunnel *t, npf_budget *b);
 /* the sublinks open in a rate group */
 int  npf_tunnel_group_count(const npf_tunnel *t, uint32_t group);
-/* resets a group's sublinks (their end: why, a static string); how many */
+/* resets a group's sublinks (their end: why, a static string), and the
+ * group's place goes (a mapping closed: NPF_RATE_GROUPS at once, not in a
+ * session's life); how many */
 int  npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why);
 /* bytes read from / written to the local sockets of the sublinks (what a
  * public mapping moved for the people connected to it) */

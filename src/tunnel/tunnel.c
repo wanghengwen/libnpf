@@ -984,6 +984,9 @@ int npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why)
             n++;
         }
     }
+    for (i = 0; i < t->nrg && !t->dead; i++)
+        if (t->rg[i].id == group)
+            t->rg[i].id = 0;                /* none of its sublinks left: the place is free */
     tunnel_leave(t);
     return n;
 }
@@ -1302,10 +1305,15 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
         for (i = 0; i < t->nrg && !g; i++)
             if (t->rg[i].id == group)
                 g = &t->rg[i];
+        for (i = 0; i < t->nrg && !g; i++)
+            if (!t->rg[i].id)
+                g = &t->rg[i];              /* a place a closed group left */
         if (!g) {
             if (t->nrg == NPF_RATE_GROUPS)
                 return -1;
             g = &t->rg[t->nrg++];
+        }
+        if (!g->id) {
             g->id = group;
             g->up = g->down = rate;
             g->at_ms = npf_mono_ms();

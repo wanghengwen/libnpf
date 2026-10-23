@@ -155,6 +155,13 @@ static const char *fwd_label(const pfwd *f, char *b, size_t cap)
     return b;
 }
 
+/* a connection or a datagram may wait for the session: a peer that will
+ * have one (on demand, or kept), not one that ended (no password, no
+ * account: it was closed after DEMAND_WAIT_MS instead of at once) */
+static int peer_may_wait(const npf_peer *p)
+{
+    return !p->finished && (p->idle_ms || p->keep);
+}
 
 static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
 {
@@ -193,7 +200,7 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
             npf_sock_close(fd);
             continue;
         }
-        if ((f->p->idle_ms || (f->p->keep && !f->p->finished))
+        if (peer_may_wait(f->p)
             && (!f->p->call || npf_call_state(f->p->call) != NPF_CALL_ESTABLISHED)) {
             /* no session yet (on demand), or between two (a kept peer
              * reconnecting): it waits, and the session starts now */
@@ -226,7 +233,7 @@ static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
             continue;
         if (p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
             npf_call_udp_send(p->call, fd, &ss, sl, f->host, (uint16_t)f->hostport, p->ps->ubuf, (size_t)r);
-        else if (p->idle_ms || (p->keep && !p->finished))
+        else if (peer_may_wait(p))
             peers_udp_wait(f, &ss, sl, p->ps->ubuf, (size_t)r);
     }
 }
@@ -582,8 +589,9 @@ static int fwd_put(npf_peer *p, pfwd *tmp, int perm, uint64_t ext, char *err, si
         return -3;
     }
     for (i = 0; i < p->nfwd && !f; i++)
-        if (!p->fwds[i]->used)
-            f = p->fwds[i];                /* a free slot, no pending reply points at it */
+        if (!p->fwds[i]->used && !p->fwds[i]->asked)
+            f = p->fwds[i];                /* a free slot, no pending reply points at it (a -R's
+                                              reverse_listen answered later took the new one up) */
     if (!f) {
         if (p->nfwd >= NPF_PEER_MAX_FWD) {
             snprintf(err, errcap, "%s: at most %d mappings", p->name, NPF_PEER_MAX_FWD);
@@ -722,6 +730,8 @@ int npf_peer_forward_del_at(npf_peer *p, int i)
      * connections end with it */
     if (f->pub && p->call && npf_call_group_reset(p->call, (uint32_t)f->id, "mapping_closed") > 0)
         npf_log("%s: %s: closed, its open connections ended", p->name, f->spec);
+    peers_demand_drop_slot(p, i);   /* its waiting connections go with it (a forward reusing the slot
+                                       got them, past its allow_from), while it still counts them */
     peers_fwd_stop(f);
     if (p->ps->cbs.fwd_gone)
         p->ps->cbs.fwd_gone(p, i, p->ps->arg);
@@ -792,6 +802,8 @@ int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, in
     }
     f->rate = rate;
     f->pub = 1;
+    if (p->ps->closing && (f->fd >= 0 || f->t_retry))
+        peers_fwd_stop(f);                  /* the public ports stay closed (it listened, made before it was public) */
     return 0;
 }
 

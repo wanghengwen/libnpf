@@ -324,13 +324,13 @@ int npf_engine_run(npf_t *n)
     return 0;
 }
 
-void npf_start_peers(npf_t *n)
+/* a peer made while running starts now; only it (all of them were started
+ * again: a direct one's backoff skipped, the others' login steps redone) */
+void npf_start_peer(npf_t *n, npf_peer *p)
 {
     if (!n->started)
         return;                             /* the run starts them */
-    npf_peers_start(n->peers);
-    if (n->node.online)
-        npf_peers_on_login(n->peers);
+    npf_peer_start(p);
 }
 
 npf_loop *npf_engine_loop(npf_t *n)

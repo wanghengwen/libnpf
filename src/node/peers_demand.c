@@ -41,6 +41,7 @@ void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
     npf_set_nonblock(fd);
     p->pend[p->npend].fd = fd;
     p->pend[p->npend].slot = f->idx;
+    p->pend[p->npend].fid = f->id;
     p->pend[p->npend].at = npf_mono_ms();
     p->pend[p->npend].conn = cid;
     p->npend++;
@@ -61,7 +62,7 @@ void peers_demand_flush(npf_peer *p)
     int k;
     for (k = 0; k < p->npend; k++) {
         pfwd *f = p->fwds[p->pend[k].slot];
-        if (f->used)
+        if (f->used && f->id == p->pend[k].fid)    /* still its forward, not another in the slot */
             peers_conn_open(f, p->pend[k].fd, p->pend[k].conn);
         else {
             npf_sock_close(p->pend[k].fd);
@@ -98,6 +99,19 @@ void peers_udp_queue_flush(npf_peer *p)
                               p->uq[k].len);
     }
     peers_udp_queue_drop(p, -1);
+}
+
+void peers_demand_drop_slot(npf_peer *p, int slot)
+{
+    int k, n = 0;
+    for (k = 0; k < p->npend; k++)
+        if (p->pend[k].slot == slot) {
+            npf_sock_close(p->pend[k].fd);
+            peers_conn_gone(p->ps, p->pend[k].conn, "mapping_closed");
+        } else {
+            p->pend[n++] = p->pend[k];
+        }
+    p->npend = n;
 }
 
 void peers_demand_drop(npf_peer *p, const char *why)
