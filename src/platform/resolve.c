@@ -74,6 +74,7 @@ static struct {
     npf_resolve *phead, *ptail;     /* and the peers' */
     int          active;            /* queued + running */
     int          pactive, prunning; /* the peers' of them; running now */
+    int          queued;            /* waiting for a worker (both queues) */
     int          workers;           /* threads started (they stay) */
     int          idle;              /* workers waiting for work */
     hub         *hubs;
@@ -179,6 +180,7 @@ static void worker(void)
             WAIT();
             P.idle--;
         }
+        P.queued--;
         if (P.head) {                   /* the node's own first */
             r = P.head;
             P.head = r->next;
@@ -272,7 +274,10 @@ static npf_resolve *start(npf_loop *loop, const char *host, uint16_t port, int s
         free(r);
         return NULL;                /* busy: the caller fails this lookup */
     }
-    if (P.idle == 0 && P.workers < RESOLVE_WORKERS) {
+    /* more waiting than idle workers to take them (one woken but not yet
+     * running still counts as idle: idle == 0 alone let a burst wait for
+     * one thread) */
+    if (P.queued + 1 > P.idle && P.workers < RESOLVE_WORKERS) {
         if (spawn() == 0)
             P.workers++;
         else if (P.workers == 0) {
@@ -298,6 +303,7 @@ static npf_resolve *start(npf_loop *loop, const char *host, uint16_t port, int s
         P.tail = r;
     }
     P.active++;
+    P.queued++;
     SIGNAL();
     UNLOCK();
     return r;
