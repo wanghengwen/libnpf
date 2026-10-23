@@ -276,7 +276,7 @@ static int same_ep(const struct sockaddr_in *a, const struct sockaddr_in *b)
 static void classify_alloc(npf_natprobe_result *res)
 {
     uint16_t p[NPF_NATPROBE_MAX_ALLOC];
-    int n = 0, i, preserve = 1, best = 0, best_cnt = 0, ok = 1;
+    int n = 0, i, preserve = 1, best = 0, best_cnt = 0;
     uint16_t lo = 0xffff, hi = 0;
 
     for (i = 0; i < res->alloc_n; i++) {
@@ -294,12 +294,13 @@ static void classify_alloc(npf_natprobe_result *res)
         res->profile.allocation = NPF_ALLOC_PRESERVE;
         return;
     }
-    /* sequential: deltas small and positive, the most common one is the step
-     * (other traffic behind the same NAT may take a port now and then) */
+    /* sequential: the most common delta is the step, small and positive,
+     * for half of them at least. Not every delta: other traffic behind the
+     * same NAT takes a port now and then (a busy NAT pushed one delta past
+     * 64 and a sequential NAT read as a block), and the range wraps at its
+     * end (a negative one) */
     for (i = 0; i + 1 < n; i++) {
         int d = (int16_t)(uint16_t)(p[i + 1] - p[i]), j, cnt = 0;
-        if (d <= 0 || d > 64)
-            ok = 0;
         for (j = 0; j + 1 < n; j++)
             if ((int16_t)(uint16_t)(p[j + 1] - p[j]) == d)
                 cnt++;
@@ -308,7 +309,7 @@ static void classify_alloc(npf_natprobe_result *res)
             best = d;
         }
     }
-    if (ok && best > 0 && best <= 16 && best_cnt * 2 >= n - 1) {
+    if (best > 0 && best <= 16 && best_cnt * 2 >= n - 1) {
         res->profile.allocation = NPF_ALLOC_SEQUENTIAL;
         res->profile.seq_delta = (int16_t)best;
         return;
