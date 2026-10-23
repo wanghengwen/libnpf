@@ -190,8 +190,8 @@ void npf_save_account_cert(npf_t *n);
 void npf_forget_account(npf_t *n);
 /* ask for the account's login name (status "account_login") once a session is there */
 void npf_account_info(npf_t *n);
-/* a console node got its number (node_enroll): keep it, become callable */
-int  npf_become_node(npf_t *n, uint64_t number, char *pw_out);
+/* a device enrolled at run time got its number: keep it, become callable */
+int  npf_become_node(npf_t *n, uint64_t number);
 
 /* a shared runtime: the loop of an instance on one of its threads (api.c) */
 npf_loop *npf_runtime_child(npf_runtime *rt, int *slot);

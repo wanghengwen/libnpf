@@ -127,13 +127,11 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     if (!npf_app_name_valid(o->app_name ? o->app_name : "libnpf")
         || !npf_app_ver_valid(o->app_ver ? o->app_ver : npf_version())) {
         snprintf(err, errcap, "app_name: 1..32 of a-z 0-9 . _ -; app_ver: up to 32 printable characters");
-        free(n->logctx.ring);
         free(n);
         return NPF_EINVAL;
     }
     if (npf_api_init(n) < 0) {
         snprintf(err, errcap, "no memory for API synchronization");
-        free(n->logctx.ring);
         free(n);
         return NPF_ENOMEM;
     }
@@ -194,10 +192,8 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
      * (resources.h, security.md D22) */
     if (npf_pub_load(n, err, errcap) < 0)
         goto fail;
-    if (n->cfg.callable) {
-        n->callee->hosted_trust = atoi(npf_conf_get(&n->conf, "hosted_trust", "1"));
-        npf_callee_attach(n->callee, &n->node);
-    }
+    if (n->cfg.callable)
+        npf_engine_callee_attach(n);
     /* peers: the application's, and those it saved in local.json */
     if (!(n->peers = npf_engine_peers_new(n))) {
         snprintf(err, errcap, "no memory");
@@ -207,6 +203,8 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
         npf_peers_no_cache(n->peers);
     {   /* peer_idle = S: the peers on demand without an idle time of their own end S s after their last connection */
         int idle = atoi(npf_conf_get(&n->conf, "peer_idle", "0"));
+        if (idle > 86400)
+            idle = 86400;                   /* the command's range: and idle * 1000 fits an int */
         npf_peers_set_idle(n->peers, (idle > 0 ? idle : 300) * 1000);
     }
     /* the modules, before the peers come: their forwards' callbacks go to them */
@@ -238,26 +236,9 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     npf_log_ctx_swap(prev_log);
     *out = n;
     return NPF_OK;
-fail:
-    npf_mods_end(n, 2);                     /* the modules made: what they keep of the peers first */
-    if (n->peers)
-        npf_peers_free(n->peers);
-    npf_mods_destroy(n);
-    npf_pub_free(n);
-    npf_local_free(&n->lc);
-    npf_engine_config_free(n);
-    free(n->callee);
-    if (n->loop) {
-        npf_node_stop(&n->node);
-        npf_loop_free(n->loop);
-    }
-    if (n->rt)
-        npf_runtime_leave(n->rt, n->rt_slot);
-    npf_identity_wipe(&n->id);
+fail:                                       /* what was made so far: npf_engine_free knows it */
     npf_log_ctx_swap(prev_log);
-    npf_api_fini(n);
-    free(n->logctx.ring);
-    free(n);
+    npf_engine_free(n);
     return fail_rc;
 }
 
@@ -344,11 +325,12 @@ void npf_engine_free(npf_t *n)
     if (!n)
         return;
     prev = npf_log_ctx_swap(&n->logctx);
-    if (!n->torn_down) {                    /* never run */
+    if (!n->torn_down) {                    /* never run (or made only in part: create() failed) */
         npf_mods_end(n, 2);                 /* what the modules keep of the peers goes first */
         npf_peers_free(n->peers);
         npf_direct_close(n->dl);
-        npf_node_stop(&n->node);
+        if (n->loop)                        /* a node never set up has fd 0 for its socket: not that */
+            npf_node_stop(&n->node);
     }
     npf_mods_destroy(n);
     npf_events_clear(n);                    /* before its loop: a timer of it */
@@ -358,11 +340,13 @@ void npf_engine_free(npf_t *n)
     npf_pub_free(n);
     npf_local_free(&n->lc);
     npf_engine_config_free(n);
+    if (n->callee)
+        npf_wipe(n->callee, sizeof *n->callee);
     free(n->callee);
     free(n->sess);
-    npf_identity_wipe(&n->id);
     npf_log_ctx_swap(prev == &n->logctx ? NULL : prev);
     npf_api_fini(n);
     free(n->logctx.ring);
+    npf_wipe(n, sizeof *n);                 /* the keys: its own, the node's copy, the model's; the passwords */
     free(n);
 }

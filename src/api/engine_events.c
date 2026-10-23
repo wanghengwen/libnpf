@@ -9,10 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
 #include "engine_internal.h"
 #include "npf/module.h"
 
@@ -221,21 +217,40 @@ static void on_account_cert(npf_node *node, void *arg)
     npf_save_account_cert(arg);
 }
 
+/* the platform's session of the account went (a login without it): as a
+ * logout (platform.c): the certificate forgotten, the modules told (the
+ * platform's mappings stayed until a restart) */
 static void on_account_lost(npf_node *node, void *arg)
 {
     npf_t *n = arg;
     (void)node;
-    unlink(n->cert_path);
-    npf_ev_account(n);
+    npf_forget_account(n);
+    npf_mods_account(n, 0);
 }
 
 /* ---- node hooks ---- */
+
+/* a legacy event whose JSON is {"key": text} (escaped: the text may be the
+ * platform's, quotes and backslashes broke the JSON) */
+static void event_text(npf_t *n, const npf_event *ev, const char *name, const char *key, const char *text)
+{
+    npf_out o = {0};
+    if (n->cb.notify || !n->cb.event) {
+        npf_engine_event(n, ev, name, "{}");
+        return;
+    }
+    npf_out_printf(&o, "{\"%s\":", key);
+    npf_out_json_str(&o, text ? text : "", strlen(text ? text : ""));
+    npf_out_printf(&o, "}");
+    npf_engine_event(n, ev, name, "%s", o.p ? o.p : "{}");
+    npf_out_free(&o);
+}
 
 static void on_enrolled(npf_node *node, uint64_t number, void *arg)
 {
     npf_t *n = arg;
     (void)node;
-    if (npf_become_node(n, number, NULL) == 0)
+    if (npf_become_node(n, number) == 0)
         npf_log("enrolled: number %llu, default password in %s (show)", (unsigned long long)number, n->node_path);
 }
 
@@ -250,8 +265,20 @@ static void on_enroll_failed(npf_node *node, const char *error, const char *reas
     ev.retry_in_ms = retry_s * 1000;
     snprintf(why, sizeof why, "%s%s%s", error, reason && *reason ? ": " : "", reason ? reason : "");
     ev.why = why;
-    npf_engine_event(n, &ev, "enroll_failed", "{\"error\":\"%s\",\"reason\":\"%s\",\"retry_in\":%d}", error,
-                     reason, retry_s);
+    if (n->cb.notify || !n->cb.event) {
+        npf_engine_event(n, &ev, "enroll_failed", "{}");
+        return;
+    }
+    {
+        npf_out o = {0};
+        npf_out_printf(&o, "{\"error\":");
+        npf_out_json_str(&o, error, strlen(error));
+        npf_out_printf(&o, ",\"reason\":");
+        npf_out_json_str(&o, reason ? reason : "", strlen(reason ? reason : ""));
+        npf_out_printf(&o, ",\"retry_in\":%d}", retry_s);
+        npf_engine_event(n, &ev, "enroll_failed", "%s", o.p ? o.p : "{}");
+        npf_out_free(&o);
+    }
 }
 
 /* signaling on demand: a module's work not done yet keeps the connection */
@@ -291,7 +318,7 @@ static void on_net_change(npf_node *node, const char *why, void *arg)
         memset(&ev, 0, sizeof ev);
         ev.type = NPF_EV_NETWORK;
         ev.why = why;
-        npf_engine_event(n, &ev, "network", "{\"why\":\"%s\"}", why);
+        event_text(n, &ev, "network", "why", why);
     }
 }
 
@@ -300,17 +327,11 @@ static void on_offline(npf_node *node, const char *why, void *arg)
 {
     npf_t *n = arg;
     npf_event ev;
-    char w[120];
-    size_t i, k = 0;
     (void)node;
-    for (i = 0; why && why[i] && k + 1 < sizeof w; i++)     /* for the JSON: no quotes or backslashes */
-        if (why[i] != '"' && why[i] != '\\' && (unsigned char)why[i] >= 0x20)
-            w[k++] = why[i];
-    w[k] = 0;
     memset(&ev, 0, sizeof ev);
     ev.type = NPF_EV_OFFLINE;
-    ev.why = w;
-    npf_engine_event(n, &ev, "offline", "{\"why\":\"%s\"}", w);
+    ev.why = why ? why : "";            /* as it is (its quotes were taken out, for the JSON's sake) */
+    event_text(n, &ev, "offline", "why", ev.why);
 }
 
 /* UDP on demand: the profile is there, the sessions waiting for it start */
@@ -430,12 +451,15 @@ static void on_resources(npf_node *node, npf_call *call, const npf_json *j, int 
     npf_pub_heard(arg, call, j, d);
 }
 
+/* the events queued go first (SESSION_UP before its data); a callback of
+ * theirs may end the session: its number is looked up after them */
 static void on_app_data(npf_node *node, npf_call *call, const uint8_t *buf, size_t len, void *arg)
 {
     npf_t *n = arg;
-    uint32_t id = npf_session_of(n, call);
+    uint32_t id;
     (void)node;
-    npf_events_flush(n);                    /* SESSION_UP before its data */
+    npf_events_flush(n);
+    id = npf_session_of(n, call);
     if (id && n->cb.data)
         n->cb.data(n->cb.user, id, buf, len);
 }
@@ -443,10 +467,12 @@ static void on_app_data(npf_node *node, npf_call *call, const uint8_t *buf, size
 static int on_media_open(npf_node *node, npf_call *call, uint32_t lid, int tag, void *arg)
 {
     npf_t *n = arg;
-    uint32_t sid = npf_session_of(n, call), id;
+    uint32_t sid, id;
     (void)node;
-    npf_events_flush(n);
-    if (!sid || !n->cb.media_open || !(id = npf_media_add(n, sid, call, lid)))
+    npf_events_flush(n);                    /* as on_app_data: the session may have ended in them */
+    sid = npf_session_of(n, call);          /* (a stream of a session gone was never removed) */
+    if (!sid || npf_call_state(call) != NPF_CALL_ESTABLISHED || !n->cb.media_open
+        || !(id = npf_media_add(n, sid, call, lid)))
         return 0;
     if (!n->cb.media_open(n->cb.user, sid, id, tag)) {
         npf_media_forget(n, id);

@@ -63,7 +63,7 @@ static int path_set(char **p, const char *fmt, ...)
 /* "key = value" lines into c (the same rules as a file) */
 static void conf_text(npf_conf *c, const char *text)
 {
-    char line[1024];
+    char line[4096];                        /* as a file's: a value too long reaches npf_conf_set (c->bad) */
     const char *p = text, *e;
     while (p && *p) {
         size_t l;
@@ -213,6 +213,11 @@ int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t err
     }
     if (o->overrides)
         conf_text(&n->ov, o->overrides);
+    if (n->ov.bad[0]) {                     /* as for the file: not cut short in silence */
+        snprintf(err, errcap, "overrides: the value of '%s' is too long (at most %d characters)", n->ov.bad,
+                 NPF_CONF_VAL_MAX - 1);
+        return NPF_EINVAL;
+    }
     if (npf_conf_get(&n->ro, "node", NULL) || npf_conf_get(&n->ov, "node", NULL)) {
         snprintf(err, errcap, "config: \"node =\" lines are gone: the application makes its peers (npf_peer_create)");
         return NPF_EINVAL;

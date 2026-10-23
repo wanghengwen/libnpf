@@ -29,8 +29,12 @@ void npf_engine_account_load(npf_t *n)
     char *s;
     long len = npf_file_read(n->cert_path, &s);
     int r;
-    if (len <= 0)
+    if (len < 0)
         return;
+    if (len == 0) {                         /* an empty file: its buffer all the same */
+        free(s);
+        return;
+    }
     s[strcspn(s, "\r\n")] = 0;
     r = npf_b64url_decode(s, strlen(s), n->node.account_cert, sizeof n->node.account_cert);
     n->node.account_cert_len = r > 0 ? (size_t)r : 0;
@@ -267,7 +271,14 @@ static int model_setup(npf_t *n, char *err, size_t errcap)
         || (npf_kdf(h, NULL, 0, b, (size_t)len - 4), memcmp(h, b + len - 4, 4) != 0)
         || (size_t)(n1 + n2) > sizeof n->enroll.model_chain) {
         snprintf(err, errcap, "config: bad 'model_cred' (an NPFV2 model credential from npf-vendor model)");
-        return -1;
+        goto fail;
+    }
+    if (n->has_number) {
+        /* enrolled already: the serial number and the fingerprint are for
+         * enrolling only (an unreadable serial_file stopped a start that
+         * needed neither), the model's key is not needed either */
+        n->model_dev = 1;
+        goto out;
     }
     n->enroll.model_chain_len = (size_t)(n1 + n2);
     memcpy(n->enroll.model_chain, b, n->enroll.model_chain_len);
@@ -282,7 +293,7 @@ static int model_setup(npf_t *n, char *err, size_t errcap)
         char *t;
         if (npf_file_read(sf, &t) < 0) {
             snprintf(err, errcap, "config: cannot read serial_file %s", sf);
-            return -1;
+            goto fail;
         }
         t[strcspn(t, "\r\n")] = 0;
         snprintf(n->enroll.serial, sizeof n->enroll.serial, "%s", t);
@@ -290,26 +301,42 @@ static int model_setup(npf_t *n, char *err, size_t errcap)
     } else if (auto_serial(&hi, n->enroll.serial, sizeof n->enroll.serial) < 0) {
         snprintf(err, errcap, "config: 'model_cred' needs the device's serial number ('serial' or 'serial_file'): "
                               "this host has neither a network card address nor a machine id");
-        return -1;
+        goto fail;
     }
     if (!n->enroll.serial[0]) {
         snprintf(err, errcap, "config: the serial number is empty");
-        return -1;
+        goto fail;
     }
     if (hw_fingerprint(n, &hi, seed, err, errcap) < 0)
-        return -1;
+        goto fail;
+    n->model_dev = 1;
+out:
     npf_wipe(seed, sizeof seed);
     npf_wipe(b, sizeof b);
-    n->model_dev = 1;
     return 0;
+fail:                                       /* the credential and the model's seed wiped on every way out */
+    npf_wipe(seed, sizeof seed);
+    npf_wipe(b, sizeof b);
+    return -1;
 }
 
 /* a number for this identity (one key per model, or node_enroll): node.json,
  * the callee state, and callable from now on; pw_out gets the default password */
-int npf_become_node(npf_t *n, uint64_t number, char *pw_out)
+/* the callee taken onto the node, with the configuration's hosted trust */
+void npf_engine_callee_attach(npf_t *n)
+{
+    n->callee->hosted_trust = atoi(npf_conf_get(&n->conf, "hosted_trust", "1"));
+    npf_callee_attach(n->callee, &n->node);
+}
+
+int npf_become_node(npf_t *n, uint64_t number)
 {
     char pw[10], out[128];
     int len;
+    if (!n->callee && !(n->callee = calloc(1, sizeof *n->callee))) {
+        npf_loge("no memory for the callee state");
+        return -1;                          /* before the number: has_number means a callee (cmd.c) */
+    }
     random_password(pw);
     len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n", (unsigned long long)number, pw);
     if (npf_file_write(n->node_path, out, (size_t)len, 0600) < 0) {
@@ -318,11 +345,12 @@ int npf_become_node(npf_t *n, uint64_t number, char *pw_out)
     }
     n->number = number;
     n->has_number = 1;
+    /* callable from now on here too, as in the node's own copy (node_signal.c):
+     * at each login the callee's work runs (on_login: it never did until a
+     * restart, unpairings and an owner reset were not reported) */
+    n->cfg.callable = 1;
+    n->cfg.number = number;
     snprintf(n->default_pw, sizeof n->default_pw, "%s", pw);
-    if (!n->callee && !(n->callee = calloc(1, sizeof *n->callee))) {
-        npf_loge("no memory for the callee state");
-        return -1;
-    }
     npf_callee_init(n->callee, n->state_path, number, n->node.id.seed, pw);
     /* the published resources make the callee's policy now; without it an
      * exit node enrolled at run time refused every internet target until a
@@ -331,10 +359,8 @@ int npf_become_node(npf_t *n, uint64_t number, char *pw_out)
     memcpy(n->callee->cert, n->node.cert, n->node.cert_len);
     n->callee->cert_len = n->node.cert_len;
     npf_callee_save(n->callee);
-    n->callee->hosted_trust = atoi(npf_conf_get(&n->conf, "hosted_trust", "1"));
-    npf_callee_attach(n->callee, &n->node);
-    if (pw_out)
-        strcpy(pw_out, pw);
+    npf_engine_callee_attach(n);
+    npf_wipe(pw, sizeof pw);
     {
         npf_event ev;
         memset(&ev, 0, sizeof ev);
@@ -365,6 +391,7 @@ int npf_engine_identity_load(npf_t *n, char *err, size_t errcap)
         snprintf(n->default_pw, sizeof n->default_pw, "%s", npf_conf_get(&n->conf, "password", ""));
         if (!n->default_pw[0]) {
             snprintf(err, errcap, "config: 'password' (the device's default password) goes with 'cred'");
+            npf_wipe(seed, sizeof seed);
             return -1;
         }
     } else {
@@ -374,8 +401,10 @@ int npf_engine_identity_load(npf_t *n, char *err, size_t errcap)
             return -1;
         }
         n->has_number = load_node(n) == 0;
-        if (model_setup(n, err, errcap) < 0)
+        if (model_setup(n, err, errcap) < 0) {
+            npf_wipe(seed, sizeof seed);
             return -1;
+        }
     }
     npf_identity_from_seed(&n->id, seed);
     if (n->has_number) {

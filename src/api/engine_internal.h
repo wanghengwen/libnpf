@@ -16,6 +16,7 @@ void npf_engine_restore_peers(npf_t *n);
 
 /* engine_identity.c: the identity and the callee state, after the configuration; 0, or -1 with err */
 int  npf_engine_identity_load(npf_t *n, char *err, size_t errcap);
+void npf_engine_callee_attach(npf_t *n);
 void npf_engine_account_load(npf_t *n);
 
 /* engine_events.c: the node and the peers with the engine's callbacks */
