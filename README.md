@@ -1,5 +1,7 @@
 # libnpf
 
+中文 | [English](README.en.md)
+
 libnpf：一个 C99 写的 P2P 网络库，让 NAT 后面的设备打洞直连、打不通自动走中转，建立端到端加密的会话，承载端口转发、应用数据和音视频。
 
 它是“穿山甲”远程访问的核心，底层传输使用开源 UDP 协议 [AnLiu（暗流）](https://github.com/wanghengwen/AnLiu)。

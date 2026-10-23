@@ -1,5 +1,7 @@
 # libnpf
 
+[中文](README.md) | English
+
 libnpf: a C99 P2P networking library that connects devices behind NAT by hole punching, falls back to a relay when needed, and runs end-to-end encrypted sessions for port forwarding, app data, and audio/video.
 
 It is the core of the "Chuanshanjia" (pangolin) remote access service. Its transport is the open-source UDP protocol [AnLiu](https://github.com/wanghengwen/AnLiu).
