@@ -116,11 +116,12 @@ int test_direct(void)
     CHECK(L.connecting == 1 && L.established == 1, "wrong key created no session (%d)", L.connecting);
     CHECK(B.established == 0 && B.closed == 0, "initiator still retrying");
 
-    /* the initiator closes: the listener sees the close */
-    npf_call_end(ca, "closed");
+    /* the initiator closes: the listener sees the close; a reason goes as a
+     * code (a-z 0-9 _), never as JSON of its own */
+    npf_call_end(ca, "bye\"},\"x\":\"1");
     run_until(loop, &L.closed, 1, 3000);
-    CHECK(A.closed == 1 && L.closed == 1 && strcmp(L.why, "closed") == 0, "close propagated (%d/%d %s)",
-          A.closed, L.closed, L.why);
+    CHECK(A.closed == 1 && L.closed == 1 && strcmp(L.why, "byex1") == 0 && strcmp(A.why, "byex1") == 0,
+          "close propagated (%d/%d %s/%s)", A.closed, L.closed, A.why, L.why);
 
     /* the wrong-key initiator gives up by itself after its retries (~14 s): end it here instead */
     npf_call_end(cb, "closed");

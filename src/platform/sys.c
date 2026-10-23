@@ -80,6 +80,14 @@ void npf_sock_close(int fd)
         closesocket((SOCKET)fd);
 }
 
+void npf_sock_listen_opts(int fd, int type)
+{
+    BOOL one = TRUE;
+    (void)type;
+    if (fd >= 0)
+        setsockopt((SOCKET)fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof one);
+}
+
 int npf_sock_again(void)
 {
     int e = WSAGetLastError();
@@ -299,6 +307,13 @@ void npf_sock_close(int fd)
 {
     if (fd >= 0)
         close(fd);
+}
+
+void npf_sock_listen_opts(int fd, int type)
+{
+    int one = 1;
+    if (fd >= 0 && type == SOCK_STREAM)
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
 }
 
 int npf_sock_again(void)

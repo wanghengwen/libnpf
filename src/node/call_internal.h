@@ -111,6 +111,8 @@ struct npf_call {
     npf_timer  *t_repunch, *t_standby;
     int         relay_asked;        /* relay_switch sent, waiting for a new allocation */
     int         ws_paired_once;     /* the WS relay worked at least once */
+    int         ws_round;           /* caller: a round began on this relay connection (one each: a
+                                       repeated relay_paired starts none) */
     npf_punch_cfg pcfg;
     uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
     int         info_round;

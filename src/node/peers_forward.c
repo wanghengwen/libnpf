@@ -399,7 +399,7 @@ static int listen_on(const char *bind_host, int port, int type, char *why, size_
 {
     struct addrinfo hints, *res;
     char ps[8];
-    int one = 1, fd;
+    int fd;
     *in_use = 0;
     memset(&hints, 0, sizeof hints);
     hints.ai_socktype = type;               /* SOCK_DGRAM: a UDP forward's socket, bound only */
@@ -411,7 +411,7 @@ static int listen_on(const char *bind_host, int port, int type, char *why, size_
     }
     fd = npf_socket(res->ai_family, type, 0, 0);
     if (fd >= 0) {
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&one, sizeof one);
+        npf_sock_listen_opts(fd, type);
         if (res->ai_family == AF_INET6 && strcmp(bind_host, "::") == 0) {
             int zero = 0;
             setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&zero, sizeof zero);

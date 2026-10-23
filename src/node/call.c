@@ -816,7 +816,7 @@ int call_start_transport(npf_call *c)
         c->conv = 1;
     c->keys_ready = 1;
     if (c->ws_mode) {   /* the tunnel starts with the START exchange */
-        if (c->ws_has_pending) {
+        if (c->ws_has_pending && c->wsr) {      /* the START came on this relay connection */
             c->ws_has_pending = 0;
             call_wsr_start(c->wsr, c->ws_pending_salt, c);
         } else if (c->caller && c->wsr && npf_wsr_paired(c->wsr)) {
@@ -2041,11 +2041,27 @@ static void free_later(npf_loop *loop, void *arg)
     call_free(arg);
 }
 
-void npf_call_end(npf_call *c, const char *reason)
+/* a reason as the peer and the platform get it (the server keeps the same
+ * characters): a-z 0-9 _, at most an end report's 23; "closed" when none is
+ * left. A peer's close carries its own, printed into JSON from here on */
+static const char *reason_code(const char *r, char out[24])
 {
+    size_t k = 0;
+    for (; r && *r && k < 23; r++)
+        if ((*r >= 'a' && *r <= 'z') || (*r >= '0' && *r <= '9') || *r == '_')
+            out[k++] = *r;
+    out[k] = 0;
+    return k ? out : "closed";
+}
+
+void npf_call_end(npf_call *c, const char *why)
+{
+    char rc[24];
+    const char *reason;
     if (c->ended)
         return;
     c->ended = 1;
+    reason = reason_code(why, rc);
     if (c->tun && npf_tunnel_is_ready(c->tun)) {
         char m[96];
         int len = snprintf(m, sizeof m, "{\"v\":1,\"type\":\"close\",\"data\":{\"reason\":\"%s\"}}", reason);

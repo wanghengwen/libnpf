@@ -160,7 +160,7 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
     char bind_addr[64] = "127.0.0.1", host[256], reply[96];
     struct sockaddr_storage ss;
     socklen_t sl;
-    int one = 1, lan, udp = 0, ut = npf_json_get(j, d, "udp");
+    int lan, udp = 0, ut = npf_json_get(j, d, "udp");
     if (strcmp(type, "reverse_close") == 0) {
         if (npf_json_get_int(j, d, "listen_id", 1, UINT32_MAX, &lid) == 0)
             for (i = 0; i < c->nrev; i++)
@@ -169,6 +169,10 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
                     break;
                 }
         npf_call_ctl_reply(c, type, j, "ok", NULL, NULL);
+        return;
+    }
+    if (c->hosted_grant) {              /* a hosted client (security.md 8.4): -L only, its grant's targets */
+        npf_call_ctl_reply(c, type, j, "error", "forbidden", NULL);
         return;
     }
     npf_json_get_str(j, d, "bind", bind_addr, sizeof bind_addr);
@@ -204,7 +208,7 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
     if (ut >= 0)
         npf_json_bool(j, ut, &udp);         /* -R .../udp: a UDP socket (data-channel.md 15) */
     fd = npf_socket(ss.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0, 0);
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    npf_sock_listen_opts(fd, udp ? SOCK_DGRAM : SOCK_STREAM);   /* a UDP port is not shared: no other listener's */
     if (fd >= 0 && strcmp(bind_addr, "::") == 0) {
         int zero = 0;                       /* "::": IPv4 too */
         setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&zero, sizeof zero);

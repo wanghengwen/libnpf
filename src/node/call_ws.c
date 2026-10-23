@@ -84,6 +84,11 @@ void call_wsr_paired(npf_wsr *r, void *arg)
     npf_log("call %s: WS relay paired", c->call_id_s);
     if (!c->caller || !c->keys_ready)
         return;
+    if (c->ws_round) {          /* a relay that pairs again cannot make rounds (10.2) */
+        npf_logw("call %s: WS relay paired again, ignored", c->call_id_s);
+        return;
+    }
+    c->ws_round = 1;
     ws_reset(c);
     ws_send_start(c, "a2b");    /* only the caller starts a round (10.2) */
 }
@@ -103,12 +108,17 @@ void call_wsr_start(npf_wsr *r, const uint8_t salt[16], void *arg)
             npf_log("call %s: repeated WS relay salt, ignored", c->call_id_s);
             return;
         }
-    if (c->ws_nsalts < 8)
-        memcpy(c->ws_salts[c->ws_nsalts++], salt, 16);
-    else
-        memcpy(c->ws_salts[i % 8], salt, 16);
+    /* every salt of the session is kept, none ever given up: a session
+     * has a round or two, more is a relay making them (10.2) */
+    if (c->ws_nsalts == (int)(sizeof c->ws_salts / sizeof c->ws_salts[0])) {
+        npf_logw("call %s: too many WS relay rounds", c->call_id_s);
+        npf_call_end(c, "transport_lost");
+        return;
+    }
+    memcpy(c->ws_salts[c->ws_nsalts++], salt, 16);
     if (c->caller) {
         ws_key(c, "b2a", salt, c->ws_krx);
+        c->ws_ctr_rx = 0;       /* the callee's records of this key count from 0 */
         c->ws_rx_ready = 1;
         return;                 /* now wait for the callee's hello */
     }
@@ -251,6 +261,8 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     }
     npf_udpf_free(c->udp);
     c->udp = NULL;
+    npf_media_free(c->media);           /* its streams are AnLiu's, released here */
+    c->media = NULL;
     if (c->anl) {
         call_conv_unlink(c);
         anl_release(c->anl);
@@ -263,6 +275,8 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     if (c->wsr)
         npf_wsr_close(c->wsr);
     c->wsr = NULL;
+    c->ws_round = 0;
+    c->ws_has_pending = 0;              /* a START of the connection closed here is stale */
     if (call_relay_blocked(url))
         return -1;
     c->wsr = npf_wsr_open(c->n->loop, url, pub, &c->n->id, c->relay.relay_id, &wsr_cbs, c);

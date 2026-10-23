@@ -96,6 +96,11 @@ int  npf_if_tunnel_name(const char *name);
 int  npf_accept(int lfd);                       /* non-blocking accepted socket or -1 */
 int  npf_set_nonblock(int fd);
 void npf_sock_close(int fd);
+/* before bind() of a listening socket (type SOCK_STREAM or SOCK_DGRAM): its
+ * port is its own. TCP may bind again at once after a restart (POSIX
+ * SO_REUSEADDR); a UDP port is never shared with another socket; on Windows
+ * SO_EXCLUSIVEADDRUSE for both (its SO_REUSEADDR would take a port in use) */
+void npf_sock_listen_opts(int fd, int type);
 
 /* after a failed socket call */
 int  npf_sock_again(void);                      /* would block / interrupted: try later */
