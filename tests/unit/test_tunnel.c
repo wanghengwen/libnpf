@@ -850,6 +850,29 @@ int test_tunnel(void)
         CHECK(npf_tunnel_count(B.t) == before, "released by their resets (%d)", npf_tunnel_count(B.t) - before);
     }
 
+    /* as many sublinks as the limit from the peer, the largest id first (all
+     * below it within the ids remembered): all open; one more is refused */
+    {
+        uint8_t msg[4 + 2] = {0, 0, 0, 0, 5, 1}, rst[3 + 5] = {NPF_CU_RESET, 5, 0};  /* half a greeting */
+        int before = npf_tunnel_count(B.t), k, room = NPF_MAX_SUBLINKS - before;
+        const uint32_t base = 5001;
+        for (k = room - 1; k >= 0; k--) {
+            npf_le32(msg, base + 2 * (uint32_t)k);
+            npf_tunnel_input_data(B.t, msg, sizeof msg);
+        }
+        CHECK(npf_tunnel_count(B.t) == NPF_MAX_SUBLINKS, "%d sublinks open in any order (%d)", NPF_MAX_SUBLINKS,
+              npf_tunnel_count(B.t));
+        npf_le32(msg, base + 2 * (uint32_t)room);
+        npf_tunnel_input_data(B.t, msg, sizeof msg);
+        CHECK(npf_tunnel_count(B.t) == NPF_MAX_SUBLINKS, "one more refused (%d)", npf_tunnel_count(B.t));
+        rst[7] = NPF_RST_LOCAL;
+        for (k = 0; k < room; k++) {
+            npf_le32(rst + 3, base + 2 * (uint32_t)k);
+            npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
+        }
+        CHECK(npf_tunnel_count(B.t) == before, "all released (%d)", npf_tunnel_count(B.t) - before);
+    }
+
     /* a RESET on the control lane can overtake the sublink's first data: the
      * late data must not open it (ids are never reused) */
     {

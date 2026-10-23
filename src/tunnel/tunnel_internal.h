@@ -90,12 +90,14 @@ struct npf_tunnel {
     int         nsubs, cap, last;
     uint32_t    next_id;
     uint32_t    peer_max_seen;  /* largest peer-opened id */
-    uint64_t    peer_seen[2];   /* the 128 peer ids below it (its parity: every other one), bit k
-                                   = peer_max_seen - 2(k + 1): seen (opened, or reset first) */
+    uint64_t    peer_seen[NPF_MAX_SUBLINKS / 64];  /* the NPF_MAX_SUBLINKS peer ids below it (its
+                                   parity: every other one), bit k = peer_max_seen - 2(k + 1): seen
+                                   (opened, or reset first) */
     uint8_t    *rb;             /* frame reassembly */
     size_t      rl, rcap;
     int         hello_sent, hello_recv;
     uint32_t    peer_window;
+    int64_t     rx_total;       /* its sublinks' receive windows together (NPF_RX_BUDGET) */
     int         peer_max;
     int         paused;
     int         dead;

@@ -98,7 +98,7 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
     }
     n->punch_lead_ms = cfg->punch_lead_ms >= 0 ? cfg->punch_lead_ms : npf_firewall_lead_ms();
     {   /* four S3 hard sides at full size at once (256 each) when the descriptors allow */
-        long lim = npf_fd_limit(4096);
+        long lim = npf_fd_limit(65536);        /* sublinks: a descriptor each, NPF_MAX_SUBLINKS a session */
         n->punch_budget = lim / 2 >= 1024 ? 1024 : lim / 2 < 64 ? 64 : (int)(lim / 2);
     }
     if (n->punch_lead_ms > 0)

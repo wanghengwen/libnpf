@@ -275,6 +275,7 @@ void tunnel_sub_free(sublink *s, int rst)
         st.end = s->end ? s->end : !rst && s->fin_first == 2 ? "peer_closed" : !rst ? "local_closed" : "local_reset";
         t->io.sublink_done(t->arg, s->id, &st);
     }
+    t->rx_total -= s->rx_window;
     for (i = 0; i < t->nsubs; i++)
         if (t->subs[i] == s) {          /* the last one takes its place */
             t->nsubs--;
@@ -352,6 +353,7 @@ static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
     s->server = server;
     s->tx_credit = t->peer_window;
     s->rx_window = NPF_INIT_WINDOW;
+    t->rx_total += s->rx_window;
     t->subs[t->nsubs] = s;
     t->ids[t->nsubs] = id;
     t->nsubs++;
@@ -368,8 +370,9 @@ void tunnel_credit_back(sublink *s, size_t n)
     if (s->rx_freed >= s->rx_window / 4) {
         uint8_t inc[4];
         uint32_t grant = s->rx_freed;
-        if (s->wq.len == 0 && s->rx_window < NPF_MAX_WINDOW) {
+        if (s->wq.len == 0 && s->rx_window < NPF_MAX_WINDOW && s->t->rx_total + s->rx_window <= NPF_RX_BUDGET) {
             grant += s->rx_window;          /* the extra half becomes permanent window */
+            s->t->rx_total += s->rx_window;
             s->rx_window *= 2;
         }
         npf_le32(inc, grant);
@@ -469,17 +472,21 @@ static int handle_control_with(npf_tunnel *t, const uint8_t *p, size_t n, npf_jt
     return 0;
 }
 
-/* the window of the peer's ids below the largest, moved n ids on */
-static void seen_shift(uint64_t w[2], uint32_t n)
+#define SEEN_BITS NPF_MAX_SUBLINKS        /* ids remembered below the largest: as many as may be open */
+#define SEEN_WORDS (SEEN_BITS / 64)
+
+/* the window of the peer's ids below the largest, moved n ids on (bit k
+ * becomes bit k + n) */
+static void seen_shift(uint64_t w[SEEN_WORDS], uint32_t n)
 {
-    if (n >= 128) {
-        w[0] = w[1] = 0;
-    } else if (n >= 64) {
-        w[1] = w[0] << (n - 64);
-        w[0] = 0;
-    } else if (n > 0) {
-        w[1] = (w[1] << n) | (w[0] >> (64 - n));
-        w[0] <<= n;
+    int i, q = (int)(n / 64), r = (int)(n % 64);
+    if (n >= SEEN_BITS) {
+        memset(w, 0, SEEN_WORDS * sizeof w[0]);
+        return;
+    }
+    for (i = SEEN_WORDS - 1; i >= 0; i--) {
+        uint64_t hi = i - q >= 0 ? w[i - q] : 0, lo = i - q - 1 >= 0 ? w[i - q - 1] : 0;
+        w[i] = r ? (hi << r) | (lo >> (64 - r)) : hi;
     }
 }
 
@@ -495,13 +502,13 @@ static int peer_id_new(npf_tunnel *t, uint32_t id)
         if (t->peer_max_seen) {
             k = (id - t->peer_max_seen) / 2;        /* the old largest: bit k - 1 */
             seen_shift(t->peer_seen, k);
-            if (k - 1 < 128)
+            if (k - 1 < SEEN_BITS)
                 t->peer_seen[(k - 1) / 64] |= 1ULL << ((k - 1) % 64);
         }
         t->peer_max_seen = id;
         return 1;
     }
-    if (id == t->peer_max_seen || (k = (t->peer_max_seen - id) / 2 - 1) >= 128
+    if (id == t->peer_max_seen || (k = (t->peer_max_seen - id) / 2 - 1) >= SEEN_BITS
         || (t->peer_seen[k / 64] >> (k % 64) & 1))
         return 0;
     t->peer_seen[k / 64] |= 1ULL << (k % 64);
@@ -836,6 +843,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
     sublink *s = arg;
     npf_tunnel *t = s->t;
     uint32_t id = s->id;            /* s may be released below; ids are never reused */
+    int was_paused = t->paused;
     (void)loop;
     (void)fd;
     if (ev & NPF_EV_WRITE) {
@@ -897,7 +905,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
             }
         }
     }
-    if (t->paused) {
+    if (t->paused && !was_paused) {     /* paused just now: no sublink reads (once, not at each event) */
         int i;
         for (i = 0; i < t->nsubs; i++)
             tunnel_update_ev(t->subs[i]);

@@ -33,9 +33,14 @@ enum { NPF_RST_LOCAL = 1, NPF_RST_PROTOCOL = 2, NPF_RST_LIMIT = 3, NPF_RST_TIMEO
 #define NPF_CU_HDR        3         /* control unit header */
 #define NPF_DATA_HDR      4         /* data message header */
 #define NPF_FRAME_MAX     16384     /* data payload per message */
-#define NPF_INIT_WINDOW   (256 * 1024)
+/* a sublink's receive window: from NPF_INIT_WINDOW, doubled while its data
+ * is taken at once, up to NPF_MAX_WINDOW; a tunnel's windows grow only
+ * while their sum stays within NPF_RX_BUDGET (the memory a peer may fill:
+ * at most max(NPF_RX_BUDGET, NPF_MAX_SUBLINKS x NPF_INIT_WINDOW)) */
+#define NPF_INIT_WINDOW   (64 * 1024)
 #define NPF_MAX_WINDOW    (4 * 1024 * 1024)
-#define NPF_MAX_SUBLINKS  128
+#define NPF_RX_BUDGET     (32 * 1024 * 1024)
+#define NPF_MAX_SUBLINKS  1024
 
 /* tests: the Happy Eyeballs delay (250 ms) and the SOCKS greeting deadline
  * of a sublink (10 s); a resolver giving a name's addresses at once (NULL,
