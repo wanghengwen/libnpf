@@ -799,6 +799,32 @@ static void tun_sublink_done(void *arg, uint32_t id, const npf_sublink_stats *st
 
 static const npf_tunnel_io tun_io = {tun_write_ctrl, tun_write_data, tun_backlog, tun_ready, tun_control, tun_broken,
                                      tun_unit, tun_target_ok, tun_sublink_done};
+/* the session moves to the WS relay: the UDP relay (binding, waiting) and
+ * the direct path (its check, a punch about to start) have nothing left to
+ * do, and their timers would ask for the WS relay again (the platform then
+ * sends the allocation again: its sublinks reset) */
+void call_relay_leave(npf_call *c)
+{
+    npf_loop *l = c->n->loop;
+    if (c->relay.t_bind)
+        npf_timer_cancel(l, c->relay.t_bind);
+    c->relay.t_bind = NULL;
+    c->relay.bound = 0;
+    c->relay_waits_ports = 0;
+    if (c->t_ws_wait)
+        npf_timer_cancel(l, c->t_ws_wait);
+    c->t_ws_wait = NULL;
+    if (c->t_pcheck)
+        npf_timer_cancel(l, c->t_pcheck);
+    c->t_pcheck = NULL;
+    c->p2p_suspect = 0;
+    c->standby_check = 0;
+    if (c->t_punch)
+        npf_timer_cancel(l, c->t_punch);
+    c->t_punch = NULL;
+    c->punch_wait_keys = 0;
+}
+
 /* the session's tunnel (call_start_transport, ws_reset), NULL: no memory */
 npf_tunnel *call_tunnel_new(npf_call *c)
 {
@@ -954,6 +980,8 @@ static void ask_ws_relay(npf_call *c)
         npf_timer_cancel(c->n->loop, c->t_ws_wait);
         c->t_ws_wait = NULL;
     }
+    if (c->ws_mode)                 /* on it already: asking again reset its sublinks */
+        return;
     npf_log("call %s: asking for the WS relay", c->call_id_s);
     snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"ws\"}", c->call_id_s);
     npf_node_send(c->n, "relay_switch", 0, data);
@@ -1027,23 +1055,37 @@ static void relay_bind_timer(npf_loop *loop, void *arg)
 }
 
 
-static void relay_setup(npf_call *c, const npf_json *j, int d)
+/* an allocation taken: the relay of the session from now on */
+static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const char *mode)
 {
-    int r = npf_json_get(j, d, "relay"), arr, i;
-    char mode[8] = "";
-    if (r < 0 || j->tok[r].type != NPF_JT_OBJECT)
-        return;
-    npf_json_get_str(j, r, "mode", mode, sizeof mode);
-    if (npf_json_get_b64(j, r, "relay_id", c->relay.relay_id, 8) != 8
-        || npf_json_get_b64(j, r, "alloc_key", c->relay.alloc_key, 32) != 32)
-        return;
+    memcpy(c->relay.relay_id, id, 8);
+    memcpy(c->relay.alloc_key, key, 32);
     snprintf(c->relay.mode, sizeof c->relay.mode, "%s", mode);
     c->relay_asked = 0;
     if (c->t_standby) {
         npf_timer_cancel(c->n->loop, c->t_standby);
         c->t_standby = NULL;
     }
+}
+
+/* the platform's relay allocation; one that is no use leaves the relay in use
+ * as it is (it used to take its id and key at once, then bind the old
+ * addresses with them) */
+static void relay_setup(npf_call *c, const npf_json *j, int d)
+{
+    int r = npf_json_get(j, d, "relay"), arr, i, naddr = 0;
+    char mode[8] = "";
+    uint8_t id[8], key[32];
+    struct sockaddr_storage addr[4];
+    if (r < 0 || j->tok[r].type != NPF_JT_OBJECT)
+        return;
+    npf_json_get_str(j, r, "mode", mode, sizeof mode);
+    if (npf_json_get_b64(j, r, "relay_id", id, 8) != 8 || npf_json_get_b64(j, r, "alloc_key", key, 32) != 32)
+        return;
     if (strcmp(mode, "ws") == 0) {
+        if (c->ws_mode && c->wsr && memcmp(id, c->relay.relay_id, 8) == 0)
+            return;                 /* the one in use, sent again (both sides asked): its sublinks stay */
+        relay_take(c, id, key, mode);
         if (call_ws_setup(c, j, r) < 0)
             call_ws_failed(c, "cannot connect");
         return;
@@ -1051,16 +1093,17 @@ static void relay_setup(npf_call *c, const npf_json *j, int d)
     if (strcmp(mode, "udp") != 0)
         return;
     arr = npf_json_get(j, r, "udp");
-    c->relay.naddr = 0;
-    for (i = 0; arr >= 0 && i < j->tok[arr].size && c->relay.naddr < 4; i++) {
+    for (i = 0; arr >= 0 && i < j->tok[arr].size && naddr < 4; i++) {
         char a[80];
-        if (npf_json_str(j, npf_json_item(j, arr, i), a, sizeof a) > 0
-            && npf_addr_parse(a, &c->relay.addr[c->relay.naddr]) == 0
-            && c->relay.addr[c->relay.naddr].ss_family == AF_INET)
-            c->relay.naddr++;
+        if (npf_json_str(j, npf_json_item(j, arr, i), a, sizeof a) > 0 && npf_addr_parse(a, &addr[naddr]) == 0
+            && addr[naddr].ss_family == AF_INET)
+            naddr++;
     }
-    if (!c->relay.naddr)
+    if (!naddr)
         return;
+    relay_take(c, id, key, mode);
+    memcpy(c->relay.addr, addr, (size_t)naddr * sizeof addr[0]);
+    c->relay.naddr = naddr;
     npf_siv_derive(&c->relay.keys, c->relay.alloc_key, LABEL_RELAY);
     c->relay.active = 1;
     c->relay.bound = 0;
@@ -1193,6 +1236,7 @@ static void repunch_timer(npf_loop *loop, void *arg)
     c->t_repunch = NULL;
     if (c->ended || c->p2p || c->ws_mode)
         return;
+    c->sock_wait = 0;                   /* asked now: punch_next has nothing more to ask for it */
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
     npf_jw_kstr(&w, "call_id", c->call_id_s);
@@ -1700,13 +1744,17 @@ static void start_punch_now(npf_call *c)
         return;
     }
     memcpy(c->pcfg.plan.nominate_key, c->nominate_key, 32);
-    if (c->punch) {
+    if (c->punch) {                 /* the last round's, lingering or still running */
+        int had = c->punch_socks > 0;
         if (c->t_linger) {
             npf_timer_cancel(c->n->loop, c->t_linger);
             c->t_linger = NULL;
         }
         npf_punch_free(c->punch);
         c->punch = NULL;
+        c->punch_socks = 0;
+        if (had)                    /* a running hard-side one: the calls waiting for its sockets */
+            punch_sockets_back(c->n);
     }
     c->punch_socks = 0;
     if (c->pcfg.plan.strategy == NPF_PUNCH_S3 && c->pcfg.plan.side == NPF_PUNCH_HARD) {
@@ -1749,8 +1797,11 @@ static void start_punch_now(npf_call *c)
     if (c->pcfg.plan.strategy == NPF_PUNCH_S2B) {
         const uint8_t *pk = node_day_key(c->n, c->n->probe_keys);
         if (c->n->nprobe_ep < 2 || !pk) {
+            npf_punch_result res;
             npf_logw("call %s: punch round %d S2B: no probe servers to measure the fresh mapping with",
                      c->call_id_s, c->punch_round);
+            memset(&res, 0, sizeof res);    /* a failed round: reported, and the next one asked for */
+            punch_done(NULL, &res, -1, c);
             return;
         }
         c->pcfg.probe_ep[0] = c->n->probe_ep[0];
@@ -1832,16 +1883,24 @@ static void handle_punch_start(npf_call *c, const npf_json *j, int d)
     char s[64], strat[8] = "S1";
     if (!c->caller)
         accept_seen(c);
-    if (c->p2p)
+    if (c->p2p || c->ws_mode)       /* a WS relay session cannot move to a direct path */
         return;
     if (no_p2p(c)) {                /* secure, or tests: the session stays on the relay */
         npf_log("call %s: punching disabled (%s)", c->call_id_s, c->secure ? "connect_mode secure" : "NPF_NO_P2P");
         return;
     }
-    memset(&c->pcfg, 0, sizeof c->pcfg);
+    /* an old or repeated round changes nothing (it wiped the plan of the
+     * round waiting for its start time: that one then probed no one) */
     if (npf_json_get_int(j, d, "round", 1, 1000, &v) < 0 || v <= c->punch_round)
         return;
     c->punch_round = (int)v;
+    if (c->t_punch) {               /* the last round's start: this one replaces it */
+        npf_timer_cancel(c->n->loop, c->t_punch);
+        c->t_punch = NULL;
+    }
+    c->punch_wait_keys = 0;
+    c->sock_wait = 0;               /* the round came */
+    memset(&c->pcfg, 0, sizeof c->pcfg);
     if (c->repunch_waiting) {       /* the round asked for: no longer waited for */
         npf_timer_cancel(c->n->loop, c->t_repunch);
         c->t_repunch = NULL;

@@ -273,6 +273,7 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     }
     c->ws_mode = 1;
     c->relay.active = 0;
+    call_relay_leave(c);
     if (c->wsr)
         npf_wsr_close(c->wsr);
     c->wsr = NULL;

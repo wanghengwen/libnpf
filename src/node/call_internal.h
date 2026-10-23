@@ -194,6 +194,7 @@ void call_conv_unlink(npf_call *c);
 npf_media *call_media_of(npf_call *c);
 npf_udpf *call_udp_of(npf_call *c);
 npf_tunnel *call_tunnel_new(npf_call *c);
+void call_relay_leave(npf_call *c);
 void call_ctl_fail_all(npf_call *c);
 int call_start_transport(npf_call *c);
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
