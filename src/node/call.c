@@ -506,6 +506,8 @@ static void anl_drain_with(npf_call *c, char *buf, size_t cap)
                 if (ctrl ? npf_tunnel_input_ctrl(c->tun, (uint8_t *)buf, (size_t)r) < 0
                          : npf_tunnel_input_data(c->tun, (uint8_t *)buf, (size_t)r) < 0)
                     return;
+                if (c->ended)               /* the peer's close: nothing more goes to the tunnel */
+                    return;
                 continue;
             }
             if (r == ANL_ECLOSED && rd[i] == c->stream) {
@@ -2076,6 +2078,7 @@ void call_free(npf_call *c)
     if (c->t_pcheck) npf_timer_cancel(n->loop, c->t_pcheck);
     if (c->relay.t_bind) npf_timer_cancel(n->loop, c->relay.t_bind);
     if (c->t_wsflush) npf_timer_cancel(n->loop, c->t_wsflush);
+    if (c->t_free) npf_timer_cancel(n->loop, c->t_free);     /* freed now (the node stops): not again */
     if (c->wsr) npf_wsr_close(c->wsr);
     free(c->ws_out);
     free(c->ws_in);
@@ -2109,8 +2112,46 @@ void call_free(npf_call *c)
 /* defer the free: npf_call_end may run inside callbacks of this call */
 static void free_later(npf_loop *loop, void *arg)
 {
+    npf_call *c = arg;
     (void)loop;
-    call_free(arg);
+    c->t_free = NULL;
+    call_free(c);
+}
+
+/* an ended call does nothing more: what its timers would start (a punch, a
+ * relay bind or switch, a path check, a retry, a probe of the signaling) is
+ * no one's now. Not t_wsflush: it sends the close over the WS relay */
+static void call_timers_stop(npf_call *c)
+{
+    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck, &c->t_repunch,
+                       &c->t_standby, &c->t_direct, &c->relay.t_bind};
+    size_t i;
+    for (i = 0; i < sizeof t / sizeof t[0]; i++) {
+        if (*t[i])
+            npf_timer_cancel(c->n->loop, *t[i]);
+        *t[i] = NULL;
+    }
+}
+
+/* the end of a call, after its CLOSED: the requests waiting for replies get
+ * none, its timers stop, it is freed on the next turn of the loop (once) */
+static void call_ended(npf_call *c)
+{
+    call_ctl_fail_all(c);                   /* after CLOSED: the peers know the session is gone */
+    call_timers_stop(c);
+    if (!c->t_free)
+        c->t_free = npf_timer_add(c->n->loop, 0, free_later, c);
+}
+
+/* a call that ends without a word to the peer or the platform (they told
+ * us, or the platform refused it, or the signaling went before it was up) */
+static void call_close_quiet(npf_call *c, const char *why)
+{
+    if (c->ended)
+        return;
+    c->ended = 1;
+    call_set_state(c, NPF_CALL_CLOSED, why);
+    call_ended(c);
 }
 
 /* a reason as the peer and the platform get it (the server keeps the same
@@ -2146,12 +2187,7 @@ void npf_call_end(npf_call *c, const char *why)
     if (!c->direct)
         npf_node_call_end(c->n, c->call_id_s, reason);
     call_set_state(c, NPF_CALL_CLOSED, reason);
-    call_ctl_fail_all(c);                   /* after CLOSED: the peers know the session is gone */
-    if (c->t_anl) {
-        npf_timer_cancel(c->n->loop, c->t_anl);
-        c->t_anl = NULL;
-    }
-    npf_timer_add(c->n->loop, 0, free_later, c);
+    call_ended(c);
 }
 
 int npf_call_state(const npf_call *c) { return c->state; }
@@ -2656,9 +2692,7 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
             snprintf(id, sizeof id, "r%d", x->call_req);
             if (x->caller && strcmp(id, rt) == 0) {
                 npf_logw("call %s: rejected by the platform (%s)", x->call_id_s, err);
-                x->ended = 1;
-                call_set_state(x, NPF_CALL_CLOSED, err);
-                npf_timer_add(n->loop, 0, free_later, x);
+                call_close_quiet(x, err);
                 return;
             }
         }
@@ -2688,9 +2722,7 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
         else if (strcmp(err, "quota") == 0)
             npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
                     "until next month or a larger plan");
-        c->ended = 1;
-        call_set_state(c, NPF_CALL_CLOSED, err);
-        npf_timer_add(n->loop, 0, free_later, c);
+        call_close_quiet(c, err);
     } else if (strcmp(type, "handshake") == 0) {
         handle_handshake(c, j, d);
     } else if (strcmp(type, "punch_start") == 0) {
@@ -2704,9 +2736,7 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
         char r[32] = "closed";
         npf_json_get_str(j, d, "reason", r, sizeof r);
         npf_log("call %s: ended by the peer (%s)", c->call_id_s, r);
-        c->ended = 1;
-        call_set_state(c, NPF_CALL_CLOSED, r);
-        npf_timer_add(n->loop, 0, free_later, c);
+        call_close_quiet(c, r);
     }
 }
 
@@ -2716,11 +2746,8 @@ void node_sig_lost(npf_node *n)
     /* calls still being set up cannot finish without signaling; established ones go on */
     for (c = n->calls; c; c = next) {
         next = c->next;
-        if (c->state != NPF_CALL_ESTABLISHED && !c->ended) {
-            c->ended = 1;
-            call_set_state(c, NPF_CALL_CLOSED, "signaling lost");
-            npf_timer_add(n->loop, 0, free_later, c);
-        }
+        if (c->state != NPF_CALL_ESTABLISHED)
+            call_close_quiet(c, "signaling lost");
     }
 }
 

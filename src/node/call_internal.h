@@ -168,6 +168,7 @@ struct npf_call {
     npf_media  *media;              /* libnpf media streams (media.h), made on first use */
     npf_udpf   *udp;                /* the UDP forwards' flows (udpfwd.h), made on first use */
     npf_timer  *t_wsflush;
+    npf_timer  *t_free;             /* its free on the next turn of the loop (ended) */
     /* callee: reverse-mapping listeners (data-channel.md 7.1) */
     struct rev_listener {
         npf_call *c;
