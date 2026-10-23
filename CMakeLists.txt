@@ -4,7 +4,7 @@
 # own code: they link npf_common and are registered at npf_create.
 cmake_minimum_required(VERSION 3.16)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-  project(libnpf VERSION 0.1.3 LANGUAGES C)
+  project(libnpf VERSION 0.1.4 LANGUAGES C)
   set(npf_VERSION ${libnpf_VERSION})
   set(CMAKE_C_STANDARD 99)
   set(CMAKE_C_STANDARD_REQUIRED ON)
