@@ -1065,6 +1065,23 @@ static void relay_bind_timer(npf_loop *loop, void *arg)
     c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
 }
 
+/* the UDP relay bound again from its first address (a BIND every 700 ms) */
+static void relay_rebind(npf_call *c)
+{
+    c->relay.tries = 0;
+    c->relay.cur = 0;
+    timer_stop(c->n->loop, &c->relay.t_bind);
+    relay_bind_send(c);
+    c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+}
+
+/* the binding refreshed every RELAY_KEEPALIVE_MS while the relay is in use */
+static void relay_keepalive(npf_call *c)
+{
+    timer_stop(c->n->loop, &c->relay.t_bind);
+    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_bind_timer, c);
+}
+
 
 /* an allocation taken: the relay of the session from now on */
 static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const char *mode)
@@ -1115,12 +1132,7 @@ static void relay_setup(npf_call *c, const npf_json *j, int d)
     npf_siv_derive(&c->relay.keys, c->relay.alloc_key, LABEL_RELAY);
     c->relay.active = 1;
     c->relay.bound = 0;
-    c->relay.tries = 0;
-    c->relay.cur = 0;
-    relay_bind_send(c);
-    if (c->relay.t_bind)
-        npf_timer_cancel(c->n->loop, c->relay.t_bind);
-    c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+    relay_rebind(c);
 }
 
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
@@ -1148,9 +1160,7 @@ static void relay_bound(npf_call *c, const char *how)
         npf_timer_cancel(c->n->loop, c->t_ws_wait);
         c->t_ws_wait = NULL;
     }
-    if (c->relay.t_bind)
-        npf_timer_cancel(c->n->loop, c->relay.t_bind);
-    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_bind_timer, c);
+    relay_keepalive(c);
     npf_log("call %s: UDP relay bound%s", c->call_id_s, how);
     path_up(c);
 }
@@ -1182,10 +1192,8 @@ static int relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct
             npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
             c->relay.active = 1;
             c->relay.bound = 1;
-            if (c->relay.t_bind)
-                npf_timer_cancel(c->n->loop, c->relay.t_bind);
             relay_bind_send(c);
-            c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_bind_timer, c);
+            relay_keepalive(c);
         } else if (!c->relay.bound) {
             /* the relay forwards the peer's data to us: it has our binding,
              * whether or not its BIND_ACK came. Measured (a Mac <-> a Linux
@@ -1429,10 +1437,7 @@ static void p2p_suspect_start(npf_call *c, const char *why)
             /* it never bound (the direct path carried the session): bound
              * now, or the session had nothing left when the path went */
             npf_log("call %s: the UDP relay never bound: binding it again", c->call_id_s);
-            c->relay.tries = 0;
-            c->relay.cur = 0;
-            relay_bind_send(c);
-            c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+            relay_rebind(c);
         }
     } else if (!c->relay_asked) {
         /* the relay was released after the standby: ask for a new allocation */
@@ -1535,10 +1540,7 @@ static void ws_wait_end(npf_call *c, int ok)
          * start, five punches at once: its binds went unanswered for 5 s) */
         npf_log("call %s: trying the UDP relay once more before the WS relay", c->call_id_s);
         c->relay_retried = 1;
-        c->relay.tries = 0;
-        c->relay.cur = 0;
-        relay_bind_send(c);
-        c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+        relay_rebind(c);
     } else if (!ok) {
         ask_ws_relay(c);
     }
@@ -1695,13 +1697,8 @@ static void punch_next(npf_node *n)
     for (o = n->calls; o; o = o->next)
         if (o->relay_waits_ports && !o->ended && !o->relay.bound && !o->ws_mode) {
             o->relay_waits_ports = 0;
-            o->relay.tries = 0;
-            o->relay.cur = 0;
             npf_log("call %s: the punch gave the NAT's ports back: trying the UDP relay again", o->call_id_s);
-            if (o->relay.t_bind)
-                npf_timer_cancel(n->loop, o->relay.t_bind);
-            relay_bind_send(o);
-            o->relay.t_bind = npf_timer_add(n->loop, 700, relay_bind_timer, o);
+            relay_rebind(o);
             binding = 1;
         }
     for (o = n->calls; o; o = o->next)
@@ -2464,13 +2461,72 @@ static void callee_reply_error(npf_node *n, const char *req, const char *err)
     npf_node_reply(n, "incoming", req, "error", err, NULL);
 }
 
+/* an incoming pairing (CPace, then Noise XXpsk3 with its key): the answer
+ * in out (*ol bytes), the CPace message in ymsg; NULL, or the error to reply */
+static const char *incoming_pake(npf_call *c, const npf_json *j, int d, const uint8_t *msg, int ml, uint8_t *out,
+                                 size_t outcap, int *ol, uint8_t ymsg[32])
+{
+    npf_node *n = c->n;
+    const char *pw = n->callee->password ? n->callee->password(n, n->callee_arg) : NULL;
+    int64_t lock = n->callee->locked_until ? n->callee->locked_until(n, n->callee_arg) : 0;
+    uint8_t p[64], pro[64], sid[24], isk[32], peer_y[32];
+    size_t pl;
+    int ok;
+    c->auth = AUTH_PAKE;
+    if (lock > npf_node_time(n) / 1000)
+        return "locked";
+    if (!pw || !*pw || npf_json_get_b64(j, d, "cpace", peer_y, 32) != 32)
+        return "unauthorized";
+    prologue(c, pro, &pl);
+    sid_of(c, sid);
+    ok = npf_cpace_start(&c->cp, pw, strlen(pw), sid, sizeof sid, ymsg) >= 0
+         && npf_cpace_finish(&c->cp, peer_y, 0, isk) >= 0
+         && npf_noise_init(&c->hs, NPF_NOISE_XXPSK3, 0, pro, pl, n->id.dh_sk, NULL, isk) >= 0
+         && npf_noise_read(&c->hs, msg, (size_t)ml, p, sizeof p) >= 0
+         && (*ol = npf_noise_write(&c->hs, NULL, 0, out, outcap)) >= 0;
+    npf_wipe(isk, 32);
+    return ok ? NULL : "unauthorized";
+}
+
+/* an incoming session of a paired caller (Noise IK) or of a grant: the
+ * callee gate (security.md 8.3): the caller's key is authorized, or hosted
+ * trust with a valid grant bound to that key; the answer in out (*ol bytes) */
+static const char *incoming_ik(npf_call *c, const npf_json *j, int d, const uint8_t *msg, int ml, uint8_t *out,
+                               size_t outcap, int *ol)
+{
+    npf_node *n = c->n;
+    uint8_t p[64], pro[64];
+    size_t pl;
+    prologue(c, pro, &pl);
+    if (npf_noise_init(&c->hs, NPF_NOISE_IK, 0, pro, pl, n->id.dh_sk, NULL, NULL) < 0
+        || npf_noise_read(&c->hs, msg, (size_t)ml, p, sizeof p) < 0)
+        return "unauthorized";
+    if (c->auth == AUTH_IK) {
+        if (!n->callee->authorized || !n->callee->authorized(n, npf_noise_remote_static(&c->hs), n->callee_arg))
+            return "unauthorized";
+    } else {
+        uint8_t g[512];
+        npf_grant gr;
+        int gl = npf_json_get_b64(j, d, "grant", g, sizeof g);
+        if (gl <= 0 || !n->callee->grant_check
+            || n->callee->grant_check(n, g, (size_t)gl, npf_noise_remote_static(&c->hs), &c->grant_account, &gr,
+                                      n->callee_arg) < 0
+            || set_targets(c, &gr) < 0)
+            return "unauthorized";
+    }
+    *ol = npf_noise_write(&c->hs, NULL, 0, out, outcap);
+    if (*ol < 0 || finish_handshake(c) < 0)
+        return "unauthorized";
+    return NULL;
+}
+
 static void handle_incoming(npf_node *n, const npf_json *j, int d)
 {
     char data[4096];
     char req[24], auth[8], hs_b[NPF_B64_LEN(512)];
-    uint8_t msg[512], out[512], p[64], pro[64], sid[24], ymsg[32], isk[32], peer_y[32];
-    size_t pl;
-    int ml, ol;
+    uint8_t msg[512], out[512], ymsg[32];
+    const char *err;
+    int ml, ol = -1;
     npf_call *c;
     npf_jw w;
     if (npf_json_get_str(j, 0, "id", req, sizeof req) < 0)
@@ -2527,70 +2583,15 @@ static void handle_incoming(npf_node *n, const npf_json *j, int d)
     parse_cands(c, j, d);
     secure_of(c, j, d);
     if (strcmp(auth, "pake") == 0) {
-        const char *pw = n->callee->password ? n->callee->password(n, n->callee_arg) : NULL;
-        int64_t lock = n->callee->locked_until ? n->callee->locked_until(n, n->callee_arg) : 0;
-        c->auth = AUTH_PAKE;
-        if (lock > npf_node_time(n) / 1000) {
-            callee_reply_error(n, req, "locked");
-            call_free(c);
-            return;
-        }
-        if (!pw || !*pw || npf_json_get_b64(j, d, "cpace", peer_y, 32) != 32) {
-            callee_reply_error(n, req, "unauthorized");
-            call_free(c);
-            return;
-        }
-        prologue(c, pro, &pl);
-        sid_of(c, sid);
-        if (npf_cpace_start(&c->cp, pw, strlen(pw), sid, sizeof sid, ymsg) < 0
-            || npf_cpace_finish(&c->cp, peer_y, 0, isk) < 0
-            || npf_noise_init(&c->hs, NPF_NOISE_XXPSK3, 0, pro, pl, n->id.dh_sk, NULL, isk) < 0
-            || npf_noise_read(&c->hs, msg, (size_t)ml, p, sizeof p) < 0
-            || (ol = npf_noise_write(&c->hs, NULL, 0, out, sizeof out)) < 0) {
-            npf_wipe(isk, 32);
-            callee_reply_error(n, req, "unauthorized");
-            call_free(c);
-            return;
-        }
-        npf_wipe(isk, 32);
+        err = incoming_pake(c, j, d, msg, ml, out, sizeof out, &ol, ymsg);
     } else if (strcmp(auth, "ik") == 0 || strcmp(auth, "grant") == 0) {
         c->auth = strcmp(auth, "ik") == 0 ? AUTH_IK : AUTH_GRANT;
-        prologue(c, pro, &pl);
-        if (npf_noise_init(&c->hs, NPF_NOISE_IK, 0, pro, pl, n->id.dh_sk, NULL, NULL) < 0
-            || npf_noise_read(&c->hs, msg, (size_t)ml, p, sizeof p) < 0) {
-            callee_reply_error(n, req, "unauthorized");
-            call_free(c);
-            return;
-        }
-        /* the callee gate (security.md 8.3): the caller's key is authorized, or
-         * hosted trust with a valid grant bound to that key */
-        if (c->auth == AUTH_IK) {
-            if (!n->callee->authorized || !n->callee->authorized(n, npf_noise_remote_static(&c->hs), n->callee_arg)) {
-                callee_reply_error(n, req, "unauthorized");
-                call_free(c);
-                return;
-            }
-        } else {
-            uint8_t g[512];
-            npf_grant gr;
-            int gl = npf_json_get_b64(j, d, "grant", g, sizeof g);
-            if (gl <= 0 || !n->callee->grant_check
-                || n->callee->grant_check(n, g, (size_t)gl, npf_noise_remote_static(&c->hs), &c->grant_account,
-                                          &gr, n->callee_arg) < 0
-                || set_targets(c, &gr) < 0) {
-                callee_reply_error(n, req, "unauthorized");
-                call_free(c);
-                return;
-            }
-        }
-        ol = npf_noise_write(&c->hs, NULL, 0, out, sizeof out);
-        if (ol < 0 || finish_handshake(c) < 0) {
-            callee_reply_error(n, req, "unauthorized");
-            call_free(c);
-            return;
-        }
+        err = incoming_ik(c, j, d, msg, ml, out, sizeof out, &ol);
     } else {
-        callee_reply_error(n, req, "unauthorized");     /* grant: not yet */
+        err = "unauthorized";
+    }
+    if (err) {
+        callee_reply_error(n, req, err);
         call_free(c);
         return;
     }
