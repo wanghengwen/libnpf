@@ -131,6 +131,9 @@ add_library(npf_common STATIC
   src/node/local.c
   src/node/resources.c
   src/node/node.c
+  src/node/node_servers.c
+  src/node/node_signal.c
+  src/node/node_network.c
   src/node/nat.c
   src/node/nodemap.c
   src/node/sources.c
@@ -161,7 +164,11 @@ add_library(npf_common STATIC
 target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
 # the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)
 if(NPF_HAS_PEERS)
-  target_sources(npf_common PRIVATE src/node/peers.c)
+  target_sources(npf_common PRIVATE
+    src/node/peers.c
+    src/node/peers_forward.c
+    src/node/peers_demand.c
+    src/node/peers_connections.c)
 else()
   target_sources(npf_common PRIVATE src/node/peers_none.c)
   target_compile_definitions(npf_common PUBLIC NPF_NO_PEERS)
