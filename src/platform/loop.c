@@ -12,6 +12,19 @@
 #include "npf/loop.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
+#include <stdint.h>
+
+/* a callback that holds the loop SLOW_CB_MS or more is logged, with its
+ * address and npf_loop_new's (the offset between them names it: nm, addr2line):
+ * nothing else runs meanwhile, timers come late (a ping, a watch) */
+#define SLOW_CB_MS 1000
+#define TIMED(fnp, call) do {                                                                       \
+        int64_t t0_ = npf_mono_ms(), d_;                                                            \
+        call;                                                                                       \
+        if ((d_ = npf_mono_ms() - t0_) >= SLOW_CB_MS)                                               \
+            npf_logw("loop: a callback held the loop %lld ms (%#lx; npf_loop_new %#lx)", (long long)d_, \
+                     (unsigned long)(uintptr_t)(fnp), (unsigned long)(uintptr_t)npf_loop_new);      \
+    } while (0)
 
 #ifdef _WIN32
 typedef CRITICAL_SECTION npf_mutex;
@@ -230,7 +243,7 @@ static void run_posted(npf_loop *l)
         npf_mutex_unlock(&l->post_mu);
         if (!p)
             return;
-        p->fn(l, p->arg);
+        TIMED(p->fn, p->fn(l, p->arg));
         free(p);
     }
 }
@@ -370,7 +383,7 @@ static void fire_timers(npf_loop *l)
         if (t->due > npf_mono_ms())
             break;
         heap_remove(l, t);
-        t->fn(l, t->arg);
+        TIMED(t->fn, t->fn(l, t->arg));
         free(t);
     }
 }
@@ -726,7 +739,7 @@ static void host_once(npf_loop *l, int max_ms)
                 continue;
             c->now = l->now;
             prev = npf_log_ctx_swap(c->logctx);
-            h->fn(c, h->fd, e, h->arg);
+            TIMED(h->fn, h->fn(c, h->fd, e, h->arg));
             npf_log_ctx_swap(prev);
         }
         goto after;
@@ -791,7 +804,7 @@ static void host_once(npf_loop *l, int max_ms)
                 continue;
             c->now = l->now;
             prev = npf_log_ctx_swap(c->logctx);
-            h->fn(c, h->fd, e, h->arg);
+            TIMED(h->fn, h->fn(c, h->fd, e, h->arg));
             npf_log_ctx_swap(prev);
         }
     }
@@ -897,7 +910,7 @@ void npf_loop_once(npf_loop *l, int max_ms)
             /* the handler may have been removed or replaced by an earlier callback */
             h = find_h(l, (int)l->pfd[i].fd);
             if (h && h->fn)
-                h->fn(l, h->fd, e, h->arg);
+                TIMED(h->fn, h->fn(l, h->fd, e, h->arg));
         }
     }
     l->now = npf_mono_ms();
