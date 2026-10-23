@@ -64,6 +64,9 @@ typedef struct npf_natprobe_result {
 } npf_natprobe_result;
 
 void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg);
+/* the allocation (profile.allocation, seq_delta, block_lo/hi) from the
+ * alloc_* samples of res (the detection does it; tests) */
+void npf_natprobe_classify_alloc(npf_natprobe_result *res);
 
 /* Run the whole detection (about 2-3 s worst case). Returns 0, or -1 if E1
  * did not answer at all (no profile). */

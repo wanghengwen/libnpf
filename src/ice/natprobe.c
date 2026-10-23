@@ -273,7 +273,7 @@ static int same_ep(const struct sockaddr_in *a, const struct sockaddr_in *b)
 }
 
 /* port allocation from K (local, mapped) samples, 4.2 */
-static void classify_alloc(npf_natprobe_result *res)
+void npf_natprobe_classify_alloc(npf_natprobe_result *res)
 {
     uint16_t p[NPF_NATPROBE_MAX_ALLOC];
     int n = 0, i, preserve = 1, best = 0, best_cnt = 0;
@@ -294,22 +294,21 @@ static void classify_alloc(npf_natprobe_result *res)
         res->profile.allocation = NPF_ALLOC_PRESERVE;
         return;
     }
-    /* sequential: the most common delta is the step, small and positive,
-     * for half of them at least. Not every delta: other traffic behind the
-     * same NAT takes a port now and then (a busy NAT pushed one delta past
-     * 64 and a sequential NAT read as a block), and the range wraps at its
-     * end (a negative one) */
+    /* sequential: the ports go up in small steps, all of them (but one, of
+     * five and more: the range wrapping at its end); the step the smallest.
+     * Other traffic behind the same NAT takes ports in between (a busy NAT:
+     * deltas 2 4 3 for a step of 1), so not "the same delta" each time: that
+     * read a busy sequential NAT as a block. A block's or random allocation
+     * goes down as often as up */
     for (i = 0; i + 1 < n; i++) {
-        int d = (int16_t)(uint16_t)(p[i + 1] - p[i]), j, cnt = 0;
-        for (j = 0; j + 1 < n; j++)
-            if ((int16_t)(uint16_t)(p[j + 1] - p[j]) == d)
-                cnt++;
-        if (cnt > best_cnt) {
-            best_cnt = cnt;
-            best = d;
+        int d = (int16_t)(uint16_t)(p[i + 1] - p[i]);
+        if (d >= 1 && d <= 64) {
+            best_cnt++;
+            if (!best || d < best)
+                best = d;
         }
     }
-    if (best > 0 && best <= 16 && best_cnt * 2 >= n - 1) {
+    if (n - 1 >= 2 && best_cnt >= (n - 1 >= 5 ? n - 2 : n - 1) && best > 0 && best <= 16) {
         res->profile.allocation = NPF_ALLOC_SEQUENTIAL;
         res->profile.seq_delta = (int16_t)best;
         return;
@@ -386,7 +385,7 @@ static int collect_alloc(npf_natprobe_result *res, const tx *txs, int n)
                 f = i;
         }
     }
-    classify_alloc(res);
+    npf_natprobe_classify_alloc(res);
     return f;
 }
 

@@ -5,6 +5,7 @@
 #include "npf/bind.h"
 #include "npf/siv.h"
 #include "npf/candidates.h"
+#include "npf/natprobe.h"
 #include "npf/portmap.h"
 #include "npf/version.h"
 
@@ -74,6 +75,35 @@ static void test_probe_vector(void)
     npf_siv_seal(&keys, NPF_DIR_REQ, buf, 40);
     hex2bin("ee8061d3211c7bbc89ec8aa9", exp, 12);
     CHECK(memcmp(buf, exp, 12) == 0, "probe vector tag (must match natprobe_test.go)");
+    {   /* the allocation from mapped ports: a busy sequential NAT (other
+         * traffic takes ports in between: seen in natlab's s2b-busy), the
+         * range wrapping, and a block of 512 ports in random order */
+        static const struct { uint16_t p[6]; int n, alloc, delta; } cases[] = {
+            {{21878, 21880, 21884, 21887}, 4, NPF_ALLOC_SEQUENTIAL, 2},
+            {{27847, 27848, 27851, 27853}, 4, NPF_ALLOC_SEQUENTIAL, 1},
+            {{24278, 24280, 24282, 24284, 24307}, 5, NPF_ALLOC_SEQUENTIAL, 2},
+            {{29997, 29998, 20000, 20001, 20002, 20003}, 6, NPF_ALLOC_SEQUENTIAL, 1},
+            {{20311, 20044, 20490, 20120}, 4, NPF_ALLOC_BLOCK, 0},
+            {{20100, 20130, 20090, 20200, 20150}, 5, NPF_ALLOC_BLOCK, 0},
+        };
+        size_t c;
+        int k;
+        for (c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+            npf_natprobe_result r;
+            memset(&r, 0, sizeof r);
+            r.alloc_n = cases[c].n;
+            for (k = 0; k < cases[c].n; k++) {
+                r.alloc_got[k] = 1;
+                r.alloc_local[k] = (uint16_t)(40000 + k);
+                r.alloc_mapped[k] = cases[c].p[k];
+            }
+            npf_natprobe_classify_alloc(&r);
+            CHECK(r.profile.allocation == cases[c].alloc
+                      && (cases[c].alloc != NPF_ALLOC_SEQUENTIAL || r.profile.seq_delta == cases[c].delta),
+                  "allocation case %zu: %d (delta %d), want %d (%d)", c, r.profile.allocation, r.profile.seq_delta,
+                  cases[c].alloc, cases[c].delta);
+        }
+    }
     CHECK(npf_siv_open(&keys, NPF_DIR_REQ, buf, 52, plain) == 40, "open own direction");
     CHECK(npf_siv_open(&keys, NPF_DIR_RESP, buf, 52, plain) < 0, "reflection rejected");
 }
