@@ -34,8 +34,10 @@ void call_ws_flush_timer(npf_loop *loop, void *arg)
     while (c->ws_out_len && c->wsr && c->ws_tx_ready) {
         size_t n = c->ws_out_len > 65536 ? 65536 : c->ws_out_len;
         uint8_t *rec = malloc(n + 16), nonce[12];
-        if (!rec)
+        if (!rec) {
+            npf_call_end(c, "error");   /* nothing would flush it again */
             return;
+        }
         ws_nonce(nonce, c->ws_ctr_tx++);
         if (npf_aead_seal(c->ws_ktx, nonce, NULL, 0, c->ws_out, n, rec) < 0
             || npf_wsr_send(c->wsr, NPF_WSR_RECORD, rec, n + 16) < 0) {
@@ -51,8 +53,9 @@ void call_ws_flush_timer(npf_loop *loop, void *arg)
         npf_tunnel_kick(c->tun);
 }
 
-/* a new round: reset the transport's sublinks and counters */
-static void ws_reset(npf_call *c)
+/* a new round: reset the transport's sublinks and counters; -1 when the
+ * new tunnel could not be made (the call ended) */
+static int ws_reset(npf_call *c)
 {
     call_ctl_fail_all(c);               /* the old tunnel's requests get no reply */
     if (c->tun)
@@ -66,6 +69,11 @@ static void ws_reset(npf_call *c)
     c->ws_in_len = 0;
     c->ws_ctr_tx = c->ws_ctr_rx = 0;
     c->ws_tx_ready = c->ws_rx_ready = 0;
+    if (!c->tun) {
+        npf_call_end(c, "error");
+        return -1;
+    }
+    return 0;
 }
 
 static void ws_send_start(npf_call *c, const char *dir)
@@ -90,7 +98,8 @@ void call_wsr_paired(npf_wsr *r, void *arg)
         return;
     }
     c->ws_round = 1;
-    ws_reset(c);
+    if (ws_reset(c) < 0)
+        return;
     ws_send_start(c, "a2b");    /* only the caller starts a round (10.2) */
 }
 
@@ -123,7 +132,8 @@ void call_wsr_start(npf_wsr *r, const uint8_t salt[16], void *arg)
         c->ws_rx_ready = 1;
         return;                 /* now wait for the callee's hello */
     }
-    ws_reset(c);
+    if (ws_reset(c) < 0)
+        return;
     ws_key(c, "a2b", salt, c->ws_krx);
     c->ws_rx_ready = 1;
     ws_send_start(c, "b2a");
@@ -139,14 +149,16 @@ static void ws_demux(npf_call *c, const uint8_t *p, size_t len)
         uint8_t *q;
         while (cap < c->ws_in_len + len)
             cap *= 2;
-        if (!(q = realloc(c->ws_in, cap)))
+        if (!(q = realloc(c->ws_in, cap))) {
+            npf_call_end(c, "error");       /* a record left out: the units after it make no sense */
             return;
+        }
         c->ws_in = q;
         c->ws_in_cap = cap;
     }
     memcpy(c->ws_in + c->ws_in_len, p, len);
     c->ws_in_len += len;
-    while (c->ws_in_len - off >= 3) {
+    while (c->ws_in_len - off >= 3 && !c->ended) {    /* the peer's close: nothing more */
         const uint8_t *u = c->ws_in + off;
         size_t n = npf_rd16(u + 1);
         int r = 0;
@@ -156,8 +168,6 @@ static void ws_demux(npf_call *c, const uint8_t *p, size_t len)
             npf_media *m = call_media_of(c);
             if (m)
                 npf_media_ws_input(m, u + 3, n);
-            if (c->ended)
-                return;
         } else if (u[0] == 3) {
             npf_udpf *uf = call_udp_of(c);
             if (uf)
@@ -181,8 +191,10 @@ static void wsr_record(npf_wsr *r, const uint8_t *rec, size_t len, void *arg)
     if (!c->ws_rx_ready || len < 16 || len > 65536 + 16)
         return;
     plain = malloc(len);
-    if (!plain)
+    if (!plain) {
+        npf_call_end(c, "error");       /* its counter would be off for every record after it */
         return;
+    }
     ws_nonce(nonce, c->ws_ctr_rx);
     if (npf_aead_open(c->ws_krx, nonce, NULL, 0, rec, len, plain) < 0) {
         free(plain);
