@@ -9,6 +9,9 @@
 #include <unistd.h>
 #include <malloc.h>
 #include <execinfo.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "npf/crypto.h"
 #include "npf/node.h"
@@ -70,12 +73,14 @@ WRAP void *realloc(void *p, size_t n) {
     q = __libc_realloc(h, n + HSZ);
     if (!q) { account(h); return NULL; }
     q->size = n; q->tag = tag;
-    if (tag == 0 && !busy) { busy = 1; backtrace(q->site, 4); busy = 0; }
+    if (tag < 2 && !busy) { busy = 1; backtrace(q->site, 4); busy = 0; }
     account(q);
     return (char *)q + HSZ;
 }
 
 typedef struct side { npf_node node; int established, closed; } side;
+static side *A_node_ref;
+static void spin(npf_loop *lc, npf_loop *la, int *flag, int want, int ms);
 static void on_state(npf_node *n, npf_call *c, int st, const char *why, void *arg)
 {
     side *s = arg; (void)n; (void)c; (void)why;
@@ -99,18 +104,19 @@ static void spin(npf_loop *lc, npf_loop *la, int *flag, int want, int ms)
         tag = 2;
     }
 }
-static void dump_callee_sites(const char *when)
+static void dump_sites(int side_tag, const char *when)
 {
-    /* live callee blocks grouped by (size, site[2]) */
+    /* live blocks of a side grouped by (size, site[2]) */
     struct { size_t size; void *site; long n; } g[512]; int ng = 0, i, j;
     for (i = 0; i < nlive; i++) {
         hdr *h = lives[i];
-        if (h->tag != 0) continue;
+        if (h->tag != side_tag) continue;
         for (j = 0; j < ng; j++) if (g[j].size == h->size && g[j].site == h->site[2]) break;
         if (j == ng && ng < 512) { g[ng].size = h->size; g[ng].site = h->site[2]; g[ng].n = 0; ng++; }
         if (j < ng) g[j].n++;
     }
-    printf("-- callee live blocks %s (size x count = bytes, caller of the allocating function):\n", when);
+    printf("-- %s live blocks %s (size x count = bytes, caller of the allocating function):\n",
+           side_tag ? "caller" : "callee", when);
     for (i = 0; i < ng; i++) {
         char **sym = backtrace_symbols(&g[i].site, 1);
         if (g[i].size * g[i].n >= 1024)
@@ -119,11 +125,43 @@ static void dump_callee_sites(const char *when)
     }
 }
 
+/* npf_memprobe N M: then M sublinks the caller opens on its first session
+ * (as npf-hosted does for each visitor), each to a TCP target on the callee's
+ * side, 26 bytes sent and nothing back: the caller's bytes per sublink */
+static void sublinks(npf_loop *lc, npf_loop *la, int m)
+{
+    static int lfd = -1, acc[1024], nacc, opened;
+    struct sockaddr_in a; socklen_t al = sizeof a; long before; int j, sp[2];
+    npf_call *c = npf_node_calls(&A_node_ref->node);
+    if (!c || !c->tun || m > 1000) return;
+    lfd = socket(AF_INET, SOCK_STREAM, 0);
+    memset(&a, 0, sizeof a); a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind(lfd, (struct sockaddr *)&a, sizeof a); listen(lfd, 1024); getsockname(lfd, (struct sockaddr *)&a, &al);
+    npf_set_nonblock(lfd);
+    before = live[1];
+    for (j = 0; j < m; j++) {
+        tag = 1;
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0 && npf_tunnel_open(c->tun, sp[0], 0, "127.0.0.1", ntohs(a.sin_port)) > 0) {
+            send(sp[1], "GET /hello.txt HTTP/1.1\r\n", 26, 0);
+            opened++;
+        }
+        tag = 2;
+        { int64_t until = npf_mono_ms() + 30; int z = 0; while (npf_mono_ms() < until) spin(lc, la, &z, 1, 5); }
+        while (nacc < 1024 && (acc[nacc] = accept(lfd, NULL, NULL)) >= 0) nacc++;
+    }
+    { int64_t until = npf_mono_ms() + 1000; int z = 0; while (npf_mono_ms() < until) spin(lc, la, &z, 1, 50); }
+    while (nacc < 1024 && (acc[nacc] = accept(lfd, NULL, NULL)) >= 0) nacc++;
+    printf("caller: %d sublinks open (%d accepted at the target): +%ld bytes, per sublink %ld\n", opened, nacc,
+           live[1] - before, opened ? (live[1] - before) / opened : 0);
+    dump_sites(1, "with sublinks");
+}
+
 int main(int argc, char **argv)
 {
-    int N = argc > 1 ? atoi(argv[1]) : 8, i;
+    int N = argc > 1 ? atoi(argv[1]) : 8, M = argc > 2 ? atoi(argv[2]) : 0, i;
     npf_loop *lc, *la;
     static side L, A;
+    A_node_ref = &A;
     npf_policy pol; npf_direct *dl; uint8_t psk[32]; char spec[64], k[44];
     struct sockaddr_storage to; long base, after;
     printf("sizeof: npf_call %zu  npf_tunnel %zu  sublink %zu  relay_c %zu  noise_hs %zu  cpace %zu  node %zu  policy %zu  punch_cfg %zu  sockaddr_storage %zu\n",
@@ -151,7 +189,9 @@ int main(int argc, char **argv)
     { int64_t until = npf_mono_ms() + 1500; int z = 0; while (npf_mono_ms() < until) spin(lc, la, &z, 1, 50); }
     after = live[0];
     printf("callee with %d sessions: %ld bytes live, %ld blocks, peak %ld; per session %ld\n", N, after, blocks[0], peak[0], (after - base) / N);
-    dump_callee_sites("with sessions");
+    dump_sites(0, "with sessions");
+    if (M > 0)
+        sublinks(lc, la, M);
     { struct mallinfo2 m = mallinfo2(); printf("process heap (mallinfo2): arena %zu in use %zu\n", m.arena, m.uordblks); }
     tag = 0; npf_direct_close(dl); npf_node_stop(&L.node); tag = 1; npf_node_stop(&A.node); tag = 2;
     return 0;
