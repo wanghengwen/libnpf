@@ -70,7 +70,7 @@ endif()
 # Every library file is compiled; the NPF config disables what is not needed.
 option(NPF_WITH_TLS "Build wss:// and https:// support" ON)
 if(NPF_WITH_TLS AND NOT NPF_USE_OPENSSL)
-  file(GLOB _mbedtls_src "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/library/*.c")
+  file(GLOB _mbedtls_src CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/mbedtls/library/*.c")
   add_library(npf_mbedtls STATIC ${_mbedtls_src})
   target_include_directories(npf_mbedtls PUBLIC
     third_party/mbedtls/include third_party/mbedtls-config
