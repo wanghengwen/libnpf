@@ -85,6 +85,11 @@ static void buf_consume(buf *b, size_t n)
 {
     memmove(b->p, b->p + n, b->len - n);
     b->len -= n;
+    if (b->len == 0 && b->cap > 65536) {    /* a burst's room is not kept for the connection's life */
+        free(b->p);
+        b->p = NULL;
+        b->cap = 0;
+    }
 }
 
 static void buf_free(buf *b)
@@ -240,22 +245,30 @@ static int flush_out(npf_ws *ws)
 {
     if (ws->out.len)
         ws->drained = 1;    /* reported (if still empty) when on_io returns */
-    while (ws->out.len) {
-        ssize_t r = raw_write(ws, ws->out.p, ws->out.len);
-        if (r == NPF_TLS_WANT_WRITE || r == NPF_TLS_WANT_READ)
-            break;
-        if (r <= 0)
-            return -1;
-        buf_consume(&ws->out, (size_t)r);
+    {
+        size_t off = 0;                 /* moved down once, not at each TLS record (16 KB of a 1 MB queue) */
+        while (off < ws->out.len) {
+            ssize_t r = raw_write(ws, ws->out.p + off, ws->out.len - off);
+            if (r == NPF_TLS_WANT_WRITE || r == NPF_TLS_WANT_READ)
+                break;
+            if (r <= 0) {
+                buf_consume(&ws->out, off);
+                return -1;
+            }
+            off += (size_t)r;
+        }
+        buf_consume(&ws->out, off);
     }
     update_interest(ws);
     return 0;
 }
 
-static int send_frame(npf_ws *ws, int opcode, const void *data, size_t len)
+/* one frame of head (hlen bytes) and then data: put together here, masked
+ * in place, no copy of its own by the caller */
+static int send_frame2(npf_ws *ws, int opcode, const void *head, size_t hlen, const void *data, size_t dlen)
 {
     uint8_t h[14], mask[4];
-    size_t hl = 2, i, start;
+    size_t hl = 2, i, start, len = hlen + dlen;
     h[0] = (uint8_t)(0x80 | opcode);
     if (len < 126) {
         h[1] = (uint8_t)(0x80 | len);
@@ -276,11 +289,16 @@ static int send_frame(npf_ws *ws, int opcode, const void *data, size_t len)
     if (buf_put(&ws->out, h, hl))
         return -1;
     start = ws->out.len;
-    if (buf_put(&ws->out, data, len))
+    if (buf_put(&ws->out, head, hlen) || buf_put(&ws->out, data, dlen))
         return -1;
     for (i = 0; i < len; i++)
         ws->out.p[start + i] ^= mask[i & 3];
     return 0;
+}
+
+static int send_frame(npf_ws *ws, int opcode, const void *data, size_t len)
+{
+    return send_frame2(ws, opcode, data, len, NULL, 0);
 }
 
 /* 0, or -1 with ws failed (and maybe freed) */
@@ -364,11 +382,15 @@ static int parse_upgrade(npf_ws *ws)
     return 1;
 }
 
-/* returns -1 to fail the connection, -2 if the handle was freed by a callback */
-static int parse_frames(npf_ws *ws)
+#define PONG_ROOM 65536     /* pongs only while the peer reads: a ping flood does not grow out */
+
+/* the frames from in.p + *off on, *off moved past each one taken; returns
+ * -1 to fail the connection, -2 if the handle was freed by a callback */
+static int parse_frames_at(npf_ws *ws, size_t *off)
 {
-    while (ws->in.len >= 2) {
-        uint8_t *p = ws->in.p;
+    while (ws->in.len - *off >= 2) {
+        uint8_t *p = ws->in.p + *off;
+        size_t avail = ws->in.len - *off;
         int fin = p[0] & 0x80, op = p[0] & 0x0f;
         uint64_t len = p[1] & 0x7f;
         size_t hl = 2;
@@ -377,19 +399,19 @@ static int parse_frames(npf_ws *ws)
         if (p[0] & 0x70)
             return -1;
         if (len == 126) {
-            if (ws->in.len < 4) return 0;
+            if (avail < 4) return 0;
             len = ((uint64_t)p[2] << 8) | p[3];
             hl = 4;
         } else if (len == 127) {
             int i;
-            if (ws->in.len < 10) return 0;
+            if (avail < 10) return 0;
             len = 0;
             for (i = 0; i < 8; i++) len = (len << 8) | p[2 + i];
             hl = 10;
         }
         if (len > NPF_WS_MAX_MESSAGE || ((op & 8) && (!fin || len > 125)))
             return -1;
-        if (ws->in.len < hl + len)
+        if (avail < hl + len)
             return 0;
         p += hl;
         ws->last_rx = npf_mono_ms();    /* pongs too: the peer is alive */
@@ -412,7 +434,7 @@ static int parse_frames(npf_ws *ws)
                     ws->cbs.on_message(ws, ws->frag.p, ws->frag.len, ws->frag_binary, ws->arg);
                     if (ws->state == ST_DEAD)
                         return -2;
-                    ws->frag.len = 0;
+                    buf_consume(&ws->frag, ws->frag.len);
                     ws->frag_active = 0;
                 }
             }
@@ -426,14 +448,19 @@ static int parse_frames(npf_ws *ws)
                 return -1;
             if (len > 2) {
                 size_t l = (size_t)len - 2 < sizeof why - 1 ? (size_t)len - 2 : sizeof why - 1;
+                size_t i;
                 memcpy(why, p + 2, l);
                 why[l] = 0;
+                for (i = 0; i < l; i++)     /* it goes into the log: no control characters */
+                    if ((unsigned char)why[i] < 0x20 || why[i] == 0x7f)
+                        why[i] = '?';
             }
             ws_fail(ws, code, why);
             return -2;
         }
         case 0x9:
-            if (len > 125 || send_frame(ws, 0xA, p, (size_t)len))
+            /* RFC 6455 5.5.3: answering only the latest ping is enough */
+            if (ws->out.len <= PONG_ROOM && send_frame(ws, 0xA, p, (size_t)len))
                 return -1;
             break;
         case 0xA:
@@ -441,9 +468,20 @@ static int parse_frames(npf_ws *ws)
         default:
             return -1;
         }
-        buf_consume(&ws->in, hl + (size_t)len);
+        *off += hl + (size_t)len;
     }
     return 0;
+}
+
+/* in is moved down once for all the frames taken, not at each (a buffer of
+ * tiny frames made that quadratic) */
+static int parse_frames(npf_ws *ws)
+{
+    size_t off = 0;
+    int r = parse_frames_at(ws, &off);
+    if (r != -2 && off)
+        buf_consume(&ws->in, off);
+    return r;
 }
 
 static void on_io_inner(npf_ws *ws, unsigned ev);
@@ -689,7 +727,12 @@ int64_t npf_ws_last_rx(const npf_ws *ws)
 
 int npf_ws_send(npf_ws *ws, const void *data, size_t len, int binary)
 {
-    if (ws->state != ST_OPEN || send_frame(ws, binary ? 2 : 1, data, len))
+    return npf_ws_send2(ws, data, len, NULL, 0, binary);
+}
+
+int npf_ws_send2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len, int binary)
+{
+    if (ws->state != ST_OPEN || send_frame2(ws, binary ? 2 : 1, head, hlen, data, len))
         return -1;
     if (flush_out(ws) < 0) {
         /* report the failure from the loop, not from inside the caller */

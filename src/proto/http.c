@@ -204,6 +204,10 @@ static void h_response(npf_http *h)
         h_fail(h, "body cut short");
         return;
     }
+    if (blen > h->max) {
+        h_fail(h, "response too large");
+        return;
+    }
     h_done(h, status, body, blen, NULL);
     h_free(h);
 }
@@ -306,6 +310,10 @@ static void h_io(npf_loop *loop, int fd, unsigned ev, void *arg)
         }
         h->in_len += (size_t)r;
         h->in[h->in_len] = 0;
+        if (h->in_len > h->max + 16384) {   /* max of body, headers within 16 KB: not twice that */
+            h_fail(h, "response too large");
+            return;
+        }
         if (h_body_complete(h)) {
             h_response(h);
             return;

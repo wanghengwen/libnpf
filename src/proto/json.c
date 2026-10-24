@@ -175,12 +175,32 @@ static int key_equal(const npf_json *j, int a, int b)
     return strcmp(x, y) == 0;
 }
 
+/* FNV-1a of a key as it reads unescaped; -1: one key_equal would refuse
+ * (oversized, or a NUL in it) */
+static int key_hash(const npf_json *j, int k, uint32_t *out)
+{
+    const npf_jtok *t = &j->tok[k];
+    const char *s = j->s + t->start;
+    char x[256];
+    int n = (int)(t->end - t->start), i;
+    uint32_t h = 2166136261u;
+    if (t->escaped) {
+        if ((n = npf_json_str(j, k, x, sizeof x)) < 0)
+            return -1;
+        s = x;
+    }
+    for (i = 0; i < n; i++)
+        h = (h ^ (unsigned char)s[i]) * 16777619u;
+    *out = h;
+    return 0;
+}
+
 static int parse_container(parser *p, int is_obj)
 {
     npf_json *j = p->j;
     int t = new_tok(p, is_obj ? NPF_JT_OBJECT : NPF_JT_ARRAY, p->pos);
     int count = 0;
-    int keys[NPF_JSON_MAX_ARRAY];
+    uint32_t kh[NPF_JSON_MAX_ARRAY];    /* the keys' hashes: each unescaped once, compared only on a match */
     if (t < 0 || ++p->depth > NPF_JSON_MAX_DEPTH)
         return -1;
     p->pos++;
@@ -194,16 +214,18 @@ static int parse_container(parser *p, int is_obj)
             return -1;
         skip_ws(p);
         if (is_obj) {
-            int k, i;
+            int k, i, prev;
+            uint32_t h;
             if (p->pos >= j->len || j->s[p->pos] != '"')
                 return -1;
             k = parse_string(p);
-            if (k < 0)
+            if (k < 0 || key_hash(j, k, &h) < 0)
                 return -1;
-            for (i = 0; i < count; i++)
-                if (key_equal(j, keys[i], k))
+            /* the earlier keys: t + 1, then each one's value's next */
+            for (i = 0, prev = t + 1; i < count; i++, prev = j->tok[prev + 1].next)
+                if (kh[i] == h && key_equal(j, prev, k))
                     return -1;
-            keys[count] = k;
+            kh[count] = h;
             skip_ws(p);
             if (p->pos >= j->len || j->s[p->pos] != ':')
                 return -1;

@@ -30,6 +30,8 @@ npf_ws *npf_ws_connect(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, v
 npf_ws *npf_ws_connect_ext(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, void *arg, int outside_vpn);
 
 int  npf_ws_send(npf_ws *ws, const void *data, size_t len, int binary);
+/* one message of head and then data (a type byte before a record: no copy to join them) */
+int  npf_ws_send2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len, int binary);
 int  npf_ws_ping(npf_ws *ws);
 /* bytes queued but not yet written to the socket */
 size_t npf_ws_pending(const npf_ws *ws);

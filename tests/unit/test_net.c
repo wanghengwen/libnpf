@@ -17,6 +17,19 @@ static int listen_local(struct sockaddr_storage *addr, socklen_t *len)
     return fd;
 }
 
+static char closed_why[128];
+static int http_failed;
+static void note_http(int status, const uint8_t *body, size_t len, const char *err, void *arg)
+{
+    (void)status; (void)body; (void)len; (void)arg;
+    http_failed += err != NULL;
+}
+static void capture_close(npf_ws *ws, int code, const char *why, void *arg)
+{
+    (void)ws; (void)code; (void)arg;
+    snprintf(closed_why, sizeof closed_why, "%s", why);
+}
+
 int main(void)
 {
     static const char *bad[] = {
@@ -60,6 +73,40 @@ int main(void)
     frame[0] = 0x02; /* an empty initial fragment must still open a fragmented message */
     CHECK(buf_put(&ws->in, frame, sizeof frame) == 0 && parse_frames(ws) == 0 && !ws->frag_active);
     real_free(ws);
+
+    /* A ping flood from a peer that reads nothing: pongs stop at 64 KB of
+     * queue; all the tiny frames are taken in one pass. */
+    ws = calloc(1, sizeof *ws);
+    ws->fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws;
+    for (k = 0; k < 30000; k++)
+        CHECK(buf_put(&ws->in, "\x89\x00", 2) == 0);
+    CHECK(parse_frames(ws) == 0 && ws->in.len == 0);
+    CHECK(ws->out.len > 0 && ws->out.len <= 65536 + 16);
+    real_free(ws);
+    /* A close reason reaches the log without control characters. */
+    ws = calloc(1, sizeof *ws);
+    ws->fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws; ws->cbs.on_close = capture_close;
+    {
+        static const uint8_t cf[] = {0x88, 7, 0x03, 0xe8, 'a', '\n', 'b', 0x1b, 'c'};
+        CHECK(buf_put(&ws->in, cf, sizeof cf) == 0 && parse_frames(ws) == -2 && strcmp(closed_why, "a?b?c") == 0);
+    }
+    real_free(ws);
+    /* An HTTP body over max is refused, not taken up to twice that. */
+    {
+        static char big[2300];
+        npf_http *hb = calloc(1, sizeof *hb);
+        int n = snprintf(big, sizeof big, "HTTP/1.1 200 OK\r\nContent-Length: 2000\r\n\r\n");
+        memset(big + n, 'x', 2000);
+        hb->fd = -1; hb->max = 1024; hb->fn = discard_http;
+        hb->in = malloc((size_t)n + 2001);
+        memcpy(hb->in, big, (size_t)n + 2000);
+        hb->in_len = (size_t)n + 2000;
+        hb->in[hb->in_len] = 0;
+        http_failed = 0;
+        hb->fn = note_http;
+        h_response(hb);                     /* frees hb */
+        CHECK(http_failed == 1);
+    }
 
     /* First address refuses asynchronously; the second accepts. No DNS dependency. */
     loop = npf_loop_new();

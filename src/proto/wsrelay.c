@@ -175,18 +175,10 @@ npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t server_pub[
 
 int npf_wsr_send(npf_wsr *r, int type, const uint8_t *p, size_t len)
 {
-    uint8_t *buf;
-    int rc;
+    uint8_t t = (uint8_t)type;
     if (!r->ws || !r->paired)
         return -1;
-    buf = malloc(len + 1);
-    if (!buf)
-        return -1;
-    buf[0] = (uint8_t)type;
-    memcpy(buf + 1, p, len);
-    rc = npf_ws_send(r->ws, buf, len + 1, 1);
-    free(buf);
-    return rc;
+    return npf_ws_send2(r->ws, &t, 1, p, len, 1);
 }
 
 size_t npf_wsr_pending(const npf_wsr *r)

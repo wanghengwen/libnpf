@@ -36,6 +36,18 @@ static void test_parse(void)
     /* duplicate keys, also after unescaping */
     CHECK(parse("{\"a\":1,\"a\":2}", &j) < 0, "duplicate key");
     CHECK(parse("{\"a\":1,\"\\u0061\":2}", &j) < 0, "duplicate key after unescape");
+    CHECK(parse("{\"x\":{\"b\":1},\"\\u0078\":2}", &j) < 0, "duplicate key after a nested value");
+    CHECK(parse("{\"a\":[1,{\"a\":2}],\"b\":3}", &j) == 0, "same key at another level is fine");
+    {   /* many escaped keys (the token array's 256 allow 120): each unescaped once */
+        static char big[8192];
+        int n = 0, k;
+        for (k = 0; k < 120; k++)
+            n += snprintf(big + n, sizeof big - (size_t)n, "%s\"\\u006b%03d\":%d", k ? "," : "{", k, k);
+        snprintf(big + n, sizeof big - (size_t)n, "}");
+        CHECK(parse(big, &j) == 0, "120 distinct escaped keys");
+        snprintf(big + n, sizeof big - (size_t)n, ",\"k100\":1}");
+        CHECK(parse(big, &j) < 0, "a plain key equal to an escaped one");
+    }
     /* escapes and UTF-8 */
     CHECK(parse("{\"s\":\"\\u4e2d\\ud83d\\ude00\\n\"}", &j) == 0
           && npf_json_get_str(&j, 0, "s", buf, sizeof buf) == 8 && memcmp(buf, "\xe4\xb8\xad\xf0\x9f\x98\x80\n", 8) == 0,
