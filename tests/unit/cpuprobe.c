@@ -42,14 +42,14 @@ static double cpu_ms(void)
 static double cpu[2];                   /* ms: callee, caller */
 static long iters[2], early[2];         /* turns, and turns the loop left before its timeout (work came) */
 static int swap;                        /* NPF_PROBE_SWAP: the caller's loop first (an order artefact?) */
-static void one(npf_loop *l, int side, int ms)
+static void one(npf_loop *l, int k, int ms)
 {
     double t0 = cpu_ms();
     int64_t w0 = npf_mono_ms();
     npf_loop_once(l, ms);
-    cpu[side] += cpu_ms() - t0;
-    iters[side]++;
-    early[side] += npf_mono_ms() - w0 < ms - 1;
+    cpu[k] += cpu_ms() - t0;
+    iters[k]++;
+    early[k] += npf_mono_ms() - w0 < ms - 1;
 }
 static void turn(npf_loop *lc, npf_loop *la, int ms)
 {
