@@ -164,7 +164,8 @@ struct npf_call {
     npf_udpf   *udp;                /* the UDP forwards' flows (udpfwd.h), made on first use */
     npf_timer  *t_wsflush;
     npf_timer  *t_free;             /* its free on the next turn of the loop (ended) */
-    /* callee: reverse-mapping listeners (data-channel.md 7.1) */
+    /* callee: reverse-mapping listeners (data-channel.md 7.1), each made
+     * when the caller asks for it */
     struct rev_listener {
         npf_call *c;
         uint32_t id;
@@ -175,7 +176,7 @@ struct npf_call {
         int      want;              /* the port asked for (0: any), as the policy allowed it */
         int64_t  refused_ms;        /* last connection from elsewhere logged */
         int      udp;               /* a UDP socket (-R .../udp; data-channel.md 15) */
-    } rev[NPF_MAX_REVERSE];
+    } *rev[NPF_MAX_REVERSE];
     int         nrev;
     uint32_t    rev_seq;
 };
