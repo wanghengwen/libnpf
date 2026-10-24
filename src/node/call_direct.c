@@ -210,9 +210,9 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
         return;
     /* a retransmitted message 1 (the same message from the same source): the
      * same answer; anything else with a seen ephemeral key: a replay */
-    npf_kdf(h1, NULL, 0, buf, len);
     for (i = 0; i < DIRECT_SEEN; i++)
         if (d->seen[i].at && now - d->seen[i].at < DIRECT_SEEN_MS && memcmp(d->seen[i].e, buf, 32) == 0) {
+            npf_kdf(h1, NULL, 0, buf, len);     /* only then: not for every datagram of a flood */
             if (call_same_addr(&d->seen[i].from, from) && d->seen[i].msg2_len
                 && memcmp(d->seen[i].h1, h1, sizeof h1) == 0)
                 (void)npf_udp_send(d->fd, d->seen[i].msg2, d->seen[i].msg2_len, from);
@@ -243,6 +243,7 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
     }
     if (ml < 0)
         goto out;
+    npf_kdf(h1, NULL, 0, buf, len);
     i = d->nseen_next++ % DIRECT_SEEN;
     memcpy(d->seen[i].e, buf, 32);
     memcpy(d->seen[i].h1, h1, sizeof h1);
