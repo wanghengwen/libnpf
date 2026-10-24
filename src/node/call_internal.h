@@ -1,5 +1,6 @@
-/* the call (npf_call) shared by call.c (handshake, AnLiu, UDP relay,
- * punching, the state, dispatch) and call_reverse.c, call_ws.c, call_direct.c */
+/* the call (npf_call) shared by call.c (the state, dispatch, the node's
+ * sessions), call_handshake.c, call_transport.c, call_path.c, call_punch.c,
+ * call_relay.c, call_reverse.c, call_ws.c and call_direct.c */
 #ifndef NPF_CALL_INTERNAL_H
 #define NPF_CALL_INTERNAL_H
 
@@ -204,6 +205,10 @@ struct npf_call {
 #define RELAY_ACK_BOUND    1         /* RELAY_BIND_ACK state: the relay sends to this address (0: a challenge) */
 #define RELAY_DATA_OVERHEAD (RELAY_HINT_SIZE + NPF_SIV_TAG_SIZE + 6)
 #define PUNCH_ROUNDS_MAX 10
+#define LABEL_PATH         "NPF-PCHECK-1"       /* the direct path check (call_path.c), its keys from the session's */
+#define PATH_PKT_LEN       (NPF_SIV_TAG_SIZE + 10)
+/* n->conv_tab: AnLiu datagrams find their call by conv without a scan */
+#define CONV_SLOT(conv) (((conv) ^ ((conv) >> 8) ^ ((conv) >> 16) ^ ((conv) >> 24)) & 255)
 
 /* a caller key's share of the node's tunnel limits: its sessions here
  * together get half the node's sublinks and receive window, so one visitor
@@ -223,34 +228,50 @@ static inline void timer_stop(npf_loop *l, npf_timer **t)
     *t = NULL;
 }
 
-/* call.c */
-int call_relay_addr_blocked(const npf_call *c);
-int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len);
-void call_path_up(npf_call *c);
-int call_no_p2p(const npf_call *c);
-void call_standby_done(npf_loop *loop, void *arg);
-void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
+/* call.c: the state, the end, dispatch, the node's sessions */
 void call_accept_seen(npf_call *c);
-void call_dpend_free(npf_call *c);
 void call_b64_of(const uint8_t *b, size_t n, char *out);
+npf_call *call_find(npf_node *n, const npf_json *j, int d);
 int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len);
 int call_relay_blocked(const npf_node *n, const char *what);
-struct npf_policy *call_policy(npf_call *c);
-void call_conv_unlink(npf_call *c);
-npf_media *call_media_of(npf_call *c);
-npf_udpf *call_udp_of(npf_call *c);
-npf_tunnel *call_tunnel_new(npf_call *c);
+int call_relay_addr_blocked(const npf_call *c);
 void call_relay_leave(npf_call *c);
-void call_ctl_fail_all(npf_call *c);
-int call_start_transport(npf_call *c);
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
 void call_set_state(npf_call *c, int st, const char *why);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);
 /* the data transport (tunnel, UDP forwarding, media) off the call and freed;
- * then the AnLiu connection (call.c) */
+ * then the AnLiu connection */
 void call_data_free(npf_call *c);
 void call_anl_drop(npf_call *c);
+
+/* call_handshake.c: the caller's call, the callee's answer, the keys */
+int call_set_targets(npf_call *c, const npf_grant *g);
+int call_finish_handshake(npf_call *c);
+void call_caller_accepted(npf_call *c, const npf_json *j, int d);
+void call_handle_incoming(npf_node *n, const npf_json *j, int d);
+void call_handle_handshake(npf_call *c, const npf_json *j, int d);
+
+/* call_transport.c: AnLiu, the WS mux, the tunnel's callbacks, media and UDP adapters */
+int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len);
+void call_path_up(npf_call *c);
+void call_dpend_free(npf_call *c);
+struct npf_policy *call_policy(npf_call *c);
+void call_conv_unlink(npf_call *c);
+npf_media *call_media_of(npf_call *c);
+npf_udpf *call_udp_of(npf_call *c);
+npf_tunnel *call_tunnel_new(npf_call *c);
+void call_ctl_fail_all(npf_call *c);
+int call_start_transport(npf_call *c);
+
+/* call_path.c: the direct path's check, its loss, the relay's standby */
+int call_no_p2p(const npf_call *c);
+int call_p2p_cut(const npf_call *c);
+int call_path_input(npf_call *c, const uint8_t *buf, size_t len);
+void call_check_p2p(npf_call *c);
+void call_p2p_suspect_start(npf_call *c, const char *why);
+void call_standby_done(npf_loop *loop, void *arg);
+void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 
 /* call_reverse.c: reverse mapping (data-channel.md 7.1) */
 void call_rev_close_all(npf_call *c);
