@@ -64,13 +64,10 @@ void call_ws_flush_timer(npf_loop *loop, void *arg)
  * new tunnel could not be made (the call ended) */
 static int ws_reset(npf_call *c)
 {
-    call_ctl_fail_all(c);               /* the old tunnel's requests get no reply */
-    if (c->tun)
-        npf_tunnel_free(c->tun);
-    npf_media_free(c->media);
-    c->media = NULL;
-    npf_udpf_free(c->udp);
-    c->udp = NULL;
+    call_data_free(c);                  /* first: no request goes on the old tunnel now */
+    call_ctl_fail_all(c);               /* its requests get no reply */
+    if (c->ended)                       /* ended in one of those callbacks */
+        return -1;
     c->tun = call_tunnel_new(c);
     c->ws_out_len = 0;
     c->ws_in_len = 0;
@@ -274,22 +271,13 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
         npf_logw("call %s: WS relay server %lld not in the server list", c->call_id_s, (long long)sid);
         return -1;
     }
-    /* drop the AnLiu transport: the WS relay carries the sublinks itself */
-    if (c->tun) {
-        npf_tunnel_free(c->tun);
-        c->tun = NULL;
-    }
-    npf_udpf_free(c->udp);
-    c->udp = NULL;
-    npf_media_free(c->media);           /* its streams are AnLiu's, released here */
-    c->media = NULL;
-    if (c->anl) {
-        call_conv_unlink(c);
-        anl_release(c->anl);
-        c->anl = NULL;
-        c->stream = NULL;
-        call_dpend_free(c);
-    }
+    /* drop the AnLiu transport: the WS relay carries the sublinks itself.
+     * The old tunnel's requests fail now, not when the WS relay pairs */
+    call_data_free(c);
+    call_ctl_fail_all(c);
+    call_anl_drop(c);
+    if (c->ended)                       /* ended in a callback: nothing more to open */
+        return -1;
     c->ws_mode = 1;
     c->relay.active = 0;
     call_relay_leave(c);

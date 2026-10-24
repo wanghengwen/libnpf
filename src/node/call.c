@@ -1268,10 +1268,63 @@ npf_call *call_new(npf_node *n, int caller)
     return c;
 }
 
+/* an ended call does nothing more: what its timers would start (a punch, a
+ * relay bind or switch, a path check, a retry, a probe of the signaling) is
+ * no one's now. Not t_wsflush: it sends the close over the WS relay */
+static void call_timers_stop(npf_call *c)
+{
+    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck, &c->t_repunch,
+                       &c->t_standby, &c->t_direct, &c->relay.t_bind};
+    size_t i;
+    for (i = 0; i < sizeof t / sizeof t[0]; i++) {
+        if (*t[i])
+            npf_timer_cancel(c->n->loop, *t[i]);
+        *t[i] = NULL;
+    }
+}
+
+/* the session's data transport goes: its tunnel, UDP forwarding and media
+ * (before the AnLiu connection whose streams they use). Each is taken off
+ * the call before it is freed: the tunnel's sublinks end with callbacks
+ * (sublink_done, a virtual end's closed), which must not find it still
+ * there. It sends nothing and fails no control request: its callers do */
+void call_data_free(npf_call *c)
+{
+    npf_tunnel *t = c->tun;
+    npf_udpf *u = c->udp;
+    npf_media *m = c->media;
+    c->tun = NULL;
+    c->udp = NULL;
+    c->media = NULL;
+    npf_udpf_free(u);
+    npf_media_free(m);
+    npf_tunnel_free(t);
+}
+
+/* the AnLiu connection goes (after call_data_free), with its data stream,
+ * its conv's entry and the datagrams waiting for it. Not its timer
+ * (t_anl): call_timers_stop */
+void call_anl_drop(npf_call *c)
+{
+    anl_t *a = c->anl;
+    if (a) {
+        call_conv_unlink(c);
+        c->anl = NULL;
+        c->stream = NULL;
+        anl_release(a);                 /* releases the stream handles too */
+    }
+    c->stream = NULL;
+    call_dpend_free(c);
+}
+
 void call_free(npf_call *c)
 {
     npf_node *n = c->n;
     npf_call **pp;
+    /* not ended yet when the node stops or a start fails: what its
+     * resources' ends call back cannot end it again (a free_later on
+     * freed memory) */
+    c->ended = 1;
     for (pp = &n->calls; *pp; pp = &(*pp)->next)
         if (*pp == c) {
             *pp = c->next;
@@ -1279,40 +1332,30 @@ void call_free(npf_call *c)
         }
     if (n->relay_hit == c)
         n->relay_hit = NULL;
-    if (c->t_anl) npf_timer_cancel(n->loop, c->t_anl);
-    if (c->t_timeout) npf_timer_cancel(n->loop, c->t_timeout);
-    if (c->t_punch) npf_timer_cancel(n->loop, c->t_punch);
+    call_timers_stop(c);
     if (c->t_linger) npf_timer_cancel(n->loop, c->t_linger);
-    if (c->t_ws_wait) npf_timer_cancel(n->loop, c->t_ws_wait);
-    if (c->t_repunch) npf_timer_cancel(n->loop, c->t_repunch);
-    if (c->t_direct) npf_timer_cancel(n->loop, c->t_direct);
-    if (c->t_standby) npf_timer_cancel(n->loop, c->t_standby);
-    if (c->t_pcheck) npf_timer_cancel(n->loop, c->t_pcheck);
-    if (c->relay.t_bind) npf_timer_cancel(n->loop, c->relay.t_bind);
     if (c->t_wsflush) npf_timer_cancel(n->loop, c->t_wsflush);
     if (c->t_free) npf_timer_cancel(n->loop, c->t_free);     /* freed now (the node stops): not again */
+    c->t_linger = c->t_wsflush = c->t_free = NULL;
     if (c->wsr) npf_wsr_close(c->wsr);
+    c->wsr = NULL;
     free(c->ws_out);
     free(c->ws_in);
+    c->ws_out = c->ws_in = NULL;
     if (c->punch) {
         npf_punch_free(c->punch);
+        c->punch = NULL;
         if (c->punch_socks > 0) {
             c->punch_socks = 0;
             call_punch_sockets_back(c->n);
         }
     }
     call_rev_close_all(c);
-    if (c->tun) npf_tunnel_free(c->tun);
+    call_data_free(c);
     if (c->kshare)
         c->kshare->calls--;                 /* its counts went with the tunnel (or go when it does) */
     free(c->targets);
-    call_dpend_free(c);
-    npf_media_free(c->media);
-    npf_udpf_free(c->udp);
-    if (c->anl) {
-        call_conv_unlink(c);
-        anl_release(c->anl);            /* releases the stream handles too */
-    }
+    call_anl_drop(c);
     if (c->p2p_owned && c->p2p_fd >= 0) {
         npf_loop_del(n->loop, c->p2p_fd);
         npf_sock_close(c->p2p_fd);
@@ -1330,21 +1373,6 @@ static void free_later(npf_loop *loop, void *arg)
     (void)loop;
     c->t_free = NULL;
     call_free(c);
-}
-
-/* an ended call does nothing more: what its timers would start (a punch, a
- * relay bind or switch, a path check, a retry, a probe of the signaling) is
- * no one's now. Not t_wsflush: it sends the close over the WS relay */
-static void call_timers_stop(npf_call *c)
-{
-    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck, &c->t_repunch,
-                       &c->t_standby, &c->t_direct, &c->relay.t_bind};
-    size_t i;
-    for (i = 0; i < sizeof t / sizeof t[0]; i++) {
-        if (*t[i])
-            npf_timer_cancel(c->n->loop, *t[i]);
-        *t[i] = NULL;
-    }
 }
 
 /* the end of a call, after its CLOSED: the requests waiting for replies get

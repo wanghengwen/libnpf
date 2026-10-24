@@ -11,6 +11,8 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "npf/tunnel.h"
+#include "npf/json.h"
+#include "call_internal.h"
 
 static int fails;
 
@@ -58,6 +60,106 @@ static void run_until(npf_loop *loop, int *flag, int want, int ms)
     int64_t until = npf_mono_ms() + ms;
     while (*flag < want && npf_mono_ms() < until)
         npf_loop_once(loop, 10);
+}
+
+/* the tunnel replaced (the session moves to the WS relay): its requests
+ * fail at once, once each; a request made from a failure finds no tunnel;
+ * a sublink's end sees none either; a failure that ends the session stops
+ * the move */
+typedef struct move_rec {
+    int fails, again_ok, end_it;
+    int sub_done, sub_closed, saw_tun;
+} move_rec;
+
+static void move_ctl(npf_call *c, const npf_json *j, int ok, void *arg)
+{
+    move_rec *r = arg;
+    (void)j;
+    r->fails += !ok;
+    if (npf_call_ctl_request(c, "again", NULL, move_ctl, r) == 0)
+        r->again_ok++;
+    if (r->end_it)
+        npf_call_end(c, "closed");
+}
+
+static void move_sub_done(npf_call *c, uint32_t sid, const npf_sublink_stats *st, void *arg)
+{
+    move_rec *r = arg;
+    (void)sid;
+    (void)st;
+    r->sub_done++;
+    r->saw_tun += c->tun != NULL;
+}
+
+static move_rec *vrec;
+static npf_call *vcall;
+static ssize_t v_read(void *a, uint8_t *b, size_t cap) { (void)a; (void)b; (void)cap; return -1; }
+static ssize_t v_write(void *a, const uint8_t *b, size_t n) { (void)a; (void)b; return (ssize_t)n; }
+static unsigned v_ready(void *a) { (void)a; return 0; }
+static void v_shutdown(void *a) { (void)a; }
+static void v_closed(void *a, int rst) { (void)a; (void)rst; vrec->sub_closed++; vrec->saw_tun += vcall->tun != NULL; }
+static const npf_vend_io vio = {v_read, v_write, v_ready, v_shutdown, v_closed};
+
+static int ws_move(npf_call *c)
+{
+    static const char js[] = "{\"ws\":{\"url\":\"wss://127.0.0.1:9/r\",\"server_id\":0}}";
+    npf_jtok tok[16];
+    npf_json j;
+    if (npf_json_parse(&j, js, sizeof js - 1, tok, 16) < 0)
+        return -2;
+    return call_ws_setup(c, &j, 0);
+}
+
+static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, const uint8_t psk[32], side *L)
+{
+    static side A2, A3;
+    move_rec r1, r2;
+    npf_call *c;
+    int want = L->established;
+
+    memset(&r1, 0, sizeof r1);
+    memset(&r2, 0, sizeof r2);
+    CHECK(init_side(&A2, loop) == 0 && init_side(&A3, loop) == 0, "nodes for the move");
+    /* the relay's URL blocked: the move stops before connecting anywhere */
+    A2.node.test_block_relay = A3.node.test_block_relay = "wss://127.0.0.1:9/r";
+    A2.node.cfg.server_url = A3.node.cfg.server_url = "wss://127.0.0.1:9/";
+
+    c = npf_direct_connect(&A2.node, to, psk);
+    run_until(loop, &A2.established, 1, 3000);
+    run_until(loop, &L->established, want + 1, 1000);
+    CHECK(c && A2.established == 1 && c->tun && npf_tunnel_is_ready(c->tun), "second session up");
+    if (c && A2.established == 1) {
+        vrec = &r1;
+        vcall = c;
+        npf_call_on_sublink_done(c, move_sub_done, &r1);
+        CHECK(npf_tunnel_open_v(c->tun, &vio, NULL, "127.0.0.1", 9) > 0, "a virtual sublink");
+        CHECK(npf_call_ctl_request(c, "one", NULL, move_ctl, &r1) == 0
+              && npf_call_ctl_request(c, "two", NULL, move_ctl, &r1) == 0, "two requests");
+        CHECK(ws_move(c) == -1, "move stops at the blocked relay");
+        CHECK(r1.fails == 2, "each request failed once (%d)", r1.fails);
+        CHECK(r1.again_ok == 0, "no request from a failure (%d)", r1.again_ok);
+        CHECK(r1.sub_done == 1 && r1.sub_closed == 1, "sublink ended (%d/%d)", r1.sub_done, r1.sub_closed);
+        CHECK(r1.saw_tun == 0, "the ends saw no tunnel (%d)", r1.saw_tun);
+        CHECK(!c->tun && !c->anl && !c->stream && c->ws_mode && !c->ended, "transport gone, session on");
+        npf_call_end(c, "closed");
+        npf_loop_once(loop, 10);
+    }
+
+    want = L->established;
+    c = npf_direct_connect(&A3.node, to, psk);
+    run_until(loop, &A3.established, 1, 3000);
+    run_until(loop, &L->established, want + 1, 1000);
+    CHECK(c && A3.established == 1, "third session up");
+    if (c && A3.established == 1) {
+        r2.end_it = 1;
+        CHECK(npf_call_ctl_request(c, "one", NULL, move_ctl, &r2) == 0, "a request");
+        CHECK(ws_move(c) == -1, "move stops");
+        CHECK(r2.fails == 1 && c->ended && !c->ws_mode && !c->wsr, "ended in the failure: no WS relay (%d)",
+              r2.fails);
+        npf_loop_once(loop, 10);
+    }
+    npf_node_stop(&A2.node);
+    npf_node_stop(&A3.node);
 }
 
 int test_direct(void)
@@ -126,6 +228,8 @@ int test_direct(void)
     /* the wrong-key initiator gives up by itself after its retries (~14 s): end it here instead */
     npf_call_end(cb, "closed");
     npf_loop_once(loop, 10);
+
+    test_tunnel_move(loop, &to, psk, &L);
 
     /* a grant call refused before anything starts: no grant, an empty or too
      * long one, a chain that does not verify (no roots here) */

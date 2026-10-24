@@ -247,6 +247,10 @@ int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_stora
 void call_set_state(npf_call *c, int st, const char *why);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);
+/* the data transport (tunnel, UDP forwarding, media) off the call and freed;
+ * then the AnLiu connection (call.c) */
+void call_data_free(npf_call *c);
+void call_anl_drop(npf_call *c);
 
 /* call_reverse.c: reverse mapping (data-channel.md 7.1) */
 void call_rev_close_all(npf_call *c);
