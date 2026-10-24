@@ -42,30 +42,37 @@ typedef pthread_mutex_t npf_mutex;
 #define npf_mutex_unlock(m) pthread_mutex_unlock(m)
 #endif
 
-/* poll(2) everywhere (no epoll: one descriptor less per loop, and the loops
- * watch a few dozen at most); the wake: an eventfd on Linux, a loopback UDP
- * socket elsewhere */
+/* The sockets: epoll on Linux (2.6.27 and later: epoll_create1, eventfd
+ * flags), kqueue on macOS, iOS and the BSDs: a wake-up costs what is ready,
+ * not what is watched (a node with a thousand sublinks). WSAPoll on Windows,
+ * which has neither (IOCP is another model). The wake: an eventfd on Linux,
+ * a loopback UDP socket elsewhere (sendto: safe in a signal handler). */
 #if defined(__linux__)
 #define NPF_EVENTFD 1
-#define NPF_EPOLL 1                 /* the host of a shared runtime: its children's sockets in one epoll */
+#define NPF_EPOLL 1                 /* the queue of a loop (and of a shared runtime's children) */
+#define NPF_EVQ_EPOLL 1
+#define NPF_EVQ_NAME "epoll"
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
-typedef struct pollfd npf_pollfd;
-#define NPF_POLL(f, n, ms) poll((f), (nfds_t)(n), (ms))
-#define NPF_POLL_IN  POLLIN
-#define NPF_POLL_OUT POLLOUT
 #elif defined(_WIN32)
 #include <mmsystem.h>
+#define NPF_POLL_LOOP 1
 typedef WSAPOLLFD npf_pollfd;
 #define NPF_POLL(f, n, ms) WSAPoll((f), (ULONG)(n), (ms))
 #define NPF_POLL_IN  POLLRDNORM
 #define NPF_POLL_OUT POLLWRNORM
 #else
-typedef struct pollfd npf_pollfd;
-#define NPF_POLL(f, n, ms) poll((f), (nfds_t)(n), (ms))
-#define NPF_POLL_IN  POLLIN
-#define NPF_POLL_OUT POLLOUT
+#define NPF_EPOLL 1                 /* the same code over kqueue (the evq_ functions) */
+#define NPF_EVQ_KQUEUE 1
+#define NPF_EVQ_NAME "kqueue"
+#include <fcntl.h>
+#include <sys/event.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
+#ifndef NPF_POLL_LOOP
+typedef struct pollfd npf_pollfd;   /* (Windows only) */
 #endif
 
 /* a socket in a runtime host's epoll: the event's pointer; dead once
@@ -73,6 +80,7 @@ typedef struct pollfd npf_pollfd;
 typedef struct ep_reg {
     npf_loop *l;
     int       fd, dead;
+    unsigned  kev;              /* kqueue: the filters registered (NPF_EV_READ / NPF_EV_WRITE) */
     struct ep_reg *next;
 } ep_reg;
 
@@ -141,12 +149,121 @@ struct npf_loop {
     int        ending;          /* child: stopped, end() steps under way */
     int64_t    end_due;
     int        attached;        /* child: run by the host now */
-    int        epfd;            /* host (NPF_EPOLL): its children's sockets and its own; -1: poll */
+    int        epfd;            /* its queue (epoll / kqueue): its sockets and its children's; -1: a child (or Windows) */
     ep_reg    *grave;           /* host: removed registrations, freed after the batch */
 };
 
 #ifdef NPF_EPOLL
-/* the epoll a loop's sockets go into: a host's own, or its host's while attached */
+/* ---- the queue: epoll or kqueue behind one set of calls ---- */
+
+static int evq_new(void)
+{
+#ifdef NPF_EVQ_EPOLL
+    return epoll_create1(EPOLL_CLOEXEC);
+#else
+    int q = kqueue();
+    if (q >= 0)
+        fcntl(q, F_SETFD, FD_CLOEXEC);
+    return q;
+#endif
+}
+
+/* the wake descriptor in q: an event with no registration (NULL) */
+static int evq_wake(int q, int fd)
+{
+#ifdef NPF_EVQ_EPOLL
+    struct epoll_event e;
+    memset(&e, 0, sizeof e);
+    e.events = EPOLLIN;
+    return epoll_ctl(q, EPOLL_CTL_ADD, fd, &e);
+#else
+    struct kevent k;
+    EV_SET(&k, fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    return kevent(q, &k, 1, NULL, 0, NULL);
+#endif
+}
+
+/* r watched in q for want (NPF_EV_READ / NPF_EV_WRITE); add: new in q */
+static int evq_set(int q, ep_reg *r, unsigned want, int add)
+{
+#ifdef NPF_EVQ_EPOLL
+    struct epoll_event e;
+    memset(&e, 0, sizeof e);
+    e.events = ((want & NPF_EV_READ) ? EPOLLIN : 0) | ((want & NPF_EV_WRITE) ? EPOLLOUT : 0);
+    e.data.ptr = r;
+    return epoll_ctl(q, add ? EPOLL_CTL_ADD : EPOLL_CTL_MOD, r->fd, &e);
+#else
+    /* a filter each way: what changed added or deleted */
+    struct kevent k[2];
+    int n = 0;
+    (void)add;
+    want &= NPF_EV_READ | NPF_EV_WRITE;
+    if ((want ^ r->kev) & NPF_EV_READ)
+        EV_SET(&k[n++], r->fd, EVFILT_READ, (want & NPF_EV_READ) ? EV_ADD : EV_DELETE, 0, 0, r);
+    if ((want ^ r->kev) & NPF_EV_WRITE)
+        EV_SET(&k[n++], r->fd, EVFILT_WRITE, (want & NPF_EV_WRITE) ? EV_ADD : EV_DELETE, 0, 0, r);
+    if (n && kevent(q, k, n, NULL, 0, NULL) < 0)
+        return -1;
+    r->kev = want;
+    return 0;
+#endif
+}
+
+static void evq_remove(int q, ep_reg *r)
+{
+#ifdef NPF_EVQ_EPOLL
+    epoll_ctl(q, EPOLL_CTL_DEL, r->fd, NULL);
+#else
+    (void)evq_set(q, r, 0, 0);          /* (a socket already closed left by itself) */
+#endif
+}
+
+typedef struct evq_ev {
+    ep_reg  *r;                         /* NULL: the wake */
+    unsigned ev;                        /* NPF_EV_* */
+} evq_ev;
+
+#define EVQ_BATCH 256
+
+/* the ready ones, at most EVQ_BATCH, waiting up to ms (-1: no limit) */
+static int evq_wait(int q, evq_ev *out, int ms)
+{
+    int n, i;
+#ifdef NPF_EVQ_EPOLL
+    struct epoll_event ev[EVQ_BATCH];
+    n = epoll_wait(q, ev, EVQ_BATCH, ms);
+    for (i = 0; i < n; i++) {
+        uint32_t x = ev[i].events;
+        unsigned e = 0;
+        if (x & (EPOLLIN | EPOLLHUP)) e |= NPF_EV_READ;
+        if (x & EPOLLOUT) e |= NPF_EV_WRITE;
+        if (x & EPOLLERR) e |= NPF_EV_ERROR | NPF_EV_READ;
+        out[i].r = ev[i].data.ptr;
+        out[i].ev = e;
+    }
+#else
+    struct kevent ev[EVQ_BATCH];
+    struct timespec ts, *tp = NULL;
+    if (ms >= 0) {
+        ts.tv_sec = ms / 1000;
+        ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+        tp = &ts;
+    }
+    n = kevent(q, NULL, 0, ev, EVQ_BATCH, tp);
+    for (i = 0; i < n; i++) {
+        unsigned e = ev[i].filter == EVFILT_WRITE ? NPF_EV_WRITE : NPF_EV_READ;
+        if (ev[i].flags & EV_EOF)
+            e |= NPF_EV_READ;           /* as poll's POLLHUP: the read sees the end */
+        if (ev[i].flags & EV_ERROR)
+            e |= NPF_EV_ERROR | NPF_EV_READ;
+        out[i].r = ev[i].udata;
+        out[i].ev = e;
+    }
+#endif
+    return n < 0 ? 0 : n;               /* EINTR: none this time */
+}
+
+/* the queue a loop's sockets go into: its own, or its host's while attached */
 static int ep_fd(const npf_loop *l)
 {
     if (l->host)
@@ -154,24 +271,15 @@ static int ep_fd(const npf_loop *l)
     return l->epfd;
 }
 
-static uint32_t ep_events(unsigned ev)
-{
-    return ((ev & NPF_EV_READ) ? EPOLLIN : 0) | ((ev & NPF_EV_WRITE) ? EPOLLOUT : 0);
-}
-
 static void ep_add(npf_loop *l, handler *h)
 {
     int ep = ep_fd(l);
-    struct epoll_event e;
     ep_reg *r;
     if (ep < 0 || h->reg || !(r = calloc(1, sizeof *r)))
         return;
     r->l = l;
     r->fd = h->fd;
-    memset(&e, 0, sizeof e);
-    e.events = ep_events(h->events);
-    e.data.ptr = r;
-    if (epoll_ctl(ep, EPOLL_CTL_ADD, h->fd, &e) < 0) {
+    if (evq_set(ep, r, h->events, 1) < 0) {
         npf_loge("loop: descriptor %d not watched: %s", h->fd, strerror(errno));
         free(r);
         return;
@@ -182,13 +290,9 @@ static void ep_add(npf_loop *l, handler *h)
 static void ep_mod(npf_loop *l, handler *h)
 {
     int ep = ep_fd(l);
-    struct epoll_event e;
     if (ep < 0 || !h->reg)
         return;
-    memset(&e, 0, sizeof e);
-    e.events = ep_events(h->events);
-    e.data.ptr = h->reg;
-    epoll_ctl(ep, EPOLL_CTL_MOD, h->fd, &e);
+    (void)evq_set(ep, h->reg, h->events, 0);
 }
 
 static void ep_del(npf_loop *l, handler *h)
@@ -198,7 +302,7 @@ static void ep_del(npf_loop *l, handler *h)
     if (!h->reg)
         return;
     if (ep >= 0)
-        epoll_ctl(ep, EPOLL_CTL_DEL, h->fd, NULL);
+        evq_remove(ep, h->reg);
     h->reg->dead = 1;
     h->reg->next = host->grave;
     host->grave = h->reg;
@@ -452,9 +556,19 @@ npf_loop *npf_loop_new(void)
 #ifdef _WIN32
     timeBeginPeriod(1);             /* 1 ms timer resolution: AnLiu pacing and RTT */
 #endif
+    l->epfd = -1;
+#ifdef NPF_EPOLL
+    if ((l->epfd = evq_new()) < 0 || evq_wake(l->epfd, l->wake_fd) < 0) {
+        npf_loge("loop: no %s: %s", NPF_EVQ_NAME, strerror(errno));
+        if (l->epfd >= 0)
+            close(l->epfd);
+        npf_sock_close(l->wake_fd);
+        free(l);
+        return NULL;
+    }
+#endif
     npf_mutex_init(&l->post_mu);
     l->now = npf_mono_ms();
-    l->epfd = -1;
     return l;
 }
 
@@ -528,19 +642,6 @@ static void attach_run(npf_loop *h, void *arg)
         h->capkids = cap;
     }
     h->kids[h->nkids++] = c;
-#ifdef NPF_EPOLL
-    if (h->epfd < 0 && (h->epfd = epoll_create1(EPOLL_CLOEXEC)) >= 0) {
-        struct epoll_event e;           /* the wake: data NULL */
-        memset(&e, 0, sizeof e);
-        e.events = EPOLLIN;
-        if (epoll_ctl(h->epfd, EPOLL_CTL_ADD, h->wake_fd, &e) < 0) {
-            close(h->epfd);
-            h->epfd = -1;
-        } else {
-            ep_all(h, 1);
-        }
-    }
-#endif
     c->attached = 1;
 #ifdef NPF_EPOLL
     ep_all(c, 1);
@@ -680,6 +781,8 @@ int npf_loop_mod(npf_loop *l, int fd, unsigned events)
     handler *h = find_h(l, fd);
     if (!h)
         return -1;
+    if (h->events == events)
+        return 0;                       /* nothing to tell the queue (a system call each) */
     h->events = events;
     ep_mod(l, h);
     return 0;
@@ -698,6 +801,7 @@ void npf_loop_del(npf_loop *l, int fd)
         l->nh--;
 }
 
+#ifndef NPF_EPOLL
 /* pfd and its parallel arrays (pgen; own, the host's) for need entries */
 static int pfd_room(npf_loop *l, int need)
 {
@@ -719,6 +823,7 @@ static int pfd_room(npf_loop *l, int need)
     l->npfd = cap;
     return 0;
 }
+#endif
 
 /* ---- the host of a shared runtime: its own sockets and timers, and its
  * children's, in one poll ---- */
@@ -748,39 +853,41 @@ static void host_once(npf_loop *l, int max_ms)
         total += l->kids[k]->nh;
     }
 #ifdef NPF_EPOLL
-    if (l->epfd >= 0) {                 /* the cost of a wake-up does not grow with the children */
-        struct epoll_event ev[256];
-        int ne = epoll_wait(l->epfd, ev, 256, wait);
+    {                                   /* the cost of a wake-up: what is ready, not what is watched */
+        evq_ev ev[EVQ_BATCH];
+        int ne = evq_wait(l->epfd, ev, wait);
+        (void)total;
+        (void)n;
         l->now = npf_mono_ms();
         for (i = 0; i < ne; i++) {
-            ep_reg *r = ev[i].data.ptr;
-            uint32_t x = ev[i].events;
-            unsigned e = 0;
+            ep_reg *r = ev[i].r;
             npf_loop *c;
             handler *h;
             if (!r) {                   /* the wake */
+#ifdef NPF_EVENTFD
                 uint64_t v;
                 while (read(l->wake_fd, &v, sizeof v) > 0)
                     ;
+#else
+                char b[16];
+                while (recv(l->wake_fd, b, sizeof b, 0) > 0)
+                    ;
+#endif
                 continue;
             }
             if (r->dead)
                 continue;               /* removed by an earlier callback of this batch */
-            if (x & (EPOLLIN | EPOLLHUP)) e |= NPF_EV_READ;
-            if (x & EPOLLOUT) e |= NPF_EV_WRITE;
-            if (x & EPOLLERR) e |= NPF_EV_ERROR | NPF_EV_READ;
             c = r->l;
             h = find_h(c, r->fd);
             if (!h || !h->fn || h->reg != r)
-                continue;
+                continue;               /* or its fd closed and reused: another registration */
             c->now = l->now;
             prev = npf_log_ctx_swap(c->logctx);
-            TIMED(h->fn, h->fn(c, h->fd, e, h->arg));
+            TIMED(h->fn, h->fn(c, h->fd, ev[i].ev, h->arg));
             npf_log_ctx_swap(prev);
         }
-        goto after;
     }
-#endif
+#else
     if (pfd_room(l, total) < 0)
         return;
     n = 0;
@@ -835,8 +942,6 @@ static void host_once(npf_loop *l, int max_ms)
             npf_log_ctx_swap(prev);
         }
     }
-#ifdef NPF_EPOLL
-after:
 #endif
     l->now = npf_mono_ms();
     run_wake_hook(l);                   /* attaches among them */
@@ -882,6 +987,12 @@ after:
     }
 }
 
+#ifdef NPF_EPOLL
+void npf_loop_once(npf_loop *l, int max_ms)
+{
+    host_once(l, max_ms);               /* with or without children: one queue */
+}
+#else
 void npf_loop_once(npf_loop *l, int max_ms)
 {
     int i, n, wait;
@@ -939,6 +1050,7 @@ void npf_loop_once(npf_loop *l, int max_ms)
     l->now = npf_mono_ms();
     fire_timers(l);
 }
+#endif
 
 /* may run on another thread (console / service control handler) or in a
  * signal handler; write() and sendto() are async-signal-safe */

@@ -1,5 +1,6 @@
-/* Single-threaded event loop: poll for sockets, a binary min-heap for
- * timers. Everything in the node runs on one loop; callbacks must not block. */
+/* Single-threaded event loop: epoll (Linux) / kqueue (macOS, iOS, BSD) /
+ * WSAPoll (Windows) for sockets, a binary min-heap for timers. Everything in
+ * the node runs on one loop; callbacks must not block. */
 #ifndef NPF_LOOP_H
 #define NPF_LOOP_H
 
