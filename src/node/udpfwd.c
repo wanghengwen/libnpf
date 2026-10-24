@@ -44,9 +44,12 @@ typedef struct uflow {
     int      fd;                    /* out: the listening socket (VFD: a virtual flow); in: ours, -1 while resolving */
     void    *vkey;                  /* out, virtual (npf_udpf_send_v): the local end's flow, replies to deliver */
     npf_udpf_deliver deliver;
-    struct sockaddr_storage src;    /* out: where the local application sends from */
+    union {                         /* out: where the local application sends from (IPv4 / IPv6) */
+        struct sockaddr     sa;
+        struct sockaddr_in  in4;
+        struct sockaddr_in6 in6;
+    } src;
     socklen_t srclen;
-    char     host[256];             /* out on the caller: the target, sent until OK; in: the target */
     uint16_t port;
     uint32_t lid;                   /* out on the callee: its -R listener, sent until OK; in on the caller: the same */
     int      ok;                    /* out: the other side has opened it */
@@ -55,9 +58,11 @@ typedef struct uflow {
     int      counted;               /* in: its socket counted in the shares (npf_udpf_set_shared) */
     pend     q[PEND_MAX];
     int      nq;
+    char     host[];                /* out on the caller: the target, sent until OK; in: the target
+                                     * (its own length: a flow is made with it) */
 } uflow;
 
-typedef struct urev {               /* caller: a -R .../udp mapping's target */
+typedef struct urev {               /* caller: a -R .../udp mapping's target (u->rev: made at the first) */
     uint32_t lid;
     char     host[256];
     uint16_t port;
@@ -77,7 +82,7 @@ struct npf_udpf {
     uint32_t     next_id;
     uint32_t     closed[CLOSED_RING];
     int          nclosed;
-    urev         rev[NPF_MAX_REVERSE];
+    urev        *rev;               /* NPF_MAX_REVERSE, made at the first -R .../udp */
     int          nrev;
     npf_timer   *t_tick;
     uint8_t     *out, *in;          /* frame being built / a datagram read */
@@ -88,25 +93,25 @@ struct npf_udpf {
 
 /* ---- the flow table ---- */
 
-static unsigned src_hash(int fd, const struct sockaddr_storage *a)
+static unsigned src_hash(int fd, const struct sockaddr *a)
 {
     const uint8_t *p = (const uint8_t *)a;
-    size_t n = a->ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in), i;
+    size_t n = a->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in), i;
     unsigned h = (unsigned)fd * 2654435761u;
     for (i = 0; i < n; i++)
         h = (h ^ p[i]) * 16777619u;
     return h & 255;
 }
 
-static int same_src(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+static int same_src(const struct sockaddr *a, const struct sockaddr *b)
 {
-    if (a->ss_family != b->ss_family)
+    if (a->sa_family != b->sa_family)
         return 0;
-    if (a->ss_family == AF_INET) {
+    if (a->sa_family == AF_INET) {
         const struct sockaddr_in *x = (const struct sockaddr_in *)a, *y = (const struct sockaddr_in *)b;
         return x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr;
     }
-    if (a->ss_family == AF_INET6) {
+    if (a->sa_family == AF_INET6) {
         const struct sockaddr_in6 *x = (const struct sockaddr_in6 *)a, *y = (const struct sockaddr_in6 *)b;
         return x->sin6_port == y->sin6_port && memcmp(&x->sin6_addr, &y->sin6_addr, 16) == 0;
     }
@@ -125,8 +130,8 @@ static uflow *find_id(const npf_udpf *u, uint32_t id)
 static uflow *find_src(const npf_udpf *u, int fd, const struct sockaddr_storage *src)
 {
     uflow *f;
-    for (f = u->by_src[src_hash(fd, src)]; f; f = f->nsrc)
-        if (f->fd == fd && !f->vkey && same_src(&f->src, src))
+    for (f = u->by_src[src_hash(fd, (const struct sockaddr *)src)]; f; f = f->nsrc)
+        if (f->fd == fd && !f->vkey && same_src(&f->src.sa, (const struct sockaddr *)src))
             return f;
     return NULL;
 }
@@ -140,7 +145,7 @@ static unsigned key_hash(const void *key)
 /* an out flow's chain in by_src */
 static unsigned src_slot(const uflow *f)
 {
-    return f->vkey ? key_hash(f->vkey) : src_hash(f->fd, &f->src);
+    return f->vkey ? key_hash(f->vkey) : src_hash(f->fd, &f->src.sa);
 }
 
 static uflow *find_key(const npf_udpf *u, const void *key)
@@ -287,6 +292,7 @@ void npf_udpf_free(npf_udpf *u)
     /* the AnLiu stream goes with the connection */
     free(u->out);
     free(u->in);
+    free(u->rev);
     free(u);
 }
 
@@ -542,7 +548,7 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
         return NULL;
     }
     if (u->nflows >= NPF_UDP_FLOWS || (u->nresolving >= UDP_RESOLVING_MAX && literal(host, port, &ss, &sl) < 0)
-        || !(f = calloc(1, sizeof *f))) {
+        || !(f = calloc(1, sizeof *f + strlen(host) + 1))) {
         unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_LIMIT);
         return NULL;
     }
@@ -551,7 +557,7 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     f->fd = -1;
     f->lid = lid;
     f->last = npf_mono_ms();
-    snprintf(f->host, sizeof f->host, "%s", host);
+    memcpy(f->host, host, strlen(host) + 1);
     f->port = port;
     link_flow(u, f);
     tick_arm(u);
@@ -639,7 +645,7 @@ static void frame_in(npf_udpf *u, const uint8_t *p, size_t n)
     if (f->out && f->vkey) {
         f->deliver(f->vkey, p, n);
     } else if (f->out) {
-        if (sendto(f->fd, p, n, 0, (const struct sockaddr *)&f->src, f->srclen) < 0)
+        if (sendto(f->fd, p, n, 0, &f->src.sa, f->srclen) < 0)
             u->st.dropped++;
     } else if (f->fd >= 0) {
         flow_send(u, f, p, n);
@@ -757,7 +763,7 @@ static int send_out(npf_udpf *u, int lfd, const struct sockaddr_storage *src, so
             drop_flow(u, old, 1, NPF_UDP_R_CLOSED);     /* the forward's oldest gives way */
         if (u->nflows >= NPF_UDP_FLOWS && (old = least_recent(u, -1, &n)))
             drop_flow(u, old, 1, NPF_UDP_R_CLOSED);
-        if (!(f = calloc(1, sizeof *f))) {
+        if (strlen(host) > 255 || !(f = calloc(1, sizeof *f + strlen(host) + 1))) {   /* (a frame's 1-byte length) */
             u->st.dropped++;
             return -1;
         }
@@ -773,7 +779,7 @@ static int send_out(npf_udpf *u, int lfd, const struct sockaddr_storage *src, so
             memcpy(&f->src, src, (size_t)srclen < sizeof f->src ? (size_t)srclen : sizeof f->src);
             f->srclen = srclen;
         }
-        snprintf(f->host, sizeof f->host, "%s", host);
+        memcpy(f->host, host, strlen(host) + 1);
         f->port = port;
         f->lid = lid;
         link_flow(u, f);
@@ -837,7 +843,8 @@ void npf_udpf_forget_fd(npf_udpf *u, int lfd)
 
 int npf_udpf_rev_add(npf_udpf *u, uint32_t lid, const char *host, uint16_t port)
 {
-    if (!u || !u->caller || u->nrev >= NPF_MAX_REVERSE || strlen(host) >= sizeof u->rev[0].host)
+    if (!u || !u->caller || u->nrev >= NPF_MAX_REVERSE || strlen(host) >= sizeof u->rev[0].host
+        || (!u->rev && !(u->rev = calloc(NPF_MAX_REVERSE, sizeof *u->rev))))
         return -1;
     u->rev[u->nrev].lid = lid;
     snprintf(u->rev[u->nrev].host, sizeof u->rev[u->nrev].host, "%s", host);
