@@ -44,6 +44,8 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 | `NPF_BUILD_TESTS` | ON | 单元测试、API 测试、模糊测试 |
 | `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`、`examples/client.c`（要 `NPF_BUILD_LIB`，Windows 上不构建） |
 | `NPF_PEERS` | ON | 本节点主动连接别的节点；只被连接的设备可以关掉，程序更小 |
+| `NPF_PORTMAP` | ON | 路由器端口映射（PCP、NAT-PMP），给家庭路由器后面的节点用；公网服务器上的程序（如托管服务）可以关掉，关掉后配置项 `portmap` 不起作用 |
+| `NPF_TOOLS_API` | OFF | 调试工具用的同步探测、绑定查询和打洞（`npf_natprobe_run` 等）；节点用的是事件驱动的版本，不需要它 |
 | `NPF_WITH_TLS` | ON | `wss://`、`https://` |
 | `NPF_USE_OPENSSL` | OFF | 用 OpenSSL 3 代替 mbedTLS 做 TLS 和应用层密码学（服务器上用；mbedTLS 的调用经一把进程级锁，OpenSSL 没有这把锁） |
 | `NPF_SANITIZE` / `NPF_TSAN` | OFF | ASan + UBSan / ThreadSanitizer |

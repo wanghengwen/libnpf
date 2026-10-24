@@ -145,6 +145,7 @@ static void test_pkt(void)
     CHECK(npf_pkt_seal(&keys, NPF_DIR_REQ, NPF_PKT_BIND_REQ, txid, 0, body, 28, 40, wire) < 0, "too short");
 }
 
+#ifdef NPF_PORTMAP
 static void test_portmap(void)
 {
     /* PCP MAP request: fixed nonce + client, check the header and opcode-data layout (RFC 6887). */
@@ -197,6 +198,7 @@ static void test_portmap(void)
         CHECK(npf_natpmp_parse_map(resp, 16, &r) < 0, "natpmp error rejected");
     }
 }
+#endif
 
 int main(void)
 {
@@ -209,7 +211,9 @@ int main(void)
     test_kat();
     test_probe_vector();
     test_pkt();
+#ifdef NPF_PORTMAP
     test_portmap();
+#endif
     failures += test_crypto();
     failures += test_json();
     failures += test_tunnel();
@@ -226,7 +230,9 @@ int main(void)
     failures += test_sys();
     failures += test_text();
     failures += test_creply();
+#ifdef NPF_PORTMAP
     failures += test_portmap_gw();
+#endif
     failures += test_callee();
     failures += test_punch();
     { struct in6_addr v6[8]; struct in_addr v4[8];

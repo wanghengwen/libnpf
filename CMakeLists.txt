@@ -118,11 +118,10 @@ add_library(npf_common STATIC
   src/proto/sig.c
   src/proto/wsrelay.c
 
-  # NAT traversal: address probing, NAT detection, candidates, PCP / NAT-PMP, punching
+  # NAT traversal: address probing, NAT detection, candidates, punching
   src/ice/bind.c
   src/ice/natprobe.c
   src/ice/candidates.c
-  src/ice/portmap.c
   src/punch/punch_ev.c
 
   # sessions: the node, calls, the tunnel and its policy, UDP forwards, media, local state
@@ -134,7 +133,6 @@ add_library(npf_common STATIC
   src/node/node_signal.c
   src/node/node_network.c
   src/node/nat.c
-  src/node/nodemap.c
   src/node/sources.c
   src/node/setup.c
   src/node/callee.c
@@ -177,6 +175,14 @@ add_library(npf_common STATIC
 )
 # the version (npf_version, the installers' names): the program's project(), else libnpf's
 target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
+# the router's port mapping (PCP, NAT-PMP: portmap.c, nodemap.c): for a node
+# behind a home router. Off: not in the library, portmap = 0 has no effect
+# (a server-side program such as npf-hosted, on a public address, needs none)
+option(NPF_PORTMAP "The router's port mapping (PCP, NAT-PMP)" ON)
+if(NPF_PORTMAP)
+  target_sources(npf_common PRIVATE src/ice/portmap.c src/node/nodemap.c)
+  target_compile_definitions(npf_common PUBLIC NPF_PORTMAP)
+endif()
 # the synchronous NAT probe, bind query and punch (npf_natprobe_run,
 # npf_bind_query, npf_punch_run): only the debugging tools use them
 # (npf-natprobe, npf-punch), a node runs the event-driven ones. Off: not in

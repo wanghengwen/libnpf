@@ -37,6 +37,8 @@ The installed `npf.pc` finds the library and the header relative to where it is,
 | `NPF_BUILD_TESTS` | ON | unit tests, API tests, fuzzing |
 | `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`, `examples/client.c` (needs `NPF_BUILD_LIB`; not on Windows) |
 | `NPF_PEERS` | ON | sessions this node starts to other nodes; off for a device that is only called, a smaller program |
+| `NPF_PORTMAP` | ON | the router's port mapping (PCP, NAT-PMP) for a node behind a home router; off for a program on a public server (such as the hosted service): the `portmap` setting then does nothing |
+| `NPF_TOOLS_API` | OFF | the synchronous probe, bind query and punch of the debugging tools (`npf_natprobe_run` and the like); a node uses the event-driven ones |
 | `NPF_WITH_TLS` | ON | `wss://`, `https://` (mbedTLS 3.6) |
 | `NPF_USE_OPENSSL` | OFF | OpenSSL 3 instead of mbedTLS for TLS and the application crypto (servers) |
 | `NPF_SANITIZE` / `NPF_TSAN` | OFF | ASan + UBSan / ThreadSanitizer |

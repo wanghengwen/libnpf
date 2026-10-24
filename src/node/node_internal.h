@@ -39,12 +39,19 @@ void node_nat_refresh(npf_node *n);
 /* sources.c: the server list's external channels */
 void node_sources_check(npf_node *n);   /* at each failed attempt: time for a round? */
 void node_sources_stop(npf_node *n);
-/* nodemap.c: the router's port mapping */
+/* nodemap.c: the router's port mapping (NPF_PORTMAP; without it, none) */
+#ifdef NPF_PORTMAP
 void node_portmap_start(npf_node *n);
 void node_portmap_stop(npf_node *n);
 /* the main socket has another port: the old lease is left to expire, a new one is asked for */
 void node_portmap_restart(npf_node *n);
 int  node_portmap_cand(const npf_node *n, struct sockaddr_storage *out);
+#else
+static inline void node_portmap_start(npf_node *n) { (void)n; }
+static inline void node_portmap_stop(npf_node *n) { (void)n; }
+static inline void node_portmap_restart(npf_node *n) { (void)n; }
+static inline int  node_portmap_cand(const npf_node *n, struct sockaddr_storage *out) { (void)n, (void)out; return 0; }
+#endif
 /* nat.c: candidates again (a port mapping came or went) */
 void node_nat_regather(npf_node *n);
 /* at login: probe (on the loop); hooks.on_login at once with a profile from

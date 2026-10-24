@@ -17,9 +17,11 @@ add_executable(npf_unit_tests
   test_sys.c
   test_text.c
   test_creply.c
-  test_portmap.c
   test_callee.c
 )
+if(NPF_PORTMAP)
+  target_sources(npf_unit_tests PRIVATE test_portmap.c)
+endif()
 target_link_libraries(npf_unit_tests PRIVATE npf_common)
 target_include_directories(npf_unit_tests PRIVATE ${NPF_LIB_DIR}/src/node)
 npf_target_options(npf_unit_tests)
