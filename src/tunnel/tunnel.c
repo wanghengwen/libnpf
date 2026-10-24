@@ -955,6 +955,8 @@ int npf_tunnel_sub_reset(npf_tunnel *t, uint32_t id, const char *why)
 /* the tunnel's memory, once nothing runs on it any more */
 static void tunnel_release(npf_tunnel *t)
 {
+    while (t->nrev)
+        free(t->rev[--t->nrev]);
     free(t->subs);
     free(t->ids);
     free(t->rb);
@@ -1054,12 +1056,14 @@ void npf_tunnel_dump(const npf_tunnel *t)
 
 int npf_tunnel_rev_add(npf_tunnel *t, uint32_t listen_id, const char *host, uint16_t port)
 {
-    if (t->nrev >= NPF_MAX_REVERSE || strlen(host) >= sizeof t->rev[0].host)
+    size_t hl = strlen(host);
+    struct rev_target *r;
+    if (t->nrev >= NPF_MAX_REVERSE || hl >= 256 || !(r = malloc(sizeof *r + hl + 1)))
         return -1;
-    t->rev[t->nrev].id = listen_id;
-    strcpy(t->rev[t->nrev].host, host);
-    t->rev[t->nrev].port = port;
-    t->nrev++;
+    r->id = listen_id;
+    r->port = port;
+    memcpy(r->host, host, hl + 1);
+    t->rev[t->nrev++] = r;
     return 0;
 }
 
@@ -1067,7 +1071,8 @@ void npf_tunnel_rev_del(npf_tunnel *t, uint32_t listen_id)
 {
     int i;
     for (i = 0; i < t->nrev; i++)
-        if (t->rev[i].id == listen_id) {
+        if (t->rev[i]->id == listen_id) {
+            free(t->rev[i]);
             t->rev[i] = t->rev[--t->nrev];
             return;
         }

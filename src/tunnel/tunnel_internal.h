@@ -106,8 +106,9 @@ struct npf_tunnel {
     npf_budget *budget;         /* NULL: none */
     uint64_t    local_in, local_out;    /* read from / written to the local sockets */
     npf_timer  *t_rate;         /* a group ran dry: look again soon */
-    /* caller: targets registered for reverse mapping (data-channel.md 7.1) */
-    struct { uint32_t id; char host[256]; uint16_t port; } rev[NPF_MAX_REVERSE];
+    /* caller: targets registered for reverse mapping (data-channel.md 7.1),
+     * each made when registered (a callee's tunnel has none) */
+    struct rev_target { uint32_t id; uint16_t port; char host[]; } *rev[NPF_MAX_REVERSE];
     int         nrev;
     npf_timer  *t_virt;         /* virtual local ends to look at (virt_poll) */
     int         in_poll;        /* virt_poll runs (it arms itself again) */
