@@ -995,6 +995,28 @@ int npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why)
     return n;
 }
 
+int npf_tunnel_sub_bytes(npf_tunnel *t, uint32_t id, uint64_t *in, uint64_t *out)
+{
+    sublink *s = find(t, id);
+    if (!s)
+        return -1;
+    *in = s->in;
+    *out = s->out;
+    return 0;
+}
+
+int npf_tunnel_sub_reset(npf_tunnel *t, uint32_t id, const char *why)
+{
+    sublink *s = find(t, id);
+    if (!s)
+        return -1;
+    t->depth++;                             /* sublink_done may free the tunnel */
+    s->end = why;
+    tunnel_sub_reset(s, NPF_RST_LOCAL);
+    tunnel_leave(t);
+    return 0;
+}
+
 /* the tunnel's memory, once nothing runs on it any more */
 static void tunnel_release(npf_tunnel *t)
 {

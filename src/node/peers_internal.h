@@ -51,6 +51,7 @@ typedef struct pfwd {
     char      refused_why[64];
     int64_t   refused_told;         /* when fwd_refused was called last (ms) */
     npf_timer *t_refused;           /* the ones since, told a second after the last time */
+    npf_timer *t_accept;            /* out of descriptors: accepting again then */
     int       told_state, told_port, told_why;   /* what the application was told last (fwd_changed) */
 } pfwd;
 
@@ -114,6 +115,8 @@ typedef struct pconn {
     struct sockaddr_storage from;
     int64_t   start;                /* Unix ms */
     int       ip;                   /* its address's entry, -1 none */
+    uint64_t  bytes;                /* in its session: both ways, at the last idle check */
+    int64_t   active;               /* monotonic ms the bytes last moved */
 } pconn;
 
 typedef struct ipent {
@@ -136,6 +139,7 @@ struct npf_peers {
     uint64_t      conn_seq;
     ipent        *ips;
     int           lim_mapping, lim_address, lim_rate;
+    npf_timer    *t_idle;           /* idle public connections end (PUBLIC_IDLE_MS) */
     int           closing;          /* npf_peers_public_json(close): public ports stay closed */
     int           default_idle_ms;  /* npf_peers_set_idle: on-demand peers made without an idle time */
     int           no_cache;         /* local.json keeps no peer's resources (NPF_OPT_NO_SAVED_OBJECTS) */

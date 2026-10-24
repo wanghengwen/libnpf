@@ -1,6 +1,7 @@
 /* Forward definitions, listeners, retries and state. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -163,15 +164,61 @@ static int peer_may_wait(const npf_peer *p)
     return !p->finished && (p->idle_ms || p->keep);
 }
 
+static void accept_resume(npf_loop *loop, void *arg)
+{
+    pfwd *f = arg;
+    f->t_accept = NULL;
+    if (f->fd >= 0)
+        npf_loop_mod(loop, f->fd, NPF_EV_READ);
+}
+
+/* accept failed for want of descriptors or memory: the connection stays
+ * queued and the listener readable, so it waits a moment (else the loop
+ * would spin on it) */
+static int accept_starved(void)
+{
+#ifdef _WIN32
+    int e = WSAGetLastError();
+    return e == WSAEMFILE || e == WSAENOBUFS;
+#else
+    return errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM;
+#endif
+}
+
+/* a public connection whose visitor went away (no FIN: off line, a NAT
+ * that forgot it) ends within about 4 minutes, not when the idle check
+ * finds it */
+static void public_keepalive(int fd)
+{
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, sizeof one);
+#ifdef TCP_KEEPIDLE
+    {
+        int idle = 120, intvl = 30, cnt = 4;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (const char *)&idle, sizeof idle);
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (const char *)&intvl, sizeof intvl);
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (const char *)&cnt, sizeof cnt);
+    }
+#endif
+}
+
+#define ACCEPT_ROUND 64                 /* connections taken per wakeup: the loop's other work goes on */
+
 static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
 {
     pfwd *f = arg;
-    (void)loop;
+    int round;
     (void)ev;
-    for (;;) {
+    for (round = 0; round < ACCEPT_ROUND; round++) {
         int fd = npf_accept(lfd);
-        if (fd < 0)
+        if (fd < 0) {
+            if (accept_starved() && !f->t_accept) {
+                npf_logw("%s: %s: out of descriptors, not accepting for 250 ms", f->p->name, f->spec);
+                npf_loop_mod(loop, lfd, 0);
+                f->t_accept = npf_timer_add(loop, 250, accept_resume, f);
+            }
             break;
+        }
         uint64_t cid = 0;
         if (f->pub) {                       /* a public mapping: who may, how many */
             struct sockaddr_storage ss;
@@ -196,6 +243,7 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
                 continue;
             }
             cid = peers_conn_add(f, &ss, ip);
+            public_keepalive(fd);
         } else if (f->draining) {
             npf_sock_close(fd);
             continue;
@@ -320,6 +368,9 @@ void peers_fwd_stop(pfwd *f)
     if (f->t_retry)
         npf_timer_cancel(loop, f->t_retry);
     f->t_retry = NULL;
+    if (f->t_accept)
+        npf_timer_cancel(loop, f->t_accept);
+    f->t_accept = NULL;
     if (f->udp) {
         peers_udp_queue_drop(f->p, f->idx);
         if (f->fd >= 0 && f->p->call)

@@ -64,6 +64,8 @@ static void fwds_free(npf_peer *p)
     for (i = 0; i < NPF_PEER_MAX_FWD && p->fwds[i]; i++) {
         if (p->fwds[i]->t_refused)
             npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_refused);
+        if (p->fwds[i]->t_accept)
+            npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_accept);
         free(p->fwds[i]->acl);
         npf_wipe(p->fwds[i], sizeof *p->fwds[i]);
         free(p->fwds[i]);
@@ -536,6 +538,8 @@ void npf_peers_free(npf_peers *ps)
         for (c = npf_node_calls(ps->n); c; c = npf_call_next(c))
             npf_call_on_sublink_done(c, NULL, NULL);
     }
+    if (ps->t_idle)
+        npf_timer_cancel(ps->n->loop, ps->t_idle);
     free(ps->conns);
     free(ps->ips);
     free(ps->ubuf);

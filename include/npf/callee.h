@@ -41,6 +41,7 @@ typedef struct npf_callee {
     npf_policy policy;
     npf_callee_ops ops;
     npf_node  *node;
+    struct npf_timer *recheck;          /* npf_callee_changed: the sessions checked again */
 } npf_callee;
 
 /* load the state file (defaults when missing) */
@@ -59,6 +60,9 @@ int  npf_callee_password_set(npf_callee *d, const char *password);
 int  npf_callee_unpair_key(npf_callee *d, const uint8_t *key);
 /* the owner forgotten, the platform told at the next login: 0, -2 not saved */
 int  npf_callee_owner_reset(npf_callee *d);
+/* the paired list or hosted trust changed: the platform told, and the
+ * sessions this state no longer admits ended (from the loop) */
+void npf_callee_changed(npf_callee *d);
 /* show / passwd / unpair / owner-reset: exit code, or -2 for other commands */
 int  npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, struct npf_out *o);
 

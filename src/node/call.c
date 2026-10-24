@@ -1461,6 +1461,16 @@ int npf_call_group_reset(npf_call *c, uint32_t group, const char *why)
     return c->tun ? npf_tunnel_group_reset(c->tun, group, why) : 0;
 }
 
+int npf_call_sub_bytes(npf_call *c, uint32_t sid, uint64_t *in, uint64_t *out)
+{
+    return c->tun ? npf_tunnel_sub_bytes(c->tun, sid, in, out) : -1;
+}
+
+int npf_call_sub_reset(npf_call *c, uint32_t sid, const char *why)
+{
+    return c->tun ? npf_tunnel_sub_reset(c->tun, sid, why) : -1;
+}
+
 void npf_call_usage_take(npf_call *c, uint64_t *tx, uint64_t *rx)
 {
     uint64_t in = 0, out = 0;
@@ -1625,12 +1635,11 @@ static const char *incoming_pake(npf_call *c, const npf_json *j, int d, const ui
 {
     npf_node *n = c->n;
     const char *pw = n->callee->password ? n->callee->password(n, n->callee_arg) : NULL;
-    int64_t lock = n->callee->locked_until ? n->callee->locked_until(n, n->callee_arg) : 0;
     uint8_t p[64], pro[64], sid[24], isk[32], peer_y[32];
     size_t pl;
     int ok;
     c->auth = AUTH_PAKE;
-    if (lock > npf_node_time(n) / 1000)
+    if (n->callee->locked && n->callee->locked(n, n->callee_arg))
         return "locked";
     if (!pw || !*pw || npf_json_get_b64(j, d, "cpace", peer_y, 32) != 32)
         return "unauthorized";
@@ -1780,6 +1789,12 @@ static void handle_handshake(npf_call *c, const npf_json *j, int d)
         return;
     if (npf_json_get_int(j, d, "step", 3, 3, &step) < 0 || (ml = npf_json_get_b64(j, d, "msg", msg, sizeof msg)) < 0)
         return;
+    /* locked while this pairing was under way (other guesses in parallel
+     * failed): no guess for it either (security.md 8.3) */
+    if (c->n->callee->locked && c->n->callee->locked(c->n, c->n->callee_arg)) {
+        npf_call_end(c, "locked");
+        return;
+    }
     if (npf_noise_read(&c->hs, msg, (size_t)ml, p, sizeof p) < 0) {
         /* wrong password: count it (security.md 8.3) */
         npf_logw("call %s: pairing failed (wrong password)", c->call_id_s);
@@ -1796,6 +1811,16 @@ static void handle_handshake(npf_call *c, const npf_json *j, int d)
     if (c->n->callee->paired)
         c->n->callee->paired(c->n, c->peer_pub, c->n->callee_arg);
     npf_log("call %s: paired", c->call_id_s);
+}
+
+void npf_node_end_callers(npf_node *n, int (*drop)(const uint8_t pub[32], int auth, void *arg), void *arg)
+{
+    npf_call *x;
+    for (x = n->calls; x; x = x->next)
+        if (!x->caller && !x->direct && !x->ended && x->keys_ready && drop(x->peer_pub, x->auth, arg)) {
+            npf_log("call %s: the caller is no longer admitted", x->call_id_s);
+            npf_call_end(x, "revoked");
+        }
 }
 
 static void handle_punch_request(npf_node *n, const npf_json *j, int d)

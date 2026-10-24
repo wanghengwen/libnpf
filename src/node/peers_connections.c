@@ -16,6 +16,8 @@
 
 #include "peers_internal.h"
 
+#define PUBLIC_IDLE_MS (30 * 60 * 1000)    /* a public connection with no byte either way ends */
+#define IDLE_CHECK_MS  60000
 #define IP_SLOTS 1024               /* source addresses tracked at once (the least recently seen give way) */
 
 /* ---- public connections: who, how many, how long, how much ---- */
@@ -36,7 +38,8 @@ void peers_unmap_v4(struct sockaddr_storage *ss)
     memcpy(ss, &s4, sizeof s4);
 }
 
-/* the address as 16 bytes (IPv4 as v4-mapped) */
+/* the address as 16 bytes (IPv4 as v4-mapped); IPv6 by its /64: one
+ * customer's network, its 2^64 addresses one source */
 static void addr_key(const struct sockaddr_storage *ss, uint8_t a[16])
 {
     memset(a, 0, 16);
@@ -44,7 +47,7 @@ static void addr_key(const struct sockaddr_storage *ss, uint8_t a[16])
         a[10] = a[11] = 0xff;
         memcpy(a + 12, &((const struct sockaddr_in *)ss)->sin_addr, 4);
     } else if (ss->ss_family == AF_INET6) {
-        memcpy(a, &((const struct sockaddr_in6 *)ss)->sin6_addr, 16);
+        memcpy(a, &((const struct sockaddr_in6 *)ss)->sin6_addr, 8);
     }
 }
 
@@ -91,10 +94,8 @@ const char *peers_conn_admit(pfwd *f, const struct sockaddr_storage *from, int *
         f->nconns++;
         return NULL;
     }
-    if ((*ip = ip_get(ps, from)) < 0) {
-        f->nconns++;
-        return NULL;                        /* nothing to count it on: let it in */
-    }
+    if ((*ip = ip_get(ps, from)) < 0)
+        return "address_full";              /* as many sources with connections as tracked: no more */
     e = &ps->ips[*ip];
     if (ps->lim_rate > 0) {
         double burst = ps->lim_rate > 1 ? ps->lim_rate / 2.0 : 1;
@@ -284,6 +285,39 @@ void peers_subs_call_gone(npf_peers *ps, npf_call *c)
     }
 }
 
+/* the open public connections whose bytes did not move for PUBLIC_IDLE_MS
+ * end (a visitor holding a mapping's connections without using them) */
+static void idle_check(npf_loop *loop, void *arg)
+{
+    npf_peers *ps = arg;
+    struct { npf_call *call; uint32_t sid; } idle[64];
+    int64_t now = npf_mono_ms();
+    int k, n = 0, open = 0;
+    ps->t_idle = NULL;
+    for (k = 0; k < ps->nconns; k++) {
+        pconn *c = &ps->conns[k];
+        uint64_t in, out;
+        if (!c->call || npf_call_sub_bytes(c->call, c->sid, &in, &out) < 0)
+            continue;
+        open++;
+        if (in + out != c->bytes || !c->active) {
+            c->bytes = in + out;
+            c->active = now;
+        } else if (now - c->active >= PUBLIC_IDLE_MS && n < (int)(sizeof idle / sizeof idle[0])) {
+            idle[n].call = c->call;
+            idle[n].sid = c->sid;
+            n++;
+        }
+    }
+    /* apart: a reset ends the connection here, its entry moves (conn_end) */
+    for (k = 0; k < n; k++)
+        npf_call_sub_reset(idle[k].call, idle[k].sid, "idle");
+    if (n)
+        npf_log("public ports: %d idle connection(s) ended (no data for %d min)", n, PUBLIC_IDLE_MS / 60000);
+    if (open)
+        ps->t_idle = npf_timer_add(loop, IDLE_CHECK_MS, idle_check, ps);
+}
+
 /* into the session (fd is its now) */
 void peers_conn_open(pfwd *f, int fd, uint64_t cid)
 {
@@ -312,6 +346,8 @@ void peers_conn_open(pfwd *f, int fd, uint64_t cid)
         if (p->ps->conns[k].id == cid) {
             p->ps->conns[k].call = p->call;
             p->ps->conns[k].sid = (uint32_t)sid;
+            if (!p->ps->t_idle)
+                p->ps->t_idle = npf_timer_add(p->ps->n->loop, IDLE_CHECK_MS, idle_check, p->ps);
             break;
         }
 }

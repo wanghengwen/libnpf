@@ -16,6 +16,7 @@
 #include "npf/conf.h"
 #include "npf/crypto.h"
 #include "npf/json.h"
+#include "npf/loop.h"
 #include "npf/node.h"
 
 /* ---- state file ---- */
@@ -150,6 +151,7 @@ static void state_refresh(npf_callee *d)
     if (stat(d->state_path, &st) == 0 && st.st_mtime != d->state_mtime) {
         state_load(d);
         npf_log("state: reloaded (local change)");
+        npf_callee_changed(d);
     }
 }
 
@@ -173,11 +175,51 @@ static void sync_paired(npf_callee *d)
         npf_node_send(d->node, "paired_sync", 0, data);
 }
 
+/* the lock in the platform's time: the device's clock may be off (a NAS
+ * without a clock boots at 1970), the server gate compares with its own */
 static void report_lock(npf_callee *d)
 {
     char data[64];
-    snprintf(data, sizeof data, "{\"locked_until\":%lld}", (long long)d->locked_until);
+    int64_t left = d->locked_until - (int64_t)time(NULL);
+    snprintf(data, sizeof data, "{\"locked_until\":%lld}",
+             (long long)(left > 0 ? npf_node_time(d->node) / 1000 + left : 0));
     npf_node_send(d->node, "lock_report", 0, data);
+}
+
+/* the sessions of callers this state no longer admits end: a key unpaired
+ * (also one paired in a session that is still open), grants when hosted
+ * trust is off; checked at the handshake only otherwise */
+static int drop_caller(const uint8_t pub[32], int auth, void *arg)
+{
+    npf_callee *d = arg;
+    int i;
+    if (auth == NPF_AUTH_GRANT)
+        return !d->hosted_trust;
+    if (auth != NPF_AUTH_IK && auth != NPF_AUTH_PAKE)
+        return 0;
+    for (i = 0; i < d->npaired; i++)
+        if (npf_ct_eq(d->paired[i].pub, pub, 32) == 0)
+            return 0;
+    return 1;
+}
+
+static void recheck_timer(npf_loop *loop, void *arg)
+{
+    npf_callee *d = arg;
+    (void)loop;
+    d->recheck = NULL;
+    npf_node_end_callers(d->node, drop_caller, d);
+}
+
+/* from the loop, not inside the operation that changed the state (it may
+ * run during another session's handshake) */
+void npf_callee_changed(npf_callee *d)
+{
+    if (!d->node)
+        return;
+    sync_paired(d);
+    if (!d->recheck)
+        d->recheck = npf_timer_add(d->node->loop, 0, recheck_timer, d);
 }
 
 /* ---- callee operations ---- */
@@ -202,11 +244,12 @@ static const char *op_password(npf_node *n, void *arg)
     return d->password;
 }
 
-static int64_t op_locked(npf_node *n, void *arg)
+/* 1 while password pairing is locked (on the local clock, as it was set) */
+static int op_locked(npf_node *n, void *arg)
 {
     npf_callee *d = arg;
     (void)n;
-    return d->locked_until;
+    return d->locked_until > (int64_t)time(NULL);
 }
 
 static void op_paired(npf_node *n, const uint8_t pub[32], void *arg)
@@ -228,7 +271,9 @@ static void op_paired(npf_node *n, const uint8_t pub[32], void *arg)
     sync_paired(d);
 }
 
-/* 5 failures lock 15 minutes, doubling up to 24 hours (security.md 8.3) */
+/* 5 failures in a row lock 15 minutes, each failure after that doubles
+ * it, up to 24 hours (security.md 8.3); a pairing or a new password starts
+ * the count again */
 static void op_pair_failed(npf_node *n, void *arg)
 {
     npf_callee *d = arg;
@@ -239,7 +284,6 @@ static void op_pair_failed(npf_node *n, void *arg)
         if (d->lock_secs > 24 * 3600)
             d->lock_secs = 24 * 3600;
         d->locked_until = time(NULL) + d->lock_secs;
-        d->fails = 0;
         npf_logw("pairing locked for %lld s after repeated wrong passwords", (long long)d->lock_secs);
         report_lock(d);
     }
@@ -418,7 +462,7 @@ void npf_callee_attach(npf_callee *d, npf_node *n)
     d->node = n;
     d->ops.authorized = op_authorized;
     d->ops.password = op_password;
-    d->ops.locked_until = op_locked;
+    d->ops.locked = op_locked;
     d->ops.paired = op_paired;
     d->ops.pair_failed = op_pair_failed;
     d->ops.grant_check = op_grant_check;
@@ -472,6 +516,7 @@ int npf_callee_unpair_key(npf_callee *d, const uint8_t *key)
         memmove(&d->paired[k], &d->paired[k + 1], (size_t)(d->npaired - k - 1) * sizeof d->paired[0]);
         d->npaired--;
     }
+    npf_callee_changed(d);
     return state_save(d) < 0 ? -2 : 0;
 }
 
@@ -508,8 +553,10 @@ int npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, npf_ou
         d->fails = 0;
         d->locked_until = 0;
         d->lock_secs = 0;
-        if (clear)
+        if (clear) {
             d->npaired = 0;
+            npf_callee_changed(d);
+        }
         if (state_save(d) < 0)
             return 1;
         npf_out_printf(o, "password %s%s\n", np == d->default_pw ? "reset to the default" : "changed",
@@ -532,6 +579,7 @@ int npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, npf_ou
             memmove(&d->paired[k - 1], &d->paired[k], (size_t)(d->npaired - k) * sizeof d->paired[0]);
             d->npaired--;
         }
+        npf_callee_changed(d);
         if (state_save(d) < 0)
             return 1;
         npf_out_printf(o, "removed\n");

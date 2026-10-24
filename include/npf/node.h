@@ -83,8 +83,8 @@ typedef struct npf_callee_ops {
     int  (*authorized)(npf_node *n, const uint8_t caller_pub[32], void *arg);
     /* current pairing password, NULL = pairing disabled */
     const char *(*password)(npf_node *n, void *arg);
-    /* Unix seconds until which password pairing is locked, 0 = not locked */
-    int64_t (*locked_until)(npf_node *n, void *arg);
+    /* nonzero while password pairing is locked */
+    int  (*locked)(npf_node *n, void *arg);
     void (*paired)(npf_node *n, const uint8_t caller_pub[32], void *arg);
     void (*pair_failed)(npf_node *n, void *arg);
     /* hosted trust: verify a grant for this caller key; 0 and the account
@@ -456,6 +456,8 @@ void npf_call_on_sublink_done(npf_call *c, npf_sublink_fn fn, void *arg);
 int  npf_call_group_count(const npf_call *c, uint32_t group);
 /* resets the connections of a group (a public mapping turned off) */
 int  npf_call_group_reset(npf_call *c, uint32_t group, const char *why);
+int  npf_call_sub_bytes(npf_call *c, uint32_t sid, uint64_t *in, uint64_t *out);   /* npf_tunnel_sub_bytes */
+int  npf_call_sub_reset(npf_call *c, uint32_t sid, const char *why);                /* npf_tunnel_sub_reset */
 /* caller: the bytes its forwarded connections moved since the last call:
  * read from them (up, to the peer) and written to them (down); a hosted
  * client's usage_report, the same bytes as its quota budget */
@@ -517,6 +519,10 @@ npf_call *npf_node_calls(npf_node *n);
 int npf_node_punch_budget(const npf_node *n);
 npf_call *npf_call_next(const npf_call *c);
 
+/* callee: end the sessions drop says are no longer admitted (their peer's
+ * key and how they were admitted: NPF_AUTH_*), once the handshake is done;
+ * direct sessions are not asked */
+void npf_node_end_callers(npf_node *n, int (*drop)(const uint8_t pub[32], int auth, void *arg), void *arg);
 int  npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const npf_identity *id,
                    const npf_node_hooks *hooks, void *arg);
 void npf_node_start(npf_node *n);

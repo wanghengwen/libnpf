@@ -201,6 +201,10 @@ int  npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why);
 /* bytes read from / written to the local sockets of the sublinks (what a
  * public mapping moved for the people connected to it) */
 void npf_tunnel_local_bytes(const npf_tunnel *t, uint64_t *in, uint64_t *out);
+/* one sublink: its local bytes so far (0, -1 no such sublink); reset it,
+ * why its npf_sublink_stats.end (0, -1 none) */
+int  npf_tunnel_sub_bytes(npf_tunnel *t, uint32_t id, uint64_t *in, uint64_t *out);
+int  npf_tunnel_sub_reset(npf_tunnel *t, uint32_t id, const char *why);
 int  npf_tunnel_open_rated(npf_tunnel *t, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
                            uint32_t rate);
 
