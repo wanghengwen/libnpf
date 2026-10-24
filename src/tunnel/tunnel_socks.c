@@ -115,12 +115,12 @@ static int connect_next(sublink *s)
             continue;
         }
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        if (connect(fd, (const struct sockaddr *)&s->cand[i], s->clen[i]) < 0 && !npf_sock_inprogress()) {
+        if (connect(fd, (const struct sockaddr *)&s->cand[i], s->hs->clen[i]) < 0 && !npf_sock_inprogress()) {
             s->last_err = errno;
             npf_sock_close(fd);
             continue;
         }
-        s->cfd[s->ncfd++] = fd;
+        s->hs->cfd[s->ncfd++] = fd;
         npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s);
         if (s->icand < s->ncand && !s->t_he)
             s->t_he = npf_timer_add(s->t->loop, npf_tunnel_he_ms, he_timer, s);
@@ -151,12 +151,12 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
     socklen_t el = sizeof err;
     (void)ev;
     getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&err, &el);
-    for (k = 0; k < s->ncfd && s->cfd[k] != fd; k++)
+    for (k = 0; k < s->ncfd && s->hs->cfd[k] != fd; k++)
         ;
     if (k == s->ncfd)
         return;
     npf_loop_del(loop, fd);
-    s->cfd[k] = s->cfd[--s->ncfd];
+    s->hs->cfd[k] = s->hs->cfd[--s->ncfd];
     if (err) {
         npf_sock_close(fd);
         s->last_err = err;
@@ -168,8 +168,8 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
         return;
     }
     for (i = 0; i < s->ncfd; i++) {     /* the winner: the slower ones go */
-        npf_loop_del(loop, s->cfd[i]);
-        npf_sock_close(s->cfd[i]);
+        npf_loop_del(loop, s->hs->cfd[i]);
+        npf_sock_close(s->hs->cfd[i]);
     }
     s->ncfd = 0;
     if (s->t_he) {
@@ -185,6 +185,7 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
     s->ncand = s->icand = 0;
     s->fd = fd;
     s->ev = 0;
+    tunnel_hs_done(s);                  /* connected: no more SOCKS bytes or attempts */
     socks_reply(s, 0);
     s->state = SL_OPEN;
     if (tunnel_flush_local(s) < 0) {
@@ -229,8 +230,8 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
         return -1;
     }
     memcpy(s->cand, cand, (size_t)nc * sizeof *cand);
-    memcpy(s->clen, clen, (size_t)nc * sizeof *clen);
-    npf_he_order(s->cand, s->clen, nc);
+    memcpy(s->hs->clen, clen, (size_t)nc * sizeof *clen);
+    npf_he_order(s->cand, s->hs->clen, nc);
     s->ncand = nc;
     s->icand = 0;
     s->state = SL_CONNECTING;
@@ -370,17 +371,17 @@ int tunnel_socks_parse(sublink *s)
         int ok = 0;
         if (s->sl < 2)
             return 0;
-        if (s->sb[0] != 5) {
+        if (s->hs->sb[0] != 5) {
             tunnel_sub_reset(s, NPF_RST_PROTOCOL);
             return -1;
         }
-        n = 2 + (size_t)s->sb[1];
+        n = 2 + (size_t)s->hs->sb[1];
         if (s->sl < n)
             return 0;
         {
             size_t i;
             for (i = 2; i < n; i++)
-                if (s->sb[i] == 0)
+                if (s->hs->sb[i] == 0)
                     ok = 1;
         }
         if (!ok) {
@@ -396,7 +397,7 @@ int tunnel_socks_parse(sublink *s)
             s->tx_credit -= 2;
         }
         tunnel_credit_back(s, n);
-        memmove(s->sb, s->sb + n, s->sl - n);
+        memmove(s->hs->sb, s->hs->sb + n, s->sl - n);
         s->sl -= n;
         s->state = SL_SOCKS_REQUEST;
     }
@@ -406,14 +407,14 @@ int tunnel_socks_parse(sublink *s)
         uint16_t port;
         if (s->sl < 5)
             return 0;
-        if (s->sb[0] != 5 || s->sb[2] != 0) {
+        if (s->hs->sb[0] != 5 || s->hs->sb[2] != 0) {
             tunnel_sub_reset(s, NPF_RST_PROTOCOL);
             return -1;
         }
-        atyp = s->sb[3];
+        atyp = s->hs->sb[3];
         if (atyp == 1) alen = 4;
         else if (atyp == 4) alen = 16;
-        else if (atyp == 3) alen = s->sb[4];
+        else if (atyp == 3) alen = s->hs->sb[4];
         else {
             socks_fail(s, 8);
             return -1;
@@ -421,7 +422,7 @@ int tunnel_socks_parse(sublink *s)
         need = 4 + (atyp == 3 ? 1 : 0) + alen + 2;
         if (s->sl < need)
             return 0;
-        if (s->sb[1] != 1) {        /* only CONNECT (C5) */
+        if (s->hs->sb[1] != 1) {        /* only CONNECT (C5) */
             socks_fail(s, 7);
             return -1;
         }
@@ -429,12 +430,12 @@ int tunnel_socks_parse(sublink *s)
             socks_fail(s, 4);
             return -1;
         }
-        port = (uint16_t)((s->sb[need - 2] << 8) | s->sb[need - 1]);
+        port = (uint16_t)((s->hs->sb[need - 2] << 8) | s->hs->sb[need - 1]);
         {
             uint8_t addr[256];
-            memcpy(addr, s->sb + 4 + (atyp == 3 ? 1 : 0), alen);
+            memcpy(addr, s->hs->sb + 4 + (atyp == 3 ? 1 : 0), alen);
             /* pipelined data after the request waits in wq until connected */
-            if (s->sl > need && tunnel_wb_put(&s->wq, s->sb + need, s->sl - need) < 0) {
+            if (s->sl > need && tunnel_wb_put(&s->wq, s->hs->sb + need, s->sl - need) < 0) {
                 tunnel_sub_reset(s, NPF_RST_LIMIT);
                 return -1;
             }
@@ -463,9 +464,15 @@ int tunnel_socks_parse(sublink *s)
     return 0;
 }
 
+void tunnel_hs_done(sublink *s)
+{
+    free(s->hs);
+    s->hs = NULL;
+}
+
 /* client side: the server's method reply (05 00) and its CONNECT reply
  * (05 REP 00 ATYP BND.ADDR BND.PORT), however the frames split them. Only
- * what judging them takes is kept (their first 7 bytes in sb), nothing to
+ * what judging them takes is kept (their first 7 bytes in rep), nothing to
  * deliver later: of p[0..n), the first *drop bytes are the replies' own
  * (the method reply; the CONNECT reply too, unless fwd_rep: -D gives it to
  * the application as it is, a failure too), the rest goes to the local
@@ -479,7 +486,7 @@ int tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop)
         size_t at = s->sl++;            /* this byte's place in the replies */
         uint8_t b = p[k++];
         if (at < 7)
-            s->sb[at] = b;
+            s->rep[at] = b;
         if (at < 2 || !s->fwd_rep)
             *drop = k;
         switch (at) {
@@ -508,7 +515,7 @@ int tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop)
             break;
         }
         if (s->sl >= 7) {
-            size_t len = 2 + 4 + (s->sb[5] == 1 ? 4 : s->sb[5] == 4 ? 16 : 1 + (size_t)s->sb[6]) + 2;
+            size_t len = 2 + 4 + (s->rep[5] == 1 ? 4 : s->rep[5] == 4 ? 16 : 1 + (size_t)s->rep[6]) + 2;
             if (s->sl == len) {
                 s->state = SL_OPEN;
                 s->t_ok = npf_mono_ms();

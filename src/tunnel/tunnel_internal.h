@@ -34,14 +34,25 @@ typedef struct rgroup {
     int64_t  at_ms;             /* last refill */
 } rgroup;
 
+/* a sublink's handshake: the SOCKS bytes being parsed (a server's greeting
+ * and request, -D's application greeting) and the connect attempts. Made
+ * with a server's or -D's sublink, freed once it is open (a port mapping's
+ * never has one): an open sublink keeps none of its 664 bytes */
+typedef struct sl_hs {
+    uint8_t   sb[SOCKS_BUF];
+    int       cfd[NPF_RESOLVE_MAX];     /* SL_CONNECTING: the attempts under way (the winner becomes fd) */
+    socklen_t clen[NPF_RESOLVE_MAX];
+} sl_hs;
+
 typedef struct sublink {
     npf_tunnel *t;
     uint32_t id;
     int      fd;
     int      state;
     int      server;            /* we run the SOCKS5 server for this sublink */
-    uint8_t  sb[SOCKS_BUF];     /* SOCKS bytes being parsed; client: the replies' first bytes */
-    size_t   sl;                /* bytes in sb; client: of the replies seen */
+    sl_hs   *hs;                /* the handshake's (above), NULL once open */
+    uint8_t  rep[7];            /* client: the replies' first bytes (tunnel_client_reply) */
+    size_t   sl;                /* bytes in hs->sb; client: of the replies seen */
     int      fwd_rep;           /* client (-D): the CONNECT reply goes to the application as it is */
     int64_t  tx_credit;         /* DATA bytes we may still send */
     uint32_t rx_freed;          /* written locally since the last WINDOW */
@@ -55,15 +66,13 @@ typedef struct sublink {
     npf_timer *t_connect;
     npf_timer *t_greet;         /* the SOCKS greeting and request still to come (GREET_MS) */
     npf_timer *t_he;            /* SL_CONNECTING: the next address's turn (HE_DELAY_MS) */
-    int      cfd[NPF_RESOLVE_MAX];  /* SL_CONNECTING: the attempts under way (the winner becomes fd) */
-    int      ncfd;
+    int      ncfd;              /* SL_CONNECTING: hs->cfd in use */
     int      last_err;          /* SL_CONNECTING: the last attempt's error */
     struct rgroup *rg;          /* its rate group, NULL: none */
     uint64_t in, out;           /* read from / written to its local socket */
     int      shared;            /* counted in the shared limits (npf_tunnel_shared.subs) */
     npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
     struct sockaddr_storage *cand;  /* SL_CONNECTING: a name's addresses still to try (malloc) */
-    socklen_t clen[NPF_RESOLVE_MAX];
     int      ncand, icand;
     /* opened here: for its record (npf_sublink_stats) */
     int64_t  t_open, t_ok, t_first;     /* mono ms: opened, CONNECT reply, first byte to the local socket */
@@ -148,6 +157,8 @@ void tunnel_virt_arm(npf_tunnel *t);
 int  tunnel_socks_parse(sublink *s);
 /* client side: the server's method and CONNECT replies, as they come (tunnel_socks.c) */
 int  tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop);
+/* the handshake is over (open, or the sublink goes): hs freed */
+void tunnel_hs_done(sublink *s);
 void tunnel_greet_wait(sublink *s);
 void tunnel_greet_done(sublink *s);
 

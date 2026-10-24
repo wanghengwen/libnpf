@@ -204,9 +204,11 @@ void tunnel_sub_free(sublink *s, int rst)
     if (s->vgone)
         t->ngone--;
     for (i = 0; i < s->ncfd; i++) {
-        npf_loop_del(t->loop, s->cfd[i]);
-        npf_sock_close(s->cfd[i]);
+        npf_loop_del(t->loop, s->hs->cfd[i]);
+        npf_sock_close(s->hs->cfd[i]);
     }
+    s->ncfd = 0;
+    tunnel_hs_done(s);
     npf_resolve_cancel(s->resolve);
     free(s->cand);
     if (s->v) {
@@ -283,6 +285,10 @@ static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
     }
     if (!(s = calloc(1, sizeof *s)))
         return NULL;
+    if (server && !(s->hs = calloc(1, sizeof *s->hs))) {   /* its SOCKS server's handshake */
+        free(s);
+        return NULL;
+    }
     s->t = t;
     s->id = id;
     s->fd = fd;
@@ -476,13 +482,13 @@ static void data_in(sublink *s, const uint8_t *p, size_t n)
         /* into the parse buffer what fits (a greeting and a request are
          * 519 bytes at most); data pipelined after the request, in this
          * frame or later ones, is queued until the target is connected */
-        size_t take = n < sizeof s->sb - s->sl ? n : sizeof s->sb - s->sl;
-        memcpy(s->sb + s->sl, p, take);
+        size_t take = n < SOCKS_BUF - s->sl ? n : SOCKS_BUF - s->sl;
+        memcpy(s->hs->sb + s->sl, p, take);
         s->sl += take;
         if (tunnel_socks_parse(s) < 0)
             return;           /* released */
         if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
-            if (s->sl == sizeof s->sb)      /* full and still no request: not SOCKS5 */
+            if (s->sl == SOCKS_BUF)         /* full and still no request: not SOCKS5 */
                 tunnel_sub_reset(s, NPF_RST_PROTOCOL);
             return;
         }
@@ -763,7 +769,7 @@ static void local_greeting(sublink *s)
     uint8_t g[3] = {5, 1, 0};
     size_t need, i;
     int ok = 0;
-    ssize_t r = recv(s->fd, s->sb + s->sl, sizeof s->sb - s->sl, MSG_DONTWAIT);
+    ssize_t r = recv(s->fd, s->hs->sb + s->sl, SOCKS_BUF - s->sl, MSG_DONTWAIT);
     if (r <= 0) {
         if (r < 0 && npf_sock_again())
             return;
@@ -773,15 +779,15 @@ static void local_greeting(sublink *s)
     s->sl += (size_t)r;
     if (s->sl < 2)
         return;
-    if (s->sb[0] != 5) {
+    if (s->hs->sb[0] != 5) {
         tunnel_sub_free(s, 1);
         return;
     }
-    need = 2 + (size_t)s->sb[1];
+    need = 2 + (size_t)s->hs->sb[1];
     if (s->sl < need)
         return;
     for (i = 2; i < need; i++)
-        if (s->sb[i] == 0)
+        if (s->hs->sb[i] == 0)
             ok = 1;
     if (send(s->fd, ok ? "\x05\x00" : "\x05\xff", 2, MSG_NOSIGNAL | MSG_DONTWAIT) != 2 || !ok) {
         tunnel_sub_free(s, 0);              /* no method we offer: the application closes */
@@ -792,11 +798,12 @@ static void local_greeting(sublink *s)
         return;
     s->tx_credit -= 3;
     if (s->sl > need) {
-        if (tunnel_send_frame(s->t, s->id, FR_DATA, s->sb + need, s->sl - need) < 0)
+        if (tunnel_send_frame(s->t, s->id, FR_DATA, s->hs->sb + need, s->sl - need) < 0)
             return;
         s->tx_credit -= (int64_t)(s->sl - need);
     }
     s->sl = 0;
+    tunnel_hs_done(s);                  /* the replies are read with rep */
     s->fwd_rep = 1;                     /* the server's replies: its CONNECT reply is the application's */
     s->state = SL_CLIENT_WAIT;
     tunnel_greet_done(s);
@@ -1180,6 +1187,10 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
     s->t_open = npf_mono_ms();
     t->next_id += 2;
     if (passthrough) {
+        if (!(s->hs = calloc(1, sizeof *s->hs))) {     /* its application's greeting */
+            tunnel_sub_free(s, 0);
+            return -1;
+        }
         s->state = SL_LOCAL_GREETING;       /* -D: a SOCKS5 application */
         tunnel_greet_wait(s);
     } else {
