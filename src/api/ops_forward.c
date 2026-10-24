@@ -143,7 +143,7 @@ static int fwd_remove_run(npf_t *n, void *arg)
 
 int npf_forward_remove(npf_t *n, uint32_t fwd)
 {
-    pid_arg x = {fwd, 0, NULL, NULL, NULL, NULL, NULL, 0};
+    pid_arg x = {.id = fwd};
     return npf_api_op(n, fwd_remove_run, &x);
 }
 
@@ -161,12 +161,12 @@ static int fwd_list_run(npf_t *n, void *arg)
             if (npf_peer_forward_id(p, k))
                 list_put(x, (uint32_t)npf_peer_forward_id(p, k));
     }
-    return *x->count > x->cap ? NPF_ETOOBIG : NPF_OK;
+    return list_rc(*x->count, x->cap);
 }
 
 int npf_forward_list(npf_t *n, uint32_t peer, uint32_t *fwds, size_t cap, size_t *count)
 {
-    list_arg x = {peer, fwds, cap, count};
+    list_arg x = {.of = peer, .ids = fwds, .cap = cap, .count = count};
     if (!count || (cap && !fwds))
         return NPF_EINVAL;
     *count = 0;
@@ -207,7 +207,7 @@ static int fwd_get_run(npf_t *n, void *arg)
 
 int npf_forward_get(npf_t *n, uint32_t fwd, npf_forward_info *out)
 {
-    pid_arg x = {fwd, 0, NULL, NULL, NULL, out, NULL, 0};
+    pid_arg x = {.id = fwd, .out = out};
     if (!out)
         return NPF_EINVAL;
     return npf_api_op(n, fwd_get_run, &x);

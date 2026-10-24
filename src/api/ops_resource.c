@@ -116,7 +116,7 @@ static int res_remove_run(npf_t *n, void *arg)
 
 int npf_resource_remove(npf_t *n, const char *name)
 {
-    pid_arg x = {0, 0, name, NULL, NULL, NULL, NULL, 0};
+    pid_arg x = {.a = name};
     if (!name || !*name)
         return NPF_EINVAL;
     return npf_api_op(n, res_remove_run, &x);
@@ -194,13 +194,13 @@ static int res_list_run(npf_t *n, void *arg)
         free(tok);
         free(r);
     }
-    return *x->count > x->cap ? NPF_ETOOBIG : NPF_OK;
+    return list_rc(*x->count, x->cap);
 }
 
 int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *out, size_t elem_size, size_t cap,
                            size_t *count)
 {
-    rl_arg x = {peer, out, elem_size, cap, count};
+    rl_arg x = {.peer = peer, .out = out, .elem = elem_size, .cap = cap, .count = count};
     if (!count || (cap && !out) || elem_size < offsetof(npf_resource_info, desc) + sizeof out->desc)
         return NPF_EINVAL;
     *count = 0;

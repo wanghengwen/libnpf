@@ -213,7 +213,7 @@ static int peer_remove_run(npf_t *n, void *arg)
 
 int npf_peer_remove_id(npf_t *n, uint32_t peer)
 {
-    pid_arg x = {peer, 0, NULL, NULL, NULL, NULL, NULL, 0};
+    pid_arg x = {.id = peer};
     return npf_api_op(n, peer_remove_run, &x);
 }
 
@@ -229,7 +229,7 @@ static int peer_find_run(npf_t *n, void *arg)
 
 int npf_peer_find(npf_t *n, const char *target_or_name, uint32_t *peer)
 {
-    pid_arg x = {0, 0, target_or_name, NULL, NULL, peer, NULL, 0};
+    pid_arg x = {.a = target_or_name, .out = peer};
     if (!target_or_name || !peer)
         return NPF_EINVAL;
     *peer = 0;
@@ -241,12 +241,12 @@ static int peer_list_run(npf_t *n, void *arg)
     npf_peer *p;
     for (p = n->peers ? npf_peers_first(n->peers) : NULL; p; p = npf_peer_next(p))
         list_put(x, npf_peer_id(p));
-    return *x->count > x->cap ? NPF_ETOOBIG : NPF_OK;
+    return list_rc(*x->count, x->cap);
 }
 
 int npf_peer_list(npf_t *n, uint32_t *peers, size_t cap, size_t *count)
 {
-    list_arg x = {0, peers, cap, count};
+    list_arg x = {.ids = peers, .cap = cap, .count = count};
     if (!count || (cap && !peers))
         return NPF_EINVAL;
     *count = 0;
@@ -297,7 +297,7 @@ static int peer_get_run(npf_t *n, void *arg)
 
 int npf_peer_get(npf_t *n, uint32_t peer, npf_peer_info *out)
 {
-    pid_arg x = {peer, 0, NULL, NULL, NULL, out, NULL, 0};
+    pid_arg x = {.id = peer, .out = out};
     if (!out)
         return NPF_EINVAL;
     return npf_api_op(n, peer_get_run, &x);
@@ -319,7 +319,7 @@ static int peer_connect_run(npf_t *n, void *arg)
 
 int npf_peer_connect_now(npf_t *n, uint32_t peer)
 {
-    pid_arg x = {peer, 0, NULL, NULL, NULL, NULL, NULL, 0};
+    pid_arg x = {.id = peer};
     return npf_api_op(n, peer_connect_run, &x);
 }
 /* ---- npf_peer_setopt ---- */

@@ -32,7 +32,7 @@ static int pw_get_run(npf_t *n, void *arg)
 
 int npf_pairing_password_get(npf_t *n, char *out, size_t cap)
 {
-    pid_arg x = {0, (int)cap, NULL, NULL, NULL, out, NULL, 0};
+    pid_arg x = {.flags = (int)cap, .out = out};
     if (!out || !cap || cap > 1 << 20)
         return NPF_EINVAL;
     out[0] = 0;
@@ -55,7 +55,7 @@ static int pw_set_run(npf_t *n, void *arg)
 
 int npf_pairing_password_set(npf_t *n, const char *password, char *err, size_t errcap)
 {
-    pid_arg x = {0, 0, password, NULL, NULL, NULL, err, errcap};
+    pid_arg x = {.a = password, .err = err, .errcap = errcap};
     if (err && errcap)
         err[0] = 0;
     if (!password)
@@ -85,12 +85,12 @@ static int pairing_list_run(npf_t *n, void *arg)
         }
         (*x->count)++;
     }
-    return *x->count > x->cap ? NPF_ETOOBIG : NPF_OK;
+    return list_rc(*x->count, x->cap);
 }
 
 int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t elem_size, size_t cap, size_t *count)
 {
-    pl_arg x = {out, elem_size, cap, count};
+    pl_arg x = {.out = out, .elem = elem_size, .cap = cap, .count = count};
     if (!count || (cap && !out) || elem_size < sizeof(npf_pairing))
         return NPF_EINVAL;
     *count = 0;
@@ -109,7 +109,7 @@ static int unpair_run(npf_t *n, void *arg)
 
 int npf_pairing_remove(npf_t *n, const uint8_t key[32])
 {
-    pid_arg x = {0, 0, NULL, NULL, NULL, (void *)key, NULL, 0};
+    pid_arg x = {.out = (void *)key};
     return npf_api_op(n, unpair_run, &x);
 }
 

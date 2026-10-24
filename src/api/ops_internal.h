@@ -108,4 +108,10 @@ static inline void list_put(list_arg *x, uint32_t id)
     (*x->count)++;
 }
 
+/* a list's result: all of them in count, more than the room given: NPF_ETOOBIG */
+static inline int list_rc(size_t count, size_t cap)
+{
+    return count > cap ? NPF_ETOOBIG : NPF_OK;
+}
+
 #endif

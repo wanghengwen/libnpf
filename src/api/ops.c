@@ -231,7 +231,7 @@ static int session_get_run(npf_t *n, void *arg)
 
 int npf_session_get(npf_t *n, uint32_t session, npf_session_info *out)
 {
-    pid_arg x = {session, 0, NULL, NULL, NULL, out, NULL, 0};
+    pid_arg x = {.id = session, .out = out};
     if (!out)
         return NPF_EINVAL;
     return npf_api_op(n, session_get_run, &x);
@@ -243,12 +243,12 @@ static int session_list_run(npf_t *n, void *arg)
     int k;
     for (k = 0; k < n->nsess; k++)
         list_put(x, n->sess[k].id);
-    return *x->count > x->cap ? NPF_ETOOBIG : NPF_OK;
+    return list_rc(*x->count, x->cap);
 }
 
 int npf_session_list(npf_t *n, uint32_t *sessions, size_t cap, size_t *count)
 {
-    list_arg x = {0, sessions, cap, count};
+    list_arg x = {.ids = sessions, .cap = cap, .count = count};
     if (!count || (cap && !sessions))
         return NPF_EINVAL;
     *count = 0;
