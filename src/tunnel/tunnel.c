@@ -1,5 +1,6 @@
 /* libnpf: the tunnel (data-channel.md): frames, flow control, the sublinks
- * and their local ends; the SOCKS5 side and connecting in tunnel_socks.c */
+ * and their local ends; the SOCKS5 side and connecting in tunnel_socks.c,
+ * the rate limits in tunnel_rate.c, the virtual local ends in tunnel_virt.c */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <errno.h>
@@ -121,7 +122,7 @@ static void send_reset(npf_tunnel *t, uint32_t id, int reason)
     tunnel_send_frame(t, id, FR_RESET, &r, 1);
 }
 
-static sublink *find(npf_tunnel *t, uint32_t id)
+sublink *tunnel_find(npf_tunnel *t, uint32_t id)
 {
     int i;
     if (t->last < t->nsubs && t->ids[t->last] == id)
@@ -134,118 +135,8 @@ static sublink *find(npf_tunnel *t, uint32_t id)
     return NULL;
 }
 
-static void io_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 static void rx_add(npf_tunnel *t, int64_t d);
 void tunnel_update_ev(sublink *s);
-
-#define RATE_TICK_MS 50
-
-static void rg_refill(rgroup *g)
-{
-    int64_t now = npf_mono_ms(), add;
-    if (now <= g->at_ms)
-        return;
-    add = (now - g->at_ms) * (int64_t)g->rate / 1000;
-    if (add <= 0)
-        return;
-    g->at_ms = now;
-    g->up = g->up + add > (int64_t)g->rate ? (int64_t)g->rate : g->up + add;
-    g->down = g->down + add > (int64_t)g->rate ? (int64_t)g->rate : g->down + add;
-}
-
-static void rate_tick_in(npf_tunnel *t);
-
-/* every loop callback into the tunnel holds it (depth): a sublink_done or a
- * transport's write it causes may free the tunnel, which then goes when the
- * callback is done with it (tunnel_leave) */
-static void rate_tick(npf_loop *loop, void *arg)
-{
-    npf_tunnel *t = arg;
-    (void)loop;
-    t->t_rate = NULL;
-    t->depth++;
-    rate_tick_in(t);
-    tunnel_leave(t);
-}
-
-static void rate_tick_in(npf_tunnel *t)
-{
-    int i;
-    for (i = 0; i < t->nrg; i++)
-        rg_refill(&t->rg[i]);
-    for (i = 0; i < t->nsubs; i++)
-        if (t->subs[i]->rg || t->budget)
-            tunnel_update_ev(t->subs[i]);
-}
-
-/* a group ran dry: its sublinks wait for the next tick */
-static void rate_wait(npf_tunnel *t)
-{
-    if (!t->t_rate)
-        t->t_rate = npf_timer_add(t->loop, RATE_TICK_MS, rate_tick, t);
-}
-
-/* the budget's slow bucket (none left): one second of burst */
-static void budget_refill(npf_budget *b)
-{
-    int64_t now = npf_mono_ms();
-    if (b->at_ms == 0 || b->tokens > b->slow) {
-        b->tokens = b->slow;
-        b->at_ms = now;
-    }
-    b->tokens += (double)(now - b->at_ms) * b->slow / 1000;
-    if (b->tokens > b->slow)
-        b->tokens = b->slow;
-    b->at_ms = now;
-}
-
-/* bytes the sublink may move now (up: local -> tunnel), at most want */
-static size_t rate_allow(sublink *s, int up, size_t want)
-{
-    npf_budget *b = s->t->budget;
-    if (s->rg && s->rg->rate) {
-        int64_t *tok;
-        rg_refill(s->rg);
-        tok = up ? &s->rg->up : &s->rg->down;
-        if (*tok <= 0) {
-            rate_wait(s->t);
-            return 0;
-        }
-        if ((int64_t)want > *tok)
-            want = (size_t)*tok;
-    }
-    if (b && b->left <= 0) {                /* the quota is used up: the slow speed */
-        budget_refill(b);
-        if (b->tokens < 1) {
-            rate_wait(s->t);
-            return 0;
-        }
-        if ((double)want > b->tokens)
-            want = (size_t)b->tokens;
-    } else if (b && (int64_t)want > b->left) {
-        want = (size_t)b->left;
-    }
-    return want;
-}
-
-static void rate_take(sublink *s, int up, size_t n)
-{
-    npf_budget *b = s->t->budget;
-    if (s->rg && s->rg->rate)
-        *(up ? &s->rg->up : &s->rg->down) -= (int64_t)n;
-    if (b) {
-        if (b->idle && b->wake) {
-            b->idle = 0;
-            b->wake(b->wake_arg);
-        }
-        if (b->left > 0)
-            b->left -= (int64_t)n;
-        else
-            b->tokens -= (double)n;
-    }
-}
-
-static void virt_arm(npf_tunnel *t);
 
 void tunnel_update_ev(sublink *s)
 {
@@ -256,20 +147,20 @@ void tunnel_update_ev(sublink *s)
     if (s->state == SL_LOCAL_GREETING) {
         ev = NPF_EV_READ;
     } else if (s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) {
-        if (!s->local_eof && s->tx_credit > 0 && !t->paused && rate_allow(s, 1, 1))
+        if (!s->local_eof && s->tx_credit > 0 && !t->paused && tunnel_rate_allow(s, 1, 1))
             ev |= NPF_EV_READ;
-        if (s->wq.len && rate_allow(s, 0, 1))
+        if (s->wq.len && tunnel_rate_allow(s, 0, 1))
             ev |= NPF_EV_WRITE;
     }
     if (s->v) {                     /* no socket: virt_poll asks the local end */
         s->ev = ev;
         if (ev & s->v->ready(s->varg))
-            virt_arm(t);
+            tunnel_virt_arm(t);
         return;
     }
     if (ev != s->ev) {
         if (s->ev == 0 && ev)
-            npf_loop_add(t->loop, s->fd, ev, io_cb, s);
+            npf_loop_add(t->loop, s->fd, ev, tunnel_io_cb, s);
         else if (ev == 0)
             npf_loop_del(t->loop, s->fd);
         else
@@ -442,7 +333,7 @@ static ssize_t local_write(sublink *s, const uint8_t *p, size_t len)
     ssize_t w;
     if (!s->v && s->fd < 0)
         return (ssize_t)len;            /* its virtual end closed (npf_tunnel_vclose): nobody reads it */
-    n = rate_allow(s, 0, len);
+    n = tunnel_rate_allow(s, 0, len);
     if (n == 0)
         return 0;
     if (s->v) {
@@ -452,7 +343,7 @@ static ssize_t local_write(sublink *s, const uint8_t *p, size_t len)
         return npf_sock_again() ? 0 : -1;
     }
     if (w > 0) {
-        rate_take(s, 0, (size_t)w);
+        tunnel_rate_take(s, 0, (size_t)w);
         s->t->local_out += (uint64_t)w;
         if (!s->out)
             s->t_first = npf_mono_ms();
@@ -578,7 +469,7 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
      * caller opens sublinks only after it) */
     if (!t->hello_sent)
         return -1;
-    s = find(t, id);
+    s = tunnel_find(t, id);
     if (!s) {
         int peer_opened = t->caller ? (id % 2 == 0) : (id % 2 == 1);
         if (type == FR_RESET && peer_opened) {
@@ -892,7 +783,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
         return;
     }
     if ((ev & NPF_EV_READ) && !s->local_eof && s->tx_credit > 0 && !t->paused) {
-        size_t want = rate_allow(s, 1, s->tx_credit < NPF_FRAME_MAX ? (size_t)s->tx_credit : NPF_FRAME_MAX);
+        size_t want = tunnel_rate_allow(s, 1, s->tx_credit < NPF_FRAME_MAX ? (size_t)s->tx_credit : NPF_FRAME_MAX);
         uint8_t *m = want ? npf_scratch(NPF_DATA_HDR + NPF_FRAME_MAX) : NULL;    /* received in place */
         ssize_t r = !m ? -1 : s->v ? s->v->read(s->varg, m + NPF_DATA_HDR, want)
                                    : recv(s->fd, m + NPF_DATA_HDR, want, MSG_DONTWAIT);
@@ -903,7 +794,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
         if (!m)
             return;
         if (r > 0) {
-            rate_take(s, 1, (size_t)r);
+            tunnel_rate_take(s, 1, (size_t)r);
             t->local_in += (uint64_t)r;
             s->in += (uint64_t)r;
         }
@@ -946,7 +837,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
 }
 
 /* a local socket's event: the transport's write may free the tunnel */
-static void io_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
+void tunnel_io_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     npf_tunnel *t = ((sublink *)arg)->t;
     t->depth++;
@@ -998,39 +889,10 @@ void npf_tunnel_local_bytes(const npf_tunnel *t, uint64_t *in, uint64_t *out)
     *out = t->local_out;
 }
 
-int npf_tunnel_group_count(const npf_tunnel *t, uint32_t group)
-{
-    int i, n = 0;
-    for (i = 0; i < t->nsubs; i++)
-        n += t->subs[i]->rg && t->subs[i]->rg->id == group;
-    return n;
-}
-
-int npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why)
-{
-    int i, n = 0;
-    t->depth++;                             /* sublink_done may free the tunnel */
-    for (i = t->nsubs - 1; i >= 0 && !t->dead; i--) {   /* from the end: a released one's place takes one seen already */
-        sublink *s;
-        if (i >= t->nsubs)
-            continue;
-        s = t->subs[i];
-        if (s->rg && s->rg->id == group) {
-            s->end = why;
-            tunnel_sub_reset(s, NPF_RST_LOCAL);
-            n++;
-        }
-    }
-    for (i = 0; i < t->nrg && !t->dead; i++)
-        if (t->rg[i].id == group)
-            t->rg[i].id = 0;                /* none of its sublinks left: the place is free */
-    tunnel_leave(t);
-    return n;
-}
 
 int npf_tunnel_sub_bytes(npf_tunnel *t, uint32_t id, uint64_t *in, uint64_t *out)
 {
-    sublink *s = find(t, id);
+    sublink *s = tunnel_find(t, id);
     if (!s)
         return -1;
     *in = s->in;
@@ -1040,7 +902,7 @@ int npf_tunnel_sub_bytes(npf_tunnel *t, uint32_t id, uint64_t *in, uint64_t *out
 
 int npf_tunnel_sub_reset(npf_tunnel *t, uint32_t id, const char *why)
 {
-    sublink *s = find(t, id);
+    sublink *s = tunnel_find(t, id);
     if (!s)
         return -1;
     t->depth++;                             /* sublink_done may free the tunnel */
@@ -1105,129 +967,6 @@ void npf_tunnel_free(npf_tunnel *t)
     tunnel_destroy(t);
 }
 
-/* ---- virtual local ends (npf_tunnel_open_v) ---- */
-
-#define VIRT_ROUNDS 64                  /* passes of one poll (a pass reads a frame per sublink) */
-#define GONE_MS     30000               /* a closed virtual end waits this long for the peer's FIN */
-
-static void gone_timeout(npf_loop *loop, void *arg)
-{
-    sublink *s = arg;
-    npf_tunnel *t = s->t;
-    (void)loop;
-    s->t_gone = NULL;
-    if (!s->end)
-        s->end = "local_reset";
-    t->depth++;
-    tunnel_sub_reset(s, NPF_RST_TIMEOUT);
-    tunnel_leave(t);
-}
-
-/* a virtual end its owner closed (npf_tunnel_vclose). A reset: the sublink
- * goes. Else a close: FIN after what was sent (on the data channel, in
- * order), and the sublink waits for the peer's FIN, its data dropped (a
- * RESET at once on the faster control channel overtook what was still on
- * its way: a POST's tail, a QUIT); no credit for it, so the peer stops
- * sending once its window is used up */
-static void vend_close(sublink *s)
-{
-    npf_tunnel *t = s->t;
-    int reset = s->vgone == 2;
-    s->vgone = 0;
-    t->ngone--;
-    if (reset) {
-        if (!s->end)
-            s->end = "local_reset";
-        tunnel_sub_reset(s, NPF_RST_LOCAL);
-        return;
-    }
-    s->wq.off = s->wq.len = 0;          /* nobody reads it now */
-    if (!s->local_eof) {
-        s->local_eof = 1;
-        if (!s->fin_first)
-            s->fin_first = 1;
-        tunnel_send_frame(t, s->id, FR_FIN, NULL, 0);
-    }
-    s->shut_wr = 1;                     /* no local end to shut down */
-    s->gone = 1;
-    if (s->peer_fin) {
-        tunnel_sub_free(s, 0);
-        return;
-    }
-    s->t_gone = npf_timer_add(t->loop, GONE_MS, gone_timeout, s);
-}
-
-/* every virtual end closed since the last look; from the end: freeing s
- * moves the last sublink (seen already) into its place */
-static void vends_closed(npf_tunnel *t)
-{
-    int i;
-    for (i = t->nsubs - 1; i >= 0 && t->ngone > 0 && !t->dead; i--)
-        if (i < t->nsubs && t->subs[i]->vgone)
-            vend_close(t->subs[i]);
-}
-
-static void virt_poll(npf_loop *loop, void *arg)
-{
-    npf_tunnel *t = arg;
-    int round, busy = 1;
-    (void)loop;
-    t->t_virt = NULL;
-    t->in_poll = 1;
-    t->depth++;
-    vends_closed(t);
-    for (round = 0; round < VIRT_ROUNDS && busy && !t->free_later; round++) {
-        int i;
-        busy = 0;
-        /* from the end: io_cb releases s at most, never another, and the
-         * last one (seen already) takes its place */
-        for (i = t->nsubs - 1; i >= 0 && !t->free_later; i--) {
-            sublink *s;
-            unsigned ev;
-            if (i >= t->nsubs)
-                continue;
-            s = t->subs[i];
-            if (!s->v || !(ev = s->ev & s->v->ready(s->varg)))
-                continue;
-            busy = 1;
-            io_cb(t->loop, -1, ev, s);
-        }
-    }
-    if (!t->free_later)
-        vends_closed(t);                /* the ends closed meanwhile */
-    t->in_poll = 0;
-    if (tunnel_leave(t))
-        return;
-    if (busy || t->ngone)
-        virt_arm(t);                    /* more next time: other work goes first */
-}
-
-static void virt_arm(npf_tunnel *t)
-{
-    if (!t->t_virt && !t->in_poll && !t->dead)
-        t->t_virt = npf_timer_add(t->loop, 0, virt_poll, t);
-}
-
-void npf_tunnel_vkick(npf_tunnel *t, uint32_t id)
-{
-    (void)id;
-    virt_arm(t);
-}
-
-/* the owner closed the virtual end: not called again from now on, the rest
- * at the next virt_poll (vend_close). Never here: it may be called from
- * inside one of the end's own calls (write, read, shutdown), whose callers
- * still use the sublink */
-void npf_tunnel_vclose(npf_tunnel *t, uint32_t id, int reset)
-{
-    sublink *s = find(t, id);
-    if (!s || !s->v)
-        return;
-    s->v = NULL;
-    s->vgone = reset ? 2 : 1;
-    t->ngone++;
-    virt_arm(t);
-}
 
 int npf_tunnel_control(npf_tunnel *t, const char *json, size_t len)
 {

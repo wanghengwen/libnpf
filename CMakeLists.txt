@@ -151,6 +151,8 @@ add_library(npf_common STATIC
   src/node/media.c
   src/node/udpfwd.c
   src/tunnel/tunnel.c
+  src/tunnel/tunnel_rate.c
+  src/tunnel/tunnel_virt.c
   src/tunnel/tunnel_socks.c
   src/tunnel/policy.c
   src/version.c

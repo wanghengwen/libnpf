@@ -117,8 +117,11 @@ struct npf_tunnel {
     int         ngone;          /* virtual ends their owner closed, not handled yet */
 };
 
-/* tunnel.c */
+/* tunnel.c: the frames, flow control, the sublinks and their local ends */
 int  tunnel_wb_put(wbuf *b, const void *p, size_t n);
+sublink *tunnel_find(npf_tunnel *t, uint32_t id);
+/* a local socket's event (also what virt_poll feeds a virtual end) */
+void tunnel_io_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 int  tunnel_send_frame(npf_tunnel *t, uint32_t id, int type, const void *payload, size_t len);
 void tunnel_update_ev(sublink *s);
 void tunnel_sub_free(sublink *s, int rst);
@@ -129,6 +132,15 @@ int  tunnel_leave(npf_tunnel *t);
 int  tunnel_flush_local(sublink *s);
 /* n bytes of the peer's data taken here: WINDOW back once a quarter of the window is free */
 void tunnel_credit_back(sublink *s, size_t n);
+
+/* tunnel_rate.c: the rate groups and the budget */
+/* bytes the sublink may move now (up: local -> tunnel), at most want; 0: wait for the next tick */
+size_t tunnel_rate_allow(sublink *s, int up, size_t want);
+void tunnel_rate_take(sublink *s, int up, size_t n);
+
+/* tunnel_virt.c: the virtual local ends */
+/* a poll of the virtual ends soon (one at a time, not from inside one) */
+void tunnel_virt_arm(npf_tunnel *t);
 
 /* tunnel_socks.c */
 /* parse what the client sent so far; -1 if the sublink was freed */
