@@ -826,6 +826,8 @@ npf_tunnel *call_tunnel_new(npf_call *c)
     npf_tunnel *t = npf_tunnel_new(c->n->loop, c->caller, &tun_io, c, call_policy(c));
     if (t && c->n->budget)
         npf_tunnel_set_budget(t, c->n->budget);   /* a hosted client: its quota */
+    if (t)
+        npf_tunnel_set_shared(t, &c->n->tun_shared);
     return t;
 }
 
@@ -1654,6 +1656,19 @@ static const char *incoming_pake(npf_call *c, const npf_json *j, int d, const ui
     return ok ? NULL : "unauthorized";
 }
 
+#define SESSIONS_PER_KEY 4
+
+/* the sessions here of the caller with this key */
+static int key_sessions(npf_node *n, const uint8_t *pub)
+{
+    npf_call *x;
+    int k = 0;
+    for (x = n->calls; pub && x; x = x->next)
+        if (!x->caller && !x->direct && !x->ended && x->keys_ready && npf_ct_eq(x->peer_pub, pub, 32) == 0)
+            k++;
+    return k;
+}
+
 /* an incoming session of a paired caller (Noise IK) or of a grant: the
  * callee gate (security.md 8.3): the caller's key is authorized, or hosted
  * trust with a valid grant bound to that key; the answer in out (*ol bytes) */
@@ -1667,6 +1682,8 @@ static const char *incoming_ik(npf_call *c, const npf_json *j, int d, const uint
     if (npf_noise_init(&c->hs, NPF_NOISE_IK, 0, pro, pl, n->id.dh_sk, NULL, NULL) < 0
         || npf_noise_read(&c->hs, msg, (size_t)ml, p, sizeof p) < 0)
         return "unauthorized";
+    if (key_sessions(n, npf_noise_remote_static(&c->hs)) >= SESSIONS_PER_KEY)
+        return "busy";                      /* one caller does not take all the sessions */
     if (c->auth == AUTH_IK) {
         if (!n->callee->authorized || !n->callee->authorized(n, npf_noise_remote_static(&c->hs), n->callee_arg))
             return "unauthorized";

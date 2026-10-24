@@ -15,7 +15,7 @@
 #define CONNECT_MS     10000
 #define HE_DELAY_MS    250      /* Happy Eyeballs (RFC 8305): the next address after this long without an answer */
 #define GREET_MS       10000    /* a peer-opened sublink's SOCKS greeting and request, at most this long */
-#define RESOLVING_MAX  16       /* lookups of one tunnel at once: one peer cannot take the whole resolver */
+#define RESOLVING_MAX  6        /* lookups of one tunnel at once: one caller (SESSIONS_PER_KEY) cannot take the peers' resolver share */
 
 static void socks_reply(sublink *s, uint8_t rep)
 {

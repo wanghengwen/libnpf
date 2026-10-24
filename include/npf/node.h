@@ -20,6 +20,7 @@
 #include "npf/natprobe.h"
 #include "npf/portmap.h"
 #include "npf/sig.h"
+#include "npf/tunnel.h"
 
 #define NPF_MAX_SERVERS   32
 #define NPF_MAX_ROOTS     2
@@ -293,6 +294,7 @@ struct npf_node {
     int           ping_s;
     int           punch_lead_ms;    /* effective lead of punching (cfg.punch_lead_ms resolved) */
     int           punch_budget;     /* default S3 socket budget: 1024, at most half the descriptor limit */
+    npf_tunnel_shared tun_shared;   /* the sessions' tunnels together: peers' sublinks, receive windows */
     int64_t       hard_punch_end;   /* when a hard-side punch last gave its sockets back (monotonic ms), 0: none */
     npf_timer    *t_punch_gap;      /* the next hard-side punch once the gap after it is over */
 

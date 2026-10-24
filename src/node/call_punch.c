@@ -455,6 +455,13 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
      * round waiting for its start time: that one then probed no one) */
     if (npf_json_get_int(j, d, "round", 1, 1000, &v) < 0 || v <= c->punch_round)
         return;
+    /* each side asks for PUNCH_ROUNDS_MAX counted rounds and some let go
+     * (EMPTY_ROUNDS_MAX); far more is not ours to spray (a platform using
+     * the device to flood addresses) */
+    if (v > 4 * PUNCH_ROUNDS_MAX) {
+        npf_logw("call %s: punch round %lld refused (more rounds than both sides ask for)", c->call_id_s, (long long)v);
+        return;
+    }
     c->punch_round = (int)v;
     if (c->t_punch) {               /* the last round's start: this one replaces it */
         npf_timer_cancel(c->n->loop, c->t_punch);

@@ -192,6 +192,16 @@ typedef struct npf_budget {
     void    *wake_arg;
 } npf_budget;
 void npf_tunnel_set_budget(npf_tunnel *t, npf_budget *b);
+/* a node's limits over all its sessions' tunnels: sublinks the peers opened
+ * (a socket each, here) and receive window granted (memory the peers may
+ * fill); a new sublink over them is refused (NPF_RST_LIMIT), a window over
+ * rx_max does not grow. One peer with many sessions cannot take the
+ * process's descriptors or memory. */
+typedef struct npf_tunnel_shared {
+    int     subs, subs_max;
+    int64_t rx, rx_max;
+} npf_tunnel_shared;
+void npf_tunnel_set_shared(npf_tunnel *t, npf_tunnel_shared *sh);
 /* the sublinks open in a rate group */
 int  npf_tunnel_group_count(const npf_tunnel *t, uint32_t group);
 /* resets a group's sublinks (their end: why, a static string), and the

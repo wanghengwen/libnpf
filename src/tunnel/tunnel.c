@@ -136,6 +136,7 @@ static sublink *find(npf_tunnel *t, uint32_t id)
 
 static void io_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 static int tunnel_leave(npf_tunnel *t);
+static void rx_add(npf_tunnel *t, int64_t d);
 void tunnel_update_ev(sublink *s);
 
 #define RATE_TICK_MS 50
@@ -279,7 +280,9 @@ void tunnel_sub_free(sublink *s, int rst)
         st.end = s->end ? s->end : !rst && s->fin_first == 2 ? "peer_closed" : !rst ? "local_closed" : "local_reset";
         t->io.sublink_done(t->arg, s->id, &st);
     }
-    t->rx_total -= s->rx_window;
+    rx_add(t, -(int64_t)s->rx_window);
+    if (s->shared)
+        t->shared->subs--;
     for (i = 0; i < t->nsubs; i++)
         if (t->subs[i] == s) {          /* the last one takes its place */
             t->nsubs--;
@@ -337,6 +340,14 @@ static int maybe_done(sublink *s)
     return 1;
 }
 
+/* receive window granted: this tunnel's, and its node's over all tunnels */
+static void rx_add(npf_tunnel *t, int64_t d)
+{
+    t->rx_total += d;
+    if (t->shared)
+        t->shared->rx += d;
+}
+
 static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
 {
     sublink *s;
@@ -360,7 +371,11 @@ static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
     s->server = server;
     s->tx_credit = t->peer_window;
     s->rx_window = NPF_INIT_WINDOW;
-    t->rx_total += s->rx_window;
+    rx_add(t, s->rx_window);
+    if (server && t->shared) {
+        s->shared = 1;
+        t->shared->subs++;
+    }
     t->subs[t->nsubs] = s;
     t->ids[t->nsubs] = id;
     t->nsubs++;
@@ -377,9 +392,10 @@ void tunnel_credit_back(sublink *s, size_t n)
     if (s->rx_freed >= s->rx_window / 4) {
         uint8_t inc[4];
         uint32_t grant = s->rx_freed;
-        if (s->wq.len == 0 && s->rx_window < NPF_MAX_WINDOW && s->t->rx_total + s->rx_window <= NPF_RX_BUDGET) {
+        if (s->wq.len == 0 && s->rx_window < NPF_MAX_WINDOW && s->t->rx_total + s->rx_window <= NPF_RX_BUDGET
+            && (!s->t->shared || s->t->shared->rx + s->rx_window <= s->t->shared->rx_max)) {
             grant += s->rx_window;          /* the extra half becomes permanent window */
-            s->t->rx_total += s->rx_window;
+            rx_add(s->t, s->rx_window);
             s->rx_window *= 2;
         }
         npf_le32(inc, grant);
@@ -549,8 +565,10 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
             send_reset(t, id, NPF_RST_PROTOCOL);   /* no reverse mapping registered */
             return 0;
         }
-        if (t->nsubs >= NPF_MAX_SUBLINKS) {
-            send_reset(t, id, NPF_RST_LIMIT);
+        if (t->nsubs >= NPF_MAX_SUBLINKS
+            || (t->shared && (t->shared->subs >= t->shared->subs_max
+                              || t->shared->rx + NPF_INIT_WINDOW > t->shared->rx_max))) {
+            send_reset(t, id, NPF_RST_LIMIT);   /* this session's, or the node's over all sessions */
             return 0;
         }
         s = sub_new(t, id, -1, 1);
@@ -957,6 +975,11 @@ npf_tunnel *npf_tunnel_new(npf_loop *loop, int caller, const npf_tunnel_io *io, 
 void npf_tunnel_set_budget(npf_tunnel *t, npf_budget *b)
 {
     t->budget = b;
+}
+
+void npf_tunnel_set_shared(npf_tunnel *t, npf_tunnel_shared *sh)
+{
+    t->shared = sh;
 }
 
 void npf_tunnel_local_bytes(const npf_tunnel *t, uint64_t *in, uint64_t *out)

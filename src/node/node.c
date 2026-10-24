@@ -103,6 +103,10 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
     {   /* four S3 hard sides at full size at once (256 each) when the descriptors allow */
         long lim = npf_fd_limit(65536);        /* sublinks: a descriptor each, NPF_MAX_SUBLINKS a session */
         n->punch_budget = lim / 2 >= 1024 ? 1024 : lim / 2 < 64 ? 64 : (int)(lim / 2);
+        /* the peers' sublinks together: half the descriptors (signaling,
+         * UDP and accepting go on), windows to 8 sessions' worth */
+        n->tun_shared.subs_max = lim / 2 < 64 ? 64 : (int)(lim / 2);
+        n->tun_shared.rx_max = 8 * (int64_t)NPF_RX_BUDGET;
     }
     if (n->punch_lead_ms > 0)
         npf_log("node: punching starts %d ms early (%s)", n->punch_lead_ms,
