@@ -459,6 +459,88 @@ static int peer_id_new(npf_tunnel *t, uint32_t id)
     return 1;
 }
 
+/* a DATA frame of the sublink: into the SOCKS parse while it greets, the
+ * server's replies while it waits for them, else to the local end (what it
+ * cannot take now queued); a protocol error resets it */
+static void data_in(sublink *s, const uint8_t *p, size_t n)
+{
+    /* the peer may not exceed the window we granted: everything received
+     * and not yet given back (buffered, or consumed but not yet in a WINDOW) */
+    if (n == 0 || s->peer_fin || s->wq.len + (s->server ? s->sl : 0) + s->rx_freed + n > s->rx_window) {
+        tunnel_sub_reset(s, NPF_RST_PROTOCOL);
+        return;
+    }
+    if (s->gone)
+        return;   /* its local end closed: dropped, no credit back (the peer's window runs out) */
+    if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
+        /* into the parse buffer what fits (a greeting and a request are
+         * 519 bytes at most); data pipelined after the request, in this
+         * frame or later ones, is queued until the target is connected */
+        size_t take = n < sizeof s->sb - s->sl ? n : sizeof s->sb - s->sl;
+        memcpy(s->sb + s->sl, p, take);
+        s->sl += take;
+        if (tunnel_socks_parse(s) < 0)
+            return;           /* released */
+        if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
+            if (s->sl == sizeof s->sb)      /* full and still no request: not SOCKS5 */
+                tunnel_sub_reset(s, NPF_RST_PROTOCOL);
+            return;
+        }
+        if (take < n && tunnel_wb_put(&s->wq, p + take, n - take) < 0)
+            tunnel_sub_reset(s, NPF_RST_LIMIT);
+        return;
+    }
+    if (s->state == SL_CLIENT_WAIT) {
+        size_t drop;
+        int r = tunnel_client_reply(s, p, n, &drop);
+        if (r < 0) {
+            if (!s->end)
+                s->end = "target_failed";   /* the other side could not reach the target */
+            tunnel_sub_reset(s, r == -2 ? NPF_RST_PROTOCOL : NPF_RST_LOCAL);
+            return;
+        }
+        tunnel_credit_back(s, drop);    /* the replies' own bytes: the rest is credited as written */
+        p += drop;
+        n -= drop;
+        if (n == 0) {
+            tunnel_update_ev(s);
+            return;
+        }
+    }
+    if ((s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) && s->wq.len == 0) {
+        /* nothing queued: straight from the frame to the local end, only
+         * what it cannot take now is queued (one copy less) */
+        size_t done = 0;
+        while (done < n) {
+            ssize_t w = local_write(s, p + done, n - done);
+            if (w < 0) {
+                tunnel_sub_reset(s, NPF_RST_LOCAL);
+                return;
+            }
+            if (w == 0)
+                break;
+            done += (size_t)w;
+        }
+        if (done < n && tunnel_wb_put(&s->wq, p + done, n - done) < 0) {
+            tunnel_sub_reset(s, NPF_RST_LIMIT);
+            return;
+        }
+        if (done)
+            tunnel_credit_back(s, done); /* after queueing the rest: the window grows only if all went */
+        tunnel_update_ev(s);
+        return;
+    }
+    if (tunnel_wb_put(&s->wq, p, n) < 0) {
+        tunnel_sub_reset(s, NPF_RST_LIMIT);
+        return;
+    }
+    if ((s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) && tunnel_flush_local(s) < 0) {
+        tunnel_sub_reset(s, NPF_RST_LOCAL);
+        return;
+    }
+    tunnel_update_ev(s);
+}
+
 static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, size_t n)
 {
     sublink *s;
@@ -499,83 +581,7 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
     }
     switch (type) {
     case FR_DATA:
-        if (n == 0 || s->peer_fin)
-            goto proto;
-        /* the peer may not exceed the window we granted: everything received
-         * and not yet given back (buffered, or consumed but not yet in a WINDOW) */
-        if (s->wq.len + (s->server ? s->sl : 0) + s->rx_freed + n > s->rx_window)
-            goto proto;
-        if (s->gone)
-            return 0;   /* its local end closed: dropped, no credit back (the peer's window runs out) */
-        if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
-            /* into the parse buffer what fits (a greeting and a request are
-             * 519 bytes at most); data pipelined after the request, in this
-             * frame or later ones, is queued until the target is connected */
-            size_t take = n < sizeof s->sb - s->sl ? n : sizeof s->sb - s->sl;
-            memcpy(s->sb + s->sl, p, take);
-            s->sl += take;
-            if (tunnel_socks_parse(s) < 0)
-                return 0;           /* released */
-            if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
-                if (s->sl == sizeof s->sb)
-                    goto proto;     /* full and still no request: not SOCKS5 */
-                return 0;
-            }
-            if (take < n && tunnel_wb_put(&s->wq, p + take, n - take) < 0) {
-                tunnel_sub_reset(s, NPF_RST_LIMIT);
-                return 0;
-            }
-            return 0;
-        }
-        if (s->state == SL_CLIENT_WAIT) {
-            size_t drop;
-            int r = tunnel_client_reply(s, p, n, &drop);
-            if (r < 0) {
-                if (!s->end)
-                    s->end = "target_failed";   /* the other side could not reach the target */
-                tunnel_sub_reset(s, r == -2 ? NPF_RST_PROTOCOL : NPF_RST_LOCAL);
-                return 0;
-            }
-            tunnel_credit_back(s, drop);    /* the replies' own bytes: the rest is credited as written */
-            p += drop;
-            n -= drop;
-            if (n == 0) {
-                tunnel_update_ev(s);
-                return 0;
-            }
-        }
-        if ((s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) && s->wq.len == 0) {
-            /* nothing queued: straight from the frame to the local end, only
-             * what it cannot take now is queued (one copy less) */
-            size_t done = 0;
-            while (done < n) {
-                ssize_t w = local_write(s, p + done, n - done);
-                if (w < 0) {
-                    tunnel_sub_reset(s, NPF_RST_LOCAL);
-                    return 0;
-                }
-                if (w == 0)
-                    break;
-                done += (size_t)w;
-            }
-            if (done < n && tunnel_wb_put(&s->wq, p + done, n - done) < 0) {
-                tunnel_sub_reset(s, NPF_RST_LIMIT);
-                return 0;
-            }
-            if (done)
-                tunnel_credit_back(s, done); /* after queueing the rest: the window grows only if all went */
-            tunnel_update_ev(s);
-            return 0;
-        }
-        if (tunnel_wb_put(&s->wq, p, n) < 0) {
-            tunnel_sub_reset(s, NPF_RST_LIMIT);
-            return 0;
-        }
-        if ((s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) && tunnel_flush_local(s) < 0) {
-            tunnel_sub_reset(s, NPF_RST_LOCAL);
-            return 0;
-        }
-        tunnel_update_ev(s);
+        data_in(s, p, n);
         return 0;
     case FR_FIN:
         if (!s->local_eof && !s->fin_first)
