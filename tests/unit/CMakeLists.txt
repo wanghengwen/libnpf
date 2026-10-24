@@ -48,3 +48,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NPF_HAVE_GLIBC)
   target_link_options(npf_memprobe PRIVATE -rdynamic)
   npf_target_options(npf_memprobe)
 endif()
+
+# the CPU a session costs, carrying data and idle (not a test): bin/npf_cpuprobe [MB] [sessions]
+add_executable(npf_cpuprobe cpuprobe.c)
+target_link_libraries(npf_cpuprobe PRIVATE npf_common Threads::Threads)
+target_include_directories(npf_cpuprobe PRIVATE ${NPF_LIB_DIR}/src/node)
+npf_target_options(npf_cpuprobe)
