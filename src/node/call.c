@@ -592,10 +592,6 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
     int matched = 0;
     if (n->probe && npf_natprobe_input(n->probe, fd, buf, len, from))
         return 1;                   /* a probe server's answer to the running NAT probe */
-    for (c = n->calls; c; c = c->next)
-        if (!c->ended && c->direct && c->caller && !c->keys_ready && fd == n->udp_fd
-            && call_same_addr(from, &c->p2p_addr) && call_direct_reply(c, buf, len, from))
-            return 1;
     /* AnLiu first, the bulk of the traffic: the datagram names its connection
      * (conv, masked but not encrypted, DESIGN 3.4); anl_input then
      * authenticates it. A node keeps many sessions at once (many-to-many), and
@@ -625,6 +621,14 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
         for (c = n->calls; c; c = c->next)
             if (!c->ended && c->p2p && fd == c->p2p_fd && call_same_addr(from, &c->p2p_addr) && call_path_input(c, buf, len))
                 return 1;
+    /* a direct listener's answer (Noise message 2) to a connection being
+     * made: after the sessions already up with that listener, whose every
+     * datagram would else be tried as one (a Noise read is a DH: 16 idle
+     * sessions' keepalives cost one each while a 17th connected) */
+    for (c = n->calls; c; c = c->next)
+        if (!c->ended && c->direct && c->caller && !c->keys_ready && fd == n->udp_fd
+            && call_same_addr(from, &c->p2p_addr) && call_direct_reply(c, buf, len, from))
+            return 1;
     /* relayed: every session on one relay server comes from its address,
      * each tried until one's keys open it; the last one first */
     if ((c = n->relay_hit) && !c->ended && call_relay_input(c, buf, len, from))
