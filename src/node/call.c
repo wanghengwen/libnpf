@@ -123,6 +123,10 @@ npf_call *call_new(npf_node *n, int caller)
     npf_call *c = calloc(1, sizeof *c);
     if (!c)
         return NULL;
+    if (!(c->hs = calloc(1, sizeof *c->hs))) {
+        free(c);
+        return NULL;
+    }
     c->n = n;
     c->caller = caller;
     c->secure = n->cfg.secure;
@@ -224,6 +228,7 @@ void call_free(npf_call *c)
     if (c->kshare)
         c->kshare->calls--;                 /* its counts went with the tunnel (or go when it does) */
     free(c->targets);
+    call_hs_free(c);
     call_anl_drop(c);
     if (c->p2p_owned && c->p2p_fd >= 0) {
         npf_loop_del(n->loop, c->p2p_fd);
@@ -233,6 +238,15 @@ void call_free(npf_call *c)
     free(c);
     if (!n->calls)
         npf_scratch_trim();             /* the last session's buffers (sys.h) */
+}
+
+void call_hs_free(npf_call *c)
+{
+    if (c->hs) {
+        npf_wipe(c->hs, sizeof *c->hs);
+        free(c->hs);
+        c->hs = NULL;
+    }
 }
 
 /* defer the free: npf_call_end may run inside callbacks of this call */

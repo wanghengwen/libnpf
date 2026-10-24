@@ -61,10 +61,7 @@ struct npf_call {
     char        req_id[24];         /* callee: id of the incoming request to answer */
     int         call_req;           /* caller: id of our call request */
 
-    npf_noise_hs hs;
-    npf_cpace   cp;
-    char        password[128];
-    uint8_t     pinned[32];
+    struct call_hs *hs;             /* the handshake's state, until the keys are ready */
     uint8_t     peer_pub[32];
     int         keys_ready;
     uint8_t     k12[64];            /* k1 | k2 */
@@ -126,15 +123,10 @@ struct npf_call {
     int         info_round;
     int         punch_wait_keys;
 
-    /* peer data from signaling */
-    struct sockaddr_storage peer_cand[NPF_PUNCH_MAX_PEERS];
-    int         npeer_cand;
     int         ended;
     int         direct;             /* direct connection: no platform, fixed path */
     struct npf_policy *policy;      /* callee: target policy of this session's sublinks */
-    uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */
-    size_t      dmsg1_len;
-    int         dtries;
+    int         dtries;             /* direct initiator: message 1 sent this many times */
     npf_timer  *t_direct;
     struct npf_key_share *kshare;   /* callee: its caller key's share of the node's tunnel limits */
     uint64_t    grant_account;      /* callee: the account of the grant that admitted the caller */
@@ -147,8 +139,6 @@ struct npf_call {
     uint64_t    rep_tx, rep_rx;     /* caller: bytes already reported (npf_call_usage_take) */
     npf_sublink_fn sub_done;        /* a connection opened here ended (npf_call_on_sublink_done) */
     void       *sub_arg;
-    uint8_t     grant[512];         /* caller: hosted-trust grant to present */
-    size_t      grant_len;
     struct {                        /* control requests over the tunnel awaiting a reply */
         int id;
         npf_ctl_fn fn;
@@ -189,6 +179,19 @@ struct npf_call {
     int         nrev;
     uint32_t    rev_seq;
 };
+
+/* the handshake's state: made with the call, freed once the keys are ready
+ * (call_start_transport): an established session carries none of it */
+typedef struct call_hs {
+    npf_noise_hs noise;
+    npf_cpace   cp;
+    char        password[128];
+    uint8_t     pinned[32];
+    uint8_t     grant[512];         /* caller: hosted-trust grant to present */
+    size_t      grant_len;
+    uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */
+    size_t      dmsg1_len;
+} call_hs;
 
 /* shared by call.c, call_punch.c, call_relay.c */
 #define RELAY_BIND_TRIES   3
@@ -240,6 +243,7 @@ int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_stora
 void call_set_state(npf_call *c, int st, const char *why);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);
+void call_hs_free(npf_call *c);         /* the handshake's state wiped and freed (keys ready, or the call goes) */
 /* the data transport (tunnel, UDP forwarding, media) off the call and freed;
  * then the AnLiu connection */
 void call_data_free(npf_call *c);

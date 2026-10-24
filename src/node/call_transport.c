@@ -742,6 +742,7 @@ int call_start_transport(npf_call *c)
     if (c->conv == 0)
         c->conv = 1;
     c->keys_ready = 1;
+    call_hs_free(c);                        /* nothing of the handshake is needed from here on */
     if (c->ws_mode) {   /* the tunnel starts with the START exchange */
         if (c->ws_has_pending && c->wsr) {      /* the START came on this relay connection */
             c->ws_has_pending = 0;
