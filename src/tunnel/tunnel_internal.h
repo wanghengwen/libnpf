@@ -16,7 +16,7 @@ enum {
     SL_RESOLVING,           /* server: the target name is being resolved (worker thread) */
     SL_CONNECTING,          /* server: connecting to the target */
     SL_OPEN,
-    SL_CLIENT_WAIT,         /* client (port mapping): waiting for the two replies */
+    SL_CLIENT_WAIT,         /* client: waiting for the server's two replies (tunnel_client_reply) */
     SL_LOCAL_GREETING,      /* client (-D): the local application's greeting, answered here */
 };
 
@@ -40,11 +40,9 @@ typedef struct sublink {
     int      fd;
     int      state;
     int      server;            /* we run the SOCKS5 server for this sublink */
-    uint8_t  sb[SOCKS_BUF];     /* SOCKS bytes being parsed / replies being stripped */
-    size_t   sl;
-    size_t   strip;             /* client: reply bytes still to strip (0 = unknown yet) */
-    int      skip_method;       /* client (-D): bytes of the server's method reply still to drop */
-    int      socks_rep;         /* client (-D): its CONNECT reply not seen yet (REP 2: the policy) */
+    uint8_t  sb[SOCKS_BUF];     /* SOCKS bytes being parsed; client: the replies' first bytes */
+    size_t   sl;                /* bytes in sb; client: of the replies seen */
+    int      fwd_rep;           /* client (-D): the CONNECT reply goes to the application as it is */
     int64_t  tx_credit;         /* DATA bytes we may still send */
     uint32_t rx_freed;          /* written locally since the last WINDOW */
     uint32_t rx_window;
@@ -135,8 +133,8 @@ void tunnel_credit_back(sublink *s, size_t n);
 /* tunnel_socks.c */
 /* parse what the client sent so far; -1 if the sublink was freed */
 int  tunnel_socks_parse(sublink *s);
-/* client side (port mapping): strip "05 00" and the CONNECT reply */
-int  tunnel_client_strip(sublink *s, const uint8_t *p, size_t n, size_t *used);
+/* client side: the server's method and CONNECT replies, as they come (tunnel_socks.c) */
+int  tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop);
 void tunnel_greet_wait(sublink *s);
 void tunnel_greet_done(sublink *s);
 

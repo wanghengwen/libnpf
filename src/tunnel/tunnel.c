@@ -612,7 +612,7 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
             goto proto;
         /* the peer may not exceed the window we granted: everything received
          * and not yet given back (buffered, or consumed but not yet in a WINDOW) */
-        if (s->wq.len + s->sl + s->rx_freed + n > s->rx_window)
+        if (s->wq.len + (s->server ? s->sl : 0) + s->rx_freed + n > s->rx_window)
             goto proto;
         if (s->gone)
             return 0;   /* its local end closed: dropped, no credit back (the peer's window runs out) */
@@ -637,44 +637,23 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
             return 0;
         }
         if (s->state == SL_CLIENT_WAIT) {
-            size_t used;
-            if (tunnel_client_strip(s, p, n, &used) < 0) {
+            size_t drop;
+            int r = tunnel_client_reply(s, p, n, &drop);
+            if (r < 0) {
                 if (!s->end)
                     s->end = "target_failed";   /* the other side could not reach the target */
-                tunnel_sub_reset(s, NPF_RST_LOCAL);
+                tunnel_sub_reset(s, r == -2 ? NPF_RST_PROTOCOL : NPF_RST_LOCAL);
                 return 0;
             }
-            tunnel_credit_back(s, used);
-            p += used;
-            n -= used;
+            tunnel_credit_back(s, drop);    /* the replies' own bytes: the rest is credited as written */
+            p += drop;
+            n -= drop;
             if (n == 0) {
                 tunnel_update_ev(s);
                 return 0;
             }
         }
-        if (s->skip_method) {               /* -D: the server's "05 00", answered here already */
-            size_t k = 0;
-            while (k < n && s->skip_method) {
-                if (p[k] != (s->skip_method == 2 ? 5 : 0)) {
-                    tunnel_sub_reset(s, NPF_RST_PROTOCOL);
-                    return 0;
-                }
-                k++;
-                s->skip_method--;
-            }
-            tunnel_credit_back(s, k);
-            p += k;
-            n -= k;
-            if (n == 0)
-                return 0;
-        }
-        if (s->socks_rep && !s->skip_method) {     /* -D: the CONNECT reply goes to the application as it is */
-            if (p[0] == 5 && n >= 2 && p[1] == 2)
-                s->end = "target_refused";      /* not a resource the other side published */
-            if (n >= 2)
-                s->socks_rep = 0;
-        }
-        if (s->state == SL_OPEN && s->wq.len == 0) {
+        if ((s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) && s->wq.len == 0) {
             /* nothing queued: straight from the frame to the local end, only
              * what it cannot take now is queued (one copy less) */
             size_t done = 0;
@@ -701,7 +680,7 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
             tunnel_sub_reset(s, NPF_RST_LIMIT);
             return 0;
         }
-        if (s->state == SL_OPEN && tunnel_flush_local(s) < 0) {
+        if ((s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) && tunnel_flush_local(s) < 0) {
             tunnel_sub_reset(s, NPF_RST_LOCAL);
             return 0;
         }
@@ -711,6 +690,8 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         if (!s->local_eof && !s->fin_first)
             s->fin_first = 2;
         s->peer_fin = 1;
+        if (s->state == SL_CLIENT_WAIT && !s->end)
+            s->end = "target_failed";       /* the replies cut short: the target was not reached */
         if (s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) {
             if (tunnel_flush_local(s) < 0) {
                 tunnel_sub_reset(s, NPF_RST_LOCAL);
@@ -885,9 +866,8 @@ static void local_greeting(sublink *s)
         s->tx_credit -= (int64_t)(s->sl - need);
     }
     s->sl = 0;
-    s->skip_method = 2;
-    s->socks_rep = 1;
-    s->state = SL_OPEN;
+    s->fwd_rep = 1;                     /* the server's replies: its CONNECT reply is the application's */
+    s->state = SL_CLIENT_WAIT;
     tunnel_greet_done(s);
     tunnel_update_ev(s);
 }

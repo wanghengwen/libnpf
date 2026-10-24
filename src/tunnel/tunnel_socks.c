@@ -463,40 +463,58 @@ int tunnel_socks_parse(sublink *s)
     return 0;
 }
 
-/* client side (port mapping): strip "05 00" and the CONNECT reply */
-int tunnel_client_strip(sublink *s, const uint8_t *p, size_t n, size_t *used)
+/* client side: the server's method reply (05 00) and its CONNECT reply
+ * (05 REP 00 ATYP BND.ADDR BND.PORT), however the frames split them. Only
+ * what judging them takes is kept (their first 7 bytes in sb), nothing to
+ * deliver later: of p[0..n), the first *drop bytes are the replies' own
+ * (the method reply; the CONNECT reply too, unless fwd_rep: -D gives it to
+ * the application as it is, a failure too), the rest goes to the local
+ * end. 0: fine, s->state SL_OPEN once both replies are complete; -1: the
+ * target failed (s->end says how); -2: not a SOCKS5 reply */
+int tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop)
 {
-    size_t take;
-    *used = 0;
-    while (s->state == SL_CLIENT_WAIT && *used < n) {
-        size_t need;
-        take = n - *used;
-        if (take > sizeof s->sb - s->sl)
-            take = sizeof s->sb - s->sl;
-        memcpy(s->sb + s->sl, p + *used, take);
-        s->sl += take;
-        *used += take;
-        if (s->sl < 2)
-            continue;
-        if (s->sb[0] != 5 || s->sb[1] != 0)
-            return -1;              /* method refused */
-        if (s->sl < 2 + 5)
-            continue;
-        if (s->sb[3] != 0) {
-            s->end = s->sb[3] == 2 ? "target_refused" : "target_failed";   /* 2: the other side's policy */
-            return -1;              /* REP != 0: connection failed */
+    size_t k = 0;
+    *drop = 0;
+    while (k < n && s->state == SL_CLIENT_WAIT) {
+        size_t at = s->sl++;            /* this byte's place in the replies */
+        uint8_t b = p[k++];
+        if (at < 7)
+            s->sb[at] = b;
+        if (at < 2 || !s->fwd_rep)
+            *drop = k;
+        switch (at) {
+        case 0:                         /* VER, the method reply's and the CONNECT reply's */
+        case 2:
+            if (b != 5)
+                return -2;
+            break;
+        case 1:                         /* METHOD: no authentication, the only one offered */
+        case 4:                         /* RSV */
+            if (b != 0)
+                return -2;
+            break;
+        case 3:                         /* REP */
+            if (b != 0) {
+                s->end = b == 2 ? "target_refused" : "target_failed";  /* 2: the other side's policy */
+                if (!s->fwd_rep)
+                    return -1;          /* -D: the reply goes on to the application */
+            }
+            break;
+        case 5:                         /* ATYP */
+            if (b != 1 && b != 3 && b != 4)
+                return -2;
+            break;
+        default:
+            break;
         }
-        need = 2 + 4 + (s->sb[5] == 1 ? 4 : s->sb[5] == 4 ? 16 : 1 + (size_t)s->sb[6]) + 2;
-        if (s->sl < need)
-            continue;
-        /* bytes after the replies belong to the application */
-        if (s->sl > need) {
-            size_t extra = s->sl - need;
-            *used -= extra;
+        if (s->sl >= 7) {
+            size_t len = 2 + 4 + (s->sb[5] == 1 ? 4 : s->sb[5] == 4 ? 16 : 1 + (size_t)s->sb[6]) + 2;
+            if (s->sl == len) {
+                s->state = SL_OPEN;
+                s->t_ok = npf_mono_ms();
+                s->sl = 0;
+            }
         }
-        s->state = SL_OPEN;
-        s->t_ok = npf_mono_ms();
-        s->sl = 0;
     }
     return 0;
 }
