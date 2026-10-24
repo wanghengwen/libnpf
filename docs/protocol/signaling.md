@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.31。更新日期：2026-10-23。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.32。更新日期：2026-10-24。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -245,8 +245,10 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | `account_get`、`account_update` | 客户端到平台 | 本人资料；`account_update` 只能改 `name` |
 | `plan_list` | 客户端到平台 | 可订阅的套餐 `plans`（`level, name, monthly_bytes, relay_kbps, public_max, public_kbps, choose_port, prices`，级别 0 为免费级；`prices` 为可购买的时长 `[{months, currency, amount}]`，金额为最小货币单位，账户已定币种时只给该币种）、账户当前的级别 `level` 与订阅 `sub{level, start, expires}`，以及支付页 `subscribe_url`（服务器配置 `subscribe_url`，没有配置时不给出：界面提示联系运营方） |
 | `pay_ticket` | 客户端到平台 | `{level?, lang?}` → `{url}`：`subscribe_url` 加片段 `#ticket=…&level=N&lang=…`。票据一次有效、10 分钟过期，带它打开支付页不需要再登录（服务器配置 `pay_ticket_secret`，没有配置时网址不带票据）；没有支付页时回 `unavailable` |
-| `login_method_bind` | 客户端到平台 | `{method, …}` 绑定新的登录方式：`google` / `wechat` 附 `purpose = bind` 的事务 `transaction_id` 与确认码 `code`；`email` / `phone` 附 `verification_id`（已有的被替换）；`password` 附 `password`，账户还没有邮箱或手机号时同时附 `verification_id`（R28）。应答为账户资料；已属于其他账户、或该第三方方式已绑定另一个身份时 `conflict`，已有密码时 `conflict`（改密码用 `password_change`） |
-| `login_method_unbind` | 客户端到平台 | `{method}`：`password`、`google`、`wechat`、`email`、`phone`。解绑后必须还能登录（密码、Google、微信至少一种），有密码时还要留一个邮箱或手机号，否则 `conflict`；没有绑定该方式时 `not_found` |
+| `login_method_bind` | 客户端到平台 | `{method, …}` 绑定新的登录方式：`google` / `wechat` 附 `purpose = bind` 的事务 `transaction_id` 与确认码 `code`；`email` / `phone` 附 `verification_id`（已有的被替换）；`password` 附 `password`，账户还没有邮箱或手机号时同时附 `verification_id`（R28）。应答为账户资料；已属于其他账户、或该第三方方式已绑定另一个身份时 `conflict`，已有密码时 `conflict`（改密码用 `password_change`）。另须**再次证明是本人**（见下行） |
+| `login_method_unbind` | 客户端到平台 | `{method}`：`password`、`google`、`wechat`、`email`、`phone`。解绑后必须还能登录（密码、Google、微信至少一种），有密码时还要留一个邮箱或手机号，否则 `conflict`；没有绑定该方式时 `not_found`。
+
+绑定与解绑都要再次证明是本人（被盗的会话不能借此永久占有账户）：有密码的账户附 `current_password`（错了 `forbidden`，消息 `password`，计入该账户的密码错误次数）；没有密码的账户附一个已绑定身份的 `purpose = confirm` 事务（`confirm_transaction_id`、`confirm_code`，用后作废），或一个发到账户当前邮箱或手机号的验证（`current_verification_id`）。缺少或不对时 `forbidden`，消息 `reauth`。成功后平台给变更前的邮箱发一封通知 |
 | `password_change` | 客户端到平台 | 旧密码、新密码；成功后吊销该账户其他客户端的证书（R34）。旧密码不对回 `forbidden`、消息 `password`；账户没有密码（第三方登录注册的）回 `forbidden`、消息 `no_password`（用 `password_reset_begin` 设一个） |
 | `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：`password_reset_begin` 的字段、应答与错误同 `verify_begin`（邮件说明用途是找回密码），`verify_finish` 之后以 `verification_id` 调 `password_reset_finish` 设置新密码；验证不成立或地址不属于任何账户都回 `forbidden`、消息 `verification` |
 | `account_logout` | 客户端到平台 | 吊销当前客户端的客户端证书 |
@@ -918,6 +920,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-24 | 0.32 | 安全加固：`login_method_bind` / `login_method_unbind` 要再次证明是本人（`current_password`，或 `confirm_transaction_id` + `confirm_code`，或 `current_verification_id`；否则 `forbidden` `reauth`），成功后通知旧邮箱；平台按账户与按来源（IPv6 按 /64）限制密码错误、匿名登录、呼叫频率与连接数（`rate_limited`，`credentials` / `busy`）；被拒或超时的呼叫 30 秒后删除；`punch_request` 至少间隔 2 秒、每个呼叫最多 24 次；候选最多 16 个、类型与地址经过检查 |
 | 2026-10-23 | 0.31 | 账户请求被拒时给出原因：`account_login` 的 `credentials`，`password_change` 的 `password` / `no_password`，`account_delete` 的 `password` / `verification`，`password_reset_finish` 地址不属于任何账户时也是 `verification`（与验证码不对相同） |
 | 2026-10-23 | 0.30 | 设备自己的名称：新增 `node_name`（节点起名字或查询），设备信息增加 `name`（起的名字，没有时为登录上报的主机名），`alias` 只是账户的备注，不再用注册时的名字补位 |
 | 2026-10-23 | 0.29 | `verify_begin` / `password_reset_begin` 增加可选的 `lang`（验证码邮件的语言，不给时中英文都写）；邮件网关的错误（`bad_request` `address`、`unavailable` `mail` / `mail_daily_limit`）；`password_reset_begin` 写明与 `verify_begin` 相同，邮件据此说明用途 |
