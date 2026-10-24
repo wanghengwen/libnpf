@@ -18,6 +18,7 @@ add_executable(npf_unit_tests
   test_text.c
   test_creply.c
   test_portmap.c
+  test_callee.c
 )
 target_link_libraries(npf_unit_tests PRIVATE npf_common)
 target_include_directories(npf_unit_tests PRIVATE ${NPF_LIB_DIR}/src/node)

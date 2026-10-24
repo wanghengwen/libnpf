@@ -4,8 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "npf/conf.h"
+#include "npf/crypto.h"
 #include "npf/node.h"
 #include "npf/platform.h"
 
@@ -74,23 +76,35 @@ int npf_seed_file(const char *path, uint8_t seed[32], int create)
 {
     char *s;
     long n = npf_file_read(path, &s);
+    struct stat st;
     if (n >= 0) {
         int r;
+        long len = n;
         while (n > 0 && isspace((unsigned char)s[n - 1]))
             s[--n] = 0;
         r = npf_b64url_decode(s, (size_t)n, seed, 32);
+        npf_wipe(s, (size_t)len);
         free(s);
         return r == 32 ? 0 : -1;
+    }
+    /* made only when there is none: a key that cannot be read now (its
+     * permissions, no descriptors left, an I/O error) is never replaced */
+    if (stat(path, &st) == 0 || errno != ENOENT) {
+        npf_loge("cannot read %s: %s", path, strerror(errno));
+        return -1;
     }
     if (!create)
         return -1;
     {
         char out[64];
         size_t l;
+        int r;
         npf_random(seed, 32);
         l = npf_b64url_encode(seed, 32, out);
         out[l++] = '\n';
-        if (npf_file_write(path, out, l, 0600) < 0) {
+        r = npf_file_write(path, out, l, 0600);
+        npf_wipe(out, sizeof out);
+        if (r < 0) {
             npf_loge("cannot write %s: %s", path, strerror(errno));
             return -1;
         }

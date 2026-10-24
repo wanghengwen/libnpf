@@ -41,6 +41,9 @@ typedef struct npf_callee {
     long       state_mtime_ns;          /*   its time, size and content (a change */
     int64_t    state_size;              /*   within the same second, same size) */
     uint8_t    state_hash[32];
+    uint64_t   state_ino, state_dev;    /* POSIX: every write renames a new file into place */
+    int        state_settled;           /* the hash checked once the second was over: no more reads */
+    int        state_loaded;            /* read once: a later file that does not parse is not taken */
     npf_policy policy;
     npf_callee_ops ops;
     npf_node  *node;

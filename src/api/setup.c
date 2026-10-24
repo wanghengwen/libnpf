@@ -41,8 +41,11 @@ const char *npf_setup_key_taken(const npf_conf *ov)
 static int set_b64(npf_conf *c, const char *k, const uint8_t key[32])
 {
     char b[NPF_B64_LEN(32) + 1];
+    int r;
     b[npf_b64url_encode(key, 32, b)] = 0;
-    return npf_conf_set(c, k, b);
+    r = npf_conf_set(c, k, b);
+    npf_wipe(b, sizeof b);              /* direct_psk */
+    return r;
 }
 
 static int set_int(npf_conf *c, const char *k, int v)

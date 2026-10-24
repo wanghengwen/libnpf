@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "npf/conf.h"
+#include "npf/crypto.h"
 #include "npf/sys.h"
 
 #ifdef _WIN32
@@ -55,6 +56,7 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val)
     if (i < c->n) {                         /* replace: in place when it fits */
         if (vl < c->room[i]) {
             memcpy(c->val[i], val, vl + 1);
+            npf_wipe(c->val[i] + vl + 1, c->room[i] - vl - 1);   /* a longer old value (a password) gone too */
             return 0;
         }
         o = realloc(c->old, (size_t)(c->nold + 1) * sizeof *o);
@@ -100,12 +102,16 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val)
 void npf_conf_free(npf_conf *c)
 {
     int i;
+    /* values may be secrets (password, cred, direct_psk): wiped first */
     for (i = 0; i < c->n; i++) {
         free(c->key[i]);
+        npf_wipe(c->val[i], c->room[i]);
         free(c->val[i]);
     }
-    for (i = 0; i < c->nold; i++)
+    for (i = 0; i < c->nold; i++) {
+        npf_wipe(c->old[i], strlen(c->old[i]));
         free(c->old[i]);
+    }
     free(c->key);
     free(c->val);
     free(c->room);
@@ -375,7 +381,10 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
         && ConvertStringSecurityDescriptorToSecurityDescriptorA("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)",
                                                                 SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL))
         psa = &sa;
-    h = CreateFileA(tmp, GENERIC_WRITE, 0, psa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    /* CREATE_ALWAYS on a tmp file someone else made keeps its DACL (and
+     * MoveFileEx then the file's): removed, then made new with ours */
+    DeleteFileA(tmp);
+    h = CreateFileA(tmp, GENERIC_WRITE, 0, psa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (psa)
         LocalFree(sa.lpSecurityDescriptor);
     if (h == INVALID_HANDLE_VALUE)
@@ -391,7 +400,10 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
     int fd;
     if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp)
         return -1;
-    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+    /* a tmp file someone else left (with its own owner, mode or a symlink)
+     * is not written into: removed, then made new */
+    unlink(tmp);
+    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
     if (fd < 0)
         return -1;
     if (write(fd, data, len) != (ssize_t)len || fsync(fd) < 0) {

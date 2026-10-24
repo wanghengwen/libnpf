@@ -3,9 +3,11 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -75,15 +77,17 @@ void npf_account_info(npf_t *n)
 static int parse_cred(const char *s, uint64_t *number, uint8_t seed[32])
 {
     uint8_t b[64], h[32];
-    if (strncmp(s, "NPFD1.", 6) != 0 || npf_b64url_decode(s + 6, strlen(s + 6), b, sizeof b) != 52)
-        return -1;
-    npf_kdf(h, NULL, 0, b, 48);
-    if (memcmp(h, b + 48, 4) != 0)
-        return -1;
-    *number = npf_rd64(b + 8);
-    memcpy(seed, b + 16, 32);
-    npf_wipe(b, sizeof b);
-    return 0;
+    int r = -1;
+    if (strncmp(s, "NPFD1.", 6) == 0 && npf_b64url_decode(s + 6, strlen(s + 6), b, sizeof b) == 52) {
+        npf_kdf(h, NULL, 0, b, 48);
+        if (memcmp(h, b + 48, 4) == 0) {
+            *number = npf_rd64(b + 8);
+            memcpy(seed, b + 16, 32);
+            r = 0;
+        }
+    }
+    npf_wipe(b, sizeof b);              /* the seed, also when the check failed */
+    return r;
 }
 
 static void random_password(char out[10])
@@ -102,6 +106,19 @@ static void random_password(char out[10])
     out[o] = 0;
 }
 
+/* there, but it cannot be read now (permissions, no descriptors left) */
+static int unreadable(const char *path)
+{
+    struct stat st;
+    FILE *f;
+    if (stat(path, &st) != 0)
+        return errno != ENOENT;
+    if (!(f = fopen(path, "rb")))
+        return 1;
+    fclose(f);
+    return 0;
+}
+
 /* data_dir/node.json: {"number", "password"} of an enrolled identity */
 static int load_node(npf_t *n)
 {
@@ -114,6 +131,7 @@ static int load_node(npf_t *n)
         return -1;
     ok = npf_json_parse(&j, s, (size_t)len, tok, 32) == 0 && npf_json_get_str(&j, 0, "number", num, sizeof num) > 0
          && npf_json_get_str(&j, 0, "password", n->default_pw, sizeof n->default_pw) > 0;
+    npf_wipe(s, (size_t)len);           /* the default password */
     free(s);
     if (!ok)
         return -1;
@@ -401,6 +419,12 @@ int npf_engine_identity_load(npf_t *n, char *err, size_t errcap)
             return -1;
         }
         n->has_number = load_node(n) == 0;
+        if (!n->has_number && unreadable(n->node_path)) {
+            /* there but not readable now: not enrolled again over it */
+            snprintf(err, errcap, "cannot read %s", n->node_path);
+            npf_wipe(seed, sizeof seed);
+            return -1;
+        }
         if (model_setup(n, err, errcap) < 0) {
             npf_wipe(seed, sizeof seed);
             return -1;
