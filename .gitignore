@@ -59,3 +59,14 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# keys and secrets: never in the tree
+*.key
+*.pem
+*.p8
+*.p12
+*.secret
+pgpass
+control.token
+identity
+seed
