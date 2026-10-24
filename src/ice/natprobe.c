@@ -142,6 +142,7 @@ static int tx_step(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *tx
     return pending;
 }
 
+#ifdef NPF_TOOLS_API
 /* drive a set of transactions until all are answered or have given up */
 static void tx_run(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *txs, int n)
 {
@@ -176,6 +177,7 @@ static void tx_run(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *tx
         }
     }
 }
+#endif
 
 /* blocking for the probe run with poll(); not for the event loop's: there
  * ev_alloc_cb reads until nothing is left, and MSG_DONTWAIT is 0 on Windows */
@@ -404,6 +406,7 @@ void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg)
     cfg->main_fd = -1;
 }
 
+#ifdef NPF_TOOLS_API   /* the tools' (CMake NPF_TOOLS_API): a node uses npf_natprobe_start */
 int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res)
 {
     npf_siv_keys keys;
@@ -477,6 +480,7 @@ int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res)
     finish_profile(res);
     return 0;
 }
+#endif
 
 /* ---- event-driven (roadmap 1.1, review R8) ----
  * The same two phases on the event loop: the transactions are pumped by a

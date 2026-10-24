@@ -102,6 +102,7 @@ int npf_bind_resp_parse(const npf_pkt *pkt, npf_bind_resp *resp)
     return 0;
 }
 
+#ifdef NPF_TOOLS_API   /* the tools' (CMake NPF_TOOLS_API) */
 int npf_bind_query(int fd, const struct sockaddr_in *ep, const npf_siv_keys *keys,
                    const uint8_t *ticket, size_t ticket_len, int64_t offset_ms,
                    struct sockaddr_in *mapped, int timeout_ms)
@@ -150,3 +151,4 @@ int npf_bind_query(int fd, const struct sockaddr_in *ep, const npf_siv_keys *key
         }
     }
 }
+#endif

@@ -69,7 +69,8 @@ void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg);
 void npf_natprobe_classify_alloc(npf_natprobe_result *res);
 
 /* Run the whole detection (about 2-3 s worst case). Returns 0, or -1 if E1
- * did not answer at all (no profile). */
+ * did not answer at all (no profile). Built with NPF_TOOLS_API only (the
+ * npf-natprobe tool; a node uses the event-driven one). */
 int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res);
 
 /* Event-driven (the node): the same detection on the loop, nothing blocks.

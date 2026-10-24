@@ -66,7 +66,8 @@ size_t npf_rand_range(size_t lo, size_t hi);
 /* One BIND_REQ/RESP exchange on an already-open UDP socket `fd` against `ep`,
  * using probe keys `keys` and `ticket`. `offset_ms` is added to the local clock
  * for ts_ms. On success writes the mapped address to `mapped` and returns 0;
- * -1 on timeout. Retransmits at 0/200/600 ms. */
+ * -1 on timeout. Retransmits at 0/200/600 ms. Built with NPF_TOOLS_API only
+ * (the tools). */
 int npf_bind_query(int fd, const struct sockaddr_in *ep, const npf_siv_keys *keys,
                    const uint8_t *ticket, size_t ticket_len, int64_t offset_ms,
                    struct sockaddr_in *mapped, int timeout_ms);

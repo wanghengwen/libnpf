@@ -200,7 +200,9 @@ int npf_punch_run(const npf_punch_plan *plan, int primary_fd, npf_punch_result *
                 memset(&to, 0, sizeof(to));
                 t4->sin_family = AF_INET;
                 t4->sin_addr = plan->peer_ip4;
-                t4->sin_port = htons((uint16_t)npf_rand_range(lo, hi));
+                /* lo > hi: the range wraps past 65535 (punch.h); npf_rand_range
+                 * would always give lo */
+                t4->sin_port = htons((uint16_t)(lo + npf_rand_range(0, (uint32_t)(uint16_t)(hi - lo))));
                 send_pkt(socks[0].fd, &kp, plan->role, NPF_PKT_PROBE,
                          b, probe_body(b, plan->session_id, 0), &to);
                 res->probes_sent++;

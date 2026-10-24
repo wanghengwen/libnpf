@@ -123,7 +123,6 @@ add_library(npf_common STATIC
   src/ice/natprobe.c
   src/ice/candidates.c
   src/ice/portmap.c
-  src/punch/punch.c
   src/punch/punch_ev.c
 
   # sessions: the node, calls, the tunnel and its policy, UDP forwards, media, local state
@@ -178,6 +177,15 @@ add_library(npf_common STATIC
 )
 # the version (npf_version, the installers' names): the program's project(), else libnpf's
 target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
+# the synchronous NAT probe, bind query and punch (npf_natprobe_run,
+# npf_bind_query, npf_punch_run): only the debugging tools use them
+# (npf-natprobe, npf-punch), a node runs the event-driven ones. Off: not in
+# the library (a program that builds the tools sets it, as npf does)
+option(NPF_TOOLS_API "The synchronous probe, bind query and punch for the debugging tools" OFF)
+if(NPF_TOOLS_API)
+  target_sources(npf_common PRIVATE src/punch/punch.c)
+  target_compile_definitions(npf_common PUBLIC NPF_TOOLS_API)
+endif()
 # the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)
 if(NPF_HAS_PEERS)
   target_sources(npf_common PRIVATE

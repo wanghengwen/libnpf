@@ -127,7 +127,8 @@ void npf_punch_peer_port(npf_punch *p, uint16_t port);
 
 /* primary_fd: an already-open, already-bound UDP socket (family == plan.family)
  * for S1/S0 and the S3 easy side; ignored for the S3 hard side (it opens its
- * own). Returns 0 if a path was nominated, -1 on timeout. */
+ * own). Returns 0 if a path was nominated, -1 on timeout. Built with
+ * NPF_TOOLS_API only (the npf-punch tool; a node uses npf_punch_new). */
 int npf_punch_run(const npf_punch_plan *plan, int primary_fd, npf_punch_result *res);
 
 #endif
