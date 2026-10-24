@@ -15,6 +15,7 @@ struct npf_tls {
     int                fd;
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config  conf;
+    size_t              retry_len;      /* a write that wants again: its length */
 };
 
 /* mbedTLS is built without MBEDTLS_THREADING_C and its PSA key store is
@@ -157,10 +158,24 @@ ssize_t npf_tls_read(npf_tls *t, void *buf, size_t n)
 ssize_t npf_tls_write(npf_tls *t, const void *buf, size_t n)
 {
     int r;
+    /* mbedTLS expects the same data again after WANT_*, and then returns
+     * the length it is given although it sends only the record it kept: a
+     * WS buffer that grew in between would lose the bytes after it */
+    if (t->retry_len) {
+        if (n < t->retry_len)
+            return -1;
+        n = t->retry_len;
+    }
     TLS_LOCK();
     r = mbedtls_ssl_write(&t->ssl, buf, n);
     TLS_UNLOCK();
-    return r >= 0 ? r : map(r);
+    if (r >= 0) {
+        t->retry_len = 0;
+        return r;
+    }
+    r = map(r);
+    t->retry_len = r == NPF_TLS_WANT_READ || r == NPF_TLS_WANT_WRITE ? n : 0;
+    return r;
 }
 
 #else

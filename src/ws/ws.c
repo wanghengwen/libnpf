@@ -283,7 +283,8 @@ static int send_frame(npf_ws *ws, int opcode, const void *data, size_t len)
     return 0;
 }
 
-static void start_upgrade(npf_ws *ws)
+/* 0, or -1 with ws failed (and maybe freed) */
+static int start_upgrade(npf_ws *ws)
 {
     char req[1024];
     uint8_t k[16];
@@ -298,8 +299,13 @@ static void start_upgrade(npf_ws *ws)
                  "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
                  "User-Agent: Mozilla/5.0\r\n\r\n",
                  ws->path, hostfield, ws->key);
+    if (n < 0 || (size_t)n >= sizeof req) {   /* not with the URL limits (npf_url_parse) */
+        ws_fail(ws, 0, "request too large");
+        return -1;
+    }
     ws->state = ST_UPGRADE;
     buf_put(&ws->out, req, (size_t)n);
+    return 0;
 }
 
 /* parse the HTTP response; returns 1 done, 0 need more, -1 error */
@@ -476,8 +482,8 @@ static void on_io_inner(npf_ws *ws, unsigned ev)
         ws->t_connect = NULL;
         if (ws->tls) {
             ws->state = ST_TLS;
-        } else {
-            start_upgrade(ws);
+        } else if (start_upgrade(ws) < 0) {
+            return;
         }
     }
     if (ws->state == ST_TLS) {
@@ -492,7 +498,8 @@ static void on_io_inner(npf_ws *ws, unsigned ev)
             ws_fail(ws, 0, "tls handshake failed");
             return;
         }
-        start_upgrade(ws);
+        if (start_upgrade(ws) < 0)
+            return;
     }
     if (flush_out(ws) < 0) {
         ws_fail(ws, 0, "write failed");

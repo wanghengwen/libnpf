@@ -96,7 +96,7 @@ int npf_cert_chain_parse(const uint8_t (*roots)[32], int nroots, const uint8_t *
     if (n1 < 0)
         return -1;
     n2 = npf_cert_parse(buf + n1, len - (size_t)n1, leaf);
-    if (n2 < 0 || (size_t)(n1 + n2) != len)
+    if (n2 < 0 || (size_t)(n1 + n2) != len || leaf->type >= 16)   /* a permission bit, below */
         return -1;
     return npf_cert_chain_verify(roots, nroots, inter, 1u << leaf->type, leaf, now);
 }
