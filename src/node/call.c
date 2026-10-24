@@ -1015,7 +1015,9 @@ static void check_p2p(npf_call *c)
         }
         if (now - c->p2p_suspect < P2P_DUAL_MS)
             return;
-        npf_logw("call %s: direct path lost, staying on the relay", c->call_id_s);
+        npf_logw("call %s: direct path lost%s", c->call_id_s,
+                 c->relay.active && c->relay.bound ? ", staying on the relay"
+                 : c->relay.active && c->relay.t_bind ? ", the UDP relay still binding" : "");
         c->p2p_suspect = 0;
         c->standby_check = 0;
         c->p2p = 0;
