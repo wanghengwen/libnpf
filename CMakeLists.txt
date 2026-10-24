@@ -165,6 +165,10 @@ add_library(npf_common STATIC
   src/api/platform.c
   src/api/module.c
   src/api/ops.c
+  src/api/ops_peer.c
+  src/api/ops_forward.c
+  src/api/ops_resource.c
+  src/api/ops_pairing.c
   src/api/events.c
   src/api/setup.c
   src/api/api.c
@@ -218,7 +222,16 @@ if(NPF_BUILD_LIB AND CMAKE_EXE_LINKER_FLAGS MATCHES "-static")
 endif()
 if(NPF_BUILD_LIB)
   include(GNUInstallDirs)
-  add_library(npf_shared SHARED src/api/api.c)
+  # the public entry points compiled into the library itself: an archive
+  # member is linked in only when something refers to it, and nothing inside
+  # refers to npf_peer_create or npf_forward_get
+  add_library(npf_shared SHARED
+    src/api/api.c
+    src/api/ops.c
+    src/api/ops_peer.c
+    src/api/ops_forward.c
+    src/api/ops_resource.c
+    src/api/ops_pairing.c)
   set_target_properties(npf_shared PROPERTIES OUTPUT_NAME npf VERSION ${NPF_SOVERSION}.0.0 SOVERSION ${NPF_SOVERSION})
   target_compile_definitions(npf_shared PRIVATE NPF_SHARED NPF_BUILDING)
   target_include_directories(npf_shared PUBLIC include PRIVATE src/api)
