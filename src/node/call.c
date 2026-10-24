@@ -135,22 +135,6 @@ int call_relay_addr_blocked(const npf_call *c)
            && call_relay_blocked(c->n, npf_addr_str(&c->relay.addr[c->relay.cur], a, sizeof a));
 }
 
-static void relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
-{
-    uint8_t buf[2048];
-    uint8_t *p = buf + NPF_SIV_TAG_SIZE;
-    if (len + 6 + NPF_SIV_TAG_SIZE > sizeof buf)
-        return;
-    if (call_relay_addr_blocked(c))
-        return;
-    p[0] = PKT_RELAY_DATA;
-    p[1] = 0;
-    npf_le32(p + 2, c->relay.seq++);
-    memcpy(p + 6, dgram, len);
-    npf_siv_seal(&c->relay.keys, 0, buf, len + 6);
-    call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], buf, len + 6 + NPF_SIV_TAG_SIZE);
-}
-
 /* tests: NPF_TEST_DROP_P2P=ms[:port] cuts the direct path that long after it
  * came up; with a port only the path to the peer on that port (many-to-many) */
 static int p2p_cut(const npf_call *c)
@@ -172,7 +156,7 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
     /* the relay carries the data when there is no direct path, and as a second
      * copy while the direct path is suspected (AnLiu drops the duplicates) */
     if ((!c->p2p || c->p2p_suspect) && c->relay.active)
-        relay_send_data(c, (const uint8_t *)buf, (size_t)len);
+        call_relay_send_data(c, (const uint8_t *)buf, (size_t)len);
     return 0;
 }
 

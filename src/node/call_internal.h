@@ -34,6 +34,8 @@ typedef struct relay_c {
     struct sockaddr_storage addr[4];
     int      naddr, cur;
     uint32_t seq;
+    uint8_t  cookie[8];         /* the relay's cookie for our address (RELAY_BIND_ACK), echoed in RELAY_BIND */
+    int64_t  echo_ms;           /* when a challenge was last answered at once (mono ms) */
     int      tries;
     npf_timer *t_bind;
     int64_t  expires;
@@ -192,11 +194,14 @@ struct npf_call {
 #define RELAY_STANDBY_MS   30000     /* relay kept after the direct path is up, then released */
 #define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
 #define PUNCH_LINGER_MS    10000
-#define LABEL_RBIND        "NPF-RBIND-v1"
 #define LABEL_RELAY        "NPF-RELAY-v1"
 #define PKT_RELAY_BIND     7
 #define PKT_RELAY_BIND_ACK 8
 #define PKT_RELAY_DATA     9
+#define RELAY_HINT_SIZE    4         /* relay_id[0..3] in the clear before every datagram to the relay */
+#define RELAY_COOKIE_SIZE  8
+#define RELAY_ACK_BOUND    1         /* RELAY_BIND_ACK state: the relay sends to this address (0: a challenge) */
+#define RELAY_DATA_OVERHEAD (RELAY_HINT_SIZE + NPF_SIV_TAG_SIZE + 6)
 #define PUNCH_ROUNDS_MAX 10
 
 /* a timer stopped, if it runs, and forgotten */
@@ -260,6 +265,7 @@ void call_ask_ws_relay(npf_call *c);
 void call_relay_rebind(npf_call *c);
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
+void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);
 void call_ws_wait_end(npf_call *c, int ok);
 
 #endif

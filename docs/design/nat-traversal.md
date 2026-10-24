@@ -217,7 +217,7 @@ P    = type(1) | flags(1) | body_len(2) | txid(12) | ts_ms(4) | body | pad
 | `ts_ms` | 发送方的毫秒时钟，用于计算 RTT，服务器用它做时间窗检查 |
 | `pad` | 随机字节 |
 
-**编码**：整数一律小端序（与 AnLiu 一致），IP 地址按网络字节序原样存放。`type` 编号：`BIND_REQ` = 1、`BIND_RESP` = 2、`PROBE` = 3、`PROBE_ACK` = 4、`NOMINATE` = 5、`NOMINATE_ACK` = 6；UDP 中转使用 `RELAY_BIND` = 7、`RELAY_BIND_ACK` = 8、`RELAY_DATA` = 9（`RELAY_DATA` 用紧凑报文头，见 [data-channel.md](../protocol/data-channel.md) 9.2）。KDF 标签（12 字节，作为派生块的 ChaCha20 nonce）：地址探测为 `NPF-PROBE-v1`，打洞探测为 `NPF-PUNCH-v1`，提名为 `NPF-NOMIN-v1`，中转绑定为 `NPF-RBIND-v1`，中转数据为 `NPF-RELAY-v1`。
+**编码**：整数一律小端序（与 AnLiu 一致），IP 地址按网络字节序原样存放。`type` 编号：`BIND_REQ` = 1、`BIND_RESP` = 2、`PROBE` = 3、`PROBE_ACK` = 4、`NOMINATE` = 5、`NOMINATE_ACK` = 6；UDP 中转使用 `RELAY_BIND` = 7、`RELAY_BIND_ACK` = 8、`RELAY_DATA` = 9（`RELAY_DATA` 用紧凑报文头，见 [data-channel.md](../protocol/data-channel.md) 9.2）。KDF 标签（12 字节，作为派生块的 ChaCha20 nonce）：地址探测为 `NPF-PROBE-v1`，打洞探测为 `NPF-PUNCH-v1`，提名为 `NPF-NOMIN-v1`，中转（绑定与数据，用分配的 `alloc_key`）为 `NPF-RELAY-v1`；设备发往中转的报文前面另有 4 字节明文的分配提示，见 data-channel.md 9。
 
 **方向密钥**：沿用 AnLiu 的做法，按发送方向派生两套密钥（请求方向 / 响应方向，或打洞的主叫 / 被叫方向）。把请求原样反射回请求方会因为密钥方向不匹配而认证失败，攻击者无法用抓到的请求冒充响应。
 
@@ -239,9 +239,9 @@ P    = type(1) | flags(1) | body_len(2) | txid(12) | ts_ms(4) | body | pad
 | `BIND_RESP` | 服务器 → 设备 | `family(1) | port(2) | addr(4 或 16)` 服务器看到的源地址；`srv_time_ms(8)` 服务器时间 |
 | `BOUNCE_REQ`（type 7） | 设备 → 服务器 | `ticket | family(1) = 4 | port(2) | addr(4) | txid(12)`：过滤行为测试（4.2），请服务器给 `addr:port` 发一个 `txid` 为这个值的 `BIND_RESP`（内容是 `addr:port` 本身） |
 
-长度区间：`BIND_REQ`、`BOUNCE_REQ` 为 [96, 200] 字节，`BIND_RESP` 为 [64, 请求长度]。
+长度区间：`BIND_REQ`、`BOUNCE_REQ` 为 [96, 200] 字节（之外的不解密、直接丢弃），`BIND_RESP` 为 [47, 请求长度]（回应 `BOUNCE_REQ` 的两个包各自可以短于 64 字节）。
 
-服务器对 `BOUNCE_REQ` 回两个包：给请求方一个普通的 `BIND_RESP`（确认），给目标一个 `BIND_RESP`，都从收到请求的那个 socket 发出、都不长于请求。目标的 IP 必须与请求的源 IP 相同：只能让服务器回复请求方自己的另一个映射，不能用来向第三方反射，放大最多两倍（同一个 IP）。
+服务器对 `BOUNCE_REQ` 回两个包：给请求方一个普通的 `BIND_RESP`（确认），给目标一个 `BIND_RESP`，都从收到请求的那个 socket 发出，两个合计不长于请求。目标的 IP 必须与请求的源 IP 相同：只能让服务器回复请求方自己的另一个映射，不能用来向第三方反射，也没有放大（伪造源地址的请求得到的字节不多于发出的）。
 
 `BIND_RESP` 的 `txid` 与 `ts_ms` 都**原样带回请求中的值**：设备用 `txid` 匹配请求，用 `ts_ms` 计算 RTT（每次重发都重新加密、带新的 `ts_ms`，因此 RTT 不受重传影响）。
 
