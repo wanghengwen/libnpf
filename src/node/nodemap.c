@@ -26,14 +26,31 @@
 #define PM_LEASE_S   3600
 #define PM_RENEW_S    600            /* ahead of the end of the lease */
 #define PM_RETRY_MS  (30 * 60 * 1000)
+#define PM_MIN_S      120            /* a gateway's lease as it is used: renewed no more often than every minute, */
+#define PM_MAX_S    86400            /* and at least once a day */
 
+/* A request runs on a thread of its own and may outlive the node: the node
+ * forgets it (cancelled, under pm_mu) when it stops; the thread then frees
+ * the job instead of posting it, or (posted already) pm_deliver does. Only
+ * a job not cancelled touches the node or its loop */
 typedef struct pm_job {
     npf_node   *n;
     uint16_t    port;
     uint32_t    lifetime;
     int         ok;
+    int         cancelled;          /* under pm_mu */
     npf_portmap res;
 } pm_job;
+
+#ifdef _WIN32
+static SRWLOCK pm_mu = SRWLOCK_INIT;
+#define PM_LOCK()   AcquireSRWLockExclusive(&pm_mu)
+#define PM_UNLOCK() ReleaseSRWLockExclusive(&pm_mu)
+#else
+static pthread_mutex_t pm_mu = PTHREAD_MUTEX_INITIALIZER;
+#define PM_LOCK()   pthread_mutex_lock(&pm_mu)
+#define PM_UNLOCK() pthread_mutex_unlock(&pm_mu)
+#endif
 
 static void pm_timer(npf_loop *loop, void *arg);
 
@@ -48,16 +65,25 @@ static int public_ip4(const uint8_t *a)
 static void pm_deliver(npf_loop *loop, void *arg)
 {
     pm_job *j = arg;
-    npf_node *n = j->n;
+    npf_node *n;
     int64_t next = PM_RETRY_MS;
+    int cancelled;
     (void)loop;
-    if (n->pm_job != j) {                   /* the node stopped meanwhile */
+    PM_LOCK();
+    cancelled = j->cancelled;
+    PM_UNLOCK();
+    if (cancelled) {                        /* the node stopped meanwhile: it may be gone */
         free(j);
         return;
     }
+    n = j->n;
     n->pm_job = NULL;
     if (j->ok && j->res.ext_family == 4 && (public_ip4(j->res.external_ip) || getenv("NPF_TEST_PORTMAP_GW"))) {
         int had = n->pm_ok;
+        if (j->res.lifetime < PM_MIN_S)
+            j->res.lifetime = PM_MIN_S;
+        if (j->res.lifetime > PM_MAX_S)
+            j->res.lifetime = PM_MAX_S;
         n->pm = j->res;
         n->pm_ok = 1;
         if (!had)
@@ -86,8 +112,24 @@ static void pm_deliver(npf_loop *loop, void *arg)
 static void pm_work(pm_job *j)
 {
     j->ok = npf_portmap_request(j->port, j->lifetime, &j->res) == 0;
-    if (npf_loop_post_drop(j->n->loop, pm_deliver, free, j) < 0)
+    PM_LOCK();                              /* the node (and its loop) still there while not cancelled */
+    if (j->cancelled || npf_loop_post_drop(j->n->loop, pm_deliver, free, j) < 0) {
+        PM_UNLOCK();
         free(j);
+        return;
+    }
+    PM_UNLOCK();
+}
+
+/* the node no longer waits for its request (stop, restart) */
+static void pm_forget(npf_node *n)
+{
+    if (!n->pm_job)
+        return;
+    PM_LOCK();
+    ((pm_job *)n->pm_job)->cancelled = 1;
+    PM_UNLOCK();
+    n->pm_job = NULL;
 }
 
 #ifdef _WIN32
@@ -161,10 +203,9 @@ void node_portmap_stop(npf_node *n)
     if (n->t_pm)
         npf_timer_cancel(n->loop, n->t_pm);
     n->t_pm = NULL;
-    n->pm_job = NULL;                       /* a running request's answer is dropped */
-    if (n->pm_ok) {                         /* the gateway answered before: removing is quick */
-        npf_portmap r;
-        npf_portmap_request(n->udp_port, 0, &r);
+    pm_forget(n);                           /* a running request's answer is dropped */
+    if (n->pm_ok) {                         /* one short try: a gateway gone silent does not hold up the stop */
+        npf_portmap_remove(n->udp_port, n->pm.method);
         n->pm_ok = 0;
     }
 }
@@ -174,7 +215,7 @@ void node_portmap_restart(npf_node *n)
     if (n->t_pm)
         npf_timer_cancel(n->loop, n->t_pm);
     n->t_pm = NULL;
-    n->pm_job = NULL;
+    pm_forget(n);
     n->pm_ok = 0;
     node_portmap_start(n);
 }

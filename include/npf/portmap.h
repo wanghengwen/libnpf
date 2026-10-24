@@ -42,6 +42,11 @@ int  npf_portmap_gateway_v4(struct in_addr *gw);
  * `internal_port`. Returns 0 on success (res filled), -1 otherwise. */
 int  npf_portmap_request(uint16_t internal_port, uint32_t lifetime, npf_portmap *res);
 
+/* The mapping of internal_port removed with the method that made it: one
+ * try of 250 ms (a stopping node does not wait out a gateway gone silent;
+ * an unremoved mapping ends with its lease). 0 / -1. */
+int  npf_portmap_remove(uint16_t internal_port, int method);
+
 const char *npf_portmap_method_str(int method);
 
 #endif
