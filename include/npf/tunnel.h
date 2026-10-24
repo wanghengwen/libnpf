@@ -201,7 +201,9 @@ typedef struct npf_tunnel_shared {
     int     subs, subs_max;
     int64_t rx, rx_max;
 } npf_tunnel_shared;
-void npf_tunnel_set_shared(npf_tunnel *t, npf_tunnel_shared *sh);
+/* node: the node's (all sessions); key: the caller key's (its sessions here,
+ * half the node's: one visitor leaves room for the others); NULL none */
+void npf_tunnel_set_shared(npf_tunnel *t, npf_tunnel_shared *node, npf_tunnel_shared *key);
 /* the sublinks open in a rate group */
 int  npf_tunnel_group_count(const npf_tunnel *t, uint32_t group);
 /* resets a group's sublinks (their end: why, a static string), and the

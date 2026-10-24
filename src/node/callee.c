@@ -21,6 +21,46 @@
 
 /* ---- state file ---- */
 
+#if defined(__APPLE__)
+#define MTIME_NS(st) ((long)(st).st_mtimespec.tv_nsec)
+#elif defined(_WIN32)
+#define MTIME_NS(st) 0L
+#else
+#define MTIME_NS(st) ((long)(st).st_mtim.tv_nsec)
+#endif
+
+/* the state file as it is now (read or written by us) */
+static void stamp(npf_callee *d, const char *buf, size_t n)
+{
+    struct stat st;
+    if (stat(d->state_path, &st) == 0) {
+        d->state_mtime = st.st_mtime;
+        d->state_mtime_ns = MTIME_NS(st);
+        d->state_size = (int64_t)st.st_size;
+    }
+    npf_kdf(d->state_hash, NULL, 0, (const uint8_t *)buf, n);
+}
+
+/* changed since: its time or size, or (a change in the same second with the
+ * same size, where the time cannot tell) its content */
+static int state_changed(npf_callee *d)
+{
+    struct stat st;
+    char *s;
+    long n;
+    uint8_t h[32];
+    if (stat(d->state_path, &st) != 0)
+        return 0;
+    if (st.st_mtime != d->state_mtime || MTIME_NS(st) != d->state_mtime_ns || (int64_t)st.st_size != d->state_size)
+        return 1;
+    if ((int64_t)time(NULL) - (int64_t)st.st_mtime > 2 || (n = npf_file_read(d->state_path, &s)) < 0)
+        return 0;
+    npf_kdf(h, NULL, 0, (const uint8_t *)s, (size_t)n);
+    npf_wipe(s, (size_t)n);
+    free(s);
+    return memcmp(h, d->state_hash, 32) != 0;
+}
+
 static int state_load(npf_callee *d)
 {
     npf_jtok *tok;
@@ -29,7 +69,6 @@ static int state_load(npf_callee *d)
     npf_json j;
     int arr, i;
     int64_t v;
-    struct stat st;
     snprintf(d->password, sizeof d->password, "%s", d->default_pw);
     d->npaired = 0;
     d->fails = 0;
@@ -41,8 +80,7 @@ static int state_load(npf_callee *d)
     d->owner_reset_pending = 0;
     if (n < 0)
         return 0;   /* first run: defaults */
-    if (stat(d->state_path, &st) == 0)
-        d->state_mtime = st.st_mtime;
+    stamp(d, s, (size_t)n);
     if (!(tok = malloc(2048 * sizeof *tok)) || npf_json_parse(&j, s, (size_t)n, tok, 2048) < 0
         || tok[0].type != NPF_JT_OBJECT) {
         npf_log("state: %s is corrupt, using defaults", d->state_path);
@@ -93,7 +131,6 @@ static int state_save(npf_callee *d)
     char *buf = malloc(65536);
     npf_jw w;
     int i, n;
-    struct stat st;
     if (!buf)
         return -1;
     npf_jw_init(&w, buf, 65536);
@@ -137,10 +174,9 @@ static int state_save(npf_callee *d)
         free(buf);
         return -1;
     }
+    stamp(d, buf, (size_t)n);
     npf_wipe(buf, (size_t)n);           /* the password */
     free(buf);
-    if (stat(d->state_path, &st) == 0)
-        d->state_mtime = st.st_mtime;
     return 0;
 }
 
@@ -149,8 +185,7 @@ static void report_lock(npf_callee *d);
 /* reload when the local command line changed the file */
 static void state_refresh(npf_callee *d)
 {
-    struct stat st;
-    if (stat(d->state_path, &st) == 0 && st.st_mtime != d->state_mtime) {
+    if (state_changed(d)) {
         int64_t lock = d->locked_until;
         state_load(d);
         npf_log("state: reloaded (local change)");
@@ -160,22 +195,21 @@ static void state_refresh(npf_callee *d)
     }
 }
 
-/* while pairing is locked the platform refuses the calls that would read
- * the state (op_password): a local passwd on the command line is looked
- * for here instead */
-static void lock_watch(npf_loop *loop, void *arg)
+/* a local change of the state file (unpair, passwd on the command line)
+ * takes effect within 5 s: its sessions end, a lock lifted is told; not only
+ * at the next call that reads the state (while locked the platform lets
+ * none through) */
+static void state_watch(npf_loop *loop, void *arg)
 {
     npf_callee *d = arg;
-    d->t_lock = NULL;
+    d->t_watch = npf_timer_add(loop, 5000, state_watch, d);
     state_refresh(d);
-    if (d->locked_until > (int64_t)time(NULL))
-        d->t_lock = npf_timer_add(loop, 5000, lock_watch, d);
 }
 
-static void lock_watch_start(npf_callee *d)
+static void state_watch_start(npf_callee *d)
 {
-    if (d->node && !d->t_lock && d->locked_until > (int64_t)time(NULL))
-        d->t_lock = npf_timer_add(d->node->loop, 5000, lock_watch, d);
+    if (d->node && !d->t_watch)
+        d->t_watch = npf_timer_add(d->node->loop, 5000, state_watch, d);
 }
 
 static void sync_paired(npf_callee *d)
@@ -214,16 +248,22 @@ static void report_lock(npf_callee *d)
 /* the sessions of callers this state no longer admits end: a key unpaired
  * (also one paired in a session that is still open), grants when hosted
  * trust is off; checked at the handshake only otherwise */
-static int drop_caller(const uint8_t pub[32], int auth, void *arg)
+static int drop_caller(const npf_caller *w, void *arg)
 {
     npf_callee *d = arg;
     int i;
-    if (auth == NPF_AUTH_GRANT)
-        return !d->hosted_trust;
-    if (auth != NPF_AUTH_IK && auth != NPF_AUTH_PAKE)
+    if (w->auth == NPF_AUTH_GRANT) {        /* as op_grant_check: trust off, or the account's grants revoked */
+        if (!d->hosted_trust)
+            return 1;
+        for (i = 0; i < d->nrevokes; i++)
+            if (d->revokes[i].account == w->grant_account && (int64_t)w->grant_issued < d->revokes[i].before)
+                return 1;
+        return 0;
+    }
+    if (w->auth != NPF_AUTH_IK && w->auth != NPF_AUTH_PAKE)
         return 0;
     for (i = 0; i < d->npaired; i++)
-        if (npf_ct_eq(d->paired[i].pub, pub, 32) == 0)
+        if (npf_ct_eq(d->paired[i].pub, w->pub, 32) == 0)
             return 0;
     return 1;
 }
@@ -309,7 +349,7 @@ static void op_pair_failed(npf_node *n, void *arg)
         if (d->lock_secs > 24 * 3600)
             d->lock_secs = 24 * 3600;
         d->locked_until = time(NULL) + d->lock_secs;
-        lock_watch_start(d);
+        state_watch_start(d);
         npf_logw("pairing locked for %lld s after repeated wrong passwords", (long long)d->lock_secs);
         report_lock(d);
     }
@@ -368,6 +408,7 @@ static void op_revoke(npf_node *n, uint64_t account, int64_t before, int owner, 
         d->owner = 0;
     npf_log("revoked account %llu%s", (unsigned long long)account, owner ? " (owner)" : "");
     state_save(d);
+    npf_callee_changed(d);                  /* grant sessions the revocation covers end (also by a local change) */
 }
 
 static void op_bind_committed(npf_node *n, uint64_t account, const uint8_t op[16], void *arg)
@@ -504,13 +545,14 @@ void npf_callee_attach(npf_callee *d, npf_node *n)
         memcpy(n->cert, d->cert, d->cert_len);
         n->cert_len = d->cert_len;
     }
+    state_watch_start(d);
 }
 
 void npf_callee_on_login(npf_callee *d)
 {
     sync_paired(d);
     report_lock(d);
-    lock_watch_start(d);
+    state_watch_start(d);
     if (d->owner_reset_pending) {
         npf_node_send(d->node, "owner_reset", 0, NULL);
         d->owner_reset_pending = 0;

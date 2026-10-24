@@ -57,6 +57,7 @@ void node_sig_lost(npf_node *n);
 /* returns 1 when the datagram belonged to a call */
 int  node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void node_calls_free(npf_node *n);
+void call_key_shares_free(npf_node *n);      /* call.c: the caller keys' shares, after the calls */
 
 
 #endif

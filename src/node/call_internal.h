@@ -135,6 +135,7 @@ struct npf_call {
     size_t      dmsg1_len;
     int         dtries;
     npf_timer  *t_direct;
+    struct npf_key_share *kshare;   /* callee: its caller key's share of the node's tunnel limits */
     uint64_t    grant_account;      /* callee: the account of the grant that admitted the caller */
     char        caller_app[72];     /* callee: the caller's program ("name ver", incoming caller.app) */
     int         caller_hosted;      /* callee: the caller is a hosted client (a public mapping) */
@@ -203,6 +204,16 @@ struct npf_call {
 #define RELAY_ACK_BOUND    1         /* RELAY_BIND_ACK state: the relay sends to this address (0: a challenge) */
 #define RELAY_DATA_OVERHEAD (RELAY_HINT_SIZE + NPF_SIV_TAG_SIZE + 6)
 #define PUNCH_ROUNDS_MAX 10
+
+/* a caller key's share of the node's tunnel limits: its sessions here
+ * together get half the node's sublinks and receive window, so one visitor
+ * leaves room for the others; the entry is reused once no session holds it
+ * and nothing is counted in it */
+typedef struct npf_key_share {
+    uint8_t pub[32];
+    int     calls;
+    npf_tunnel_shared sh;
+} npf_key_share;
 
 /* a timer stopped, if it runs, and forgotten */
 static inline void timer_stop(npf_loop *l, npf_timer **t)

@@ -11,6 +11,8 @@
 #include "npf/loop.h"
 #include "npf/platform.h"
 #include "npf/resolve.h"
+#include "npf/crypto.h"
+#include "../../src/node/udpfwd.h"
 
 static int fails;
 
@@ -39,6 +41,15 @@ static int slow_gai(const char *node, const char *service, const struct addrinfo
         npf_sleep_ms(2);
     *res = NULL;
     return EAI_NONAME;
+}
+
+static int g_units;
+static int unit_sink(void *arg, const uint8_t *buf, size_t len)
+{
+    (void)arg;
+    (void)len;
+    g_units += buf[0] == 2;         /* NPF_UDP_CLOSE */
+    return 0;
 }
 
 static void got(npf_resolve *r, int err, const struct sockaddr_storage *a, const socklen_t *l, int n, void *arg)
@@ -152,6 +163,40 @@ int test_resolve(void)
     HOLD(0);
     CHECK(drained() && npf_resolve_active_peer() == 0, "the peers' share drains");
     npf_loop_free(l);
+
+    /* 5a. one session's UDP flows to names (review 2026-10-24): at most
+     * UDP_RESOLVING_MAX (2) of its lookups at once, the rest refused at
+     * once: one session cannot take the peers' share from the others */
+    {
+        npf_policy pol;
+        npf_udpf_io uio;
+        npf_udpf *u;
+        uint8_t fr[64];
+        char name[32];
+        memset(&pol, 0, sizeof pol);
+        memset(&uio, 0, sizeof uio);
+        uio.unit = unit_sink;
+        l = npf_loop_new();
+        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL);     /* callee, on the WS relay */
+        HOLD(1);
+        g_units = 0;
+        for (i = 0; i < 10; i++) {
+            size_t tl = (size_t)snprintf(name, sizeof name, "dead%d.example", i);
+            npf_le32(fr, (uint32_t)(2 * i + 1));            /* the caller's flows are odd */
+            fr[4] = 1;                                      /* the target follows */
+            fr[5] = (uint8_t)tl;
+            memcpy(fr + 6, name, tl);
+            npf_le16(fr + 6 + tl, 53);
+            fr[8 + tl] = 'x';
+            npf_udpf_ws_input(u, fr, 9 + tl);
+        }
+        CHECK(npf_resolve_active_peer() == 2, "one session's UDP flows hold 2 lookups (%d)", npf_resolve_active_peer());
+        CHECK(g_units == 8, "the other 8 flows refused at once (%d)", g_units);
+        npf_udpf_free(u);                                   /* cancels its lookups */
+        HOLD(0);
+        CHECK(drained() && npf_resolve_active_peer() == 0, "its lookups gone with the session");
+        npf_loop_free(l);
+    }
 
     /* 6. many loops created and freed while lookups run */
     HOLD(1);

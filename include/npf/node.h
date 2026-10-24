@@ -295,6 +295,8 @@ struct npf_node {
     int           punch_lead_ms;    /* effective lead of punching (cfg.punch_lead_ms resolved) */
     int           punch_budget;     /* default S3 socket budget: 1024, at most half the descriptor limit */
     npf_tunnel_shared tun_shared;   /* the sessions' tunnels together: peers' sublinks, receive windows */
+    struct npf_key_share **kshares; /* per caller key: half of tun_shared (call.c key_share) */
+    int           nkshares;
     int64_t       hard_punch_end;   /* when a hard-side punch last gave its sockets back (monotonic ms), 0: none */
     npf_timer    *t_punch_gap;      /* the next hard-side punch once the gap after it is over */
 
@@ -521,10 +523,16 @@ npf_call *npf_node_calls(npf_node *n);
 int npf_node_punch_budget(const npf_node *n);
 npf_call *npf_call_next(const npf_call *c);
 
-/* callee: end the sessions drop says are no longer admitted (their peer's
- * key and how they were admitted: NPF_AUTH_*), once the handshake is done;
- * direct sessions are not asked */
-void npf_node_end_callers(npf_node *n, int (*drop)(const uint8_t pub[32], int auth, void *arg), void *arg);
+/* a callee's session as npf_node_end_callers asks about it */
+typedef struct npf_caller {
+    const uint8_t *pub;             /* the caller's key */
+    int            auth;            /* how it was admitted: NPF_AUTH_* */
+    uint64_t       grant_account;   /* NPF_AUTH_GRANT: the grant's account and issue time */
+    uint32_t       grant_issued;
+} npf_caller;
+/* callee: end the sessions drop says are no longer admitted, once the
+ * handshake is done; direct sessions are not asked */
+void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *arg), void *arg);
 int  npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const npf_identity *id,
                    const npf_node_hooks *hooks, void *arg);
 void npf_node_start(npf_node *n);

@@ -62,7 +62,7 @@ typedef struct sublink {
     int      last_err;          /* SL_CONNECTING: the last attempt's error */
     struct rgroup *rg;          /* its rate group, NULL: none */
     uint64_t in, out;           /* read from / written to its local socket */
-    int      shared;            /* counted in the node's (npf_tunnel_shared.subs) */
+    int      shared;            /* counted in the shared limits (npf_tunnel_shared.subs) */
     npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
     struct sockaddr_storage *cand;  /* SL_CONNECTING: a name's addresses still to try (malloc) */
     socklen_t clen[NPF_RESOLVE_MAX];
@@ -84,7 +84,7 @@ struct npf_tunnel {
     npf_tunnel_io io;
     void       *arg;
     npf_policy *policy;
-    npf_tunnel_shared *shared;  /* the node's limits over all its tunnels, NULL none */
+    npf_tunnel_shared *shared[2];   /* the node's limits over all its tunnels, the caller key's; NULL none */
     /* the sublinks: ids[i] is subs[i]'s, looked up by a scan of ids (a few
      * hundred at most: one cache line per 16), the last one found first */
     sublink   **subs;
@@ -125,6 +125,9 @@ int  tunnel_send_frame(npf_tunnel *t, uint32_t id, int type, const void *payload
 void tunnel_update_ev(sublink *s);
 void tunnel_sub_free(sublink *s, int rst);
 void tunnel_sub_reset(sublink *s, int reason);
+/* the end of a call into the tunnel that held it (t->depth++ before): 1
+ * when it was freed meanwhile (it is gone now) */
+int  tunnel_leave(npf_tunnel *t);
 int  tunnel_flush_local(sublink *s);
 /* n bytes of the peer's data taken here: WINDOW back once a quarter of the window is free */
 void tunnel_credit_back(sublink *s, size_t n);

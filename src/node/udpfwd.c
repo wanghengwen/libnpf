@@ -72,6 +72,7 @@ struct npf_udpf {
     anl_stream_t *s;
     uflow       *by_id[256], *by_src[256];
     int          nflows;
+    int          nresolving;        /* flows whose names are being resolved (UDP_RESOLVING_MAX) */
     uint32_t     next_id;
     uint32_t     closed[CLOSED_RING];
     int          nclosed;
@@ -194,8 +195,10 @@ static void free_flow(npf_udpf *u, uflow *f)
         npf_loop_del(u->loop, f->fd);
         npf_sock_close(f->fd);
     }
-    if (f->res)
+    if (f->res) {
         npf_resolve_cancel(f->res);
+        f->u->nresolving--;
+    }
     for (i = 0; i < f->nq; i++)
         free(f->q[i].d);
     free(f);
@@ -453,6 +456,7 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     int i;
     (void)r;
     f->res = NULL;
+    u->nresolving--;
     if (err || n < 1) {
         npf_logw("udp: %s: the name does not resolve", f->host);
         drop_flow(u, f, 1, NPF_UDP_R_FAILED);
@@ -498,6 +502,11 @@ static int closed_lately(const npf_udpf *u, uint32_t id)
     return 0;
 }
 
+/* names of one session's flows being resolved at once: with the tunnel's
+ * (RESOLVING_MAX) and SESSIONS_PER_KEY sessions, one caller stays below the
+ * peers' resolver capacity (RESOLVE_PEER_CAPACITY) */
+#define UDP_RESOLVING_MAX 2
+
 /* a flow the peer opened, to host:port here (lid: the -R mapping it came through, caller) */
 static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t port, uint32_t lid)
 {
@@ -509,7 +518,8 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
         unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_REFUSED);
         return NULL;
     }
-    if (u->nflows >= NPF_UDP_FLOWS || !(f = calloc(1, sizeof *f))) {
+    if (u->nflows >= NPF_UDP_FLOWS || (u->nresolving >= UDP_RESOLVING_MAX && literal(host, port, &ss, &sl) < 0)
+        || !(f = calloc(1, sizeof *f))) {
         unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_LIMIT);
         return NULL;
     }
@@ -527,6 +537,8 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     } else if (!(f->res = npf_resolve_start_peer(u->loop, host, port, SOCK_DGRAM, resolved, f))) {
         drop_flow(u, f, 1, NPF_UDP_R_FAILED);
         return NULL;
+    } else {
+        u->nresolving++;
     }
     return find_id(u, id);                  /* refused or failed at once: gone */
 }

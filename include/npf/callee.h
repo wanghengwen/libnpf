@@ -37,12 +37,15 @@ typedef struct npf_callee {
     struct { uint64_t account; int64_t before; } revokes[NPF_MAX_REVOKES];
     int        nrevokes;
     int        hosted_trust;            /* accept platform grants (D3, default on) */
-    time_t     state_mtime;
+    time_t     state_mtime;             /* the state file as last read or written: */
+    long       state_mtime_ns;          /*   its time, size and content (a change */
+    int64_t    state_size;              /*   within the same second, same size) */
+    uint8_t    state_hash[32];
     npf_policy policy;
     npf_callee_ops ops;
     npf_node  *node;
     struct npf_timer *recheck;          /* npf_callee_changed: the sessions checked again */
-    struct npf_timer *t_lock;           /* while locked: a local passwd looked for */
+    struct npf_timer *t_watch;          /* the state file looked at (local changes) */
 } npf_callee;
 
 /* load the state file (defaults when missing) */

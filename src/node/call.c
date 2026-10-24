@@ -804,14 +804,63 @@ void call_relay_leave(npf_call *c)
     c->punch_wait_keys = 0;
 }
 
-/* the session's tunnel (call_start_transport, ws_reset), NULL: no memory */
+static npf_key_share *key_share(npf_node *n, const uint8_t pub[32])
+{
+    npf_key_share *e, *idle = NULL, **ns;
+    int i;
+    for (i = 0; i < n->nkshares; i++) {
+        e = n->kshares[i];
+        if (memcmp(e->pub, pub, 32) == 0)
+            return e;
+        if (!idle && !e->calls && !e->sh.subs && !e->sh.rx)
+            idle = e;
+    }
+    if (!(e = idle)) {
+        if (!(e = calloc(1, sizeof *e)))
+            return NULL;
+        if (!(ns = realloc(n->kshares, (size_t)(n->nkshares + 1) * sizeof *ns))) {
+            free(e);
+            return NULL;
+        }
+        n->kshares = ns;
+        n->kshares[n->nkshares++] = e;
+    }
+    memset(e, 0, sizeof *e);
+    memcpy(e->pub, pub, 32);
+    e->sh.subs_max = n->tun_shared.subs_max / 2;
+    e->sh.rx_max = n->tun_shared.rx_max / 2;
+    return e;
+}
+
+void call_key_shares_free(npf_node *n)
+{
+    int i, k = 0;
+    for (i = 0; i < n->nkshares; i++)
+        if (n->kshares[i]->calls || n->kshares[i]->sh.subs || n->kshares[i]->sh.rx)
+            n->kshares[k++] = n->kshares[i];    /* a tunnel still going: kept, not freed under it */
+        else
+            free(n->kshares[i]);
+    n->nkshares = k;
+    if (!k) {
+        free(n->kshares);
+        n->kshares = NULL;
+    }
+}
+
+/* the session's tunnel (call_start_transport, ws_reset), NULL: no memory;
+ * a callee's counts in the node's limits and its caller key's */
 npf_tunnel *call_tunnel_new(npf_call *c)
 {
     npf_tunnel *t = npf_tunnel_new(c->n->loop, c->caller, &tun_io, c, call_policy(c));
-    if (t && c->n->budget)
+    static const uint8_t zero[32];
+    if (!t)
+        return NULL;
+    if (c->n->budget)
         npf_tunnel_set_budget(t, c->n->budget);   /* a hosted client: its quota */
-    if (t)
-        npf_tunnel_set_shared(t, &c->n->tun_shared);
+    if (!c->caller && !c->direct && !c->kshare && memcmp(c->peer_pub, zero, 32) != 0
+        && (c->kshare = key_share(c->n, c->peer_pub)))
+        c->kshare->calls++;
+    npf_tunnel_set_shared(t, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
     return t;
 }
 
@@ -1254,6 +1303,8 @@ void call_free(npf_call *c)
     }
     call_rev_close_all(c);
     if (c->tun) npf_tunnel_free(c->tun);
+    if (c->kshare)
+        c->kshare->calls--;                 /* its counts went with the tunnel (or go when it does) */
     free(c->targets);
     call_dpend_free(c);
     npf_media_free(c->media);
@@ -1806,6 +1857,13 @@ static void handle_handshake(npf_call *c, const npf_json *j, int d)
         npf_call_end(c, "auth_failed");
         return;
     }
+    /* the same limit per key as a paired caller's (incoming_ik): checked
+     * where the session is admitted, in the step that admits it */
+    if (key_sessions(c->n, npf_noise_remote_static(&c->hs)) >= SESSIONS_PER_KEY) {
+        npf_logw("call %s: pairing refused: this key has %d sessions here already", c->call_id_s, SESSIONS_PER_KEY);
+        npf_call_end(c, "busy");
+        return;
+    }
     if (finish_handshake(c) < 0) {
         npf_call_end(c, "error");
         return;
@@ -1816,14 +1874,22 @@ static void handle_handshake(npf_call *c, const npf_json *j, int d)
     npf_log("call %s: paired", c->call_id_s);
 }
 
-void npf_node_end_callers(npf_node *n, int (*drop)(const uint8_t pub[32], int auth, void *arg), void *arg)
+void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *arg), void *arg)
 {
     npf_call *x;
-    for (x = n->calls; x; x = x->next)
-        if (!x->caller && !x->direct && !x->ended && x->keys_ready && drop(x->peer_pub, x->auth, arg)) {
+    npf_caller w;
+    for (x = n->calls; x; x = x->next) {
+        if (x->caller || x->direct || x->ended || !x->keys_ready)
+            continue;
+        w.pub = x->peer_pub;
+        w.auth = x->auth;
+        w.grant_account = x->grant_account;
+        w.grant_issued = x->grant_issued;
+        if (drop(&w, arg)) {
             npf_log("call %s: the caller is no longer admitted", x->call_id_s);
             npf_call_end(x, "revoked");
         }
+    }
 }
 
 static void handle_punch_request(npf_node *n, const npf_json *j, int d)

@@ -142,6 +142,7 @@ void npf_node_stop(npf_node *n)
 {
     node_portmap_stop(n);
     node_calls_free(n);
+    call_key_shares_free(n);
     node_sources_stop(n);
     node_sig_race_drop(n);
     if (n->sig)

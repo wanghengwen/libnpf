@@ -104,6 +104,10 @@ static void pump(npf_loop *l, void *arg)
     t_pump = NULL;
     for (i = 0; i < 2; i++) {
         size_t n = e[i]->len < 5 ? e[i]->len : e[i]->len / 2 + 1, off = 0;
+        if (!e[i]->t || !e[i]->peer->t) {   /* freed by a test: what was on its way goes */
+            e[i]->len = e[i]->dlen = 0;
+            continue;
+        }
         if (n) {
             npf_tunnel_input_ctrl(e[i]->peer->t, e[i]->q, n);
             if (e[i]->len > n)
@@ -905,6 +909,76 @@ int test_tunnel(void)
               "freed from its own callback: gone once the input returns");
         free_in_done = NULL;
         close(sp3[1]);
+    }
+
+    /* the same from a timer (review 2026-10-24): a local SOCKS greeting
+     * that never comes; at its deadline sublink_done frees the tunnel, which
+     * goes when the timer is done with it (ASan: no use after free) */
+    {
+        end C, D;
+        int sp4[2], k;
+        int64_t t0;
+        memset(&C, 0, sizeof C);
+        memset(&D, 0, sizeof D);
+        C.peer = &D;                        /* not pumped: the hellos are passed here */
+        D.peer = &C;
+        C.t = npf_tunnel_new(loop, 1, &io, &C, NULL);
+        D.t = npf_tunnel_new(loop, 0, &io_b, &D, &pol);
+        npf_tunnel_start(D.t);
+        for (k = 0; k < 4; k++) {
+            if (D.len) {
+                npf_tunnel_input_ctrl(C.t, D.q, D.len);
+                D.len = 0;
+            }
+            if (C.len) {
+                npf_tunnel_input_ctrl(D.t, C.q, C.len);
+                C.len = 0;
+            }
+        }
+        /* the caller key's share (review 2026-10-24): one peer sublink
+         * allowed there, the second refused though the node has room */
+        {
+            npf_tunnel_shared node_sh = {0, 1000, 0, (int64_t)1 << 40}, key_sh = {0, 1, 0, (int64_t)1 << 40};
+            int sa[2], sb[2], before = npf_tunnel_count(D.t);
+            size_t off;
+            npf_tunnel_set_shared(D.t, &node_sh, &key_sh);
+            socketpair(AF_UNIX, SOCK_STREAM, 0, sa);
+            socketpair(AF_UNIX, SOCK_STREAM, 0, sb);
+            CHECK(npf_tunnel_open(C.t, sa[0], 0, "127.0.0.1", 9) > 0 && npf_tunnel_open(C.t, sb[0], 0, "127.0.0.1", 9) > 0,
+                  "two sublinks opened toward the callee");
+            for (off = 0; off + 4 <= C.dlen;) {
+                size_t m = npf_rd32(C.dq + off);
+                npf_tunnel_input_data(D.t, C.dq + off + 4, m);
+                off += 4 + m;
+            }
+            C.dlen = 0;
+            CHECK(npf_tunnel_count(D.t) == before + 1 && key_sh.subs == 1 && node_sh.subs == 1,
+                  "the key's share takes one, refuses the other (%d open, key %d, node %d)",
+                  npf_tunnel_count(D.t) - before, key_sh.subs, node_sh.subs);
+            npf_tunnel_free(D.t);                       /* its sublinks go: the shares count down */
+            D.t = NULL;
+            CHECK(key_sh.subs == 0 && key_sh.rx == 0 && node_sh.subs == 0 && node_sh.rx == 0,
+                  "the shares back to zero when the tunnel goes");
+            close(sa[1]);
+            close(sb[1]);
+        }
+        socketpair(AF_UNIX, SOCK_STREAM, 0, sp4);
+        npf_tunnel_greet_ms = 0;
+        CHECK(C.t && npf_tunnel_open(C.t, sp4[0], 1, NULL, 0) >= 0, "a local SOCKS sublink waiting for its greeting");
+        free_in_done = &C.t;
+        t0 = npf_mono_ms();
+        while (C.t && npf_mono_ms() - t0 < 2000)
+            npf_loop_once(loop, 5);
+        CHECK(C.t == NULL, "freed from its own callback at the greeting deadline");
+        free_in_done = NULL;
+        npf_tunnel_greet_ms = 10000;
+        npf_tunnel_free(C.t);
+        npf_tunnel_free(D.t);
+        free(C.q);
+        free(C.dq);
+        free(D.q);
+        free(D.dq);
+        close(sp4[1]);
     }
 
     npf_tunnel_free(A.t);

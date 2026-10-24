@@ -15,7 +15,8 @@
 #define CONNECT_MS     10000
 #define HE_DELAY_MS    250      /* Happy Eyeballs (RFC 8305): the next address after this long without an answer */
 #define GREET_MS       10000    /* a peer-opened sublink's SOCKS greeting and request, at most this long */
-#define RESOLVING_MAX  6        /* lookups of one tunnel at once: one caller (SESSIONS_PER_KEY) cannot take the peers' resolver share */
+#define RESOLVING_MAX  4        /* lookups of one tunnel at once: with a session's UDP flows' (2), one caller's
+                                 * SESSIONS_PER_KEY sessions take at most 24 of the peers' 32 (resolve.h) */
 
 static void socks_reply(sublink *s, uint8_t rep)
 {
@@ -34,9 +35,12 @@ static void socks_fail(sublink *s, uint8_t rep)
 static void connect_timeout(npf_loop *loop, void *arg)
 {
     sublink *s = arg;
+    npf_tunnel *t = s->t;
     (void)loop;
     s->t_connect = NULL;
+    t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
     socks_fail(s, 6);
+    tunnel_leave(t);
 }
 
 static int map_errno(int e)
@@ -90,9 +94,12 @@ static int connect_next(sublink *s);
 static void he_timer(npf_loop *loop, void *arg)
 {
     sublink *s = arg;
+    npf_tunnel *t = s->t;
     (void)loop;
     s->t_he = NULL;
+    t->depth++;
     connect_next(s);                    /* no answer yet: the next address too */
+    tunnel_leave(t);
 }
 
 /* start the next address's attempt (Happy Eyeballs: the others keep going);
@@ -127,9 +134,19 @@ static int connect_next(sublink *s)
 
 /* an attempt answered: connected (the others closed, the sublink open) or
  * failed (the next address at once, or the end when none is left) */
+static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s);
+
 static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     sublink *s = arg;
+    npf_tunnel *t = s->t;
+    t->depth++;
+    conn_cb_in(loop, fd, ev, s);
+    tunnel_leave(t);
+}
+
+static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
+{
     int err = 0, i, k;
     socklen_t el = sizeof err;
     (void)ev;
@@ -223,11 +240,21 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
 }
 
 /* the worker thread's answer for a domain-name target */
+static void resolved_in(sublink *s, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n);
+
 static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n,
                      void *arg)
 {
     sublink *s = arg;
+    npf_tunnel *t = s->t;
     (void)r;
+    t->depth++;
+    resolved_in(s, err, addrs, lens, n);
+    tunnel_leave(t);
+}
+
+static void resolved_in(sublink *s, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n)
+{
     s->resolve = NULL;
     if (err != 0) {
         socks_fail(s, 4);           /* host unreachable: the name did not resolve */
@@ -309,14 +336,17 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
 static void greet_timeout(npf_loop *loop, void *arg)
 {
     sublink *s = arg;
+    npf_tunnel *t = s->t;
     (void)loop;
     s->t_greet = NULL;
+    t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
     if (s->state == SL_LOCAL_GREETING) {
         s->end = "greeting_timeout";
         tunnel_sub_free(s, 1);
     } else if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
         tunnel_sub_reset(s, NPF_RST_PROTOCOL);
     }
+    tunnel_leave(t);
 }
 
 void tunnel_greet_wait(sublink *s)
