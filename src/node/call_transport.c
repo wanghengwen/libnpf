@@ -13,6 +13,7 @@
 
 #define NPF_TAG_TUNNEL     1
 #define ANL_MTU            1200
+#define ANL_MSG_MAX        (NPF_DATA_HDR + NPF_FRAME_MAX)   /* the largest message on either stream (a data message) */
 
 static void grant_update(npf_call *c, const npf_json *j);
 static void anl_schedule(npf_call *c);
@@ -328,9 +329,9 @@ static void anl_drain(npf_call *c)
         return;
     if (c->media && npf_media_poll(c->media) < 0)  /* the peer's new media streams: taken or not */
         return;
-    if (!(buf = npf_scratch(65536)))
+    if (!(buf = npf_scratch(ANL_MSG_MAX)))     /* kept by the thread between uses (sys.h): no larger than needed */
         return;
-    anl_drain_with(c, buf, 65536);
+    anl_drain_with(c, buf, ANL_MSG_MAX);
     npf_scratch_done(buf);
 }
 
@@ -370,6 +371,11 @@ static void anl_drain_with(npf_call *c, char *buf, size_t cap)
             if (r == ANL_ECLOSED && rd[i] == c->stream) {
                 npf_log("call %s: tunnel stream closed", c->call_id_s);
                 npf_call_end(c, "closed");
+                return;
+            }
+            if (r == ANL_EBUFSIZE) {        /* larger than any message of the protocol: it would never be read */
+                npf_logw("call %s: a message of the peer's over %d bytes: the session ends", c->call_id_s, (int)cap);
+                npf_call_end(c, "error");
                 return;
             }
             break;
