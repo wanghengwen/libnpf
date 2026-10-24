@@ -1,6 +1,6 @@
-/* Event loop: poll everywhere (WSAPoll on Windows): no epoll descriptor per
- * loop; timers in a binary min-heap. A shared runtime's host loop runs its
- * children's sockets and timers with its own (on Linux in one epoll). */
+/* Event loop: epoll on Linux, kqueue on macOS, iOS and the BSDs, WSAPoll on
+ * Windows; timers in a binary min-heap. A shared runtime's host loop runs
+ * its children's sockets and timers with its own (in its one queue). */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -114,6 +114,7 @@ typedef struct posted {
 struct npf_loop {
     handler   *h;               /* the nh entries (idx: fd -> entry) */
     int        nh;
+    int        hfree;           /* no free entry in h below this one */
     npf_timer **heap;           /* timers: min-heap by (due, seq) */
     int        nheap, capheap;
     uint64_t   tseq;
@@ -271,20 +272,24 @@ static int ep_fd(const npf_loop *l)
     return l->epfd;
 }
 
-static void ep_add(npf_loop *l, handler *h)
+/* -1: the queue does not take it (no memory, a descriptor it cannot watch) */
+static int ep_add(npf_loop *l, handler *h)
 {
     int ep = ep_fd(l);
     ep_reg *r;
-    if (ep < 0 || h->reg || !(r = calloc(1, sizeof *r)))
-        return;
+    if (ep < 0 || h->reg)
+        return 0;                       /* a child not attached: when it is */
+    if (!(r = calloc(1, sizeof *r)))
+        return -1;
     r->l = l;
     r->fd = h->fd;
     if (evq_set(ep, r, h->events, 1) < 0) {
         npf_loge("loop: descriptor %d not watched: %s", h->fd, strerror(errno));
         free(r);
-        return;
+        return -1;
     }
     h->reg = r;
+    return 0;
 }
 
 static void ep_mod(npf_loop *l, handler *h)
@@ -315,13 +320,13 @@ static void ep_all(npf_loop *l, int add)
     for (i = 0; i < l->nh; i++)
         if (l->h[i].active) {
             if (add)
-                ep_add(l, &l->h[i]);
+                (void)ep_add(l, &l->h[i]);
             else
                 ep_del(l, &l->h[i]);
         }
 }
 #else
-#define ep_add(l, h) ((void)0)
+#define ep_add(l, h) 0
 #define ep_mod(l, h) ((void)0)
 #define ep_del(l, h) ((void)0)
 #endif
@@ -752,7 +757,7 @@ int npf_loop_add(npf_loop *l, int fd, unsigned events, npf_io_fn fn, void *arg)
     int i;
     if (fd < 0 || find_h(l, fd))
         return -1;
-    for (i = 0; i < l->nh && l->h[i].active; i++)
+    for (i = l->hfree < l->nh ? l->hfree : l->nh; i < l->nh && l->h[i].active; i++)
         ;
     if (i == l->nh) {
         if (l->nh == l->cap) {
@@ -784,7 +789,11 @@ int npf_loop_add(npf_loop *l, int fd, unsigned events, npf_io_fn fn, void *arg)
     h->gen = ++l->gen;
     h->reg = NULL;
     idx_put(l, fd, i);
-    ep_add(l, h);
+    l->hfree = i + 1;
+    if (ep_add(l, h) < 0) {             /* it would never be called: the caller hears it */
+        npf_loop_del(l, fd);
+        return -1;
+    }
     return 0;
 }
 
@@ -809,6 +818,8 @@ void npf_loop_del(npf_loop *l, int fd)
     idx_del(l, fd);
     h->active = 0;
     h->fn = NULL;
+    if (h - l->h < l->hfree)
+        l->hfree = (int)(h - l->h);
     while (l->nh > 0 && !l->h[l->nh - 1].active)
         l->nh--;
 }

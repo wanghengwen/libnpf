@@ -159,9 +159,10 @@ void tunnel_update_ev(sublink *s)
         return;
     }
     if (ev != s->ev) {
-        if (s->ev == 0 && ev)
-            npf_loop_add(t->loop, s->fd, ev, tunnel_io_cb, s);
-        else if (ev == 0)
+        if (s->ev == 0 && ev) {
+            if (npf_loop_add(t->loop, s->fd, ev, tunnel_io_cb, s) < 0)
+                return;                 /* not watched: tried again at the next change, not taken as watched */
+        } else if (ev == 0)
             npf_loop_del(t->loop, s->fd);
         else
             npf_loop_mod(t->loop, s->fd, ev);
@@ -1181,16 +1182,17 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
     s = sub_new(t, t->next_id, fd, 0);
     if (!s)
         return -1;
+    if (passthrough && !(s->hs = calloc(1, sizeof *s->hs))) {     /* its application's greeting */
+        s->fd = -1;                         /* the caller keeps its local end on -1 */
+        tunnel_sub_free(s, 0);
+        return -1;
+    }
     s->rg = g;
     s->v = v;
     s->varg = varg;
     s->t_open = npf_mono_ms();
     t->next_id += 2;
     if (passthrough) {
-        if (!(s->hs = calloc(1, sizeof *s->hs))) {     /* its application's greeting */
-            tunnel_sub_free(s, 0);
-            return -1;
-        }
         s->state = SL_LOCAL_GREETING;       /* -D: a SOCKS5 application */
         tunnel_greet_wait(s);
     } else {

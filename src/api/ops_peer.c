@@ -259,16 +259,15 @@ static int peer_get_run(npf_t *n, void *arg)
     npf_peer *p = peer_of(n, x->id);
     npf_peer_info i;
     npf_call *c;
-    const char *h, *nick;
+    const char *nick;
     uint16_t port;
     int k;
     if (!p)
         return NPF_ENOENT;
     memset(&i, 0, sizeof i);
     i.size = sizeof i;
-    if (npf_peer_direct_target(p, &h, &port) == 0) {
+    if (npf_peer_direct_target(p, i.host, sizeof i.host, &port) == 0) {
         i.target = NPF_TARGET_DIRECT;
-        snprintf(i.host, sizeof i.host, "%s", h);
         i.port = port;
     } else {
         i.target = NPF_TARGET_NUMBER;

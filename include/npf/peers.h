@@ -139,8 +139,8 @@ int       npf_peer_idle_asked(const npf_peer *p);    /* the idle time it was mad
 int       npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms);
 const char *npf_peer_last_why(const npf_peer *p);     /* why the last session ended, or why it waits; "" */
 int       npf_peer_finished(const npf_peer *p);
-/* a direct peer's target as given (host without brackets, port); 0, -1 a platform peer */
-int       npf_peer_direct_target(const npf_peer *p, const char **host, uint16_t *port);
+/* a direct peer's target as given (host without brackets, into host[cap], port); 0, -1 a platform peer */
+int       npf_peer_direct_target(const npf_peer *p, char *host, size_t cap, uint16_t *port);
 /* a nick of this run (not in local.json; NULL: back to local.json's) */
 void      npf_peer_set_nick_here(npf_peer *p, const char *nick);
 void      npf_peer_set_label(npf_peer *p, const char *name);

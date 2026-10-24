@@ -891,19 +891,15 @@ npf_peer *npf_peers_by_id(const npf_peers *ps, uint32_t id)
     return NULL;
 }
 
-int npf_peer_direct_target(const npf_peer *p, const char **host, uint16_t *port)
+/* into the caller's buffer: instances run on threads of their own (a
+ * static one was shared by all) */
+int npf_peer_direct_target(const npf_peer *p, char *host, size_t cap, uint16_t *port)
 {
-    static char h[300];
-    const char *colon;
-    if (!p->direct)
-        return -1;
-    colon = strrchr(p->name, ':');
-    if (p->name[0] == '[') {
-        snprintf(h, sizeof h, "%.*s", (int)(colon - p->name - 2), p->name + 1);
-    } else {
-        snprintf(h, sizeof h, "%.*s", (int)(colon - p->name), p->name);
-    }
-    *host = h;
+    const char *colon = p->direct ? strrchr(p->name, ':') : NULL;
+    int br = p->name[0] == '[';
+    if (!colon || colon - p->name < 1 + 2 * br)
+        return -1;                          /* (a direct peer's name is canonical: HOST:PORT) */
+    snprintf(host, cap, "%.*s", (int)(colon - p->name - 2 * br), p->name + br);
     *port = (uint16_t)atoi(colon + 1);
     return 0;
 }

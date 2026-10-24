@@ -33,15 +33,27 @@ int64_t npf_node_time(const npf_node *n)
     return npf_unix_ms() + n->clock_offset_ms;
 }
 
+/* room for a string field escaped (\u00XX: 6 bytes a character at most) */
+static size_t env_room(const char *v)
+{
+    return v ? 16 + 6 * strlen(v) : 0;
+}
+
 static int send_env(npf_node *n, const char *type, const char *id, const char *reply_to, const char *status,
                     const char *error, const char *data_json)
 {
     char *buf;
     npf_jw w;
     int len, r;
-    if (!n->sig || !(buf = malloc(NPF_JSON_MAX_SIZE)))
+    /* what this envelope needs, not NPF_JSON_MAX_SIZE for each one (most
+     * are a call_end or a reply: a few hundred bytes) */
+    size_t cap = 64 + (data_json ? strlen(data_json) : 2) + env_room(type) + env_room(id) + env_room(reply_to)
+                 + env_room(status) + env_room(error);
+    if (cap > NPF_JSON_MAX_SIZE)
+        cap = NPF_JSON_MAX_SIZE;
+    if (!n->sig || !(buf = malloc(cap)))
         return -1;
-    npf_jw_init(&w, buf, NPF_JSON_MAX_SIZE);
+    npf_jw_init(&w, buf, cap);
     npf_jw_obj(&w);
     npf_jw_kint(&w, "v", 1);
     npf_jw_kstr(&w, "type", type);
@@ -370,11 +382,19 @@ static void ping_cb(npf_loop *loop, void *arg)
     n->t_ping = npf_timer_add(n->loop, ivl, ping_cb, n);
 }
 
+/* login and enrol: two certificates of 1 KB in base64 and the host's
+ * record may not fit in 4 KB, and a login that never fits never logs in */
+#define LOGIN_JSON_MAX 8192
+
 static void send_login(npf_node *n)
 {
-    char data[4096], num[24];
+    char *data = malloc(LOGIN_JSON_MAX), num[24];
     npf_jw w;
-    npf_jw_init(&w, data, sizeof data);
+    if (!data) {
+        npf_logw("login: no memory");
+        return;
+    }
+    npf_jw_init(&w, data, LOGIN_JSON_MAX);
     npf_jw_obj(&w);
     if (n->cfg.callable) {
         npf_jw_kstr(&w, "role", "node");
@@ -425,6 +445,7 @@ static void send_login(npf_node *n)
     n->login_sent_ms = npf_mono_ms();
     if (npf_jw_finish(&w) < 0 || npf_node_send(n, "login", 1, data) < 0)
         npf_logw("login: send failed");
+    free(data);
 }
 
 /* ---- one key per model: enrol (security.md 5.2) ---- */
@@ -457,16 +478,37 @@ static const char *enroll_why(const char *err, const char *reason)
                                             : "no reason given";
 }
 
+/* the number and the certificate an enrolment gave: a device number (nine
+ * digits, its check digit right) and a node certificate for this
+ * identity's key that the roots signed. Its validity period is not looked
+ * at: an enrolment comes before the login sets the clock (a board without
+ * a clock of its own starts in 1970); welcome's checks it */
+static int enroll_got(npf_node *n, const npf_json *j, int d, char num[24], uint8_t cert[1024], int *cl)
+{
+    npf_cert inter, leaf;
+    if (npf_json_get_str(j, d, "number", num, 24) <= 0 || !npf_number_parse(num)
+        || (*cl = npf_json_get_b64(j, d, "cert", cert, 1024)) <= 0)
+        return -1;
+    if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, cert, (size_t)*cl, &inter, &leaf, 0) < 0
+        || leaf.type != NPF_CERT_NODE || memcmp(leaf.dh_pub, n->id.dh_pub, 32) != 0) {
+        npf_loge("enrol: the certificate given does not verify");
+        return -1;
+    }
+    return 0;
+}
+
 static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
 {
     char num[24], err[32] = "no reply", reason[24] = "";
-    int d, cl;
+    uint8_t cert[sizeof n->cert];
+    int d, cl = 0;
     (void)arg;
     if (!j)
         return;                             /* the connection went: enrol again on the next one */
     d = npf_json_get(j, 0, "data");
-    if (!ok || npf_json_get_str(j, d, "number", num, sizeof num) <= 0
-        || (cl = npf_json_get_b64(j, d, "cert", n->cert, sizeof n->cert)) <= 0) {
+    if (!ok || enroll_got(n, j, d, num, cert, &cl) < 0) {
+        if (ok)
+            snprintf(err, sizeof err, "bad_reply");
         npf_json_get_str(j, 0, "error", err, sizeof err);
         npf_json_get_str(j, 0, "message", reason, sizeof reason);
         npf_loge("enrol: refused (%s%s%s): %s", err, reason[0] ? ", " : "", reason, enroll_why(err, reason));
@@ -485,8 +527,9 @@ static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
     n->enroll_state = NPF_ENROLL_DONE;
     n->enroll_error[0] = n->enroll_reason[0] = 0;
     n->enroll_at_unix_ms = npf_unix_ms();
+    memcpy(n->cert, cert, (size_t)cl);
     n->cert_len = (size_t)cl;
-    n->cfg.number = strtoull(num, NULL, 10);
+    n->cfg.number = npf_number_parse(num);
     n->cfg.callable = 1;
     npf_log("enrol: number %.3s %.3s %.3s", num, num + 3, num + 6);
     if (n->hooks.on_enrolled)
@@ -499,11 +542,15 @@ static void send_enroll(npf_node *n)
     const npf_enroll_req *e = n->cfg.enroll;
     uint8_t msg[64 + 1 + 64 + 32 + 32], sv[64], sd[64];   /* h is the 64-byte BLAKE2b handshake hash */
     size_t sl = strlen(e->serial), ml;
-    char data[3072];
+    char *data;
     int i;
     npf_jw w;
     if (sl == 0 || sl > 64) {
         npf_loge("enrol: no serial number (serial / serial_file)");
+        return;
+    }
+    if (!(data = malloc(LOGIN_JSON_MAX))) {
+        npf_logw("enrol: no memory");
         return;
     }
     memcpy(msg, npf_sig_hash(n->sig), 64);
@@ -514,7 +561,7 @@ static void send_enroll(npf_node *n)
     ml = 129 + sl;
     npf_sign2(sv, e->model_sk, "npf-enroll-v1", 13, msg, ml);
     npf_sign2(sd, n->id.sign_sk, "npf-enroll-v1", 13, msg, ml);
-    npf_jw_init(&w, data, sizeof data);
+    npf_jw_init(&w, data, LOGIN_JSON_MAX);
     npf_jw_obj(&w);
     npf_jw_kb64(&w, "model_chain", e->model_chain, e->model_chain_len);
     npf_jw_kstr(&w, "serial", e->serial);
@@ -540,7 +587,9 @@ static void send_enroll(npf_node *n)
             o += (size_t)snprintf(kinds + o, sizeof kinds - o, "%s%s", i ? ", " : "", e->hw_kind[i]);
         npf_log("enrol: serial %s with the model credential, hardware items: %s", e->serial, kinds);
     }
-    if (npf_jw_finish(&w) < 0 || npf_node_request(n, "enroll", data, enroll_reply, NULL) < 0) {
+    i = npf_jw_finish(&w) < 0 || npf_node_request(n, "enroll", data, enroll_reply, NULL) < 0;
+    free(data);
+    if (i) {
         npf_logw("enrol: send failed");
         return;
     }

@@ -1,6 +1,7 @@
 /* Event loop timers (binary min-heap): firing order by due time, then by the
  * order added; cancel from anywhere, including a timer cancelling itself or
  * another one from its callback, and adding timers from a callback. */
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -163,6 +164,57 @@ static void test_logctx(void)
     npf_loop_free(l);
 }
 
+/* a descriptor the queue does not take is refused, not left silent; a
+ * freed entry is taken again by the next socket and both still fire */
+static int slot_hits[3];
+static void slot_cb(npf_loop *l, int fd, unsigned ev, void *arg)
+{
+    char b[8];
+    (void)l;
+    (void)ev;
+    slot_hits[(int)(long)arg]++;
+    while (recv(fd, b, sizeof b, MSG_DONTWAIT) > 0)
+        ;
+}
+
+static void test_slots(void)
+{
+    npf_loop *l = npf_loop_new();
+    int sp[3][2], i;
+    for (i = 0; i < 3; i++)
+        CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp[i]) == 0, "socketpair");
+#ifdef __linux__
+    {   /* epoll takes no regular file */
+        char path[] = "/tmp/npf-loop-XXXXXX";
+        int f = mkstemp(path);
+        CHECK(f >= 0 && npf_loop_add(l, f, NPF_EV_READ, slot_cb, (void *)0L) < 0, "a regular file refused");
+        CHECK(npf_loop_add(l, sp[0][0], NPF_EV_READ, slot_cb, (void *)0L) == 0, "and nothing left of it");
+        npf_loop_del(l, sp[0][0]);
+        if (f >= 0) {
+            close(f);
+            unlink(path);
+        }
+    }
+#endif
+    for (i = 0; i < 3; i++)
+        CHECK(npf_loop_add(l, sp[i][0], NPF_EV_READ, slot_cb, (void *)(long)i) == 0, "add %d", i);
+    npf_loop_del(l, sp[0][0]);
+    npf_loop_del(l, sp[1][0]);
+    CHECK(npf_loop_add(l, sp[1][0], NPF_EV_READ, slot_cb, (void *)1L) == 0, "a freed entry taken again");
+    CHECK(npf_loop_add(l, sp[0][0], NPF_EV_READ, slot_cb, (void *)0L) == 0, "and the next one");
+    for (i = 0; i < 3; i++)
+        CHECK(send(sp[i][1], "x", 1, 0) == 1, "send");
+    for (i = 0; i < 5 && (!slot_hits[0] || !slot_hits[1] || !slot_hits[2]); i++)
+        npf_loop_once(l, 50);
+    CHECK(slot_hits[0] && slot_hits[1] && slot_hits[2], "each fires (%d %d %d)", slot_hits[0], slot_hits[1],
+          slot_hits[2]);
+    npf_loop_free(l);
+    for (i = 0; i < 3; i++) {
+        close(sp[i][0]);
+        close(sp[i][1]);
+    }
+}
+
 int test_loop(void)
 {
     int i, prev = -1, ok = 1;
@@ -207,5 +259,6 @@ int test_loop(void)
     npf_loop_free(T.loop);
     test_reuse();
     test_logctx();
+    test_slots();
     return fails;
 }

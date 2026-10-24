@@ -174,9 +174,9 @@ int npf_peer_connect_mode(const npf_peer *p) { (void)p; return 0; }
 int npf_peer_idle_asked(const npf_peer *p) { (void)p; return 0; }
 int npf_peer_finished(const npf_peer *p) { (void)p; return 1; }
 const char *npf_peer_last_why(const npf_peer *p) { (void)p; return ""; }
-int npf_peer_direct_target(const npf_peer *p, const char **host, uint16_t *port)
+int npf_peer_direct_target(const npf_peer *p, char *host, size_t cap, uint16_t *port)
 {
-    (void)p, (void)host, (void)port;
+    (void)p, (void)host, (void)cap, (void)port;
     return -1;
 }
 void npf_peer_set_nick_here(npf_peer *p, const char *nick) { (void)p, (void)nick; }
