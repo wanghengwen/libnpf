@@ -29,6 +29,13 @@
 #define S2B_PASS_MS   300   /* between two passes */
 #define S2B_RESEND_MS 1000  /* the destinations sent so far, again (their mappings exist: no new ones) */
 
+/* a source of a triggered check: an IPv4 or IPv6 address, not 128 bytes */
+typedef union trig_addr {
+    struct sockaddr     sa;
+    struct sockaddr_in  in4;
+    struct sockaddr_in6 in6;
+} trig_addr;
+
 typedef struct psock {
     int     fd;
     int     owned;
@@ -39,12 +46,12 @@ struct npf_punch {
     npf_loop       *loop;
     npf_punch_cfg   cfg;
     npf_siv_keys    kp, kn;
-    psock           socks[NPF_PUNCH_MAX_SOCKETS];
-    int             nsock;
+    psock          *socks;          /* nsock of capsock: 1, 2 (S2B, S5), or 1 + S3 hard's own */
+    int             nsock, capsock;
     int64_t         start, deadline, spray_next, nom_next, validated_at;
     int             sprayed, nom_sent, have_valid, win_sock, finished;
     int             win_fd;         /* the socket the winning path uses (socks[win_sock] or fd6) */
-    struct { struct sockaddr_storage a; int sock; int64_t at; } trig[TRIG_MAX];
+    struct { trig_addr a; int sock; int64_t at; } trig[TRIG_MAX];
     int             ntrig;
     struct sockaddr_storage winner;
     /* S2B */
@@ -55,11 +62,13 @@ struct npf_punch {
     uint16_t        own_port, peer_port;
     uint16_t        dests[S2B_MAX];
     int             ndests;
-    uint8_t         sent_to[65536 / 8]; /* the peer's IPv4 ports probed (7.8: unsolicited) */
+    uint8_t        *sent_to;        /* sprays (S3 easy, S2B, S5): the peer's IPv4 ports probed (7.8:
+                                     * unsolicited), 8 KB; NULL: the candidates are the ports probed */
     npf_punch_result res;
     uint64_t        seen_tx[SEEN_MAX];  /* the last SEEN_MAX authenticated packets' txids (first 8 bytes) */
     int             seen_at;
     npf_timer      *tick;
+    int64_t         tick_due;
     npf_punch_done_fn done;
     void           *arg;
 };
@@ -164,7 +173,7 @@ static void probe(npf_punch *p, int sock, const struct sockaddr_storage *to)
     }
     st16(b + n, (uint16_t)sock);
     send_pkt(fd, &p->kp, p->cfg.plan.role, NPF_PKT_PROBE, b, n + 2, to);
-    if (to->ss_family == AF_INET) {
+    if (to->ss_family == AF_INET && p->sent_to) {
         uint16_t port = ss_port(to);
         p->sent_to[port >> 3] |= (uint8_t)(1u << (port & 7));
     }
@@ -175,13 +184,29 @@ static void probe(npf_punch *p, int sock, const struct sockaddr_storage *to)
     p->res.probes_sent++;
 }
 
-static int same_ss(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+static int trig_same(const trig_addr *a, const struct sockaddr_storage *b)
 {
-    if (a->ss_family != b->ss_family || ss_port(a) != ss_port(b))
+    if (a->sa.sa_family != b->ss_family || a->sa.sa_family == AF_UNSPEC)
         return 0;
-    return a->ss_family == AF_INET6
-               ? memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0
-               : ((const struct sockaddr_in *)a)->sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
+    if (a->sa.sa_family == AF_INET6) {
+        const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)b;
+        return a->in6.sin6_port == y->sin6_port && memcmp(&a->in6.sin6_addr, &y->sin6_addr, 16) == 0;
+    }
+    return a->in4.sin_port == ((const struct sockaddr_in *)b)->sin_port
+           && a->in4.sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
+}
+
+/* the peer's IPv4 port probed in this round: the spray's bitmap, else (S1,
+ * S3 hard) its candidates and srflx are what was probed */
+static int probed(const npf_punch *p, uint16_t port)
+{
+    int i;
+    if (p->sent_to)
+        return (p->sent_to[port >> 3] & (1u << (port & 7))) != 0;
+    for (i = 0; i < p->cfg.npeers; i++)
+        if (p->cfg.peers[i].ss_family == AF_INET && ss_port(&p->cfg.peers[i]) == port)
+            return 1;
+    return p->cfg.plan.peer_srflx.ss_family == AF_INET && ss_port(&p->cfg.plan.peer_srflx) == port;
 }
 
 /* A triggered check (ICE): a PROBE that came in shows a path from the peer
@@ -199,7 +224,7 @@ static void triggered(npf_punch *p, int sock, const struct sockaddr_storage *fro
     if (p->have_valid || p->finished)
         return;
     for (i = 0; i < p->ntrig; i++)
-        if (p->trig[i].sock == sock && same_ss(&p->trig[i].a, from)) {
+        if (p->trig[i].sock == sock && trig_same(&p->trig[i].a, from)) {
             if (now - p->trig[i].at < TRIG_GAP_MS)
                 return;
             p->trig[i].at = now;
@@ -208,7 +233,7 @@ static void triggered(npf_punch *p, int sock, const struct sockaddr_storage *fro
         }
     if (p->ntrig == TRIG_MAX)
         return;
-    p->trig[p->ntrig].a = *from;
+    memcpy(&p->trig[p->ntrig].a, from, ss_len(from));
     p->trig[p->ntrig].sock = sock;
     p->trig[p->ntrig].at = now;
     p->ntrig++;
@@ -369,8 +394,10 @@ static int s2b_input(npf_punch *p, const uint8_t *buf, size_t len, const struct 
         npf_log("punch: S2B: the fresh socket's mapping is port %u", resp.port);
         if (p->cfg.info)
             p->cfg.info(p, resp.port, p->arg);
-        if (p->peer_port)
+        if (p->peer_port) {
             p->pass_next = npf_mono_ms();
+            schedule(p);
+        }
     }
     return 1;
 }
@@ -382,6 +409,7 @@ void npf_punch_peer_port(npf_punch *p, uint16_t port)
     p->peer_port = port;
     npf_log("punch: S2B: the peer's fresh mapping is port %u", port);
     p->pass_next = npf_mono_ms();
+    schedule(p);
 }
 
 static void tick_cb(npf_loop *loop, void *arg)
@@ -469,10 +497,74 @@ static void tick_cb(npf_loop *loop, void *arg)
     schedule(p);
 }
 
+/* a spray due at t: when its interval is below a tick, it goes in batches
+ * a tick apart (SPRAY_BURST at most each), not a wake-up a probe */
+static int64_t spray_due(int64_t t, int64_t ivl, int64_t now)
+{
+    if (t < now - SPRAY_LAG_MS)
+        t = now - SPRAY_LAG_MS;
+    if (ivl < TICK_MS && t < now + TICK_MS)
+        t = now + TICK_MS;
+    return t;
+}
+
+/* when tick_cb next has something to do: the same conditions as there */
+static int64_t next_due(const npf_punch *p, int64_t now)
+{
+    const npf_punch_plan *pl = &p->cfg.plan;
+    int64_t due = p->deadline;
+    int i;
+#define DUE(t) do { int64_t t_ = (t); if (t_ < due) due = t_; } while (0)
+    if (pl->strategy == NPF_PUNCH_S1 || (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY)
+        || (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD && p->nsock == 1))
+        DUE(p->socks[0].next_send);
+    if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD)
+        for (i = 1; i < p->nsock; i++)
+            DUE(p->socks[i].next_send);
+    if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY && p->sprayed < pl->m_total) {
+        int64_t ivl = pl->pps > 0 ? 1000 / pl->pps : 5;
+        DUE(spray_due(p->spray_next, ivl < 1 ? 1 : ivl, now));
+    }
+    if (pl->strategy == NPF_PUNCH_S2B && p->nsock > 1) {
+        if (!p->own_port) {
+            if (p->bsent < 4)
+                DUE(p->bnext);
+        } else if (p->peer_port) {
+            if (p->pass < (pl->passes > 0 ? pl->passes : 4))
+                DUE(p->pass_next);
+            if (p->resend_next)
+                DUE(p->resend_next);
+        }
+    }
+    if (pl->strategy == NPF_PUNCH_S5 && p->nsock > 1) {
+        int64_t ivl = 1000 / (pl->pps > 0 ? pl->pps : 4);
+        int total = pl->m_total > 0 && pl->m_total < S5_MAX ? pl->m_total : S5_MAX;
+        if (p->sprayed < total)
+            DUE(spray_due(p->spray_next, ivl < S5_MIN_IVL ? S5_MIN_IVL : ivl, now));
+    }
+    if (pl->role == NPF_PUNCH_CONTROLLING && p->have_valid)
+        DUE(p->nom_sent ? p->nom_next : p->validated_at + NOM_GRACE_MS);
+#undef DUE
+    return due;
+}
+
+/* the tick at the next thing to do, not every TICK_MS: a punch of S1 wakes
+ * the loop 20 times a second, then 5, not 100 (an S5 round runs minutes).
+ * After a change that brings something forward (a path validated, S2B's
+ * ports known) too */
 static void schedule(npf_punch *p)
 {
-    if (!p->tick && !p->finished)
-        p->tick = npf_timer_add(p->loop, TICK_MS, tick_cb, p);
+    int64_t now = npf_mono_ms(), due;
+    if (p->finished)
+        return;
+    due = next_due(p, now);
+    if (p->tick) {
+        if (p->tick_due <= due)
+            return;
+        npf_timer_cancel(p->loop, p->tick);
+    }
+    p->tick_due = due;
+    p->tick = npf_timer_add(p->loop, due > now ? due - now : 0, tick_cb, p);
 }
 
 /* 1 when this packet (its random txid) was taken before: someone on the
@@ -511,7 +603,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
                 ;
             if (i == p->res.nseen && p->res.nseen < (int)(sizeof p->res.seen / sizeof p->res.seen[0]))
                 p->res.seen[p->res.nseen++] = port;
-            if (pkt.type == NPF_PKT_PROBE && !(p->sent_to[port >> 3] & (1u << (port & 7))))
+            if (pkt.type == NPF_PKT_PROBE && !probed(p, port))
                 p->res.unsolicited++;
         }
         if (pkt.type == NPF_PKT_PROBE) {
@@ -533,6 +625,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
                 p->win_sock = sock;
                 p->win_fd = fd;
                 p->validated_at = npf_mono_ms();
+                schedule(p);                /* the NOMINATE's time */
                 if (npf_log_on(NPF_LOG_TRACE)) {
                     char a[64];
                     npf_logt("punch: path validated via %s (sock %d, %d ms)", ss_txt(from, a, sizeof a), sock,
@@ -599,9 +692,20 @@ npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_f
                          npf_punch_done_fn done, void *arg)
 {
     npf_punch *p = calloc(1, sizeof *p);
-    int i;
+    int i, hard = cfg->plan.strategy == NPF_PUNCH_S3 && cfg->plan.side == NPF_PUNCH_HARD;
+    int spray = (cfg->plan.strategy == NPF_PUNCH_S3 && !hard) || cfg->plan.strategy == NPF_PUNCH_S2B
+                || cfg->plan.strategy == NPF_PUNCH_S5;
     if (!p)
         return NULL;
+    /* the sockets it needs: the main one, a fresh one (S2B, S5), S3 hard's own */
+    p->capsock = hard ? 1 + (cfg->plan.n_sockets < NPF_PUNCH_MAX_SOCKETS - 1 ? (cfg->plan.n_sockets > 0 ? cfg->plan.n_sockets : 0)
+                                                                            : NPF_PUNCH_MAX_SOCKETS - 1)
+                      : 2;
+    if (!(p->socks = calloc((size_t)p->capsock, sizeof *p->socks)) || (spray && !(p->sent_to = calloc(1, 65536 / 8)))) {
+        free(p->socks);
+        free(p);
+        return NULL;
+    }
     p->loop = loop;
     p->cfg = *cfg;
     p->done = done;
@@ -639,8 +743,8 @@ npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_f
     }
     if (cfg->plan.strategy == NPF_PUNCH_S3 && cfg->plan.side == NPF_PUNCH_HARD) {
         int n = cfg->plan.n_sockets;
-        if (n > NPF_PUNCH_MAX_SOCKETS - 1)
-            n = NPF_PUNCH_MAX_SOCKETS - 1;
+        if (n > p->capsock - 1)
+            n = p->capsock - 1;
         for (i = 0; i < n; i++) {
             struct sockaddr_in a;
             int fd = npf_udp_socket(AF_INET, 0);
@@ -687,5 +791,7 @@ void npf_punch_free(npf_punch *p)
             npf_sock_close(p->socks[i].fd);
         }
     }
+    free(p->socks);
+    free(p->sent_to);
     free(p);
 }
