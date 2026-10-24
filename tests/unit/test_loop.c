@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "npf/log.h"
 #include "npf/loop.h"
 #include "npf/platform.h"
 
@@ -125,6 +126,43 @@ static void test_reuse(void)
     npf_loop_free(l);
 }
 
+/* a standalone loop's callbacks run in the thread's log context (the
+ * instance's level, hook, ring): not the process's (it lost its debug lines) */
+static int ctx_timer_debug = -1, ctx_fd_debug = -1;
+static void ctx_timer(npf_loop *l, void *arg) { (void)l; (void)arg; ctx_timer_debug = npf_log_on(NPF_LOG_DEBUG); }
+static void ctx_fd(npf_loop *l, int fd, unsigned ev, void *arg)
+{
+    char b[4];
+    (void)l; (void)ev; (void)arg;
+    (void)!recv(fd, b, sizeof b, 0);
+    ctx_fd_debug = npf_log_on(NPF_LOG_DEBUG);
+}
+
+static void test_logctx(void)
+{
+    npf_loop *l = npf_loop_new();
+    npf_log_ctx ctx, *prev;
+    int sp[2], was = npf_log_get_level();
+    memset(&ctx, 0, sizeof ctx);
+    ctx.level = NPF_LOG_DEBUG;
+    npf_log_set_level(NPF_LOG_INFO);        /* the process: info */
+    prev = npf_log_ctx_swap(&ctx);          /* this thread's instance: debug */
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
+    npf_loop_add(l, sp[0], NPF_EV_READ, ctx_fd, NULL);
+    (void)!send(sp[1], "x", 1, 0);
+    npf_timer_add(l, 0, ctx_timer, NULL);
+    npf_loop_once(l, 100);
+    npf_loop_once(l, 0);
+    CHECK(ctx_fd_debug == 1 && ctx_timer_debug == 1, "callbacks in the thread's log context (fd %d, timer %d)",
+          ctx_fd_debug, ctx_timer_debug);
+    npf_log_ctx_swap(prev);
+    npf_log_set_level(was);
+    npf_loop_del(l, sp[0]);
+    close(sp[0]);
+    close(sp[1]);
+    npf_loop_free(l);
+}
+
 int test_loop(void)
 {
     int i, prev = -1, ok = 1;
@@ -168,5 +206,6 @@ int test_loop(void)
     npf_timer_add(T.loop, 100000, fire, (void *)0L);
     npf_loop_free(T.loop);
     test_reuse();
+    test_logctx();
     return fails;
 }

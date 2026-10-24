@@ -326,6 +326,18 @@ static void ep_all(npf_loop *l, int add)
 #define ep_del(l, h) ((void)0)
 #endif
 
+/* the log context a loop's work runs in: a runtime child's, its instance's
+ * (npf_loop_set_logctx); a loop without one keeps the thread's (a
+ * standalone instance's thread set it itself: its level, hook and ring).
+ * Returns what to put back */
+static npf_log_ctx *ctx_enter(const npf_loop *c)
+{
+    npf_log_ctx *prev = npf_log_ctx_swap(c->logctx);
+    if (!c->logctx)
+        npf_log_ctx_swap(prev);         /* none of its own: the thread's stays */
+    return prev;
+}
+
 #define POSTED_BATCH 256            /* then sockets and timers get their turn */
 
 static void run_posted(npf_loop *l)
@@ -647,7 +659,7 @@ static void attach_run(npf_loop *h, void *arg)
     ep_all(c, 1);
 #endif
     c->now = npf_mono_ms();
-    prev = npf_log_ctx_swap(c->logctx);
+    prev = ctx_enter(c);
     c->cf.start(c, c->carg);
     npf_log_ctx_swap(prev);
     npf_loop_wake(c);                   /* what was posted to it before */
@@ -882,7 +894,7 @@ static void host_once(npf_loop *l, int max_ms)
             if (!h || !h->fn || h->reg != r)
                 continue;               /* or its fd closed and reused: another registration */
             c->now = l->now;
-            prev = npf_log_ctx_swap(c->logctx);
+            prev = ctx_enter(c);
             TIMED(h->fn, h->fn(c, h->fd, ev[i].ev, h->arg));
             npf_log_ctx_swap(prev);
         }
@@ -937,7 +949,7 @@ static void host_once(npf_loop *l, int max_ms)
             if (!h || !h->fn || h->gen != l->pgen[i])
                 continue;               /* or its fd closed and reused meanwhile: not this one's events */
             c->now = l->now;
-            prev = npf_log_ctx_swap(c->logctx);
+            prev = ctx_enter(c);
             TIMED(h->fn, h->fn(c, h->fd, e, h->arg));
             npf_log_ctx_swap(prev);
         }
@@ -954,7 +966,7 @@ static void host_once(npf_loop *l, int max_ms)
         if (!woken && !timers && !stop)
             continue;
         c->now = l->now;
-        prev = npf_log_ctx_swap(c->logctx);
+        prev = ctx_enter(c);
         if (woken)
             run_wake_hook(c);
         if (timers)
