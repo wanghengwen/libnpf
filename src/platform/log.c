@@ -47,6 +47,8 @@ static int   g_echo;                /* daemon start-up: the terminal sees the lo
 static int   g_own_stderr = 1;      /* stderr goes to the log file too (not in an application) */
 static char  g_log_path[1024];
 static long  g_log_max = 10L << 20;
+static long  g_log_size;            /* bytes in the file (counted: no ftell per line) */
+static long  g_log_rot;             /* rotated past this size (g_log_max; more after a failed rotation) */
 static int   g_level = NPF_LOG_INFO;     /* the process's; atomic */
 static NPF_THREAD_LOCAL npf_log_ctx *t_ctx;
 
@@ -72,9 +74,13 @@ static int log_attach(int to_stderr)
         return -1;
     }
 #else
-    FILE *f = fopen(g_log_path, "a");
+    /* as on POSIX: a new log is private, the handle not inherited (N) */
+    int existed = GetFileAttributesA(g_log_path) != INVALID_FILE_ATTRIBUTES;
+    FILE *f = fopen(g_log_path, "aN");
     if (!f)
         return -1;
+    if (!existed)
+        npf_file_private(g_log_path);
 #endif
 #ifndef _WIN32
     fcntl(fileno(f), F_SETFD, FD_CLOEXEC);
@@ -86,6 +92,11 @@ static int log_attach(int to_stderr)
     if (g_logf)
         fclose(g_logf);
     g_logf = f;
+    fseek(f, 0, SEEK_END);
+    g_log_size = ftell(f);
+    if (g_log_size < 0)
+        g_log_size = 0;
+    g_log_rot = g_log_max;
     return 0;
 }
 
@@ -96,7 +107,14 @@ static void log_rotate(void)
     fclose(g_logf);
     g_logf = NULL;
     remove(old);
-    rename(g_log_path, old);
+    if (rename(g_log_path, old) != 0) {
+        /* held open elsewhere (Windows) or the directory not writable: the
+         * file is not rotated at each line from now on, it goes on growing
+         * to twice the size and then this tries again */
+        if (log_attach(!g_echo && g_own_stderr) == 0)
+            g_log_rot = g_log_size + g_log_max;
+        return;
+    }
     log_attach(!g_echo && g_own_stderr);
 }
 
@@ -154,12 +172,13 @@ static void sink(log_Event *ev)
     if (g_logf) {
         fwrite(line, 1, (size_t)n, g_logf);
         fflush(g_logf);
+        g_log_size += n;
     }
     if (!g_logf || g_echo) {
         fwrite(line + 11, 1, (size_t)n - 11, stderr);
         fflush(stderr);
     }
-    if (g_logf && ftell(g_logf) > g_log_max)
+    if (g_logf && g_log_size > g_log_rot)
         log_rotate();
 }
 
@@ -313,12 +332,14 @@ static size_t ring_copy(const char *ring, size_t pos, size_t len, char *out, siz
 
 int npf_log_open(const char *path, long max_bytes)
 {
+    char abs[sizeof g_log_path];
     int r;
-    if (npf_abspath(path, g_log_path, sizeof g_log_path) < 0)
+    if (npf_abspath(path, abs, sizeof abs) < 0)
         return -1;
+    lock_fn(true, NULL);                /* a line being written may rotate the old path */
+    memcpy(g_log_path, abs, sizeof abs);
     if (max_bytes > 0)
         g_log_max = max_bytes;
-    lock_fn(true, NULL);
     g_own_stderr = 1;
     r = log_attach(1);
     lock_fn(false, NULL);
@@ -327,12 +348,14 @@ int npf_log_open(const char *path, long max_bytes)
 
 int npf_log_open_app(const char *path, long max_bytes)
 {
+    char abs[sizeof g_log_path];
     int r;
-    if (npf_abspath(path, g_log_path, sizeof g_log_path) < 0)
+    if (npf_abspath(path, abs, sizeof abs) < 0)
         return -1;
+    lock_fn(true, NULL);                /* a line being written may rotate the old path */
+    memcpy(g_log_path, abs, sizeof abs);
     if (max_bytes > 0)
         g_log_max = max_bytes;
-    lock_fn(true, NULL);
     g_own_stderr = 0;
     r = log_attach(0);
     lock_fn(false, NULL);
@@ -344,8 +367,8 @@ int npf_log_open_app(const char *path, long max_bytes)
 int npf_log_open_daemon(const char *path)
 {
     int r;
-    snprintf(g_log_path, sizeof g_log_path, "%s", path);
     lock_fn(true, NULL);
+    snprintf(g_log_path, sizeof g_log_path, "%s", path);
     r = log_attach(0);
     g_echo = r == 0;
     lock_fn(false, NULL);

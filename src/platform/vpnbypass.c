@@ -50,6 +50,8 @@ typedef struct {
 static choice g_ch;
 static int64_t g_at = -RECHECK_MS;
 static int g_lock;
+static int g_picking;                /* a thread is in pick() */
+static int g_ready;                  /* g_ch picked once */
 static char g_said[160];
 
 int npf_if_tunnel_name(const char *n)
@@ -147,7 +149,8 @@ static void pick(choice *c)
             def = a;
     if (def && win_tunnel(def)) {
         c->vpn = 1;
-        WideCharToMultiByte(CP_UTF8, 0, def->FriendlyName, -1, c->vpn_name, sizeof c->vpn_name, NULL, NULL);
+        if (!WideCharToMultiByte(CP_UTF8, 0, def->FriendlyName, -1, c->vpn_name, sizeof c->vpn_name, NULL, NULL))
+            c->vpn_name[0] = 0;         /* longer than the room (a long name in CJK): no partial, unterminated text */
         for (a = aa; a; a = a->Next) {
             int virt;
             if (a == def || a->OperStatus != IfOperStatusUp || win_tunnel(a) || !a->FirstGatewayAddress || !has_v4(a, NULL)
@@ -162,7 +165,8 @@ static void pick(choice *c)
         if (best) {
             c->idx4 = best->IfIndex;
             c->idx6 = best->Ipv6IfIndex;
-            WideCharToMultiByte(CP_UTF8, 0, best->FriendlyName, -1, c->name, sizeof c->name, NULL, NULL);
+            if (!WideCharToMultiByte(CP_UTF8, 0, best->FriendlyName, -1, c->name, sizeof c->name, NULL, NULL))
+                c->name[0] = 0;
         }
     }
     free(aa);
@@ -299,30 +303,55 @@ int npf_vpn_bypass(int fd, int family, void *arg)
     choice c;
     int64_t now = npf_mono_ms();
     char said[160];
+    int look;
     (void)arg;
-    while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
-        ;
-    if (now - g_at >= RECHECK_MS) {
-        pick(&g_ch);
-        g_at = now;
-        if (!g_ch.vpn)
-            snprintf(said, sizeof said, "-");
-        else
-            snprintf(said, sizeof said, "%s>%s", g_ch.vpn_name, g_ch.name);
-        if (strcmp(said, g_said) != 0) {
-            if (g_ch.vpn && g_ch.name[0])
-                npf_log("udp: a VPN (%s) has the default route: the UDP sockets and the signaling go out on %s (connect_mode p2p)",
-                        g_ch.vpn_name, g_ch.name);
-            else if (g_ch.vpn)
-                npf_log("udp: a VPN (%s) has the default route and no other network is up: the UDP sockets go through it",
-                        g_ch.vpn_name);
-            else if (g_said[0] && strcmp(g_said, "-") != 0)
-                npf_log("udp: no VPN in the way any more");
-            snprintf(g_said, sizeof g_said, "%s", said);
-        }
+    /* the lock only around the copies: pick() (interfaces, routes) and the
+     * log (an application's hook) run outside it, one thread picks while
+     * the others use the last choice */
+    for (;;) {
+        while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
+            ;
+        look = now - g_at >= RECHECK_MS && !g_picking;
+        if (look || g_ready)
+            break;
+        __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+        npf_sleep_ms(1);                /* the first choice is being made: wait for it */
     }
+    if (look)
+        g_picking = 1;
     c = g_ch;
     __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+    if (look) {
+        int changed;
+        memset(&c, 0, sizeof c);
+        pick(&c);
+        if (!c.vpn)
+            snprintf(said, sizeof said, "-");
+        else
+            snprintf(said, sizeof said, "%s>%s", c.vpn_name, c.name);
+        while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
+            ;
+        g_ch = c;
+        g_at = now;
+        g_picking = 0;
+        g_ready = 1;
+        changed = strcmp(said, g_said) != 0;
+        if (changed) {
+            int was = g_said[0] && strcmp(g_said, "-") != 0;
+            snprintf(g_said, sizeof g_said, "%s", said);
+            __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+            if (c.vpn && c.name[0])
+                npf_log("udp: a VPN (%s) has the default route: the UDP sockets and the signaling go out on %s (connect_mode p2p)",
+                        c.vpn_name, c.name);
+            else if (c.vpn)
+                npf_log("udp: a VPN (%s) has the default route and no other network is up: the UDP sockets go through it",
+                        c.vpn_name);
+            else if (was)
+                npf_log("udp: no VPN in the way any more");
+        } else {
+            __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+        }
+    }
     if (!c.vpn)
         return 0;                       /* nothing to go around */
     return bind_to(fd, family, &c) == 0 ? 0 : -1;

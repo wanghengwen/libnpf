@@ -747,6 +747,10 @@ static void send_failed(const struct sockaddr *to, int err)
     /* macOS's local network privacy: a program without the permission (one
      * started over SSH, say) gets "No route to host" for every address of
      * the local network, while the internet works */
+    if (err == EHOSTUNREACH && t_lan_err.err == err && now - t_lan_err.at < SEND_ERR_QUIET_MS) {
+        t_lan_err.more++;               /* told a moment ago: no interface list for each datagram */
+        return;
+    }
     if (err == EHOSTUNREACH && on_local_subnet(to)) {
         if (!quiet(&t_lan_err, err, now))
             report(&t_lan_err, NPF_LOG_WARN, err, now, to,

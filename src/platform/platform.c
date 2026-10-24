@@ -65,7 +65,35 @@ void npf_random(void *buf, size_t len)
     arc4random_buf(buf, len);       /* kernel CSPRNG, never fails (Android: getrandom only from API 28) */
 }
 #else
+#include <fcntl.h>
 #include <sys/random.h>
+#include <unistd.h>
+
+/* kernels before 3.17 have no getrandom (ENOSYS: NAS models still on 3.10),
+ * a seccomp filter may refuse it (EPERM): /dev/urandom then */
+static void urandom(unsigned char *p, size_t len)
+{
+    int fd;
+    do
+        fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        perror("/dev/urandom");
+        abort();
+    }
+    while (len > 0) {
+        ssize_t n = read(fd, p, len);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR)
+                continue;
+            perror("/dev/urandom");
+            abort();
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    close(fd);
+}
 
 void npf_random(void *buf, size_t len)
 {
@@ -75,6 +103,10 @@ void npf_random(void *buf, size_t len)
         if (n < 0) {
             if (errno == EINTR)
                 continue;
+            if (errno == ENOSYS || errno == EPERM) {
+                urandom(p, len);
+                return;
+            }
             perror("getrandom");
             abort();
         }
@@ -97,10 +129,15 @@ long npf_fd_limit(long want)
         return 1024;
     if (rl.rlim_cur != RLIM_INFINITY && (long)rl.rlim_cur < want) {
         rlim_t to = rl.rlim_max == RLIM_INFINITY || (long)rl.rlim_max > want ? (rlim_t)want : rl.rlim_max;
-        if (to > rl.rlim_cur) {
+        /* macOS refuses (EINVAL) more than kern.maxfilesperproc even under
+         * an unlimited hard limit: less then, not the default 256 */
+        while (to > rl.rlim_cur) {
             struct rlimit nl = {to, rl.rlim_max};
-            if (setrlimit(RLIMIT_NOFILE, &nl) == 0)
+            if (setrlimit(RLIMIT_NOFILE, &nl) == 0) {
                 rl.rlim_cur = to;
+                break;
+            }
+            to /= 2;
         }
     }
     return rl.rlim_cur == RLIM_INFINITY ? want : (long)rl.rlim_cur;

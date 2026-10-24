@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #endif
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -81,6 +82,7 @@ typedef struct handler {
     int       active;
     int       fd;
     unsigned  events;
+    unsigned  gen;              /* its registration (npf_loop_add): a pfd entry taken from another is stale */
     ep_reg   *reg;              /* in the host's epoll (NPF_EPOLL) */
 } handler;
 
@@ -122,7 +124,9 @@ struct npf_loop {
     struct sockaddr_in wake_addr;
 #endif
     npf_pollfd *pfd;
-    int        npfd;
+    unsigned  *pgen;            /* pfd entry -> the registration it was taken from */
+    int        npfd;            /* pfd, pgen and own have room for this many */
+    unsigned   gen;
     int       *idx;             /* fd -> index into h, plus one; open addressing */
     int        idx_cap;         /* power of two */
     int        idx_tomb;        /* deleted slots still occupying the table */
@@ -377,10 +381,13 @@ static void heap_remove(npf_loop *l, npf_timer *t)
 
 static void fire_timers(npf_loop *l)
 {
-    /* a callback may add or cancel timers */
+    /* a callback may add or cancel timers; one it adds (even due at once:
+     * one that arms itself again with 0 ms) waits for the next turn, after
+     * the sockets were looked at */
+    uint64_t end = l->tseq;
     while (l->nheap > 0) {
         npf_timer *t = l->heap[0];
-        if (t->due > npf_mono_ms())
+        if (t->due > npf_mono_ms() || t->seq >= end)
             break;
         heap_remove(l, t);
         TIMED(t->fn, t->fn(l, t->arg));
@@ -395,6 +402,7 @@ static int next_wait(npf_loop *l, int max_ms)
     if (l->nheap > 0) {
         int64_t d = l->heap[0]->due - l->now;
         if (d < 0) d = 0;
+        if (d > INT_MAX) d = INT_MAX;
         if (wait < 0 || d < wait) wait = (int)d;
     }
     return wait;
@@ -432,7 +440,9 @@ npf_loop *npf_loop_new(void)
     l->wake_addr.sin_family = AF_INET;
     l->wake_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (l->wake_fd < 0 || bind(l->wake_fd, (struct sockaddr *)&l->wake_addr, sizeof l->wake_addr) < 0
-        || getsockname(l->wake_fd, (struct sockaddr *)&l->wake_addr, &al) < 0) {
+        || getsockname(l->wake_fd, (struct sockaddr *)&l->wake_addr, &al) < 0
+        /* connected to itself: datagrams from other local processes are dropped */
+        || connect(l->wake_fd, (struct sockaddr *)&l->wake_addr, sizeof l->wake_addr) < 0) {
         npf_sock_close(l->wake_fd);
         free(l);
         return NULL;
@@ -481,6 +491,7 @@ void npf_loop_free(npf_loop *l)
     free(l->idx);
     free(l->kids);
     free(l->own);
+    free(l->pgen);
     free(l);
 }
 
@@ -657,6 +668,7 @@ int npf_loop_add(npf_loop *l, int fd, unsigned events, npf_io_fn fn, void *arg)
     h->fn = fn;
     h->arg = arg;
     h->active = 1;
+    h->gen = ++l->gen;
     h->reg = NULL;
     idx_put(l, fd, i);
     ep_add(l, h);
@@ -686,6 +698,28 @@ void npf_loop_del(npf_loop *l, int fd)
         l->nh--;
 }
 
+/* pfd and its parallel arrays (pgen; own, the host's) for need entries */
+static int pfd_room(npf_loop *l, int need)
+{
+    int cap = need + 64;
+    npf_pollfd *p;
+    unsigned *g;
+    int *o;
+    if (l->npfd >= need && l->pgen && l->own)
+        return 0;
+    if (!(p = realloc(l->pfd, (size_t)cap * sizeof *p)))
+        return -1;
+    l->pfd = p;
+    if (!(g = realloc(l->pgen, (size_t)cap * sizeof *g)))
+        return -1;
+    l->pgen = g;
+    if (!(o = realloc(l->own, (size_t)cap * sizeof *o)))
+        return -1;
+    l->own = o;
+    l->npfd = cap;
+    return 0;
+}
+
 /* ---- the host of a shared runtime: its own sockets and timers, and its
  * children's, in one poll ---- */
 
@@ -707,6 +741,8 @@ static void host_once(npf_loop *l, int max_ms)
         int64_t d = child_due(l->kids[k]) - l->now;
         if (d < 0)
             d = 0;
+        if (d > INT_MAX)
+            d = INT_MAX;                /* a child without timers: INT64_MAX */
         if (wait < 0 || d < wait)
             wait = (int)d;
         total += l->kids[k]->nh;
@@ -745,18 +781,8 @@ static void host_once(npf_loop *l, int max_ms)
         goto after;
     }
 #endif
-    if (l->npfd < total || !l->own) {   /* own: as long as pfd */
-        int cap = l->npfd < total ? total + 64 : l->npfd;
-        npf_pollfd *p = realloc(l->pfd, (size_t)cap * sizeof *p);
-        int *o;
-        if (p)
-            l->pfd = p;
-        o = p ? realloc(l->own, (size_t)cap * sizeof *o) : NULL;
-        if (!o)
-            return;
-        l->own = o;
-        l->npfd = cap;
-    }
+    if (pfd_room(l, total) < 0)
+        return;
     n = 0;
     l->pfd[n].fd = l->wake_fd;
     l->pfd[n].events = NPF_POLL_IN;
@@ -771,6 +797,7 @@ static void host_once(npf_loop *l, int max_ms)
             l->pfd[n].events = (short)(((c->h[i].events & NPF_EV_READ) ? NPF_POLL_IN : 0)
                                        | ((c->h[i].events & NPF_EV_WRITE) ? NPF_POLL_OUT : 0));
             l->pfd[n].revents = 0;
+            l->pgen[n] = c->h[i].gen;
             l->own[n++] = k;
         }
     }
@@ -800,8 +827,8 @@ static void host_once(npf_loop *l, int max_ms)
             c = l->own[i] < 0 ? l : l->kids[l->own[i]];
             /* the handler may have been removed or replaced by an earlier callback */
             h = find_h(c, (int)l->pfd[i].fd);
-            if (!h || !h->fn)
-                continue;
+            if (!h || !h->fn || h->gen != l->pgen[i])
+                continue;               /* or its fd closed and reused meanwhile: not this one's events */
             c->now = l->now;
             prev = npf_log_ctx_swap(c->logctx);
             TIMED(h->fn, h->fn(c, h->fd, e, h->arg));
@@ -863,13 +890,8 @@ void npf_loop_once(npf_loop *l, int max_ms)
         return;
     }
     wait = next_wait(l, max_ms);
-    if (l->npfd < l->nh + 1) {
-        npf_pollfd *p = realloc(l->pfd, (size_t)(l->nh + 64) * sizeof *p);
-        if (!p)
-            return;
-        l->pfd = p;
-        l->npfd = l->nh + 64;
-    }
+    if (pfd_room(l, l->nh + 1) < 0)
+        return;
     n = 0;
     l->pfd[n].fd = l->wake_fd;
     l->pfd[n].events = NPF_POLL_IN;
@@ -882,6 +904,7 @@ void npf_loop_once(npf_loop *l, int max_ms)
         l->pfd[n].events = (short)(((l->h[i].events & NPF_EV_READ) ? NPF_POLL_IN : 0)
                                    | ((l->h[i].events & NPF_EV_WRITE) ? NPF_POLL_OUT : 0));
         l->pfd[n].revents = 0;
+        l->pgen[n] = l->h[i].gen;
         n++;
     }
     if (NPF_POLL(l->pfd, n, wait) > 0) {
@@ -909,7 +932,7 @@ void npf_loop_once(npf_loop *l, int max_ms)
             if (r & (POLLERR | POLLNVAL)) e |= NPF_EV_ERROR | NPF_EV_READ;
             /* the handler may have been removed or replaced by an earlier callback */
             h = find_h(l, (int)l->pfd[i].fd);
-            if (h && h->fn)
+            if (h && h->fn && h->gen == l->pgen[i])  /* not an fd closed and reused meanwhile */
                 TIMED(h->fn, h->fn(l, h->fd, e, h->arg));
         }
     }
@@ -933,7 +956,7 @@ void npf_loop_wake(npf_loop *l)
         (void)r;
     }
 #else
-    sendto(l->wake_fd, "x", 1, 0, (struct sockaddr *)&l->wake_addr, sizeof l->wake_addr);
+    send(l->wake_fd, "x", 1, 0);        /* connected (npf_loop_new) */
 #endif
 }
 

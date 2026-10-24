@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "npf/loop.h"
 #include "npf/platform.h"
@@ -62,6 +64,67 @@ static void cancels_itself(npf_loop *l, void *arg)
     npf_timer_add(l, 5, added, NULL);
 }
 
+/* a timer that arms itself again at once: one firing per turn of the loop,
+ * the sockets looked at in between (it used to keep the loop in its timers) */
+static int rearm_n;
+static void rearm(npf_loop *l, void *arg)
+{
+    (void)arg;
+    if (++rearm_n < 1000)
+        npf_timer_add(l, 0, rearm, NULL);
+}
+
+/* within one poll's batch, a callback closes another socket and a new one
+ * gets its number: that one's handler does not get the old one's events */
+static int sp_y[2], sp_new[2], new_called, x_called;
+static void new_cb(npf_loop *l, int fd, unsigned ev, void *arg) { (void)l; (void)fd; (void)ev; (void)arg; new_called++; }
+static void y_cb(npf_loop *l, int fd, unsigned ev, void *arg) { (void)l; (void)fd; (void)ev; (void)arg; }
+static void x_cb(npf_loop *l, int fd, unsigned ev, void *arg)
+{
+    char b[8];
+    (void)ev;
+    (void)arg;
+    x_called++;
+    (void)!recv(fd, b, sizeof b, 0);
+    npf_loop_del(l, sp_y[0]);
+    close(sp_y[0]);
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp_new);   /* the lowest free number: the one just closed */
+    npf_loop_add(l, sp_new[0], NPF_EV_READ, new_cb, NULL);
+}
+
+static void test_reuse(void)
+{
+    npf_loop *l = npf_loop_new();
+    int sp_x[2], reused;
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp_x);
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp_y);
+    npf_loop_add(l, sp_x[0], NPF_EV_READ, x_cb, NULL);    /* before y in the poll set */
+    npf_loop_add(l, sp_y[0], NPF_EV_READ, y_cb, NULL);
+    (void)!send(sp_x[1], "x", 1, 0);
+    (void)!send(sp_y[1], "y", 1, 0);                      /* y readable in the same batch */
+    npf_loop_once(l, 100);
+    reused = sp_new[0] == sp_y[0];
+    CHECK(x_called == 1, "x read");
+    CHECK(new_called == 0, "the new socket (number %s) got no stale event", reused ? "reused" : "not reused");
+    npf_loop_once(l, 0);
+    CHECK(new_called == 0, "nothing to read on it later either");
+    npf_loop_del(l, sp_new[0]);
+    npf_loop_del(l, sp_x[0]);
+    close(sp_x[0]);
+    close(sp_x[1]);
+    close(sp_y[1]);
+    close(sp_new[0]);
+    close(sp_new[1]);
+
+    npf_timer_add(l, 0, rearm, NULL);
+    npf_loop_once(l, 0);
+    CHECK(rearm_n == 1, "a timer armed again at once waits for the next turn (%d)", rearm_n);
+    npf_loop_once(l, 0);
+    CHECK(rearm_n == 2, "and fires then (%d)", rearm_n);
+    rearm_n = 1000;
+    npf_loop_free(l);
+}
+
 int test_loop(void)
 {
     int i, prev = -1, ok = 1;
@@ -104,5 +167,6 @@ int test_loop(void)
     /* timers left pending are freed with the loop */
     npf_timer_add(T.loop, 100000, fire, (void *)0L);
     npf_loop_free(T.loop);
+    test_reuse();
     return fails;
 }
