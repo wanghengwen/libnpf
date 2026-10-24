@@ -485,8 +485,10 @@ static int apply_setting(npf_t *c, const char *k, const char *v, npf_out *o)
     } else if (strcmp(k, "punch_sockets") == 0) {
         n->cfg.punch_sockets = atoi(v);
     } else if (strcmp(k, "hosted_trust") == 0) {
-        if (c->callee)
+        if (c->callee) {
             c->callee->hosted_trust = atoi(v);
+            npf_callee_changed(c->callee);     /* off: the grant sessions end */
+        }
     } else if (strcmp(k, "connect_mode") == 0) {
         npf_node_set_secure(n, strcmp(v, "secure") == 0);
     } else if (strcmp(k, "peer_idle") == 0) {
@@ -582,9 +584,14 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
         npf_out_printf(o, "%s: cannot be set this way%s\n", k, strcmp(k, "node") == 0 ? " (peers: npf_peer_create)" : "");
         return 2;
     }
-    /* where the writable directory and its files are: read before local.json */
-    if (strcmp(k, "dir") == 0 || strcmp(k, "state") == 0) {
-        npf_out_printf(o, "%s: only in npf.conf (it says where local.json is)\n", k);
+    if (strcmp(k, "resource") == 0) {
+        npf_out_printf(o, "resource: with the resource command\n");
+        return 2;
+    }
+    /* where to connect, what to trust, the files written (dir and state
+     * also say where local.json is) */
+    if (npf_conf_file_only(k)) {
+        npf_out_printf(o, "%s: only in npf.conf\n", k);
         return 2;
     }
     if (!npf_conf_known(k) && !npf_mod_key_known(c, k)) {   /* libnpf's or a module's */

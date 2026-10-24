@@ -248,8 +248,13 @@ int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t err
     conf_merge(&n->conf, &n->ov);
     if (!(n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS)) {   /* local.json: its settings over the others */
         int i;
-        for (i = 0; i < n->lc.settings.n; i++)
+        for (i = 0; i < n->lc.settings.n; i++) {
+            if (npf_conf_file_only(n->lc.settings.key[i])) {    /* not from here (npf_cmd_set refuses it) */
+                npf_logw("%s: %s ignored: only in npf.conf", n->lc.path, n->lc.settings.key[i]);
+                continue;
+            }
             npf_conf_set(&n->conf, n->lc.settings.key[i], n->lc.settings.val[i]);
+        }
     }
     if (o->log_level >= 0)
         npf_log_set_level(o->log_level);

@@ -49,6 +49,8 @@ void npf_conf_set_rel(npf_conf *c, const char *conf_path, const char *key, const
  * removes the lines with that value, value != NULL appends a line. 0 or -1. */
 int npf_conf_file_edit(const char *path, const char *key, const char *old, const char *value);
 /* a key the programs read (the configuration accepts others silently) */
+/* where to connect, what to trust, the files written: npf.conf only */
+int  npf_conf_file_only(const char *key);
 int npf_conf_known(const char *key);
 /* a value that can be written as one line and read back the same: no
  * control characters (a line break would add lines), no '#' (a comment) */

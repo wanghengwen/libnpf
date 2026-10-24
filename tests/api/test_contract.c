@@ -149,10 +149,59 @@ static void unsaved(void)
     rmdir(dir);
 }
 
+/* where to connect, what to trust, the files written: never through set,
+ * never from local.json (another local user may hold the control token) */
+static void file_only(void)
+{
+    char dir[] = "/tmp/npf-contract-XXXXXX", err[300], val[300], path[400];
+    const char *files[] = {"identity", "seed", "local.json"};
+    npf_options o;
+    npf_t *n = NULL;
+    size_t i;
+    FILE *f;
+    if (!mkdtemp(dir)) {
+        check(0, "a directory");
+        return;
+    }
+    snprintf(path, sizeof path, "%s/local.json", dir);
+    if (!(f = fopen(path, "w"))) {
+        check(0, "local.json written");
+        return;
+    }
+    fprintf(f, "{\"settings\":{\"root\":\"AAAA\",\"log\":\"%s/planted.log\",\"peer_idle\":\"7\"}}\n", dir);
+    fclose(f);
+    npf_options_init(&o);
+    o.conf_dir = dir;
+    o.role = NPF_ROLE_DIRECT;
+    o.overrides = "udp_port = 0\n";
+    if (npf_create(&o, &n, err, sizeof err) != NPF_OK) {
+        check(0, "an instance");
+        return;
+    }
+    check(npf_config_get(n, "peer_idle", val, sizeof val) == NPF_OK && strcmp(val, "7") == 0,
+          "local.json: an ordinary setting taken");
+    check(npf_config_get(n, "root", val, sizeof val) == NPF_OK && strcmp(val, "AAAA") != 0,
+          "local.json: root ignored");
+    check(npf_config_get(n, "log", val, sizeof val) == NPF_OK && !strstr(val, "planted"), "local.json: log ignored");
+    check(npf_config_set(n, "root", "BBBB", 1, err, sizeof err) != NPF_OK && strstr(err, "npf.conf"),
+          "set root: refused, only in npf.conf");
+    check(npf_config_set(n, "serverlist_saved", "/tmp/x", 0, err, sizeof err) != NPF_OK, "set serverlist_saved: refused");
+    check(npf_config_set(n, "direct_psk", "x", 0, err, sizeof err) != NPF_OK, "set direct_psk: refused");
+    npf_destroy(n);
+    for (i = 0; i < sizeof files / sizeof files[0]; i++) {
+        snprintf(path, sizeof path, "%s/%s", dir, files[i]);
+        unlink(path);
+    }
+    snprintf(path, sizeof path, "%s/planted.log", dir);
+    check(access(path, F_OK) != 0, "the planted log path not written");
+    rmdir(dir);
+}
+
 int main(void)
 {
     alarm(30);
     inits();
     unsaved();
+    file_only();
     return fails != 0;
 }

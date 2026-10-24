@@ -223,6 +223,24 @@ static const char *const known_keys[] = {
     "peer_idle", "pidfile", "portmap", "web_dir", "punch_lead_ms", "punch_sockets", "report_host", "resource", "root", "serial", "serial_file", "server", "server_pub",
     "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", NULL};
 
+/* keys that say where to connect, what to trust or run, and which files
+ * the program writes: only in npf.conf (whoever may write it may run the
+ * program), never set through the control interface or taken from
+ * local.json (a Windows service's control token is every local user's) */
+static const char *const file_only_keys[] = {
+    "control", "control_token", "web_dir", "log", "pidfile", "dir", "state", "root", "server", "server_pub",
+    "serverlist", "serverlist_saved", "doh_servers", "report_host", "serial_file", "direct", "direct_psk",
+    "direct_psk_file", "hosted_exec", "hosted_service", "model", "model_cred", "cred", "node", "resource", NULL};
+
+int npf_conf_file_only(const char *key)
+{
+    int i;
+    for (i = 0; file_only_keys[i]; i++)
+        if (strcmp(file_only_keys[i], key) == 0)
+            return 1;
+    return 0;
+}
+
 int npf_conf_known(const char *key)
 {
     int i;
