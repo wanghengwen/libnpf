@@ -75,6 +75,16 @@ static void test_probe_vector(void)
     npf_siv_seal(&keys, NPF_DIR_REQ, buf, 40);
     hex2bin("ee8061d3211c7bbc89ec8aa9", exp, 12);
     CHECK(memcmp(buf, exp, 12) == 0, "probe vector tag (must match natprobe_test.go)");
+    {   /* a datagram longer than any packet is refused before it is decrypted
+         * into the caller's NPF_PKT_MAX bytes (it overflowed the stack: no key
+         * needed, the NAT probe's input; ASan) */
+        static uint8_t big[2048];
+        uint8_t plain[NPF_PKT_MAX], key[32] = {1};
+        npf_siv_keys k;
+        npf_pkt pkt;
+        npf_siv_derive(&k, key, "NPF-TEST-v01");
+        CHECK(npf_pkt_open(&k, NPF_DIR_RESP, big, sizeof big, plain, &pkt) < 0, "an oversized packet is refused");
+    }
     {   /* the allocation from mapped ports: a busy sequential NAT (other
          * traffic takes ports in between: seen in natlab's s2b-busy), the
          * range wrapping, and a block of 512 ports in random order */

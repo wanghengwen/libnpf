@@ -45,7 +45,8 @@ typedef struct npf_pkt {
 int npf_pkt_seal(const npf_siv_keys *keys, int dir, int type, const uint8_t txid[NPF_TXID_SIZE],
                  uint32_t ts_ms, const uint8_t *body, size_t body_len, size_t wire_len, uint8_t *out);
 
-/* Verify, decrypt and parse. plain needs len bytes. Returns 0 or -1. */
+/* Verify, decrypt and parse. plain needs NPF_PKT_MAX bytes (len, if less); a packet
+ * longer than NPF_PKT_MAX is refused. Returns 0 or -1. */
 int npf_pkt_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t len,
                  uint8_t *plain, npf_pkt *pkt);
 

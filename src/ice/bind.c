@@ -57,8 +57,12 @@ int npf_pkt_seal(const npf_siv_keys *keys, int dir, int type, const uint8_t txid
 int npf_pkt_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t len,
                  uint8_t *plain, npf_pkt *pkt)
 {
-    int plen = npf_siv_open(keys, dir, in, len, plain);
+    int plen;
     size_t blen;
+    if (len > NPF_PKT_MAX)
+        return -1;                  /* longer than any packet; plain holds NPF_PKT_MAX (it was decrypted
+                                       into it before the tag was checked: a stack overflow, no key needed) */
+    plen = npf_siv_open(keys, dir, in, len, plain);
     if (plen < NPF_PKT_HDR_SIZE)
         return -1;
     blen = ld16(plain + 2);

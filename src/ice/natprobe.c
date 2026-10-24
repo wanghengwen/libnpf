@@ -634,6 +634,8 @@ int npf_natprobe_input(npf_natprobe *p, int fd, const uint8_t *buf, size_t len, 
     int i, ours = 0;
     if (!p || (p->phase != 1 && p->phase != 3) || fd != p->cfg.main_fd || from->ss_family != AF_INET)
         return 0;
+    if (len > NPF_PKT_MAX)
+        return 0;                   /* never a probe server's: and tx_input opens into NPF_PKT_MAX bytes */
     for (i = 0; i < p->n_ep && !ours; i++)
         ours = same_ep(f, &p->cfg.ep[i]);
     if (!ours)
