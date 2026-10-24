@@ -893,6 +893,34 @@ int test_tunnel(void)
         fails_expected = 0;
     }
 
+    /* a control unit cut by the stream's reads: byte by byte, then one
+     * whole and the next one's head in one read; each still acts once */
+    {
+        uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0}, two[2 * (3 + 5)];
+        int sp3[2], sp4[2], id1, id2, before = npf_tunnel_count(A.t);
+        size_t k;
+        socketpair(AF_UNIX, SOCK_STREAM, 0, sp3);
+        socketpair(AF_UNIX, SOCK_STREAM, 0, sp4);
+        id1 = npf_tunnel_open(A.t, sp3[0], 0, "127.0.0.1", 9);
+        id2 = npf_tunnel_open(A.t, sp4[0], 0, "127.0.0.1", 9);
+        CHECK(id1 > 0 && id2 > 0 && npf_tunnel_count(A.t) == before + 2, "two sublinks to reset");
+        npf_le32(rst + 3, (uint32_t)id1);
+        rst[7] = NPF_RST_LOCAL;
+        for (k = 0; k < sizeof rst; k++)
+            CHECK(npf_tunnel_input_ctrl(A.t, rst + k, 1) == 0, "a byte of a unit");
+        CHECK(npf_tunnel_count(A.t) == before + 1, "a RESET fed byte by byte reset its sublink (%d)",
+              npf_tunnel_count(A.t) - before);
+        memcpy(two, rst, sizeof rst);           /* the same id again: nothing to do */
+        memcpy(two + sizeof rst, rst, sizeof rst);
+        npf_le32(two + sizeof rst + 3, (uint32_t)id2);
+        CHECK(npf_tunnel_input_ctrl(A.t, two, sizeof rst + 2) == 0 && npf_tunnel_count(A.t) == before + 1,
+              "a whole unit and the next one's head: the head waits");
+        CHECK(npf_tunnel_input_ctrl(A.t, two + sizeof rst + 2, sizeof rst - 2) == 0
+              && npf_tunnel_count(A.t) == before, "its rest: the second sublink reset (%d)", npf_tunnel_count(A.t) - before);
+        close(sp3[1]);
+        close(sp4[1]);
+    }
+
     /* a callback that frees the tunnel (sublink_done, inside the peer's
      * RESET): the tunnel goes at the end of that input, nothing in it used
      * after (ASan) */

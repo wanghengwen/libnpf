@@ -93,7 +93,7 @@ struct npf_tunnel {
     uint64_t    peer_seen[NPF_MAX_SUBLINKS / 64];  /* the NPF_MAX_SUBLINKS peer ids below it (its
                                    parity: every other one), bit k = peer_max_seen - 2(k + 1): seen
                                    (opened, or reset first) */
-    uint8_t    *rb;             /* frame reassembly */
+    uint8_t    *rb;             /* a control unit the stream's reads cut, gathered; none between units */
     size_t      rl, rcap;
     int         hello_sent, hello_recv;
     uint32_t    peer_window;

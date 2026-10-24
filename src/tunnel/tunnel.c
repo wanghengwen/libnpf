@@ -671,28 +671,56 @@ static int handle_unit(npf_tunnel *t, int type, const uint8_t *p, size_t n)
     }
 }
 
+/* room in rb for a unit of need bytes (NPF_CU_HDR + NPF_CTRL_MAX at most) */
+static int rb_room(npf_tunnel *t, size_t need)
+{
+    size_t c = t->rcap ? t->rcap : 512;
+    uint8_t *q;
+    if (need <= t->rcap)
+        return 0;
+    while (c < need)
+        c *= 2;
+    if (!(q = realloc(t->rb, c)))
+        return -1;
+    t->rb = q;
+    t->rcap = c;
+    return 0;
+}
+
+/* the control units in one read of the control stream, handled from the
+ * read's buffer; only a unit the read cut (its head in one read, the rest in
+ * the next) is gathered in rb, which holds nothing between units (an idle
+ * session keeps no buffer; a unit is 16 KB at most) */
 static int input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len)
 {
     size_t off = 0;
-    if (t->rl + len > t->rcap) {
-        size_t c = t->rcap ? t->rcap : 65536;
-        uint8_t *q;
-        while (c < t->rl + len)
-            c *= 2;
-        q = realloc(t->rb, c);
-        if (!q)
+    while (t->rl && off < len) {            /* the tail of the unit the last read cut */
+        size_t need = t->rl < NPF_CU_HDR ? NPF_CU_HDR : NPF_CU_HDR + npf_rd16(t->rb + 1);
+        size_t take = need - t->rl < len - off ? need - t->rl : len - off;
+        if (rb_room(t, t->rl + take) < 0)
             return -1;
-        t->rb = q;
-        t->rcap = c;
+        memcpy(t->rb + t->rl, buf + off, take);
+        t->rl += take;
+        off += take;
+        if (t->rl < (size_t)NPF_CU_HDR)
+            break;
+        if (npf_rd16(t->rb + 1) > NPF_CTRL_MAX)
+            return broken(t, "oversized control unit");
+        if (t->rl == (size_t)NPF_CU_HDR + npf_rd16(t->rb + 1)) {
+            int r = handle_unit(t, t->rb[0], t->rb + NPF_CU_HDR, t->rl - NPF_CU_HDR);
+            t->rl = 0;
+            if (r < 0)
+                return broken(t, "protocol error");
+            if (t->dead)
+                return -1;
+        }
     }
-    memcpy(t->rb + t->rl, buf, len);
-    t->rl += len;
-    while (t->rl - off >= NPF_CU_HDR) {
-        uint8_t *h = t->rb + off;
+    while (len - off >= NPF_CU_HDR) {       /* whole units, from the read's buffer */
+        const uint8_t *h = buf + off;
         size_t n = npf_rd16(h + 1);
         if (n > NPF_CTRL_MAX)
             return broken(t, "oversized control unit");
-        if (t->rl - off < NPF_CU_HDR + n)
+        if (len - off < NPF_CU_HDR + n)
             break;
         if (handle_unit(t, h[0], h + NPF_CU_HDR, n) < 0)
             return broken(t, "protocol error");
@@ -700,9 +728,15 @@ static int input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len)
             return -1;
         off += NPF_CU_HDR + n;
     }
-    if (off) {
-        memmove(t->rb, t->rb + off, t->rl - off);
-        t->rl -= off;
+    if (off < len) {                        /* a unit cut here: its head, the rest in the next read */
+        if (rb_room(t, len - off) < 0)
+            return -1;
+        memcpy(t->rb, buf + off, len - off);
+        t->rl = len - off;
+    } else if (!t->rl && t->rb) {
+        free(t->rb);
+        t->rb = NULL;
+        t->rcap = 0;
     }
     return 0;
 }
