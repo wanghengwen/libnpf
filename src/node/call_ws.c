@@ -36,7 +36,7 @@ void call_ws_flush_timer(npf_loop *loop, void *arg)
         size_t off = 0;
         while (off < c->ws_out_len && c->wsr && c->ws_tx_ready) {
             size_t n = c->ws_out_len - off > 65536 ? 65536 : c->ws_out_len - off;
-            uint8_t *rec = malloc(n + 16), nonce[12];
+            uint8_t *rec = npf_scratch(n + 16), nonce[12];  /* the thread's, reused: not 64 KB a record */
             if (!rec) {
                 npf_call_end(c, "error");   /* nothing would flush it again */
                 return;
@@ -44,16 +44,21 @@ void call_ws_flush_timer(npf_loop *loop, void *arg)
             ws_nonce(nonce, c->ws_ctr_tx++);
             if (npf_aead_seal(c->ws_ktx, nonce, NULL, 0, c->ws_out + off, n, rec) < 0
                 || npf_wsr_send(c->wsr, NPF_WSR_RECORD, rec, n + 16) < 0) {
-                free(rec);
+                npf_scratch_done(rec);
                 npf_call_end(c, "transport_lost");
                 return;
             }
-            free(rec);
+            npf_scratch_done(rec);
             off += n;
         }
         if (off) {
             memmove(c->ws_out, c->ws_out + off, c->ws_out_len - off);
             c->ws_out_len -= off;
+        }
+        if (!c->ws_out_len) {           /* all sent: an idle session keeps no buffer (64 KB and more) */
+            free(c->ws_out);
+            c->ws_out = NULL;
+            c->ws_out_cap = 0;
         }
     }
     if (c->tun)
@@ -144,24 +149,26 @@ void call_wsr_start(npf_wsr *r, const uint8_t salt[16], void *arg)
     npf_tunnel_start(c->tun);
 }
 
-/* records -> channel units -> the tunnel's control / data input */
-static void ws_demux(npf_call *c, const uint8_t *p, size_t len)
+/* room for len more in ws_in: 0, -1 no memory */
+static int ws_in_room(npf_call *c, size_t len)
+{
+    size_t cap = c->ws_in_cap ? c->ws_in_cap : 16384;
+    uint8_t *q;
+    if (c->ws_in_len + len <= c->ws_in_cap)
+        return 0;
+    while (cap < c->ws_in_len + len)
+        cap *= 2;
+    if (!(q = realloc(c->ws_in, cap)))
+        return -1;
+    c->ws_in = q;
+    c->ws_in_cap = cap;
+    return 0;
+}
+
+/* the channel units in ws_in -> the tunnel's control / data input, media, UDP */
+static void ws_demux(npf_call *c)
 {
     size_t off = 0;
-    if (c->ws_in_len + len > c->ws_in_cap) {
-        size_t cap = c->ws_in_cap ? c->ws_in_cap : 65536;
-        uint8_t *q;
-        while (cap < c->ws_in_len + len)
-            cap *= 2;
-        if (!(q = realloc(c->ws_in, cap))) {
-            npf_call_end(c, "error");       /* a record left out: the units after it make no sense */
-            return;
-        }
-        c->ws_in = q;
-        c->ws_in_cap = cap;
-    }
-    memcpy(c->ws_in + c->ws_in_len, p, len);
-    c->ws_in_len += len;
     while (c->ws_in_len - off >= 3 && !c->ended) {    /* the peer's close: nothing more */
         const uint8_t *u = c->ws_in + off;
         size_t n = npf_rd16(u + 1);
@@ -185,31 +192,36 @@ static void ws_demux(npf_call *c, const uint8_t *p, size_t len)
     }
     memmove(c->ws_in, c->ws_in + off, c->ws_in_len - off);
     c->ws_in_len -= off;
+    if (!c->ws_in_len) {                /* no unit cut across records: no buffer kept */
+        free(c->ws_in);
+        c->ws_in = NULL;
+        c->ws_in_cap = 0;
+    }
 }
 
 static void wsr_record(npf_wsr *r, const uint8_t *rec, size_t len, void *arg)
 {
     npf_call *c = arg;
-    uint8_t nonce[12], *plain;
+    uint8_t nonce[12];
     (void)r;
     if (!c->ws_rx_ready || len < 16 || len > 65536 + 16)
         return;
-    plain = malloc(len);
-    if (!plain) {
+    /* opened straight into ws_in, after a unit cut by the last record: no
+     * buffer and copy of its own; ws_in_len moves only once it is good */
+    if (ws_in_room(c, len - 16) < 0) {
         npf_call_end(c, "error");       /* its counter would be off for every record after it */
         return;
     }
     ws_nonce(nonce, c->ws_ctr_rx);
-    if (npf_aead_open(c->ws_krx, nonce, NULL, 0, rec, len, plain) < 0) {
-        free(plain);
+    if (npf_aead_open(c->ws_krx, nonce, NULL, 0, rec, len, c->ws_in + c->ws_in_len) < 0) {
         npf_logw("call %s: WS relay record failed authentication", c->call_id_s);
         npf_call_end(c, "transport_lost");
         return;
     }
     c->ws_ctr_rx++;
     c->rx_bytes += len - 16;
-    ws_demux(c, plain, len - 16);
-    free(plain);
+    c->ws_in_len += len - 16;
+    ws_demux(c);
 }
 
 /* The WS relay failed. Before it ever worked: the caller asks for a relay on

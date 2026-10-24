@@ -92,7 +92,7 @@ static int ws_mux(npf_call *c, int ch, const uint8_t *buf, size_t len)
     if (!c->ws_tx_ready || len > 65535)
         return -1;
     if (c->ws_out_len + 3 + len > c->ws_out_cap) {
-        size_t cap = c->ws_out_cap ? c->ws_out_cap : 65536;
+        size_t cap = c->ws_out_cap ? c->ws_out_cap : 16384;
         uint8_t *q;
         while (cap < c->ws_out_len + 3 + len)
             cap *= 2;
