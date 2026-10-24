@@ -127,6 +127,19 @@ int test_direct(void)
     npf_call_end(cb, "closed");
     npf_loop_once(loop, 10);
 
+    /* a grant call refused before anything starts: no grant, an empty or too
+     * long one, a chain that does not verify (no roots here) */
+    {
+        static uint8_t g[600], chain[64];
+        npf_call *before = A.node.calls;
+        memset(g, 1, sizeof g);
+        CHECK(npf_call_start_grant(&A.node, 123, chain, sizeof chain, NULL, 16) == NULL, "no grant refused");
+        CHECK(npf_call_start_grant(&A.node, 123, chain, sizeof chain, g, 0) == NULL, "empty grant refused");
+        CHECK(npf_call_start_grant(&A.node, 123, chain, sizeof chain, g, 513) == NULL, "long grant refused");
+        CHECK(npf_call_start_grant(&A.node, 123, chain, sizeof chain, g, 64) == NULL, "bad chain refused");
+        CHECK(A.node.calls == before, "no call made");
+    }
+
     npf_direct_close(dl);
     npf_node_stop(&L.node);
     npf_node_stop(&A.node);

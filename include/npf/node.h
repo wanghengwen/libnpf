@@ -346,8 +346,6 @@ struct npf_node {
     npf_call     *conv_tab[256];    /* calls with an AnLiu connection, by conv (datagram demux) */
     const npf_callee_ops *callee;   /* callable nodes */
     void         *callee_arg;
-    const uint8_t *pending_grant;   /* npf_call_start_grant -> npf_call_start */
-    size_t        pending_grant_len;
     void         *app;              /* device / client state */
 };
 

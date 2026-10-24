@@ -1523,27 +1523,37 @@ void npf_call_usage_take(npf_call *c, uint64_t *tx, uint64_t *rx)
 
 /* ---- caller ---- */
 
+/* a call as auth says: PAKE with the password, IK to the pinned key, the
+ * account's grant with IK to the certified key (grant, grant_len) */
+static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *password, const uint8_t pinned[32],
+                            const uint8_t *grant, size_t grant_len);
+
 npf_call *npf_call_start_grant(npf_node *n, uint64_t number, const uint8_t *chain, size_t chain_len,
                                const uint8_t *grant, size_t grant_len)
 {
     npf_cert inter, leaf;
     npf_call *c;
-    if (grant_len > sizeof c->grant
-        || npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, chain, chain_len, &inter, &leaf,
-                                npf_node_time(n) / 1000) < 0
+    if (!grant || grant_len == 0 || grant_len > sizeof c->grant) {
+        npf_logw("call: no usable grant for %llu", (unsigned long long)number);
+        return NULL;
+    }
+    if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, chain, chain_len, &inter, &leaf,
+                             npf_node_time(n) / 1000) < 0
         || leaf.type != NPF_CERT_NODE || leaf.subject != number) {
         npf_log("call: the platform's certificate for %llu does not verify", (unsigned long long)number);
         return NULL;
     }
     /* IK with the certified key; the grant goes with the call (security.md 8.2) */
-    n->pending_grant = grant;
-    n->pending_grant_len = grant_len;
-    c = npf_call_start(n, number, NULL, leaf.dh_pub);
-    n->pending_grant = NULL;
-    return c;
+    return call_start(n, number, AUTH_GRANT, NULL, leaf.dh_pub, grant, grant_len);
 }
 
 npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, const uint8_t pinned[32])
+{
+    return call_start(n, number, password ? AUTH_PAKE : AUTH_IK, password, pinned, NULL, 0);
+}
+
+static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *password, const uint8_t pinned[32],
+                            const uint8_t *grant, size_t grant_len)
 {
     char data[4096];
     npf_call *c;
@@ -1560,13 +1570,13 @@ npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, con
     c->number = number;
     npf_random(c->call_id, 16);
     call_b64_of(c->call_id, 16, c->call_id_s);
-    c->auth = password ? AUTH_PAKE : n->pending_grant ? AUTH_GRANT : AUTH_IK;
-    if (n->pending_grant) {
-        memcpy(c->grant, n->pending_grant, n->pending_grant_len);
-        c->grant_len = n->pending_grant_len;
+    c->auth = auth;
+    if (auth == AUTH_GRANT) {
+        memcpy(c->grant, grant, grant_len);
+        c->grant_len = grant_len;
     }
     prologue(c, pro, &pl);
-    if (password) {
+    if (auth == AUTH_PAKE) {
         snprintf(c->password, sizeof c->password, "%s", password);
         sid_of(c, sid);
         if (npf_cpace_start(&c->cp, c->password, strlen(c->password), sid, sizeof sid, cmsg) < 0
@@ -1590,7 +1600,7 @@ npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, con
     npf_jw_kstr(&w, "hs", hs);
     if (c->auth == AUTH_GRANT)
         npf_jw_kb64(&w, "grant", c->grant, c->grant_len);
-    if (password)
+    if (c->auth == AUTH_PAKE)
         npf_jw_kb64(&w, "cpace", cmsg, 32);
     npf_node_write_nat(n, &w);
     npf_node_write_cands(n, &w);
