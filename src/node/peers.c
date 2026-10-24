@@ -387,6 +387,37 @@ const char *npf_peer_resources(const npf_peer *p)
     return d ? d->resources : NULL;
 }
 
+int npf_peer_resources_same(const npf_peer *p, const char *json)
+{
+    return p->resources && strcmp(p->resources, json) == 0;
+}
+
+#define SAVE_GAP_MS 30000       /* local.json for the peers' lists: once in this long at most */
+
+static void save_later(npf_loop *loop, void *arg)
+{
+    npf_peers *ps = arg;
+    (void)loop;
+    ps->t_save = NULL;
+    ps->saved_at = npf_mono_ms();
+    npf_local_save(ps->lc);
+}
+
+/* a peer sending one list after another (its session's control units)
+ * costs one write of local.json every SAVE_GAP_MS, not one per list */
+static int save_soon(npf_peers *ps)
+{
+    int64_t now = npf_mono_ms();
+    if (ps->t_save)
+        return 0;
+    if (!ps->saved_at || now - ps->saved_at >= SAVE_GAP_MS) {
+        ps->saved_at = now;
+        return npf_local_save(ps->lc);
+    }
+    ps->t_save = npf_timer_add(ps->n->loop, ps->saved_at + SAVE_GAP_MS - now, save_later, ps);
+    return 0;
+}
+
 int npf_peer_resources_set(npf_peer *p, const char *json)
 {
     npf_ldev *d = p->ps->lc ? npf_local_dev(p->ps->lc, p->name, 0) : NULL;
@@ -403,7 +434,7 @@ int npf_peer_resources_set(npf_peer *p, const char *json)
             return -1;
         free(d->resources);
         d->resources = k;
-        return npf_local_save(p->ps->lc);
+        return save_soon(p->ps);
     }
     return 0;
 }
@@ -578,6 +609,10 @@ void npf_peers_free(npf_peers *ps)
     }
     if (ps->t_idle)
         npf_timer_cancel(ps->n->loop, ps->t_idle);
+    if (ps->t_save) {                   /* what waited to be written goes now */
+        npf_timer_cancel(ps->n->loop, ps->t_save);
+        npf_local_save(ps->lc);
+    }
     free(ps->conns);
     free(ps->ips);
     free(ps->ubuf);

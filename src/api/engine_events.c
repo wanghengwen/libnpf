@@ -14,16 +14,38 @@
 
 /* ---- events ---- */
 
+/* fmt into small when it fits, else into a malloc'd buffer (the platform's
+ * event data passed on as it came is not cut into invalid JSON); NULL no memory */
+static char *vfmt(char *small, size_t cap, const char *fmt, va_list ap)
+{
+    va_list aq;
+    int len;
+    char *big;
+    va_copy(aq, ap);
+    len = vsnprintf(small, cap, fmt, aq);
+    va_end(aq);
+    if (len < 0)
+        return NULL;
+    if ((size_t)len < cap)
+        return small;
+    if (!(big = malloc((size_t)len + 1)))
+        return NULL;
+    vsnprintf(big, (size_t)len + 1, fmt, ap);
+    return big;
+}
+
 /* a module's event (npf/module.h): NPF_EV_MODULE under notify */
 void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 {
-    char buf[1024];
+    char small[1024], *buf;
     va_list ap;
     if (!n->cb.event && !n->cb.notify)
         return;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    buf = vfmt(small, sizeof small, fmt, ap);
     va_end(ap);
+    if (!buf)
+        return;
     if (n->cb.notify) {
         npf_event ev;
         memset(&ev, 0, sizeof ev);
@@ -34,12 +56,14 @@ void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
     } else {
         n->cb.event(n->cb.user, name, buf);
     }
+    if (buf != small)
+        free(buf);
 }
 
 /* one of the library's events: typed (notify), or the legacy name and JSON */
 void npf_engine_event(npf_t *n, const npf_event *ev, const char *name, const char *fmt, ...)
 {
-    char buf[1024];
+    char small[1024], *buf;
     va_list ap;
     if (n->cb.notify) {
         npf_ev_queue(n, ev);
@@ -48,9 +72,13 @@ void npf_engine_event(npf_t *n, const npf_event *ev, const char *name, const cha
     if (!n->cb.event)
         return;
     va_start(ap, fmt);
-    vsnprintf(buf, sizeof buf, fmt, ap);
+    buf = vfmt(small, sizeof small, fmt, ap);
     va_end(ap);
+    if (!buf)
+        return;
     n->cb.event(n->cb.user, name, buf);
+    if (buf != small)
+        free(buf);
 }
 
 void npf_ev_account(npf_t *n)

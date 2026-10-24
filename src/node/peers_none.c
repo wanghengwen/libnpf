@@ -102,6 +102,7 @@ const char *npf_peer_shown(const npf_peer *p) { (void)p; return ""; }
 const char *npf_peer_nick(const npf_peer *p) { (void)p; return ""; }
 const char *npf_peer_resources(const npf_peer *p) { (void)p; return NULL; }
 int npf_peer_resources_set(npf_peer *p, const char *json) { (void)p, (void)json; return -1; }
+int npf_peer_resources_same(const npf_peer *p, const char *json) { (void)p, (void)json; return 0; }
 
 const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap)
 {

@@ -226,14 +226,19 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
     npf_call *call;
     char a[80], b[400];
     int f = 1, first;
-    static npf_host_info hi;                /* read once: it does not change while running */
-    static int got_hi;
+    static npf_host_info g_hi;              /* read once: it does not change while running */
+    static int got_hi, hi_lock;             /* (instances on their own threads ask at once) */
+    npf_host_info hi;
     npf_out_printf(o, "{");
     jkstr(o, &f, "version", npf_version());
+    while (__atomic_exchange_n(&hi_lock, 1, __ATOMIC_ACQUIRE))
+        ;
     if (!got_hi) {
-        npf_host_info_get(&hi);
+        npf_host_info_get(&g_hi);
         got_hi = 1;
     }
+    hi = g_hi;
+    __atomic_store_n(&hi_lock, 0, __ATOMIC_RELEASE);
     jkey(o, &f, "host");                    /* the system it runs on (the console's log header) */
     {
         int g = 1;
@@ -492,7 +497,7 @@ static int apply_setting(npf_t *c, const char *k, const char *v, npf_out *o)
     } else if (strcmp(k, "connect_mode") == 0) {
         npf_node_set_secure(n, strcmp(v, "secure") == 0);
     } else if (strcmp(k, "peer_idle") == 0) {
-        npf_peers_set_idle(c->peers, atoi(v) * 1000);
+        npf_peers_set_idle(c->peers, (atoi(v) > 0 ? atoi(v) : 300) * 1000);     /* 0: the default, as at a start */
     } else if (strncmp(k, "hosted_", 7) == 0 && strcmp(k, "hosted_trust") != 0) {     /* settable_hosted */
         /* a hosted client's limits on its public mappings (npf-hosted sets them from the platform) */
 #define LIMIT(key, def) atoi(strcmp(k, key) == 0 ? v : npf_conf_get(&c->conf, key, def))
@@ -674,7 +679,7 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
     if (strcmp(cmd, "resource") == 0)
         return npf_cmd_resource(c, argc, argv, o);
     if (strcmp(cmd, "get") == 0) {
-        char b[600];
+        char b[NPF_CONF_VAL_MAX];
         int i;
         if (argc > 1) {
             npf_out_printf(o, "%s\n", is_secret(argv[1]) ? "(hidden)" : npf_cmd_get(c, argv[1], b, sizeof b));
@@ -686,7 +691,7 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
     }
     if (strcmp(cmd, "set") == 0) {
         int save = !(argc > 3 && strcmp(argv[3], "--no-save") == 0);
-        if (argc < 3) {
+        if (argc < 3 || argc > 4 || (argc == 4 && save)) {     /* nothing after VALUE but --no-save */
             npf_out_printf(o, "set KEY VALUE [--no-save]\n");
             return 2;
         }
@@ -749,7 +754,7 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
 
 void npf_cmd_config_json(npf_t *c, npf_out *o)
 {
-    char b[600];
+    char b[NPF_CONF_VAL_MAX];
     int i, f = 1;
     npf_out_printf(o, "{");
     for (i = 0; settable[i]; i++)

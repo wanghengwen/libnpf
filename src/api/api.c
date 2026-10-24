@@ -682,7 +682,7 @@ static void a_run(npf_t *n, void *arg)
     a_arg *x = arg;
     switch (x->what) {
     case 0: {                               /* config_get */
-        char buf[600];
+        char buf[NPF_CONF_VAL_MAX];
         int l;
         if (!npf_conf_known(x->a) && !npf_mod_key_known(n, x->a)) {
             x->code = NPF_ENOENT;

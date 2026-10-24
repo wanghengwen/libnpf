@@ -136,6 +136,8 @@ struct npf_peers {
     void         *arg;
     npf_peer     *list;
     npf_peer     *gone;             /* removed, freed on the next turn (a callback of theirs removed them) */
+    npf_timer    *t_save;           /* local.json written later: a peer's lists come faster than flash should be written */
+    int64_t       saved_at;
     int           fwd_seq;          /* the last forward number given out */
     /* public connections: open ones, the source addresses, the limits */
     pconn        *conns;

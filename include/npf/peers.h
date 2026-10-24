@@ -158,6 +158,8 @@ const char *npf_peer_nick(const npf_peer *p);   /* its nick (local.json), "" non
 const char *npf_peer_resources(const npf_peer *p);
 /* heard now: kept, and in its local.json record when it has one; 0, -1 */
 int npf_peer_resources_set(npf_peer *p, const char *json);
+/* 1 when its session told json already (the same list again: nothing new) */
+int npf_peer_resources_same(const npf_peer *p, const char *json);
 const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap);
 /* the last attempt found it not paired (no pinned key, no password, no
  * grant through the account): the user gives its password */

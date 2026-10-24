@@ -334,7 +334,8 @@ int npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o)
         char line[600];
         size_t l;
         int a = 5;
-        if (argc < 5) {
+        if (argc < 5 || strpbrk(argv[2], " \t|") || strpbrk(argv[3], " \t|")) {
+            /* the words go into one line, read again: a space or '|' in TYPE or TARGET would move a part */
             npf_out_printf(o, "resource add TYPE[/SERVICE] TARGET NAME [--desc TEXT]\n");
             return 2;
         }
@@ -396,6 +397,10 @@ void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d)
     }
     for (p = npf_peers_first(n->peers); p && npf_peer_call(p) != c; p = npf_peer_next(p))
         ;
+    if (p && npf_peer_resources_same(p, o.p)) {
+        npf_out_free(&o);                   /* the same list again: no log, no event */
+        return;
+    }
     if (p) {
         npf_peer_resources_set(p, o.p);
         npf_log("%s: %d resource%s published", npf_peer_name(p), m, m == 1 ? "" : "s");
@@ -410,11 +415,11 @@ void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d)
             ev.peer = p ? npf_peer_id(p) : 0;
             npf_ev_queue(n, &ev);
         } else if (n->cb.event) {
-            npf_out e = {0};
-            npf_out_printf(&e, "{\"session\":%u,\"resources\":%s}", (unsigned)id, o.p);
-            if (!e.failed)
-                n->cb.event(n->cb.user, "resources", e.p);
-            npf_out_free(&e);
+            npf_out ev = {0};
+            npf_out_printf(&ev, "{\"session\":%u,\"resources\":%s}", (unsigned)id, o.p);
+            if (!ev.failed)
+                n->cb.event(n->cb.user, "resources", ev.p);
+            npf_out_free(&ev);
         }
     }
     npf_out_free(&o);
