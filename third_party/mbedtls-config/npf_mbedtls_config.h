@@ -28,6 +28,10 @@
 #define MBEDTLS_ECP_DP_SECP256R1_ENABLED
 #define MBEDTLS_ECP_DP_SECP384R1_ENABLED      /* certificate chains of public services */
 #define MBEDTLS_ECP_DP_CURVE25519_ENABLED
+/* no precomputed base point tables: 7.6 KB of code and 2.3 KB of data less
+ * (2026-10-24, -Os device build); costs a few ms per P-256/P-384 signature
+ * check, once per TLS handshake */
+#define MBEDTLS_ECP_FIXED_POINT_OPTIM 0
 #define MBEDTLS_ECDH_C
 #define MBEDTLS_ECDSA_C
 #define MBEDTLS_ASN1_PARSE_C
