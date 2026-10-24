@@ -28,11 +28,31 @@ void peers_demand_timer(npf_peer *p)
         p->t_demand = npf_timer_add(p->ps->n->loop, DEMAND_TICK_MS, demand_tick, p);
 }
 
+/* the queues' room freed when nothing waits in them */
+static void queues_trim(npf_peer *p)
+{
+    if (!p->npend) {
+        free(p->pend);
+        p->pend = NULL;
+    }
+    if (!p->nuq) {
+        free(p->uq);
+        p->uq = NULL;
+    }
+}
+
+/* the peer goes: its queues' room (emptied by peers_demand_drop before) */
+void peers_demand_queues_free(npf_peer *p)
+{
+    p->npend = p->nuq = 0;
+    queues_trim(p);
+}
+
 /* on demand: a connection before the session: it waits, and the session starts */
 void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
 {
     npf_peer *p = f->p;
-    if (p->npend == DEMAND_PENDING) {
+    if (p->npend == DEMAND_PENDING || (!p->pend && !(p->pend = calloc(DEMAND_PENDING, sizeof *p->pend)))) {
         npf_sock_close(fd);
         npf_logw("%s: %s: too many connections waiting for the session, refused", p->name, f->spec);
         peers_conn_gone(p->ps, cid, "no_session");
@@ -73,6 +93,7 @@ void peers_demand_flush(npf_peer *p)
     }
     p->npend = 0;
     p->idle_since = 0;
+    queues_trim(p);
 }
 
 /* UDP datagrams that waited for the session: dropped (slot -1: all) */
@@ -88,6 +109,7 @@ void peers_udp_queue_drop(npf_peer *p, int slot)
         }
     }
     p->nuq = n;
+    queues_trim(p);
 }
 
 /* the session is up: the datagrams that waited go into it */
@@ -114,6 +136,7 @@ void peers_demand_drop_slot(npf_peer *p, int slot)
             p->pend[n++] = p->pend[k];
         }
     p->npend = n;
+    queues_trim(p);
 }
 
 void peers_demand_drop(npf_peer *p, const char *why)
@@ -136,6 +159,7 @@ void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, c
 {
     npf_peer *p = f->p;
     if (p->nuq == UDP_PENDING || p->uq_bytes + len > UDP_PENDING_BYTES
+        || (!p->uq && !(p->uq = calloc(UDP_PENDING, sizeof *p->uq)))
         || !(p->uq[p->nuq].d = malloc(len ? len : 1)))
         return;                             /* UDP: dropped */
     memcpy(p->uq[p->nuq].d, buf, len);
@@ -187,6 +211,7 @@ static void demand_tick(npf_loop *loop, void *arg)
         }
     }
     p->nuq = n;
+    queues_trim(p);
     if (p->idle_ms && p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED) {
         npf_call_info i;
         npf_call_info_get(p->call, &i);

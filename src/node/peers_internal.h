@@ -92,10 +92,12 @@ struct npf_peer {
     /* on demand (a hosted client): the listeners are up without a session;
      * a connection starts one, which ends idle_ms after the last connection */
     int        idle_ms;             /* 0: not on demand */
-    struct { int fd, slot, fid; int64_t at; uint64_t conn; } pend[DEMAND_PENDING];   /* fid: its forward's id */
+    /* the waiting ones: made when the first waits, freed when none does (a
+     * peer that never waits keeps 7 KB less) */
+    struct pend_conn { int fd, slot, fid; int64_t at; uint64_t conn; } *pend;   /* DEMAND_PENDING; fid: its forward's id */
     int        npend;
     /* UDP datagrams waiting for the session (a UDP forward of a peer on demand) */
-    struct { int slot; struct sockaddr_storage src; socklen_t sl; int64_t at; size_t len; uint8_t *d; } uq[UDP_PENDING];
+    struct pend_dgram { int slot; struct sockaddr_storage src; socklen_t sl; int64_t at; size_t len; uint8_t *d; } *uq;   /* UDP_PENDING */
     int        nuq;
     size_t     uq_bytes;
     npf_timer *t_demand;            /* pending deadlines, idle check */
@@ -182,6 +184,7 @@ void peers_demand_flush(npf_peer *p);
 void peers_udp_queue_drop(npf_peer *p, int slot);
 void peers_udp_queue_flush(npf_peer *p);
 void peers_demand_drop(npf_peer *p, const char *why);
+void peers_demand_queues_free(npf_peer *p);
 /* the connections waiting for a forward that goes (its slot may be reused): closed, mapping_closed */
 void peers_demand_drop_slot(npf_peer *p, int slot);
 void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, const uint8_t *buf, size_t len);

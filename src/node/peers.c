@@ -59,6 +59,7 @@ static void known_put(npf_peers *ps, uint64_t number, const uint8_t pub[32])
 static void fwds_free(npf_peer *p)
 {
     int i;
+    peers_demand_queues_free(p);
     free(p->resources);
     p->resources = NULL;
     for (i = 0; i < NPF_PEER_MAX_FWD && p->fwds[i]; i++) {
