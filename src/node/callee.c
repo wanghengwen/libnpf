@@ -144,15 +144,38 @@ static int state_save(npf_callee *d)
     return 0;
 }
 
+static void report_lock(npf_callee *d);
+
 /* reload when the local command line changed the file */
 static void state_refresh(npf_callee *d)
 {
     struct stat st;
     if (stat(d->state_path, &st) == 0 && st.st_mtime != d->state_mtime) {
+        int64_t lock = d->locked_until;
         state_load(d);
         npf_log("state: reloaded (local change)");
         npf_callee_changed(d);
+        if (d->locked_until != lock)
+            report_lock(d);                 /* a local passwd lifted it: the platform's gate too */
     }
+}
+
+/* while pairing is locked the platform refuses the calls that would read
+ * the state (op_password): a local passwd on the command line is looked
+ * for here instead */
+static void lock_watch(npf_loop *loop, void *arg)
+{
+    npf_callee *d = arg;
+    d->t_lock = NULL;
+    state_refresh(d);
+    if (d->locked_until > (int64_t)time(NULL))
+        d->t_lock = npf_timer_add(loop, 5000, lock_watch, d);
+}
+
+static void lock_watch_start(npf_callee *d)
+{
+    if (d->node && !d->t_lock && d->locked_until > (int64_t)time(NULL))
+        d->t_lock = npf_timer_add(d->node->loop, 5000, lock_watch, d);
 }
 
 static void sync_paired(npf_callee *d)
@@ -181,6 +204,8 @@ static void report_lock(npf_callee *d)
 {
     char data[64];
     int64_t left = d->locked_until - (int64_t)time(NULL);
+    if (!d->node)
+        return;                             /* not attached yet: told at the login */
     snprintf(data, sizeof data, "{\"locked_until\":%lld}",
              (long long)(left > 0 ? npf_node_time(d->node) / 1000 + left : 0));
     npf_node_send(d->node, "lock_report", 0, data);
@@ -284,6 +309,7 @@ static void op_pair_failed(npf_node *n, void *arg)
         if (d->lock_secs > 24 * 3600)
             d->lock_secs = 24 * 3600;
         d->locked_until = time(NULL) + d->lock_secs;
+        lock_watch_start(d);
         npf_logw("pairing locked for %lld s after repeated wrong passwords", (long long)d->lock_secs);
         report_lock(d);
     }
@@ -484,6 +510,7 @@ void npf_callee_on_login(npf_callee *d)
 {
     sync_paired(d);
     report_lock(d);
+    lock_watch_start(d);
     if (d->owner_reset_pending) {
         npf_node_send(d->node, "owner_reset", 0, NULL);
         d->owner_reset_pending = 0;
@@ -500,6 +527,7 @@ int npf_callee_password_set(npf_callee *d, const char *np)
     d->fails = 0;
     d->locked_until = 0;
     d->lock_secs = 0;
+    report_lock(d);
     return state_save(d) < 0 ? -2 : 0;
 }
 
@@ -553,6 +581,7 @@ int npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, npf_ou
         d->fails = 0;
         d->locked_until = 0;
         d->lock_secs = 0;
+        report_lock(d);
         if (clear) {
             d->npaired = 0;
             npf_callee_changed(d);

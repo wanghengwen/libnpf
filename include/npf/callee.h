@@ -42,6 +42,7 @@ typedef struct npf_callee {
     npf_callee_ops ops;
     npf_node  *node;
     struct npf_timer *recheck;          /* npf_callee_changed: the sessions checked again */
+    struct npf_timer *t_lock;           /* while locked: a local passwd looked for */
 } npf_callee;
 
 /* load the state file (defaults when missing) */
