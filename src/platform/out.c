@@ -73,10 +73,17 @@ void npf_out_printf(npf_out *o, const char *fmt, ...)
 
 void npf_out_json_str(npf_out *o, const char *s, size_t n)
 {
-    size_t i;
+    size_t i, run;
     npf_out_write(o, "\"", 1);
     for (i = 0; i < n && !o->failed; i++) {
         unsigned char ch = (unsigned char)s[i];
+        for (run = i; run < n && (unsigned char)s[run] >= 0x20 && s[run] != '"' && s[run] != '\\'; run++)
+            ;
+        if (run > i) {                      /* the plain bytes up to the next escape: one write */
+            npf_out_write(o, s + i, run - i);
+            i = run - 1;
+            continue;
+        }
         if (ch == '"' || ch == '\\') {
             char e[2] = {'\\', (char)ch};
             npf_out_write(o, e, 2);

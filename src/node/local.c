@@ -296,12 +296,15 @@ static int core_key(const char *k)
 
 static int parse(npf_local *l, const char *s, size_t len)
 {
-    npf_jtok *tok = malloc(MAX_TOK * sizeof *tok);
+    /* a token takes 2 bytes of the text at least ("1," ...): no 512 KB for a
+     * file of a few hundred tokens */
+    int cap = len / 2 + 8 < MAX_TOK ? (int)(len / 2 + 8) : MAX_TOK;
+    npf_jtok *tok = malloc((size_t)cap * sizeof *tok);
     npf_json j;
     int t, i, n, rc = -1;
     if (!tok)
         return -1;
-    if (npf_json_parse_file(&j, s, len, tok, MAX_TOK) < 0 || j.tok[0].type != NPF_JT_OBJECT)
+    if (npf_json_parse_file(&j, s, len, tok, cap) < 0 || j.tok[0].type != NPF_JT_OBJECT)
         goto out;
     if ((t = npf_json_get(&j, 0, "settings")) >= 0 && j.tok[t].type == NPF_JT_OBJECT) {
         int k = t + 1;

@@ -99,20 +99,6 @@ static void sid_of(const npf_call *c, uint8_t sid[24])
     npf_le64(sid + 16, c->number);
 }
 
-static void parse_cands(npf_call *c, const npf_json *j, int d)
-{
-    int arr = npf_json_get(j, d, "cand"), i;
-    c->npeer_cand = 0;
-    for (i = 0; arr >= 0 && i < j->tok[arr].size && c->npeer_cand < NPF_PUNCH_MAX_PEERS; i++) {
-        char a[80];
-        int it = npf_json_item(j, arr, i);
-        if (npf_json_get_str(j, it, "a", a, sizeof a) > 0
-            && npf_addr_parse(a, &c->peer_cand[c->npeer_cand]) == 0
-            && c->peer_cand[c->npeer_cand].ss_family == AF_INET)   /* the main socket is IPv4 */
-            c->npeer_cand++;
-    }
-}
-
 /* ---- AnLiu ---- */
 
 int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len)
@@ -1673,7 +1659,6 @@ static void caller_accepted(npf_call *c, const npf_json *j, int d)
     ml = npf_json_get_b64(j, d, "hs", msg, sizeof msg);
     if (ml < 0)
         goto fail;
-    parse_cands(c, j, d);
     secure_of(c, j, d);
     if (c->auth == AUTH_PAKE) {
         char data[1024];
@@ -1846,7 +1831,6 @@ static void handle_incoming(npf_node *n, const npf_json *j, int d)
         return;
     }
     call_b64_of(c->call_id, 16, c->call_id_s);
-    parse_cands(c, j, d);
     secure_of(c, j, d);
     if (strcmp(auth, "pake") == 0) {
         err = incoming_pake(c, j, d, msg, ml, out, sizeof out, &ol, ymsg);

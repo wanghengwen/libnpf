@@ -679,12 +679,12 @@ void npf_udpf_drain(npf_udpf *u, anl_stream_t *s)
         }
         if (sz < 0)
             return;
-        if (!(buf = malloc((size_t)sz + 1)))
+        if (!(buf = npf_scratch((size_t)sz + 1)))  /* reused, not a malloc per datagram (nested use: its own) */
             return;
         r = anl_stream_recv_frame(s, (char *)buf, sz + 1, &fi);
         if (r >= 0)
             frame_in(u, buf, (size_t)r);
-        free(buf);
+        npf_scratch_done(buf);
         if (r < 0)
             return;
     }

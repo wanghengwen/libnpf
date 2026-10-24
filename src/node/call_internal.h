@@ -126,8 +126,6 @@ struct npf_call {
     int         punch_wait_keys;
 
     /* peer data from signaling */
-    struct sockaddr_storage peer_cand[NPF_PUNCH_MAX_PEERS];
-    int         npeer_cand;
     int         ended;
     int         direct;             /* direct connection: no platform, fixed path */
     struct npf_policy *policy;      /* callee: target policy of this session's sublinks */
