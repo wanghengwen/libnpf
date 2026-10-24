@@ -1,6 +1,7 @@
 /* Deterministic scheduling at the API's job allocation: destroy must wait for
- * a caller that has entered but has not posted yet. Compile the real API here
- * so this hook never becomes part of the installed library. */
+ * a caller that has entered but has not posted yet. Compile the real
+ * api_thread.c (sync_call and its job) here so this hook never becomes part
+ * of the installed library. */
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <pthread.h>
@@ -8,7 +9,7 @@
 #include <unistd.h>
 static void *test_calloc(size_t count, size_t size);
 #define calloc test_calloc
-#include "../../src/api/api.c"
+#include "../../src/api/api_thread.c"
 #undef calloc
 
 static pthread_mutex_t test_mu = PTHREAD_MUTEX_INITIALIZER;

@@ -172,6 +172,7 @@ add_library(npf_common STATIC
   src/api/events.c
   src/api/setup.c
   src/api/api.c
+  src/api/api_thread.c
 )
 # the version (npf_version, the installers' names): the program's project(), else libnpf's
 target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
@@ -227,6 +228,7 @@ if(NPF_BUILD_LIB)
   # refers to npf_peer_create or npf_forward_get
   add_library(npf_shared SHARED
     src/api/api.c
+    src/api/api_thread.c
     src/api/ops.c
     src/api/ops_peer.c
     src/api/ops_forward.c
