@@ -274,9 +274,10 @@ out:
 static void direct_io(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     npf_direct *d = arg;
+    int k;
     (void)loop;
     (void)ev;
-    for (;;) {
+    for (k = 0; k < 64; k++) {          /* a bounded batch (level-triggered): a flood does not hold the loop */
         uint8_t buf[2048];
         struct sockaddr_storage from;
         socklen_t fl = sizeof from;

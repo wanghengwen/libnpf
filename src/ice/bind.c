@@ -49,7 +49,8 @@ int npf_pkt_seal(const npf_siv_keys *keys, int dir, int type, const uint8_t txid
         memcpy(p + NPF_PKT_HDR_SIZE, body, body_len);
     used = NPF_PKT_HDR_SIZE + body_len;
     if (plen > used)
-        npf_random(p + used, plen - used);      /* padding */
+        memset(p + used, 0, plen - used);       /* padding: encrypted with the rest (SIV, the random
+                                                 * txid in its IV): zeros look as random, no syscall */
     npf_siv_seal(keys, dir, out, plen);
     return (int)wire_len;
 }

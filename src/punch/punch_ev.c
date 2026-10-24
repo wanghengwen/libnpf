@@ -19,6 +19,11 @@
 #define S3_EASY_LEAD  150
 #define TICK_MS        10
 #define TRIG_MAX       64   /* triggered checks per punch */
+#define SPRAY_BURST    32   /* probes of a spray in one tick at most */
+#define SPRAY_LAG_MS   50   /* a spray behind by more (the loop stalled) catches up no further */
+#define S5_MIN_IVL     10   /* S5: 100 a second at most, */
+#define S5_MAX       6000   /* and this many in all (a plan's m_total if lower) */
+#define SEEN_MAX      128   /* packets of the peer remembered (their txids): a replay is dropped */
 #define TRIG_GAP_MS   500   /* at most one per source this often */
 #define S2B_MAX       512   /* S2B: destinations of a round (window x passes) */
 #define S2B_PASS_MS   300   /* between two passes */
@@ -52,6 +57,8 @@ struct npf_punch {
     int             ndests;
     uint8_t         sent_to[65536 / 8]; /* the peer's IPv4 ports probed (7.8: unsolicited) */
     npf_punch_result res;
+    uint64_t        seen_tx[SEEN_MAX];  /* the last SEEN_MAX authenticated packets' txids (first 8 bytes) */
+    int             seen_at;
     npf_timer      *tick;
     npf_punch_done_fn done;
     void           *arg;
@@ -260,16 +267,16 @@ static void finish(npf_punch *p, int ok)
 
 static void schedule(npf_punch *p);
 
-/* the peer's public IP at port */
-static const struct sockaddr_storage *peer_at(npf_punch *p, uint16_t port)
+/* the peer's public IP at port, in to (the caller's: punches of
+ * instances on other threads do not share one) */
+static const struct sockaddr_storage *peer_at(npf_punch *p, uint16_t port, struct sockaddr_storage *to)
 {
-    static struct sockaddr_storage to;
-    struct sockaddr_in *t4 = (struct sockaddr_in *)&to;
-    memset(&to, 0, sizeof to);
+    struct sockaddr_in *t4 = (struct sockaddr_in *)to;
+    memset(to, 0, sizeof *to);
     t4->sin_family = AF_INET;
     t4->sin_addr = p->cfg.plan.peer_ip4;
     t4->sin_port = htons(port);
-    return &to;
+    return to;
 }
 
 /* S2B: a BIND_REQ from the fresh socket to a probe server (E1: its mapping;
@@ -296,6 +303,7 @@ static void s2b_pass(npf_punch *p)
     const npf_punch_plan *pl = &p->cfg.plan;
     int w = pl->window > 0 ? pl->window : 32, k;
     int up = pl->role == NPF_PUNCH_CONTROLLING;
+    struct sockaddr_storage pa;
     if (up && (p->pass & 1)) {
         uint8_t txid[NPF_TXID_SIZE];
         npf_random(txid, sizeof txid);
@@ -307,13 +315,14 @@ static void s2b_pass(npf_punch *p)
         if (port < 1024 || port > 65535)
             continue;
         p->dests[p->ndests++] = (uint16_t)port;
-        probe(p, 1, peer_at(p, (uint16_t)port));
+        probe(p, 1, peer_at(p, (uint16_t)port, &pa));
     }
 }
 
 static void s2b_tick(npf_punch *p, int64_t now)
 {
     const npf_punch_plan *pl = &p->cfg.plan;
+    struct sockaddr_storage pa;
     int i;
     if (!p->own_port) {
         if (p->bsent < 4 && now >= p->bnext) {
@@ -334,7 +343,7 @@ static void s2b_tick(npf_punch *p, int64_t now)
     }
     if (p->resend_next && now >= p->resend_next) {
         for (i = 0; i < p->ndests; i++)
-            probe(p, 1, peer_at(p, p->dests[i]));
+            probe(p, 1, peer_at(p, p->dests[i], &pa));
         p->resend_next = now + S2B_RESEND_MS;
     }
 }
@@ -377,6 +386,8 @@ void npf_punch_peer_port(npf_punch *p, uint16_t port)
 
 static void tick_cb(npf_loop *loop, void *arg)
 {
+    struct sockaddr_storage pa;
+    int burst;
     npf_punch *p = arg;
     const npf_punch_plan *pl = &p->cfg.plan;
     int64_t now = npf_mono_ms();
@@ -419,8 +430,10 @@ static void tick_cb(npf_loop *loop, void *arg)
         uint16_t hi = pl->range_hi ? pl->range_hi : 65535;
         if (ivl < 1)
             ivl = 1;
-        while (p->sprayed < pl->m_total && now >= p->spray_next) {
-            probe(p, 0, peer_at(p, rand_port(lo, hi)));
+        if (p->spray_next < now - SPRAY_LAG_MS)
+            p->spray_next = now - SPRAY_LAG_MS;     /* after a stall: not everything that came due at once */
+        for (burst = 0; burst < SPRAY_BURST && p->sprayed < pl->m_total && now >= p->spray_next; burst++) {
+            probe(p, 0, peer_at(p, rand_port(lo, hi), &pa));
             p->sprayed++;
             p->spray_next += ivl;
         }
@@ -433,8 +446,13 @@ static void tick_cb(npf_loop *loop, void *arg)
         int64_t ivl = 1000 / (pl->pps > 0 ? pl->pps : 4);
         uint16_t lo = pl->range_lo ? pl->range_lo : 1024;
         uint16_t hi = pl->range_hi ? pl->range_hi : 65535;
-        while (now >= p->spray_next) {
-            probe(p, 1, peer_at(p, rand_port(lo, hi)));
+        int total = pl->m_total > 0 && pl->m_total < S5_MAX ? pl->m_total : S5_MAX;
+        if (ivl < S5_MIN_IVL)
+            ivl = S5_MIN_IVL;           /* "a few a second": a plan cannot make it a flood */
+        if (p->spray_next < now - SPRAY_LAG_MS)
+            p->spray_next = now - SPRAY_LAG_MS;
+        for (burst = 0; burst < SPRAY_BURST && p->sprayed < total && now >= p->spray_next; burst++) {
+            probe(p, 1, peer_at(p, rand_port(lo, hi), &pa));
             p->sprayed++;
             p->spray_next += ivl;
         }
@@ -457,6 +475,22 @@ static void schedule(npf_punch *p)
         p->tick = npf_timer_add(p->loop, TICK_MS, tick_cb, p);
 }
 
+/* 1 when this packet (its random txid) was taken before: someone on the
+ * path sending a copy (from an address of their choosing) gets no answer
+ * and no say in the path; otherwise it is remembered */
+static int replayed(npf_punch *p, const uint8_t txid[NPF_TXID_SIZE])
+{
+    uint64_t v;
+    int i;
+    memcpy(&v, txid, sizeof v);
+    for (i = 0; i < SEEN_MAX; i++)
+        if (p->seen_tx[i] == v)
+            return 1;
+    p->seen_tx[p->seen_at] = v;
+    p->seen_at = (p->seen_at + 1) % SEEN_MAX;
+    return 0;
+}
+
 static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
     const npf_punch_plan *pl = &p->cfg.plan;
@@ -468,7 +502,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
     if (npf_pkt_open(&p->kp, peer_dir, buf, len, plain, &pkt) == 0
         && (pkt.type == NPF_PKT_PROBE || pkt.type == NPF_PKT_PROBE_ACK)
         && pkt.body_len >= 10 && body_sid(pkt.body) == pl->session_id) {
-        if (p->cfg.test_deaf)
+        if (p->cfg.test_deaf || replayed(p, pkt.txid))
             return 1;
         if (from->ss_family == AF_INET) {      /* 7.8: what the peer's NAT showed */
             uint16_t port = ss_port(from);
@@ -510,6 +544,8 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
     }
     if (npf_pkt_open(&p->kn, peer_dir, buf, len, plain, &pkt) == 0
         && pkt.body_len >= 8 && body_sid(pkt.body) == pl->session_id) {
+        if (replayed(p, pkt.txid))
+            return 1;
         if (pkt.type == NPF_PKT_NOMINATE && pl->role == NPF_PUNCH_CONTROLLED) {
             uint8_t b[8];
             send_pkt(fd, &p->kn, pl->role, NPF_PKT_NOMINATE_ACK,
@@ -536,7 +572,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
 static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     npf_punch *p = arg;
-    int i;
+    int i, k;
     (void)loop;
     (void)ev;
     for (i = 1; i < p->nsock; i++)
@@ -544,7 +580,7 @@ static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
             break;
     if (i >= p->nsock)
         return;
-    for (;;) {
+    for (k = 0; k < 64; k++) {          /* a bounded batch (level-triggered) */
         uint8_t buf[512];
         struct sockaddr_storage from;
         socklen_t fl = sizeof from;

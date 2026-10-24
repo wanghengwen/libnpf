@@ -30,8 +30,11 @@ static void node_net_check(npf_node *n, const char *why);
 static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     npf_node *n = arg;
+    int k;
     (void)loop;
-    for (;;) {
+    /* a bounded batch: the loop is level-triggered, the rest is read on the
+     * next turn after the timers (a flood does not starve them) */
+    for (k = 0; k < 256; k++) {
         uint8_t buf[2048];
         struct sockaddr_storage from;
         socklen_t fl = sizeof from;

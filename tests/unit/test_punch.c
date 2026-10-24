@@ -21,6 +21,7 @@ typedef struct side {
     int        done, ok;
 } side;
 
+static int last_probes_recv;
 static void done_cb(npf_punch *p, const npf_punch_result *res, int fd, void *arg)
 {
     side *s = arg;
@@ -28,6 +29,7 @@ static void done_cb(npf_punch *p, const npf_punch_result *res, int fd, void *arg
     (void)fd;
     s->done = 1;
     s->ok = res->ok;
+    last_probes_recv = res->probes_recv;
 }
 
 static void rx_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
@@ -100,6 +102,39 @@ int test_punch(void)
     npf_loop_del(loop, b.fd);
     npf_punch_free(a.p);
     npf_punch_free(b.p);
+
+    /* a PROBE copied by someone on the path and sent again, from an address
+     * of their choosing: taken once, the copy gets no answer */
+    {
+        side c = {0}, d = {0};
+        struct sockaddr_storage tapa, spoof;
+        int tap = udp_bound(&tapa), sp = udp_bound(&spoof), k;
+        uint8_t pkt[512];
+        ssize_t n = -1;
+        ca.peers[0] = tapa;
+        ca.plan.timeout_ms = 600;
+        cb.plan.timeout_ms = 600;
+        c.p = npf_punch_new(loop, &ca, a.fd, done_cb, &c);
+        for (k = 0; k < 50 && n <= 0; k++) {
+            npf_loop_once(loop, 10);
+            n = recv(tap, pkt, sizeof pkt, MSG_DONTWAIT);
+        }
+        CHECK(n > 0, "a PROBE captured");
+        d.p = npf_punch_new(loop, &cb, b.fd, done_cb, &d);
+        if (n > 0) {
+            npf_punch_input(d.p, b.fd, pkt, (size_t)n, &spoof);
+            npf_punch_input(d.p, b.fd, pkt, (size_t)n, &spoof);
+            npf_punch_input(d.p, b.fd, pkt, (size_t)n, &tapa);
+        }
+        until = npf_mono_ms() + 2000;
+        while (!d.done && npf_mono_ms() < until)
+            npf_loop_once(loop, 10);
+        CHECK(d.done && last_probes_recv == 1, "the copies dropped (%d PROBEs taken)", last_probes_recv);
+        npf_punch_free(c.p);
+        npf_punch_free(d.p);
+        npf_sock_close(tap);
+        npf_sock_close(sp);
+    }
     npf_sock_close(a.fd);
     npf_sock_close(b.fd);
     npf_sock_close(dead);

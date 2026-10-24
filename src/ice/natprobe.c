@@ -522,9 +522,10 @@ static void ev_tick(npf_loop *loop, void *arg)
 static void ev_alloc_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     npf_natprobe *p = arg;
+    int k;
     (void)loop;
     (void)ev;
-    for (;;) {
+    for (k = 0; k < 64; k++) {          /* a bounded batch (level-triggered) */
         uint8_t buf[NPF_PKT_MAX];
         struct sockaddr_in from;
         socklen_t flen = sizeof(from);
