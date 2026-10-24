@@ -546,7 +546,7 @@ uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid)
 {
     uint32_t id;
     npf_api_lock(n);
-    if (n->nmed >= NPF_MAX_MEDIA) {
+    if (n->nmed >= NPF_MAX_MEDIA || (!n->med && !(n->med = calloc(NPF_MAX_MEDIA, sizeof *n->med)))) {
         npf_api_unlock(n);
         return 0;
     }

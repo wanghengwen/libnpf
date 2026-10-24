@@ -28,15 +28,30 @@ int npf_pub_apply(npf_t *n)
     return 0;
 }
 
+/* room for need resources (need <= NPF_RES_MAX): 0, -1 no memory. The
+ * table only grows (pub_changed puts back what it held) */
+static int res_room(npf_t *n, int need)
+{
+    int cap = n->res_cap ? n->res_cap : 4;
+    npf_res *r;
+    if (need <= n->res_cap)
+        return 0;
+    while (cap < need)
+        cap *= 2;
+    if (cap > NPF_RES_MAX)
+        cap = NPF_RES_MAX;
+    if (!(r = realloc(n->res, (size_t)cap * sizeof *r)))
+        return -1;
+    n->res = r;
+    n->res_cap = cap;
+    return 0;
+}
+
 int npf_pub_load(npf_t *n, char *err, size_t errcap)
 {
     const char *line;
     char e[200];
     int i, k;
-    if (!n->res && !(n->res = calloc(NPF_RES_MAX, sizeof *n->res))) {
-        snprintf(err, errcap, "no memory");
-        return -1;
-    }
     n->nres = 0;
     if (npf_conf_get(&n->conf, "allow", NULL) || npf_conf_get(&n->conf, "allow_all", NULL))
         npf_logw("config: allow / allow_all are gone: what callers may reach is what this node publishes "
@@ -44,6 +59,10 @@ int npf_pub_load(npf_t *n, char *err, size_t errcap)
     for (i = 0; (line = npf_conf_get_n(&n->conf, "resource", i)); i++) {
         if (n->nres >= NPF_RES_MAX) {
             snprintf(err, errcap, "config: at most %d resources", NPF_RES_MAX);
+            return -1;
+        }
+        if (res_room(n, n->nres + 1) < 0) {
+            snprintf(err, errcap, "no memory");
             return -1;
         }
         if (npf_res_from_line(&n->res[n->nres], line, e, sizeof e) < 0) {
@@ -67,7 +86,7 @@ int npf_pub_load(npf_t *n, char *err, size_t errcap)
         for (i = 0; i < m; i++) {
             for (k = 0; k < n->nres && strcmp(n->res[k].name, r[i].name) != 0; k++)
                 ;
-            if (k < n->nres || n->nres >= NPF_RES_MAX) {
+            if (k < n->nres || n->nres >= NPF_RES_MAX || res_room(n, n->nres + 1) < 0) {
                 npf_logw("resources: %s of local.json left out (%s)", r[i].name,
                          k < n->nres ? "npf.conf has one of that name" : "too many");
                 continue;
@@ -85,7 +104,7 @@ void npf_pub_free(npf_t *n)
 {
     free(n->res);
     n->res = NULL;
-    n->nres = 0;
+    n->nres = n->res_cap = 0;
 }
 
 /* the event's data: {"resources": [...]} */
@@ -159,9 +178,10 @@ static int pub_save(npf_t *n)
 /* the list as it was (pub_changed puts it back) */
 static npf_res *pub_snapshot(npf_t *n)
 {
-    npf_res *was = malloc(NPF_RES_MAX * sizeof *was);
-    if (was)
-        memcpy(was, n->res, (size_t)n->nres * sizeof *was);
+    size_t m = n->nres > 0 ? (size_t)n->nres : 0;
+    npf_res *was = malloc((m ? m : 1) * sizeof *was);   /* the list's own size */
+    if (was && m)
+        memcpy(was, n->res, m * sizeof *was);
     return was;
 }
 
@@ -171,7 +191,8 @@ static npf_res *pub_snapshot(npf_t *n)
 static int pub_changed(npf_t *n, const npf_res *was, int nwas, char *err, size_t errcap)
 {
     if (npf_pub_apply(n) < 0) {
-        memcpy(n->res, was, (size_t)nwas * sizeof *was);
+        if (nwas)
+            memcpy(n->res, was, (size_t)nwas * sizeof *was);
         n->nres = nwas;
         npf_pub_apply(n);                   /* what it was: it fitted */
         snprintf(err, errcap, "too many targets for the policy table");
@@ -199,6 +220,10 @@ int npf_pub_put(npf_t *n, const npf_res *r, char *err, size_t errcap)
     if (k == n->nres && n->nres >= NPF_RES_MAX) {
         snprintf(err, errcap, "at most %d resources", NPF_RES_MAX);
         return NPF_EBUSY;
+    }
+    if (k == n->nres && res_room(n, n->nres + 1) < 0) {
+        snprintf(err, errcap, "no memory");
+        return NPF_ENOMEM;
     }
     if (r->persist && (n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS)) {
         snprintf(err, errcap, "resources are not saved here (NPF_OPT_NO_SAVED_OBJECTS)");

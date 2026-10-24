@@ -56,7 +56,7 @@ struct npf {
     /* configuration: npf.conf, the overrides and local.json's settings in
      * effect (later ones win, peer lines add up); and each alone (where a peer
      * is from). local.json also keeps the devices (npf/local.h) */
-    npf_conf      conf, ro, ov;
+    npf_conf      conf;
     npf_local     lc;
     char         *conf_dir, *data_dir;   /* malloc (path_set) */
     const char   *local_path;           /* lc.path */
@@ -77,8 +77,8 @@ struct npf {
     npf_node_cfg  cfg;
     npf_peers    *peers;
     npf_policy    policy;           /* a client's / a direct listener's sessions */
-    struct npf_res *res;            /* the published resources (publish.c), NPF_RES_MAX of room */
-    int           nres;
+    struct npf_res *res;            /* the published resources (publish.c): res_cap of room, */
+    int           nres, res_cap;    /* grown to NPF_RES_MAX as they come (most publish none) */
     npf_direct   *dl;
     /* state shared with other threads: under the API lock (api.c) */
     int           started, running, stopping, ended, torn_down;
@@ -97,7 +97,7 @@ struct npf {
     npf_sess     *sess;             /* nsess of capsess, grown up to NPF_MAX_SESS */
     int           nsess, capsess;
     uint32_t      next_sess;
-    npf_med       med[NPF_MAX_MEDIA];
+    npf_med      *med;              /* NPF_MAX_MEDIA, made with the first stream (under the API lock) */
     int           nmed;
     uint32_t      next_med;
     /* the modules registered when it was created (npf/module.h), NULL at

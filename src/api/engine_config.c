@@ -30,8 +30,6 @@ static void dir_of(const char *path, char *out, size_t cap)
 /* the configurations, and the paths made from them */
 void npf_engine_config_free(npf_t *n)
 {
-    npf_conf_free(&n->ro);
-    npf_conf_free(&n->ov);
     npf_conf_free(&n->conf);
     free(n->conf_dir);
     free(n->data_dir);
@@ -168,8 +166,9 @@ void npf_engine_restore_peers(npf_t *n)
     }
 }
 
-/* the configuration in effect and the paths made from it (engine_internal.h) */
-int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t errcap)
+/* the configuration in effect and the paths made from it: ro (npf.conf or
+ * the setup) and ov (the overrides) read, merged into n->conf */
+static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *ov, char *err, size_t errcap)
 {
     char conf_path[1100];
     int have_conf;
@@ -178,9 +177,9 @@ int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t err
     if (o->setup) {
         snprintf(conf_path, sizeof conf_path, "%s/(npf_setup)", o->data_dir);
         npf_mkdir_p(o->data_dir);
-        if (npf_setup_conf(o->setup, o->role, o->data_dir, &n->ro, err, errcap) < 0)
+        if (npf_setup_conf(o->setup, o->role, o->data_dir, ro, err, errcap) < 0)
             return NPF_EINVAL;
-        snprintf(n->ro.path, sizeof n->ro.path, "%.1000s", conf_path);
+        snprintf(ro->path, sizeof ro->path, "%.1000s", conf_path);
         have_conf = 1;
     } else {
         if (o->conf_file && npf_path_is_abs(o->conf_file))
@@ -188,42 +187,42 @@ int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t err
         else
             snprintf(conf_path, sizeof conf_path, "%s/%s", o->conf_dir ? o->conf_dir : ".",
                      o->conf_file ? o->conf_file : "npf.conf");
-        have_conf = npf_conf_load(&n->ro, conf_path) == 0;
+        have_conf = npf_conf_load(ro, conf_path) == 0;
     }
     if (!have_conf && n->role != NPF_ROLE_DIRECT) {
         snprintf(err, errcap, "cannot read %s", conf_path);
         return NPF_EFAIL;
     }
-    if (!have_conf && (size_t)snprintf(n->ro.path, sizeof n->ro.path, "%s", conf_path) >= sizeof n->ro.path) {
+    if (!have_conf && (size_t)snprintf(ro->path, sizeof ro->path, "%s", conf_path) >= sizeof ro->path) {
         snprintf(err, errcap, "path too long");
         return NPF_EINVAL;
     }
-    if (n->ro.bad[0]) {
-        snprintf(err, errcap, "%s: the value of '%s' is too long (at most %d characters)", conf_path, n->ro.bad,
+    if (ro->bad[0]) {
+        snprintf(err, errcap, "%s: the value of '%s' is too long (at most %d characters)", conf_path, ro->bad,
                  NPF_CONF_VAL_MAX - 1);
         return NPF_EINVAL;
     }
     {
         char d[1100];
-        dir_of(n->ro.path, d, sizeof d);
+        dir_of(ro->path, d, sizeof d);
         if (path_set(&n->conf_dir, "%s", d) < 0) {
             snprintf(err, errcap, "no memory");
             return NPF_EFAIL;
         }
     }
     if (o->overrides)
-        conf_text(&n->ov, o->overrides);
-    if (n->ov.bad[0]) {                     /* as for the file: not cut short in silence */
-        snprintf(err, errcap, "overrides: the value of '%s' is too long (at most %d characters)", n->ov.bad,
+        conf_text(ov, o->overrides);
+    if (ov->bad[0]) {                     /* as for the file: not cut short in silence */
+        snprintf(err, errcap, "overrides: the value of '%s' is too long (at most %d characters)", ov->bad,
                  NPF_CONF_VAL_MAX - 1);
         return NPF_EINVAL;
     }
-    if (npf_conf_get(&n->ro, "node", NULL) || npf_conf_get(&n->ov, "node", NULL)) {
+    if (npf_conf_get(ro, "node", NULL) || npf_conf_get(ov, "node", NULL)) {
         snprintf(err, errcap, "config: \"node =\" lines are gone: the application makes its peers (npf_peer_create)");
         return NPF_EINVAL;
     }
     if (o->setup) {                         /* one source for each: a field, or the overrides */
-        const char *k = npf_setup_key_taken(&n->ov);
+        const char *k = npf_setup_key_taken(ov);
         if (k) {
             snprintf(err, errcap, "overrides: '%s' is a field of npf_setup", k);
             return NPF_EINVAL;
@@ -231,8 +230,8 @@ int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t err
     }
     /* the writable directory: the option, the configuration's "dir", conf_dir */
     if (path_set(&n->data_dir, "%s", o->data_dir                        ? o->data_dir
-                                     : npf_conf_get(&n->ov, "dir", NULL) ? npf_conf_get(&n->ov, "dir", NULL)
-                                     : npf_conf_get(&n->ro, "dir", NULL) ? npf_conf_get(&n->ro, "dir", NULL)
+                                     : npf_conf_get(ov, "dir", NULL) ? npf_conf_get(ov, "dir", NULL)
+                                     : npf_conf_get(ro, "dir", NULL) ? npf_conf_get(ro, "dir", NULL)
                                                                          : n->conf_dir) < 0) {
         snprintf(err, errcap, "no memory");
         return NPF_EFAIL;
@@ -241,11 +240,11 @@ int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t err
     if (npf_local_load(&n->lc, n->data_dir, err, errcap) < 0)
         return NPF_EFAIL;
     n->local_path = n->lc.path;
-    if (npf_conf_copy(&n->conf, &n->ro) < 0) {
+    if (npf_conf_copy(&n->conf, ro) < 0) {
         snprintf(err, errcap, "no memory");
         return NPF_EFAIL;
     }
-    conf_merge(&n->conf, &n->ov);
+    conf_merge(&n->conf, ov);
     if (!(n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS)) {   /* local.json: its settings over the others */
         int i;
         for (i = 0; i < n->lc.settings.n; i++) {
@@ -277,4 +276,21 @@ int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t err
         }
     }
     return NPF_OK;
+}
+
+/* (engine_internal.h) the read-only configuration and the overrides only
+ * while they are merged: n->conf keeps copies of their values */
+int npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t errcap)
+{
+    npf_conf *ro = calloc(2, sizeof *ro);   /* 2.2 KB: not on a small thread's stack */
+    int rc;
+    if (!ro) {
+        snprintf(err, errcap, "no memory");
+        return NPF_EFAIL;
+    }
+    rc = config_load(n, o, &ro[0], &ro[1], err, errcap);
+    npf_conf_free(&ro[0]);
+    npf_conf_free(&ro[1]);
+    free(ro);
+    return rc;
 }

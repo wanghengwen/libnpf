@@ -213,9 +213,6 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     /* a long-running role brings back what it saved (a client's one-off tasks do not) */
     if (n->role != NPF_ROLE_CLIENT && !(n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS))
         npf_engine_restore_peers(n);
-    /* the file as read and the overrides were for the start: the merged conf stays */
-    npf_conf_free(&n->ro);
-    npf_conf_free(&n->ov);
     {   /* direct connections (no platform): "direct = [ADDR:]PORT" with its key */
         const char *direct = npf_conf_get(&n->conf, "direct", NULL);
         if (direct && *direct && n->role != NPF_ROLE_CLIENT) {
@@ -344,6 +341,7 @@ void npf_engine_free(npf_t *n)
         npf_wipe(n->callee, sizeof *n->callee);
     free(n->callee);
     free(n->sess);
+    free(n->med);
     npf_log_ctx_swap(prev == &n->logctx ? NULL : prev);
     npf_api_fini(n);
     free(n->logctx.ring);
