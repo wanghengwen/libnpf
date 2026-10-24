@@ -13,6 +13,7 @@
 #include "npf/tunnel.h"
 #include "npf/json.h"
 #include "call_internal.h"
+#include "../../src/tunnel/tunnel_internal.h"
 
 static int fails;
 
@@ -141,6 +142,12 @@ static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, 
         CHECK(r1.sub_done == 1 && r1.sub_closed == 1, "sublink ended (%d/%d)", r1.sub_done, r1.sub_closed);
         CHECK(r1.saw_tun == 0, "the ends saw no tunnel (%d)", r1.saw_tun);
         CHECK(!c->tun && !c->anl && !c->stream && c->ws_mode && !c->ended, "transport gone, session on");
+        /* the -R mappings in use go on in the tunnel the WS relay brings */
+        call_crev_add(c, 7, "127.0.0.1", 8080, 0);
+        call_crev_add(c, 9, "127.0.0.1", 5353, 1);
+        c->tun = call_tunnel_new(c);
+        CHECK(c->tun && c->tun->nrev == 1 && c->tun->rev[0].id == 7 && c->tun->rev[0].port == 8080,
+              "a new tunnel has the TCP -R mapping");
         npf_call_end(c, "closed");
         npf_loop_once(loop, 10);
     }

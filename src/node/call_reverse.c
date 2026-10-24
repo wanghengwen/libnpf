@@ -240,6 +240,50 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
 
 /* ---- reverse mapping, caller side ---- */
 
+typedef struct call_crev {
+    uint32_t lid;
+    char     host[256];
+    uint16_t port;
+    int      udp;
+} call_crev;
+
+void call_crev_add(npf_call *c, uint32_t lid, const char *host, uint16_t port, int udp)
+{
+    call_crev *r;
+    if (!c->crev && !(c->crev = calloc(NPF_MAX_REVERSE, sizeof *c->crev)))
+        return;
+    if (c->ncrev == NPF_MAX_REVERSE)
+        return;
+    r = &c->crev[c->ncrev++];
+    r->lid = lid;
+    snprintf(r->host, sizeof r->host, "%s", host);
+    r->port = port;
+    r->udp = udp;
+}
+
+void call_crev_del(npf_call *c, uint32_t lid)
+{
+    int i;
+    for (i = 0; i < c->ncrev; i++)
+        if (c->crev[i].lid == lid) {
+            c->crev[i] = c->crev[--c->ncrev];
+            return;
+        }
+}
+
+/* t or u just made (one of them NULL): the mappings in use, its kind */
+void call_crev_restore(npf_call *c, npf_tunnel *t, npf_udpf *u)
+{
+    int i;
+    for (i = 0; i < c->ncrev; i++) {
+        const call_crev *r = &c->crev[i];
+        if (r->udp && u)
+            npf_udpf_rev_add(u, r->lid, r->host, r->port);
+        else if (!r->udp && t)
+            npf_tunnel_rev_add(t, r->lid, r->host, r->port);
+    }
+}
+
 typedef struct rev_req {
     char host[256];
     uint16_t port;
@@ -258,6 +302,7 @@ static void rev_reply(npf_call *c, const npf_json *j, int ok, void *arg)
         && npf_json_get_int(j, d, "port", 1, 65535, &port) == 0) {
         if (c->tun && (r->udp ? npf_udpf_rev_add(call_udp_of(c), (uint32_t)id, r->host, r->port)
                               : npf_tunnel_rev_add(c->tun, (uint32_t)id, r->host, r->port)) == 0) {
+            call_crev_add(c, (uint32_t)id, r->host, r->port, r->udp);
             r->fn(c, (int)port, (uint32_t)id, NULL, r->arg);
             free(r);
             return;
@@ -309,6 +354,7 @@ void npf_call_reverse_close(npf_call *c, uint32_t listen_id)
     if (c->tun)
         npf_tunnel_rev_del(c->tun, listen_id);
     npf_udpf_rev_del(c->udp, listen_id);
+    call_crev_del(c, listen_id);
     snprintf(data, sizeof data, "{\"listen_id\":%u}", listen_id);
     npf_call_ctl_event(c, "reverse_close", data);  /* an event: no request slot it could fail for */
 }

@@ -279,6 +279,12 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
     else if (i != c->relay.cur)
         return 1;
     if (plain[0] == PKT_RELAY_DATA) {
+        /* AnLiu first: a relayed datagram proves nothing until it takes it
+         * (the relay's keys are not the session's: a replay of an old one
+         * with the relay's address would bring back a relay given up, on
+         * the WS relay too) */
+        if (call_anl_feed(c, plain + 6, (size_t)pl - 6) < 0 || c->ended)
+            return 1;
         if (!c->relay.active) {     /* the peer sends on it: take it back, keep the binding fresh */
             npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
             c->relay.active = 1;
@@ -293,7 +299,6 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
              * connection */
             relay_bound(c, " (the peer's data came through it)");
         }
-        call_anl_feed(c, plain + 6, (size_t)pl - 6);
         return 1;
     }
     if (plain[0] == PKT_RELAY_BIND_ACK)

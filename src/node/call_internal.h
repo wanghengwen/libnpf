@@ -133,6 +133,10 @@ struct npf_call {
     struct npf_policy *policy;      /* callee: target policy of this session's sublinks */
     uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */
     size_t      dmsg1_len;
+    int         direct_tries;       /* direct initiator: message 2 attempts read (64 at most) */
+    struct call_crev *crev;         /* caller: the reverse mappings in use (NPF_MAX_REVERSE, malloc'd at the first),
+                                     * registered again in a new tunnel / UDP forwarding (the move to the WS relay) */
+    int         ncrev;
     int         dtries;
     npf_timer  *t_direct;
     struct npf_key_share *kshare;   /* callee: its caller key's share of the node's tunnel limits */
@@ -250,6 +254,11 @@ void call_free(npf_call *c);
 /* the data transport (tunnel, UDP forwarding, media) off the call and freed;
  * then the AnLiu connection (call.c) */
 void call_data_free(npf_call *c);
+/* caller: a reverse mapping in use / gone (call_reverse.c), and every one
+ * registered again in the tunnel or the UDP forwarding just made */
+void call_crev_add(npf_call *c, uint32_t lid, const char *host, uint16_t port, int udp);
+void call_crev_del(npf_call *c, uint32_t lid);
+void call_crev_restore(npf_call *c, npf_tunnel *t, npf_udpf *u);
 void call_anl_drop(npf_call *c);
 
 /* call_reverse.c: reverse mapping (data-channel.md 7.1) */

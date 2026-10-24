@@ -68,6 +68,9 @@ typedef struct npf_udpf_stats {
 
 /* anl NULL: the WS relay; policy: the callee's (NULL refuses every flow) */
 npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *policy, const npf_udpf_io *io, void *arg);
+/* the shares the sockets of the peer's flows count in, with the tunnels'
+ * sublinks (npf_tunnel_set_shared): a flow over subs_max is refused */
+void npf_udpf_set_shared(npf_udpf *u, npf_tunnel_shared *node, npf_tunnel_shared *key);
 /* the session ended: flows and sockets go, nothing is sent */
 void npf_udpf_free(npf_udpf *u);
 

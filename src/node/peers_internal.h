@@ -102,6 +102,9 @@ struct npf_peer {
     int64_t    idle_since;          /* no connection in the session since (ms), 0: some */
     int64_t    retry_at;            /* monotonic ms of the next attempt */
     char       last_why[32];        /* why the last session ended */
+    int        removed;             /* npf_peers_remove ran: freed on the next turn (t_free) */
+    npf_timer *t_free;
+    struct npf_peer *gone_next;     /* npf_peers.gone */
 };
 
 /* an open public connection (or one waiting for its session) */
@@ -132,6 +135,7 @@ struct npf_peers {
     npf_peers_cbs cbs;
     void         *arg;
     npf_peer     *list;
+    npf_peer     *gone;             /* removed, freed on the next turn (a callback of theirs removed them) */
     int           fwd_seq;          /* the last forward number given out */
     /* public connections: open ones, the source addresses, the limits */
     pconn        *conns;

@@ -129,7 +129,15 @@ int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct 
     uint8_t p[256];
     npf_noise_hs hs = c->hs;               /* a failed read spoils the state: keep ours for the real one */
     (void)from;
-    if (len > 256 || npf_noise_read(&hs, buf, len, p, sizeof p) < 0) {
+    /* message 2 is e (32) and the sealed payload (16 and more), no longer
+     * than message 1 (no amplification): anything else is no attempt at it.
+     * Each attempt costs an X25519 before the tag says no; a sender spoofing
+     * the listener's address gets 64 of them per session */
+    if (len < 48 || len > c->dmsg1_len || len > 256 || ++c->direct_tries > 64) {
+        npf_wipe(&hs, sizeof hs);
+        return 0;
+    }
+    if (npf_noise_read(&hs, buf, len, p, sizeof p) < 0) {
         npf_wipe(&hs, sizeof hs);
         return 0;
     }

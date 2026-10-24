@@ -52,6 +52,8 @@ void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
         }
         npf_log("%s: a connection to %s:%d: starting the session", p->name, f->bind, f->port);
         peers_start_call(p);
+        if (p->removed)
+            return;                         /* in the done callback of a start that failed: its fds went */
     }
     peers_demand_timer(p);
 }
@@ -151,6 +153,8 @@ void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, c
         }
         npf_log("%s: a UDP datagram to %s:%d: starting the session", p->name, f->bind, f->port);
         peers_start_call(p);
+        if (p->removed)
+            return;
     }
     peers_demand_timer(p);
 }

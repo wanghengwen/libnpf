@@ -93,6 +93,8 @@ static void finish(npf_peer *p, const char *why)
         snprintf(p->last_why, sizeof p->last_why, "%s", why);
     if (p->ps->cbs.done)
         p->ps->cbs.done(p, why, p->ps->arg);
+    if (p->removed)
+        return;                             /* the application removed it in the callback */
     peer_changed(p);
 }
 
@@ -440,8 +442,36 @@ static void peer_drop(npf_peer *p)
     peers_listeners_close(p);
 }
 
+/* what is left of a removed peer: anything a callback started on it after
+ * the removal goes too */
+static void peer_free_now(npf_peer *p)
+{
+    if (p->t_free)
+        npf_timer_cancel(p->ps->n->loop, p->t_free);
+    p->t_free = NULL;
+    peer_drop(p);
+    fwds_free(p);
+    npf_wipe(p, sizeof *p);
+    free(p);
+}
+
+static void peer_free_later(npf_loop *loop, void *arg)
+{
+    npf_peer *p = arg, **pp;
+    (void)loop;
+    p->t_free = NULL;
+    for (pp = &p->ps->gone; *pp; pp = &(*pp)->gone_next)
+        if (*pp == p) {
+            *pp = p->gone_next;
+            break;
+        }
+    peer_free_now(p);
+}
+
 /* the order of what the application hears: the session's end (peer_drop),
- * each forward, the peer */
+ * each forward, the peer. Freed on the next turn: the application may
+ * remove a peer from its callback (a done event), and the code that called
+ * out still holds the peer and its forwards (accept_cb, demand_wait) */
 void npf_peers_remove(npf_peers *ps, npf_peer *p)
 {
     npf_peer **pp;
@@ -462,9 +492,13 @@ void npf_peers_remove(npf_peers *ps, npf_peer *p)
             ps->cbs.fwd_gone(p, k, ps->arg);
     if (ps->cbs.gone)
         ps->cbs.gone(p, ps->arg);
-    fwds_free(p);
-    npf_wipe(p, sizeof *p);
-    free(p);
+    p->removed = 1;
+    p->gone_next = ps->gone;
+    ps->gone = p;
+    if (!(p->t_free = npf_timer_add(ps->n->loop, 0, peer_free_later, p))) {
+        ps->gone = p->gone_next;
+        peer_free_now(p);
+    }
 }
 
 /* HOST:PORT in its canonical form ("" when it is not one) */
@@ -532,6 +566,10 @@ void npf_peers_free(npf_peers *ps)
         fwds_free(p);
         npf_wipe(p, sizeof *p);
         free(p);
+    }
+    while ((p = ps->gone) != NULL) {
+        ps->gone = p->gone_next;
+        peer_free_now(p);
     }
     {   /* the sessions still being freed must not call back into us */
         npf_call *c;

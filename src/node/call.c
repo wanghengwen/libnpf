@@ -339,6 +339,7 @@ static void tun_control(void *arg, const npf_json *j)
             if (c->tun)
                 npf_tunnel_rev_del(c->tun, (uint32_t)id);
             npf_udpf_rev_del(c->udp, (uint32_t)id);
+            call_crev_del(c, (uint32_t)id);
         }
         return;
     }
@@ -715,8 +716,13 @@ static const npf_udpf_io udp_io = {u_unit, u_ws_write, u_ws_backlog, m_kick, u_a
 
 npf_udpf *call_udp_of(npf_call *c)
 {
-    if (!c->udp && !c->ended && (c->ws_mode || c->anl))
+    if (!c->udp && !c->ended && (c->ws_mode || c->anl)) {
         c->udp = npf_udpf_new(c->n->loop, c->ws_mode ? NULL : c->anl, c->caller, call_policy(c), &udp_io, c);
+        if (c->udp) {
+            npf_udpf_set_shared(c->udp, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
+            call_crev_restore(c, NULL, c->udp);
+        }
+    }
     return c->udp;
 }
 
@@ -861,6 +867,7 @@ npf_tunnel *call_tunnel_new(npf_call *c)
         && (c->kshare = key_share(c->n, c->peer_pub)))
         c->kshare->calls++;
     npf_tunnel_set_shared(t, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
+    call_crev_restore(c, t, NULL);          /* a new tunnel of the session: its -R mappings go on */
     return t;
 }
 
@@ -1355,6 +1362,7 @@ void call_free(npf_call *c)
     if (c->kshare)
         c->kshare->calls--;                 /* its counts went with the tunnel (or go when it does) */
     free(c->targets);
+    free(c->crev);
     call_anl_drop(c);
     if (c->p2p_owned && c->p2p_fd >= 0) {
         npf_loop_del(n->loop, c->p2p_fd);

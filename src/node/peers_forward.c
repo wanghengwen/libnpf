@@ -210,7 +210,12 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
     int round;
     (void)ev;
     for (round = 0; round < ACCEPT_ROUND; round++) {
-        int fd = npf_accept(lfd);
+        int fd;
+        /* a callback of the last round (refused, opened, a session's start)
+         * may have removed the peer or the forward: lfd closed, maybe reused */
+        if (f->p->removed || !f->used || f->fd != lfd)
+            break;
+        fd = npf_accept(lfd);
         if (fd < 0) {
             if (accept_starved() && !f->t_accept) {
                 npf_logw("%s: %s: out of descriptors, not accepting for 250 ms", f->p->name, f->spec);
@@ -243,6 +248,10 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
                 continue;
             }
             cid = peers_conn_add(f, &ss, ip);
+            if (!cid) {                     /* no memory to track it: not let in untracked (limits, idle) */
+                npf_sock_close(fd);
+                continue;
+            }
             public_keepalive(fd);
         } else if (f->draining) {
             npf_sock_close(fd);

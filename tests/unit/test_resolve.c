@@ -198,6 +198,40 @@ int test_resolve(void)
         npf_loop_free(l);
     }
 
+    /* 5b. the sockets of a peer's flows count in the node's and the
+     * caller key's shares with the sublinks: over subs_max, refused */
+    {
+        npf_policy pol;
+        npf_udpf_io uio;
+        npf_udpf *u;
+        npf_tunnel_shared node_sh = {0, 1000, 0, 0}, key_sh = {0, 2, 0, 0};
+        uint8_t fr[64];
+        static const char tgt[] = "127.0.0.1";
+        memset(&pol, 0, sizeof pol);
+        memset(&uio, 0, sizeof uio);
+        CHECK(npf_policy_add_udp(&pol, "127.0.0.1:9") == 0, "a udp resource");
+        uio.unit = unit_sink;
+        l = npf_loop_new();
+        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL);
+        npf_udpf_set_shared(u, &node_sh, &key_sh);
+        g_units = 0;
+        for (i = 0; i < 3; i++) {
+            size_t tl = sizeof tgt - 1;
+            npf_le32(fr, (uint32_t)(2 * i + 1));
+            fr[4] = 1;
+            fr[5] = (uint8_t)tl;
+            memcpy(fr + 6, tgt, tl);
+            npf_le16(fr + 6 + tl, 9);
+            fr[8 + tl] = 'x';
+            npf_udpf_ws_input(u, fr, 9 + tl);
+        }
+        CHECK(key_sh.subs == 2 && node_sh.subs == 2, "two sockets counted (key %d, node %d)", key_sh.subs, node_sh.subs);
+        CHECK(g_units == 1, "the third flow refused over the key's share (%d)", g_units);
+        npf_udpf_free(u);
+        CHECK(key_sh.subs == 0 && node_sh.subs == 0, "the shares back to zero with the session");
+        npf_loop_free(l);
+    }
+
     /* 6. many loops created and freed while lookups run */
     HOLD(1);
     for (i = 0; i < 20; i++) {

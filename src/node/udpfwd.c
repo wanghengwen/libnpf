@@ -52,6 +52,7 @@ typedef struct uflow {
     int      ok;                    /* out: the other side has opened it */
     int64_t  last;                  /* the last datagram either way (ms) */
     npf_resolve *res;               /* in: the target's name being resolved */
+    int      counted;               /* in: its socket counted in the shares (npf_udpf_set_shared) */
     pend     q[PEND_MAX];
     int      nq;
 } uflow;
@@ -82,6 +83,7 @@ struct npf_udpf {
     uint8_t     *out, *in;          /* frame being built / a datagram read */
     npf_udpf_stats st;
     int64_t      warned_at;
+    npf_tunnel_shared *shared[2];   /* the node's and the caller key's descriptors, with the sublinks */
 };
 
 /* ---- the flow table ---- */
@@ -195,6 +197,10 @@ static void free_flow(npf_udpf *u, uflow *f)
         npf_loop_del(u->loop, f->fd);
         npf_sock_close(f->fd);
     }
+    if (f->counted)
+        for (i = 0; i < 2; i++)
+            if (u->shared[i])
+                u->shared[i]->subs--;
     if (f->res) {
         npf_resolve_cancel(f->res);
         f->u->nresolving--;
@@ -257,6 +263,12 @@ npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *polic
     u->io = *io;
     u->arg = arg;
     return u;
+}
+
+void npf_udpf_set_shared(npf_udpf *u, npf_tunnel_shared *node, npf_tunnel_shared *key)
+{
+    u->shared[0] = node;
+    u->shared[1] = key;
 }
 
 void npf_udpf_free(npf_udpf *u)
@@ -430,6 +442,13 @@ static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *t
         drop_flow(u, f, 1, NPF_UDP_R_REFUSED);
         return;
     }
+    for (i = 0; i < 2; i++)
+        if (u->shared[i] && u->shared[i]->subs >= u->shared[i]->subs_max) {
+            /* a socket of ours for each of the peer's flows: in the same
+             * budget as the sublinks, one peer cannot take the descriptors */
+            drop_flow(u, f, 1, NPF_UDP_R_LIMIT);
+            return;
+        }
     fd = npf_socket(to->ss_family, SOCK_DGRAM, 0, 0);
     if (fd < 0 || connect(fd, (const struct sockaddr *)to, tl) < 0
         || npf_loop_add(u->loop, fd, NPF_EV_READ, flow_readable, f) < 0) {
@@ -440,6 +459,10 @@ static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *t
         return;
     }
     f->fd = fd;
+    f->counted = 1;
+    for (i = 0; i < 2; i++)
+        if (u->shared[i])
+            u->shared[i]->subs++;
     unit(u, NPF_UDP_OK, f->id, 0);
     for (i = 0; i < f->nq; i++) {
         flow_send(u, f, f->q[i].d, f->q[i].len);
