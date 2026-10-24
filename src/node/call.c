@@ -229,6 +229,7 @@ void call_free(npf_call *c)
         c->kshare->calls--;                 /* its counts went with the tunnel (or go when it does) */
     free(c->targets);
     call_hs_free(c);
+    free(c->pcfg);
     call_anl_drop(c);
     if (c->p2p_owned && c->p2p_fd >= 0) {
         npf_loop_del(n->loop, c->p2p_fd);

@@ -305,11 +305,13 @@ void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
 
 void call_start_punch_now(npf_call *c)
 {
+    if (!c->pcfg)
+        return;                     /* no round came (punch_start makes it) */
     if (!c->keys_ready) {
         c->punch_wait_keys = 1;   /* NOMINATE needs the E2E key (nat-traversal.md 10.1) */
         return;
     }
-    memcpy(c->pcfg.plan.nominate_key, c->nominate_key, 32);
+    memcpy(c->pcfg->plan.nominate_key, c->nominate_key, 32);
     if (c->punch) {                 /* the last round's, lingering or still running */
         int had = c->punch_socks > 0;
         timer_stop(c->n->loop, &c->t_linger);
@@ -320,21 +322,21 @@ void call_start_punch_now(npf_call *c)
             call_punch_sockets_back(c->n);
     }
     c->punch_socks = 0;
-    if (c->pcfg.plan.strategy == NPF_PUNCH_S3 && c->pcfg.plan.side == NPF_PUNCH_HARD) {
-        int want = c->pcfg.plan.n_sockets, budget = npf_node_punch_budget(c->n);
+    if (c->pcfg->plan.strategy == NPF_PUNCH_S3 && c->pcfg->plan.side == NPF_PUNCH_HARD) {
+        int want = c->pcfg->plan.n_sockets, budget = npf_node_punch_budget(c->n);
         int full = want < budget ? want : budget;      /* the most it could get with nothing else running */
         int64_t gap = punch_gap_left(c->n);
-        c->pcfg.plan.n_sockets = punch_sockets_grant(c, want);
-        if (c->caller && (c->pcfg.plan.n_sockets < full / 2 || call_hard_punches(c) >= HARD_PUNCHES_MAX || gap > 0)) {
+        c->pcfg->plan.n_sockets = punch_sockets_grant(c, want);
+        if (c->caller && (c->pcfg->plan.n_sockets < full / 2 || call_hard_punches(c) >= HARD_PUNCHES_MAX || gap > 0)) {
             /* too few to hit anything (the phone on an APDM CGNAT at a start,
              * eight sessions at once: the last four had none, 0 replies), or
              * enough punches at once (five of them: the carrier NAT dropped the
              * relay binds too): this round is let go, and another asked for as
              * soon as a punch gives its sockets back (call_punch_sockets_back); it
              * does not count */
-            if (c->pcfg.plan.n_sockets < full / 2)
+            if (c->pcfg->plan.n_sockets < full / 2)
                 npf_log("call %s: punch round %d: %d of %d hard-side sockets free: waiting for another punch to end",
-                        c->call_id_s, c->punch_round, c->pcfg.plan.n_sockets, want);
+                        c->call_id_s, c->punch_round, c->pcfg->plan.n_sockets, want);
             else if (call_hard_punches(c) >= HARD_PUNCHES_MAX)
                 npf_log("call %s: punch round %d: another hard-side punch holds the NAT's ports: waiting for it to end",
                         c->call_id_s, c->punch_round);
@@ -351,13 +353,13 @@ void call_start_punch_now(npf_call *c)
                 c->punch_requests--;
             return;
         }
-        if (c->pcfg.plan.n_sockets < want)
+        if (c->pcfg->plan.n_sockets < want)
             npf_log("call %s: punch round %d: %d of %d hard-side sockets (other punches hold the rest)",
-                    c->call_id_s, c->punch_round, c->pcfg.plan.n_sockets, want);
+                    c->call_id_s, c->punch_round, c->pcfg->plan.n_sockets, want);
     }
-    c->pcfg.fd6 = c->n->udp6_fd;
-    c->pcfg.test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;
-    if (c->pcfg.plan.strategy == NPF_PUNCH_S2B) {
+    c->pcfg->fd6 = c->n->udp6_fd;
+    c->pcfg->test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;
+    if (c->pcfg->plan.strategy == NPF_PUNCH_S2B) {
         const uint8_t *pk = node_day_key(c->n, c->n->probe_keys);
         if (c->n->nprobe_ep < 2 || !pk) {
             npf_punch_result res;
@@ -367,16 +369,16 @@ void call_start_punch_now(npf_call *c)
             punch_done(NULL, &res, -1, c);
             return;
         }
-        c->pcfg.probe_ep[0] = c->n->probe_ep[0];
-        c->pcfg.probe_ep[1] = c->n->probe_ep[1];
-        memcpy(c->pcfg.probe_key, pk, 32);
-        memcpy(c->pcfg.ticket, c->n->ticket, sizeof c->pcfg.ticket);
-        c->pcfg.clock_offset_ms = c->n->clock_offset_ms;
-        c->pcfg.info = punch_info_send;
+        c->pcfg->probe_ep[0] = c->n->probe_ep[0];
+        c->pcfg->probe_ep[1] = c->n->probe_ep[1];
+        memcpy(c->pcfg->probe_key, pk, 32);
+        memcpy(c->pcfg->ticket, c->n->ticket, sizeof c->pcfg->ticket);
+        c->pcfg->clock_offset_ms = c->n->clock_offset_ms;
+        c->pcfg->info = punch_info_send;
     }
-    c->punch = npf_punch_new(c->n->loop, &c->pcfg, c->n->udp_fd, punch_done, c);
+    c->punch = npf_punch_new(c->n->loop, c->pcfg, c->n->udp_fd, punch_done, c);
     if (c->punch)
-        c->punch_socks = c->pcfg.plan.n_sockets;
+        c->punch_socks = c->pcfg->plan.n_sockets;
     if (c->punch && c->info_port && c->info_round == c->punch_round)
         npf_punch_peer_port(c->punch, c->info_port);
 }
@@ -400,12 +402,14 @@ static void firewall_open(npf_call *c)
 {
     static const uint8_t one[1] = {0};
     int i, k;
+    if (!c->pcfg)
+        return;
     for (k = 0; k < 2; k++)
-        for (i = 0; i < c->pcfg.npeers; i++)
-            if (c->pcfg.peers[i].ss_family == AF_INET || c->n->udp6_fd >= 0)
-                call_udp_send(c, c->pcfg.peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd,
-                         &c->pcfg.peers[i], one, 1);
-    npf_logd("call %s: firewall: flows to %d peer candidates opened before the punch", c->call_id_s, c->pcfg.npeers);
+        for (i = 0; i < c->pcfg->npeers; i++)
+            if (c->pcfg->peers[i].ss_family == AF_INET || c->n->udp6_fd >= 0)
+                call_udp_send(c, c->pcfg->peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd,
+                         &c->pcfg->peers[i], one, 1);
+    npf_logd("call %s: firewall: flows to %d peer candidates opened before the punch", c->call_id_s, c->pcfg->npeers);
 }
 
 
@@ -438,7 +442,7 @@ static int cand_skipped(const npf_call *c, const struct sockaddr_storage *to, co
 
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
 {
-    npf_punch_plan *pl = &c->pcfg.plan;
+    npf_punch_plan *pl;
     int peer = npf_json_get(j, d, "peer"), arr, i;
     int64_t v, start_at;
     uint8_t pid[8];
@@ -469,7 +473,10 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
     }
     c->punch_wait_keys = 0;
     c->sock_wait = 0;               /* the round came */
-    memset(&c->pcfg, 0, sizeof c->pcfg);
+    if (!c->pcfg && !(c->pcfg = calloc(1, sizeof *c->pcfg)))
+        return;
+    memset(c->pcfg, 0, sizeof *c->pcfg);
+    pl = &c->pcfg->plan;
     if (c->repunch_waiting) {       /* the round asked for: no longer waited for */
         npf_timer_cancel(c->n->loop, c->t_repunch);
         c->t_repunch = NULL;
@@ -503,18 +510,18 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
                        : strcmp(strat, "S5") == 0 ? NPF_PUNCH_S5 : NPF_PUNCH_S1;
     pl->side = npf_json_eq(j, npf_json_get(j, d, "side"), "hard") ? NPF_PUNCH_HARD : NPF_PUNCH_EASY;
     arr = npf_json_get(j, peer, "cand");
-    for (i = 0; arr >= 0 && i < j->tok[arr].size && c->pcfg.npeers < NPF_PUNCH_MAX_PEERS; i++) {
+    for (i = 0; arr >= 0 && i < j->tok[arr].size && c->pcfg->npeers < NPF_PUNCH_MAX_PEERS; i++) {
         char a[80];
         if (npf_json_get_str(j, npf_json_item(j, arr, i), "a", a, sizeof a) > 0
-            && npf_addr_parse(a, &c->pcfg.peers[c->pcfg.npeers]) == 0
-            && (c->pcfg.peers[c->pcfg.npeers].ss_family == AF_INET
-                || (c->pcfg.peers[c->pcfg.npeers].ss_family == AF_INET6 && c->n->udp6_fd >= 0))
-            && !cand_skipped(c, &c->pcfg.peers[c->pcfg.npeers], a)) {
+            && npf_addr_parse(a, &c->pcfg->peers[c->pcfg->npeers]) == 0
+            && (c->pcfg->peers[c->pcfg->npeers].ss_family == AF_INET
+                || (c->pcfg->peers[c->pcfg->npeers].ss_family == AF_INET6 && c->n->udp6_fd >= 0))
+            && !cand_skipped(c, &c->pcfg->peers[c->pcfg->npeers], a)) {
             if (!pl->peer_srflx_len && npf_json_eq(j, npf_json_get(j, npf_json_item(j, arr, i), "t"), "srflx")) {
-                pl->peer_srflx = c->pcfg.peers[c->pcfg.npeers];
+                pl->peer_srflx = c->pcfg->peers[c->pcfg->npeers];
                 pl->peer_srflx_len = sizeof(struct sockaddr_in);
             }
-            c->pcfg.npeers++;
+            c->pcfg->npeers++;
         }
     }
     if (npf_json_get_str(j, peer, "pub_ip", s, sizeof s) > 0)
@@ -549,7 +556,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         start_at = npf_node_time(c->n);
     npf_log("call %s: punch round %d %s %s, %d peer candidates, start in %lld ms", c->call_id_s,
                 c->punch_round, strat,
-                pl->side == NPF_PUNCH_HARD ? "hard" : "easy", c->pcfg.npeers,
+                pl->side == NPF_PUNCH_HARD ? "hard" : "easy", c->pcfg->npeers,
                 (long long)(start_at - npf_node_time(c->n)));
     if (c->t_punch)
         npf_timer_cancel(c->n->loop, c->t_punch);

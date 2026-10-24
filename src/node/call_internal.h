@@ -118,7 +118,7 @@ struct npf_call {
     int         ws_paired_once;     /* the WS relay worked at least once */
     int         ws_round;           /* caller: a round began on this relay connection (one each: a
                                        repeated relay_paired starts none) */
-    npf_punch_cfg pcfg;
+    npf_punch_cfg *pcfg;            /* the rounds' plan and candidates: made at the first punch_start */
     uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
     int         info_round;
     int         punch_wait_keys;
