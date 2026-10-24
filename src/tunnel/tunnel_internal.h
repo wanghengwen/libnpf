@@ -93,7 +93,7 @@ struct npf_tunnel {
     uint64_t    peer_seen[NPF_MAX_SUBLINKS / 64];  /* the NPF_MAX_SUBLINKS peer ids below it (its
                                    parity: every other one), bit k = peer_max_seen - 2(k + 1): seen
                                    (opened, or reset first) */
-    uint8_t    *rb;             /* frame reassembly */
+    uint8_t    *rb;             /* a control unit the stream's reads cut, gathered; none between units */
     size_t      rl, rcap;
     int         hello_sent, hello_recv;
     uint32_t    peer_window;
@@ -106,8 +106,9 @@ struct npf_tunnel {
     npf_budget *budget;         /* NULL: none */
     uint64_t    local_in, local_out;    /* read from / written to the local sockets */
     npf_timer  *t_rate;         /* a group ran dry: look again soon */
-    /* caller: targets registered for reverse mapping (data-channel.md 7.1) */
-    struct { uint32_t id; char host[256]; uint16_t port; } rev[NPF_MAX_REVERSE];
+    /* caller: targets registered for reverse mapping (data-channel.md 7.1),
+     * each made when registered (a callee's tunnel has none) */
+    struct rev_target { uint32_t id; uint16_t port; char host[]; } *rev[NPF_MAX_REVERSE];
     int         nrev;
     npf_timer  *t_virt;         /* virtual local ends to look at (virt_poll) */
     int         in_poll;        /* virt_poll runs (it arms itself again) */
@@ -117,8 +118,11 @@ struct npf_tunnel {
     int         ngone;          /* virtual ends their owner closed, not handled yet */
 };
 
-/* tunnel.c */
+/* tunnel.c: the frames, flow control, the sublinks and their local ends */
 int  tunnel_wb_put(wbuf *b, const void *p, size_t n);
+sublink *tunnel_find(npf_tunnel *t, uint32_t id);
+/* a local socket's event (also what virt_poll feeds a virtual end) */
+void tunnel_io_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 int  tunnel_send_frame(npf_tunnel *t, uint32_t id, int type, const void *payload, size_t len);
 void tunnel_update_ev(sublink *s);
 void tunnel_sub_free(sublink *s, int rst);
@@ -129,6 +133,15 @@ int  tunnel_leave(npf_tunnel *t);
 int  tunnel_flush_local(sublink *s);
 /* n bytes of the peer's data taken here: WINDOW back once a quarter of the window is free */
 void tunnel_credit_back(sublink *s, size_t n);
+
+/* tunnel_rate.c: the rate groups and the budget */
+/* bytes the sublink may move now (up: local -> tunnel), at most want; 0: wait for the next tick */
+size_t tunnel_rate_allow(sublink *s, int up, size_t want);
+void tunnel_rate_take(sublink *s, int up, size_t n);
+
+/* tunnel_virt.c: the virtual local ends */
+/* a poll of the virtual ends soon (one at a time, not from inside one) */
+void tunnel_virt_arm(npf_tunnel *t);
 
 /* tunnel_socks.c */
 /* parse what the client sent so far; -1 if the sublink was freed */

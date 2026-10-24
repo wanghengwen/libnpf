@@ -62,7 +62,7 @@ static npf_call *direct_call(npf_node *n, int caller, int fd, const struct socka
 static int direct_up(npf_call *c)
 {
     uint8_t k1[32], k2[32];
-    if (npf_noise_split(&c->hs, NULL, NULL, k1, k2, NULL) < 0)
+    if (npf_noise_split(&c->hs->noise, NULL, NULL, k1, k2, NULL) < 0)
         return -1;
     memcpy(c->k12, k1, 32);
     memcpy(c->k12 + 32, k2, 32);
@@ -91,7 +91,7 @@ static void direct_retry(npf_loop *loop, void *arg)
         npf_call_end(c, "timeout");
         return;
     }
-    call_udp_send(c, c->p2p_fd, &c->p2p_addr, c->dmsg1, c->dmsg1_len);
+    call_udp_send(c, c->p2p_fd, &c->p2p_addr, c->hs->dmsg1, c->hs->dmsg1_len);
     c->t_direct = npf_timer_add(c->n->loop, c->dtries < 3 ? 300LL << c->dtries : 2000, direct_retry, c);   /* ~14 s in all */
 }
 
@@ -104,20 +104,20 @@ npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, con
     npf_call *c = direct_call(n, 1, n->udp_fd, to);
     if (!c)
         return NULL;
-    if (npf_noise_init(&c->hs, NPF_NOISE_NNPSK0, 1, DIRECT_PROLOGUE, strlen(DIRECT_PROLOGUE), NULL, NULL, psk) < 0) {
+    if (npf_noise_init(&c->hs->noise, NPF_NOISE_NNPSK0, 1, DIRECT_PROLOGUE, strlen(DIRECT_PROLOGUE), NULL, NULL, psk) < 0) {
         call_free(c);
         return NULL;
     }
     npf_le64(pay, (uint64_t)npf_unix_ms());
     npf_random(pay + 8, pl - 8);
-    len = npf_noise_write(&c->hs, pay, pl, c->dmsg1, sizeof c->dmsg1);
+    len = npf_noise_write(&c->hs->noise, pay, pl, c->hs->dmsg1, sizeof c->hs->dmsg1);
     if (len < 0) {
         call_free(c);
         return NULL;
     }
-    c->dmsg1_len = (size_t)len;
+    c->hs->dmsg1_len = (size_t)len;
     c->state = NPF_CALL_CALLING;
-    call_udp_send(c, c->p2p_fd, &c->p2p_addr, c->dmsg1, c->dmsg1_len);
+    call_udp_send(c, c->p2p_fd, &c->p2p_addr, c->hs->dmsg1, c->hs->dmsg1_len);
     c->t_direct = npf_timer_add(n->loop, 300, direct_retry, c);
     npf_log("direct %s: connecting to %s", c->call_id_s, npf_addr_str(to, a, sizeof a));
     return c;
@@ -127,13 +127,13 @@ npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, con
 int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
     uint8_t p[256];
-    npf_noise_hs hs = c->hs;               /* a failed read spoils the state: keep ours for the real one */
+    npf_noise_hs hs = c->hs->noise;               /* a failed read spoils the state: keep ours for the real one */
     (void)from;
     /* message 2 is e (32) and the sealed payload (16 and more), no longer
      * than message 1 (no amplification): anything else is no attempt at it.
      * Each attempt costs an X25519 before the tag says no; a sender spoofing
      * the listener's address gets 64 of them per session */
-    if (len < 48 || len > c->dmsg1_len || len > 256 || ++c->direct_tries > 64) {
+    if (len < 48 || len > c->hs->dmsg1_len || len > 256 || ++c->direct_tries > 64) {
         npf_wipe(&hs, sizeof hs);
         return 0;
     }
@@ -141,7 +141,7 @@ int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct 
         npf_wipe(&hs, sizeof hs);
         return 0;
     }
-    c->hs = hs;
+    c->hs->noise = hs;
     npf_wipe(&hs, sizeof hs);
     if (c->t_direct) {
         npf_timer_cancel(c->n->loop, c->t_direct);
@@ -263,7 +263,7 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
     if (!c)
         goto out;
     c->policy = d->policy;
-    c->hs = hs;
+    c->hs->noise = hs;
     npf_wipe(&hs, sizeof hs);
     (void)npf_udp_send(d->fd, m2, (size_t)ml, from);
     if (direct_up(c) < 0) {

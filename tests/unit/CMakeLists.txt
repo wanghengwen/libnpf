@@ -32,3 +32,19 @@ foreach(name net faults)
   npf_target_options(npf_${name}_test)
   add_test(NAME ${name} COMMAND npf_${name}_test)
 endforeach()
+
+# the heap per callee session (not a test): bin/npf_memprobe [sessions];
+# glibc only (its __libc_malloc under the wrappers: not musl)
+include(CheckCSourceCompiles)
+check_c_source_compiles("#include <stdlib.h>
+#ifndef __GLIBC__
+#error not glibc
+#endif
+int main(void) { return 0; }" NPF_HAVE_GLIBC)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NPF_HAVE_GLIBC)
+  add_executable(npf_memprobe memprobe.c)
+  target_link_libraries(npf_memprobe PRIVATE npf_common)
+  target_include_directories(npf_memprobe PRIVATE ${NPF_LIB_DIR}/src/node ${NPF_LIB_DIR}/src/tunnel)
+  target_link_options(npf_memprobe PRIVATE -rdynamic)
+  npf_target_options(npf_memprobe)
+endif()

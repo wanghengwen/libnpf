@@ -449,7 +449,7 @@ int tunnel_socks_parse(sublink *s)
                 else if (atyp == 4) inet_ntop(AF_INET6, addr, host, sizeof host);
                 else { memcpy(host, addr, alen); host[alen] = 0; }
                 for (i = 0; i < s->t->nrev; i++)
-                    if (s->t->rev[i].port == port && strcmp(s->t->rev[i].host, host) == 0)
+                    if (s->t->rev[i]->port == port && strcmp(s->t->rev[i]->host, host) == 0)
                         ok = 1;
                 if (!ok) {
                     socks_fail(s, 2);

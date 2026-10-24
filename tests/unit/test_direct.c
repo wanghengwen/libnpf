@@ -146,7 +146,7 @@ static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, 
         call_crev_add(c, 7, "127.0.0.1", 8080, 0);
         call_crev_add(c, 9, "127.0.0.1", 5353, 1);
         c->tun = call_tunnel_new(c);
-        CHECK(c->tun && c->tun->nrev == 1 && c->tun->rev[0].id == 7 && c->tun->rev[0].port == 8080,
+        CHECK(c->tun && c->tun->nrev == 1 && c->tun->rev[0]->id == 7 && c->tun->rev[0]->port == 8080,
               "a new tunnel has the TCP -R mapping");
         npf_call_end(c, "closed");
         npf_loop_once(loop, 10);
