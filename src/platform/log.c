@@ -17,6 +17,8 @@
 #include "npf/sys.h"
 
 #ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
 #include <windows.h>
 static SRWLOCK g_lock = SRWLOCK_INIT;
 static void lock_fn(bool lock, void *udata)
@@ -87,7 +89,26 @@ static int log_attach(int to_stderr)
     if (to_stderr)
         dup2(fileno(f), 2);         /* stray stderr output lands in the log too */
 #else
-    (void)to_stderr;
+    if (to_stderr) {
+        /* as POSIX dup2s: stray stderr output (a start-up error, the CRT's
+         * own messages) lands in the log too. A handle of its own that
+         * shares delete, so that it does not hold the file against the
+         * rotation's rename */
+        HANDLE h = CreateFileA(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        int fd = h != INVALID_HANDLE_VALUE ? _open_osfhandle((intptr_t)h, _O_WRONLY | _O_APPEND) : -1;
+        if (fd >= 0) {
+            fflush(stderr);
+            if (_dup2(fd, 2) == 0) {
+                HANDLE e = (HANDLE)_get_osfhandle(2);
+                SetHandleInformation(e, HANDLE_FLAG_INHERIT, 0);    /* _dup2 makes it inheritable */
+                SetStdHandle(STD_ERROR_HANDLE, e);
+            }
+            _close(fd);
+        } else if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+        }
+    }
 #endif
     if (g_logf)
         fclose(g_logf);

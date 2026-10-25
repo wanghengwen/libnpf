@@ -51,7 +51,8 @@ size_t npf_log_recent(char *out, size_t cap);
 /* ---- log files (the application's daemon and service use them) ---- */
 
 /* log to path (append) instead of stderr; rotated to path.1 at max_bytes
- * (0 = 10 MB). 0 or -1. */
+ * (0 = 10 MB). The process's stderr goes to the file too (POSIX and
+ * Windows). 0 or -1. */
 int  npf_log_open(const char *path, long max_bytes);
 /* the same in an application: the file only, its stderr left alone (other
  * code writes there: an Android GPU driver) */
