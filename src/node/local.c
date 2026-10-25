@@ -264,9 +264,9 @@ static int convert_old(npf_local *l, const char *dir)
     if ((f = fopen(p, "r"))) {
         while (fgets(line, sizeof line, f)) {
             char num[32], k[128];
-            const char *p = line;
+            const char *w = line;
             npf_ldev *d;
-            if (npf_text_word(&p, num, sizeof num) == 0 && npf_text_word(&p, k, sizeof k) == 0 && (d = npf_local_dev(l, num, 1))
+            if (npf_text_word(&w, num, sizeof num) == 0 && npf_text_word(&w, k, sizeof k) == 0 && (d = npf_local_dev(l, num, 1))
                 && npf_b64url_decode(k, strlen(k), d->key, 32) == 32)
                 d->has_key = 1;
         }
