@@ -742,6 +742,8 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     n->logins++;
     n->last_login_unix_ms = npf_unix_ms();
     n->unreachable_since = 0;
+    n->sig_error[0] = 0;
+    n->sig_refused = 0;
     n->src_backoff = 0;
     n->src_next = 0;
     if (n->t_login) {
@@ -826,6 +828,9 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
             char err[32] = "";
             npf_json_get_str(j, 0, "error", err, sizeof err);
             npf_logw("login: rejected (%s)", err);
+            snprintf(n->sig_error, sizeof n->sig_error, "server %d refused the login (%s)",
+                     n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, err);
+            n->sig_refused = 1;
             sig_refused(n, s, 3);
         }
         return;
@@ -924,6 +929,11 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
                  "logging in again in %d s", n->replaced_backoff_ms / 1000);
     } else if (n->cur_server >= 0)
         node_server_failed(&n->servers[n->cur_server], 1);
+    if (!was_online) {              /* an attempt that did not log in: the status says why */
+        snprintf(n->sig_error, sizeof n->sig_error, "server %d: %s", n->cur_server >= 0 ?
+                 n->servers[n->cur_server].id : -1, why ? why : "?");
+        n->sig_refused = 0;
+    }
     npf_log("signaling: disconnected (%s)", why);
     sig_gone(n, why, was_online);
 }
@@ -939,6 +949,8 @@ void node_sig_connect(npf_node *n)
         n->cur_server = node_server_pick(n);
     if (n->cur_server < 0) {
         npf_log("signaling: no usable server in the list");
+        snprintf(n->sig_error, sizeof n->sig_error, "no usable server in the list");
+        n->sig_refused = 0;
         schedule_reconnect(n);
         return;
     }
@@ -952,6 +964,8 @@ void node_sig_connect(npf_node *n)
     if (!n->sig) {
         node_server_failed(e, 1);
         npf_logw("signaling: cannot connect to %s", e->ws[i]);
+        snprintf(n->sig_error, sizeof n->sig_error, "cannot connect to %s", e->ws[i]);
+        n->sig_refused = 0;
         schedule_reconnect(n);
         return;
     }

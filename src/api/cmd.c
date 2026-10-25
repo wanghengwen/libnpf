@@ -280,6 +280,13 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
     jkey(o, &f, "online");
     npf_out_printf(o, "%s", n->online ? "true" : "false");
     jkint(o, &f, "server", n->online ? n->server_id : 0);
+    /* no server reached for so long (0: online, or no attempt failed yet), and why */
+    jkint(o, &f, "unreachable_s", !n->online && n->unreachable_since ? (npf_mono_ms() - n->unreachable_since) / 1000 : 0);
+    jkstr(o, &f, "server_error", !n->online && n->sig_error[0] ? n->sig_error : NULL);
+    if (!n->online && n->sig_error[0] && n->sig_refused) {
+        jkey(o, &f, "server_refused");      /* the platform turned the login down: not the network */
+        npf_out_printf(o, "true");
+    }
     snprintf(a, sizeof a, "%llu", (unsigned long long)n->account_id);
     jkstr(o, &f, "account", n->account_id ? a : NULL);
     jkstr(o, &f, "account_login", n->account_id && c->account_login[0] ? c->account_login : NULL);
