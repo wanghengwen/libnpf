@@ -250,7 +250,7 @@ npf_destroy(cli);
 | `conf_dir`（配置文件方式） | 只读 | `npf.conf` 及其中引用的文件 |
 | `data_dir` | 读写 | `identity`（本机密钥）、`node.json`（注册得到的编号与默认口令）、`state.json`（口令、配对、所有者）、`account.cert`、`serverlist-saved.bin`、`serverlist-builtin.bin`（`npf_setup` 以字节给出的服务器列表，每次启动写入）、`local.json` |
 
-- 需要保留身份和配对时，`data_dir` 应位于持久化存储上；丢失后的行为取决于角色和凭证，见第 5 节。POSIX 文件权限中，`identity`、`state.json`、`local.json` 等敏感文件按 0600 写入；保存的直连对端密钥也在 `local.json` 中；
+- 需要保留身份和配对时，`data_dir` 应位于持久化存储上；丢失后的行为取决于角色和凭证，见第 5 节。`state.json` 存在但损坏（读不出、解析不了）时 `npf_create` 失败（`err` 为 "cannot load authorization state …"），不按首次运行处理，见安全设计 5.1；POSIX 文件权限中，`identity`、`state.json`、`local.json` 等敏感文件按 0600 写入；保存的直连对端密钥也在 `local.json` 中；
 - 同一个 `data_dir` 不要同时给两个实例或两个进程用：库不提供目录独占锁，应用需要自行保证独占访问。
 
 **生效的设置**按顺序叠加，后者覆盖前者：npf.conf（或 `npf_setup` 的字段）、`npf_options.overrides`、`local.json` 的 `settings`（带保存的 `npf_config_set` 写在这里）。库从不写 npf.conf；运行时保存的设置、对端、转发和资源都写进 `data_dir/local.json`（临时文件 + rename，原子替换）。
