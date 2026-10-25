@@ -1,9 +1,11 @@
 #define _GNU_SOURCE
 #include <ctype.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "npf/conf.h"
 #include "npf/crypto.h"
@@ -363,6 +365,18 @@ long npf_file_read(const char *path, char **out)
     return n;
 }
 
+int npf_file_unreadable(const char *path)
+{
+    struct stat st;
+    FILE *f;
+    if (stat(path, &st) != 0)
+        return errno == ENOENT ? 0 : errno;
+    if (!(f = fopen(path, "rb")))
+        return errno ? errno : EACCES;
+    fclose(f);
+    return EIO;
+}
+
 int npf_file_write(const char *path, const void *data, size_t len, int mode)
 {
     char tmp[1024];
@@ -412,6 +426,22 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
         return -1;
     }
     close(fd);
-    return rename(tmp, path);
+    if (rename(tmp, path) < 0)
+        return -1;
+    {   /* the rename on the disk too: after a power cut the old file must
+         * not come back (an unpairing, a new password, a revocation undone) */
+        char dir[1024];
+        const char *sl = strrchr(path, '/');
+        int dfd;
+        if (!sl)
+            snprintf(dir, sizeof dir, ".");
+        else
+            snprintf(dir, sizeof dir, "%.*s", sl == path ? 1 : (int)(sl - path), path);
+        if ((dfd = open(dir, O_RDONLY | O_CLOEXEC)) >= 0) {
+            fsync(dfd);                 /* EINVAL where directories cannot be: nothing more to do */
+            close(dfd);
+        }
+    }
+    return 0;
 #endif
 }

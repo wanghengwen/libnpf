@@ -3,6 +3,8 @@
  *   daemon changes the state again: not saved over;
  * - a rewrite in the same second with the same size is seen;
  * - a reload of a file that does not parse keeps the state in force;
+ * - at the start, a file that does not parse: its copy (.bak); both: safe
+ *   mode (no default authorization), left by a repair or passwd NEW --clear;
  * - an identity seed file that is there but unreadable is not replaced;
  * - a tmp file left in the way (a symlink) is not written through. */
 #define _GNU_SOURCE
@@ -15,6 +17,7 @@
 #include "npf/callee.h"
 #include "npf/conf.h"
 #include "npf/node.h"
+#include "npf/out.h"
 #include "npf/sys.h"
 
 static int fails;
@@ -82,10 +85,55 @@ int test_callee(void)
     }
     CHECK(strcmp(d.password, "local-pw-22") == 0, "the state in force kept (%s)", d.password);
     {
+        /* at the start: its copy (state.json.bak, written after each save)
+         * is taken, and the file written again from it (R2 M7) */
         static npf_callee first;
-        CHECK(npf_callee_init(&first, path, 123, seed, "default-pw") < 0,
-              "a corrupt file at startup does not restore the default password and clear revocations");
-        CHECK(!first.password[0], "no default password in force after failed initialization");
+        char bak[300], out[2048];
+        npf_out o = {0};
+        snprintf(bak, sizeof bak, "%s.bak", path);
+        CHECK(file_pw(bak, pw, sizeof pw) == 0 && strcmp(pw, "local-pw-22") == 0, "the copy has the last save (%s)", pw);
+        CHECK(npf_callee_init(&first, path, 123, seed, "default-pw") == 0 && !first.damaged
+              && strcmp(first.password, "local-pw-22") == 0, "a corrupt file at startup: its copy taken (%s)",
+              first.password);
+        CHECK(file_pw(path, pw, sizeof pw) == 0 && strcmp(pw, "local-pw-22") == 0, "and the file written again");
+
+        /* both unusable: safe mode, never the default authorization */
+        npf_file_write(path, "{not json", 9, 0600);
+        npf_file_write(bak, "{neither", 8, 0600);
+        CHECK(npf_callee_init(&first, path, 123, seed, "default-pw") == 0 && first.damaged,
+              "both corrupt at startup: safe mode, the start goes on");
+        CHECK(!first.password[0] && first.npaired == 0, "no default password in force");
+        CHECK(npf_callee_password_set(&first, "another-pw-1") == -2, "a password alone is not saved over it");
+        {
+            char *argv[] = {"all"};
+            CHECK(npf_callee_cmd(&first, "unpair", 1, argv, &o) == 1 && o.p && strstr(o.p, "damaged"),
+                  "unpair says the state is damaged");
+        }
+        npf_out_free(&o);
+        {
+            char *t = NULL;
+            CHECK(npf_file_read(path, &t) == 9, "the damaged file left for its repair");
+            free(t);
+        }
+        npf_callee_show(&first, &o);
+        CHECK(o.p && strstr(o.p, "DAMAGED"), "show says so");
+        npf_out_free(&o);
+        {
+            char *argv[] = {"fresh-pw-123", "--clear"};
+            CHECK(npf_callee_cmd(&first, "passwd", 2, argv, &o) == 0 && !first.damaged, "passwd NEW --clear: a fresh state");
+            npf_out_free(&o);
+        }
+        CHECK(file_pw(path, pw, sizeof pw) == 0 && strcmp(pw, "fresh-pw-123") == 0
+              && file_pw(bak, out, sizeof out) == 0 && strcmp(out, "fresh-pw-123") == 0, "written with its copy");
+
+        /* both unusable again, then the file repaired by hand: taken at the next look */
+        npf_file_write(path, "{not json", 9, 0600);
+        npf_file_write(bak, "{neither", 8, 0600);
+        CHECK(npf_callee_init(&first, path, 123, seed, "default-pw") == 0 && first.damaged, "safe mode again");
+        write_pw(path, "repaired-pw1");
+        CHECK(npf_callee_cmd(&first, "show", 0, NULL, &o) == 0 && !first.damaged
+              && strcmp(first.password, "repaired-pw1") == 0, "a repaired file ends safe mode (%s)", first.password);
+        npf_out_free(&o);
     }
 
     /* the identity seed: unreadable now, not replaced */

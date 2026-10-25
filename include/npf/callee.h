@@ -44,6 +44,8 @@ typedef struct npf_callee {
     uint64_t   state_ino, state_dev;    /* POSIX: every write renames a new file into place */
     int        state_settled;           /* the hash checked once the second was over: no more reads */
     int        state_loaded;            /* read once: a later file that does not parse is not taken */
+    int        damaged;                 /* safe mode: state.json and its copy unusable at the start:
+                                         * no call, no pairing, nothing saved until it is repaired */
     npf_policy policy;
     npf_callee_ops ops;
     npf_node  *node;
@@ -51,7 +53,11 @@ typedef struct npf_callee {
     struct npf_timer *t_watch;          /* the state file looked at (local changes) */
 } npf_callee;
 
-/* load the state file (defaults only when missing); -1 if unreadable or invalid */
+/* load the state file (defaults only when missing). One that cannot be read
+ * or parsed: its copy (STATE.bak, written after each save); both unusable:
+ * safe mode (damaged: every call and pairing refused, nothing saved; a
+ * repaired file is taken within 5 s, passwd NEW --clear writes a fresh one).
+ * 0, or -1 when there is no memory */
 int  npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, const uint8_t seed[32],
                      const char *default_pw);
 int  npf_callee_save(npf_callee *d);

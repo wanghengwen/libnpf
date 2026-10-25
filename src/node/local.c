@@ -2,9 +2,11 @@
 #define _GNU_SOURCE
 #include "npf/text.h"
 #include "npf/sys.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "npf/crypto.h"
 #include "npf/json.h"
@@ -416,6 +418,15 @@ int npf_local_load(npf_local *l, const char *dir, char *err, size_t errcap)
     snprintf(l->settings.path, sizeof l->settings.path, "%s", l->path);
     n = npf_file_read(l->path, &s);
     if (n < 0) {                            /* none yet: perhaps the files of an earlier version */
+        int e = npf_file_unreadable(l->path);
+        if (e) {
+            /* there but not readable (another user's file, an I/O error): not
+             * taken for a first run, which would write it over and lose the
+             * saved nodes, settings and pinned keys */
+            snprintf(err, errcap, "cannot read %s: %s (it must belong to the user npf runs as)", l->path,
+                     strerror(e));
+            return -1;
+        }
         if (convert_old(l, dir) && npf_local_save(l) < 0) {
             snprintf(err, errcap, "cannot write %s", l->path);
             return -1;

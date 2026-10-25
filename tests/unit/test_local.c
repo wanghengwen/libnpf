@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "npf/local.h"
@@ -124,6 +125,19 @@ int test_local(void)
     put(dir, "local.json", "{\"devices\": {");
     CHECK(npf_local_load(&m, dir, err, sizeof err) < 0 && strstr(err, "not readable"), "damaged");
     npf_local_free(&m);
+    /* one that cannot be read (another user's, root's 0600 file) is not a
+     * first run either: refused, and left as it is (R2 M6) */
+    if (geteuid() != 0) {
+        char lp[600];
+        struct stat st;
+        put(dir, "local.json", "{\"devices\": {}}");
+        snprintf(lp, sizeof lp, "%s/local.json", dir);
+        chmod(lp, 0);
+        CHECK(npf_local_load(&m, dir, err, sizeof err) < 0 && strstr(err, "cannot read"), "unreadable: %s", err);
+        npf_local_free(&m);
+        CHECK(stat(lp, &st) == 0 && st.st_size == 15 && (st.st_mode & 0777) == 0, "and not written over");
+        chmod(lp, 0600);
+    }
 
     /* an earlier version's local.conf and known: converted once */
     unlink(strcat(strcpy(err, dir), "/local.json"));

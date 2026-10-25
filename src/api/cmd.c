@@ -262,6 +262,10 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
         jkstr(o, &f, "number", NULL);
     }
     jkstr(o, &f, "role", n->cfg.callable ? "node" : "client");
+    if (c->callee && c->callee->damaged) {  /* safe mode (callee.h): calls and pairing refused */
+        jkey(o, &f, "state_damaged");
+        npf_out_printf(o, "true");
+    }
     if (c->model_dev) {                     /* one key per model: the enrolment (signaling.md "enroll") */
         static const char *const st[] = {"none", "enrolling", "enrolled", "refused"};
         int g = 1, s = c->has_number && n->enroll_state != NPF_ENROLL_REFUSED ? NPF_ENROLL_DONE : n->enroll_state;

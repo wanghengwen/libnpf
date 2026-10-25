@@ -58,6 +58,10 @@ int npf_conf_value_ok(const char *value);
 
 /* Read a whole file (NUL-terminated). Returns length or -1. *out is malloc'd. */
 long npf_file_read(const char *path, char **out);
+/* after npf_file_read failed: why the file is there but cannot be read (an
+ * errno value: EACCES, EIO when it opened but did not read through), 0 when
+ * it is not there (a first run) */
+int  npf_file_unreadable(const char *path);
 /* Atomic replace: temp file, fsync, rename. mode e.g. 0600. Returns 0 or -1. */
 int npf_file_write(const char *path, const void *data, size_t len, int mode);
 

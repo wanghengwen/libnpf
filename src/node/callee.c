@@ -76,36 +76,80 @@ static int state_changed(npf_callee *d)
     return changed;
 }
 
+/* a state file's text and its JSON (tok on the heap): 0; -1 when it cannot
+ * be read (*missing: it is not there at all) or parsed */
+static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_json *j, int *missing)
+{
+    struct stat st;
+    *tok = NULL;
+    *missing = 0;
+    if ((*n = npf_file_read(path, s)) < 0) {
+        *missing = stat(path, &st) != 0 && errno == ENOENT;
+        if (!*missing)
+            npf_loge("state: cannot read %s", path);
+        return -1;
+    }
+    if (!(*tok = malloc(2048 * sizeof **tok)) || npf_json_parse(j, *s, (size_t)*n, *tok, 2048) < 0
+        || (*tok)[0].type != NPF_JT_OBJECT) {
+        npf_loge("state: %s cannot be parsed", path);
+        free(*tok);
+        *tok = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+static int state_save(npf_callee *d);
+
 static int state_load(npf_callee *d)
 {
     npf_jtok *tok = NULL;
-    char *s;
-    long n = npf_file_read(d->state_path, &s);
+    char *s = NULL, bak[1100];
+    long n;
     npf_json j;
-    int arr, i;
+    int arr, i, missing, from_bak = 0;
     int64_t v;
-    if (n < 0) {
-        struct stat st;
-        if (stat(d->state_path, &st) == 0 || errno != ENOENT) {
-            npf_loge("state: cannot read %s", d->state_path);
-            return -1;                     /* only a missing file means first run */
-        }
-    } else {
-        /* Parse once, before changing anything. A failed second parse used
-         * to reset live authorization state to defaults under memory pressure. */
-        if (!(tok = malloc(2048 * sizeof *tok)) || npf_json_parse(&j, s, (size_t)n, tok, 2048) < 0
-            || tok[0].type != NPF_JT_OBJECT) {
-            npf_loge("state: %s cannot be parsed; %s", d->state_path,
-                     d->state_loaded ? "kept the state in force" : "refusing to use default authorization");
-            free(tok);
-            if (d->state_loaded)
-                stamp(d, s, (size_t)n);     /* told once, not at every check */
-            npf_wipe(s, (size_t)n);
-            free(s);
+    if (state_read(d->state_path, &s, &n, &tok, &j, &missing) < 0) {
+        if (missing) {
+            n = -1;                         /* only a missing file means first run */
+        } else if (d->state_loaded) {
+            /* a reload: what is in force stays (told once, not at every check) */
+            npf_loge("state: %s kept the state in force", d->state_path);
+            if (n >= 0) {
+                stamp(d, s, (size_t)n);
+                npf_wipe(s, (size_t)n);
+                free(s);
+            }
             return -1;
+        } else {
+            /* the start: its copy, written after the file at each save */
+            int bm;
+            stamp(d, n >= 0 ? s : "", n >= 0 ? (size_t)n : 0);    /* safe mode: until the file changes */
+            if (n >= 0) {
+                npf_wipe(s, (size_t)n);
+                free(s);
+            }
+            snprintf(bak, sizeof bak, "%s.bak", d->state_path);
+            if (state_read(bak, &s, &n, &tok, &j, &bm) < 0) {
+                if (n >= 0) {
+                    npf_wipe(s, (size_t)n);
+                    free(s);
+                }
+                if (!d->damaged)
+                    npf_loge("state: %s and %s cannot be used: safe mode, every call and pairing refused until "
+                             "the file is repaired (or passwd NEW --clear writes a fresh one); never the default "
+                             "authorization", d->state_path, bak);
+                d->damaged = 1;
+                return -1;
+            }
+            npf_logw("state: %s cannot be used; its copy %s taken (written again)", d->state_path, bak);
+            from_bak = 1;
         }
     }
     d->state_loaded = 1;
+    if (d->damaged)
+        npf_log("state: %s readable again: safe mode over", d->state_path);
+    d->damaged = 0;
     snprintf(d->password, sizeof d->password, "%s", d->default_pw);
     d->npaired = 0;
     d->fails = 0;
@@ -117,7 +161,8 @@ static int state_load(npf_callee *d)
     d->owner_reset_pending = 0;
     if (n < 0)
         return 0;   /* first run: defaults */
-    stamp(d, s, (size_t)n);
+    if (!from_bak)
+        stamp(d, s, (size_t)n);
     if (npf_json_get_str(&j, 0, "password", d->password, sizeof d->password) <= 0)
         snprintf(d->password, sizeof d->password, "%s", d->default_pw);
     arr = npf_json_get(&j, 0, "paired");
@@ -154,15 +199,19 @@ static int state_load(npf_callee *d)
     free(tok);
     npf_wipe(s, (size_t)n);             /* the password */
     free(s);
+    if (from_bak)
+        state_save(d);                  /* the file from its copy */
     return 0;
 }
 
 static int state_save(npf_callee *d)
 {
-    char *buf = malloc(STATE_MAX);
+    char *buf, bak[1100];
     npf_jw w;
     int i, n;
-    if (!buf)
+    if (d->damaged)
+        return -1;                      /* safe mode: the damaged file stays for its repair */
+    if (!(buf = malloc(STATE_MAX)))
         return -1;
     npf_jw_init(&w, buf, STATE_MAX);
     npf_jw_obj(&w);
@@ -206,6 +255,11 @@ static int state_save(npf_callee *d)
         return -1;
     }
     stamp(d, buf, (size_t)n);
+    /* its copy, after it: taken at the start when the file cannot be used
+     * (the medium damaged it); the same content, so no change is undone */
+    snprintf(bak, sizeof bak, "%s.bak", d->state_path);
+    if (npf_file_write(bak, buf, (size_t)n, 0600) < 0)
+        npf_logw("state: cannot write its copy %s: %s", bak, strerror(errno));
     npf_wipe(buf, (size_t)n);           /* the password */
     free(buf);
     return 0;
@@ -327,6 +381,8 @@ static int op_authorized(npf_node *n, const uint8_t pub[32], void *arg)
     int i;
     (void)n;
     state_refresh(d);
+    if (d->damaged)
+        return 0;                       /* safe mode: who is paired is not known */
     for (i = 0; i < d->npaired; i++)
         if (npf_ct_eq(d->paired[i].pub, pub, 32) == 0)
             return 1;
@@ -338,7 +394,7 @@ static const char *op_password(npf_node *n, void *arg)
     npf_callee *d = arg;
     (void)n;
     state_refresh(d);
-    return d->password;
+    return d->damaged ? NULL : d->password;    /* safe mode: no pairing (never the default password) */
 }
 
 /* 1 while password pairing is locked (on the local clock, as it was set) */
@@ -346,7 +402,7 @@ static int op_locked(npf_node *n, void *arg)
 {
     npf_callee *d = arg;
     (void)n;
-    return d->locked_until > (int64_t)time(NULL);
+    return d->damaged || d->locked_until > (int64_t)time(NULL);
 }
 
 static void op_paired(npf_node *n, const uint8_t pub[32], void *arg)
@@ -401,6 +457,8 @@ static int op_grant_check(npf_node *n, const uint8_t *g, size_t len, const uint8
     int64_t now = npf_node_time(n) / 1000;
     int i;
     state_refresh(d);
+    if (d->damaged)
+        return -1;                      /* safe mode: the revocations are not known */
     if (!d->hosted_trust || n->cert_len == 0 || npf_cert_parse(n->cert, n->cert_len, &inter) < 0
         || !(inter.perms & NPF_PERM_GRANT) || npf_grant_verify(g, len, inter.sign_pub, &gr) < 0)
         return -1;
@@ -513,6 +571,11 @@ void npf_callee_show(npf_callee *d, npf_out *o)
     char num[16];
     snprintf(num, sizeof num, "%09llu", (unsigned long long)d->number);
     npf_out_printf(o, "number:           %.3s %.3s %.3s\n", num, num + 3, num + 6);
+    if (d->damaged) {
+        npf_out_printf(o, "state:            DAMAGED (%s and its copy cannot be used): calls and pairing refused;\n"
+                          "                  repair it, or passwd NEW --clear writes a fresh one\n", d->state_path);
+        return;
+    }
     npf_out_printf(o, "current password: %s%s\n", d->password, strcmp(d->password, d->default_pw) ? " (changed)" : "");
     npf_out_printf(o, "default password: %s\n", d->default_pw);
     if (d->locked_until > time(NULL))
@@ -560,7 +623,9 @@ int npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, cons
     snprintf(d->default_pw, sizeof d->default_pw, "%s", default_pw);
     d->hosted_trust = 1;
     npf_policy_refresh(&d->policy);
-    return state_load(d);
+    if (state_load(d) < 0 && !d->damaged)
+        return -1;
+    return 0;                           /* loaded, first run, or safe mode (d->damaged) */
 }
 
 int npf_callee_save(npf_callee *d)
@@ -595,6 +660,8 @@ void npf_callee_attach(npf_callee *d, npf_node *n)
 void npf_callee_on_login(npf_callee *d)
 {
     state_refresh(d);                   /* a local change first: not saved over */
+    if (d->damaged)
+        npf_loge("state: %s damaged: online, but every call and pairing refused (safe mode)", d->state_path);
     sync_paired(d);
     report_lock(d);
     state_watch_start(d);
@@ -606,11 +673,32 @@ void npf_callee_on_login(npf_callee *d)
 }
 
 /* local commands (D21); returns the exit code, or -2 if cmd is not one of them */
+/* safe mode left by writing a fresh state: this password, nobody paired,
+ * no owner, no lock (the revocations are lost: grants made before them
+ * work again until they expire) */
+static void state_fresh(npf_callee *d, const char *np)
+{
+    npf_logw("state: %s written afresh (safe mode over): a new password, no paired callers", d->state_path);
+    d->damaged = 0;
+    d->state_loaded = 1;
+    snprintf(d->password, sizeof d->password, "%s", np);
+    d->npaired = 0;
+    d->fails = 0;
+    d->locked_until = 0;
+    d->lock_secs = 0;
+    d->cert_len = 0;
+    d->owner = 0;
+    d->nrevokes = 0;
+    d->owner_reset_pending = 0;
+}
+
 int npf_callee_password_set(npf_callee *d, const char *np)
 {
     if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
         return -1;
     state_refresh(d);
+    if (d->damaged)
+        return -2;                      /* safe mode: passwd NEW --clear (npf_callee_cmd) writes a fresh state */
     snprintf(d->password, sizeof d->password, "%s", np);
     d->fails = 0;
     d->locked_until = 0;
@@ -623,6 +711,8 @@ int npf_callee_unpair_key(npf_callee *d, const uint8_t *key)
 {
     int k;
     state_refresh(d);
+    if (d->damaged)
+        return -2;
     if (!key) {
         d->npaired = 0;
     } else {
@@ -640,6 +730,8 @@ int npf_callee_unpair_key(npf_callee *d, const uint8_t *key)
 int npf_callee_owner_reset(npf_callee *d)
 {
     state_refresh(d);                   /* a local change first: not saved over */
+    if (d->damaged)
+        return -2;
     d->owner = 0;
     d->owner_reset_pending = 1;
     return state_save(d) < 0 ? -2 : 0;
@@ -651,6 +743,27 @@ int npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, npf_ou
     if (strcmp(cmd, "show") == 0) {
         npf_callee_show(d, o);
         return 0;
+    }
+    if (d->damaged) {
+        int i, clear = 0;
+        const char *np = NULL;
+        for (i = 0; strcmp(cmd, "passwd") == 0 && i < argc; i++) {
+            if (strcmp(argv[i], "--clear") == 0) clear = 1;
+            else if (strcmp(argv[i], "--reset") != 0) np = argv[i];
+        }
+        if (strcmp(cmd, "passwd") == 0 && clear && np && strlen(np) >= 8 && strlen(np) < sizeof d->password) {
+            state_fresh(d, np);
+            npf_callee_changed(d);
+            if (state_save(d) < 0)
+                return 1;
+            npf_out_printf(o, "the damaged state replaced: password changed, no paired callers\n");
+            return 0;
+        }
+        if (strcmp(cmd, "passwd") == 0 || strcmp(cmd, "unpair") == 0 || strcmp(cmd, "owner-reset") == 0) {
+            npf_out_printf(o, "the state file %s is damaged (calls and pairing are refused): repair it, or write a "
+                              "fresh one with passwd NEW --clear (all paired callers removed)\n", d->state_path);
+            return 1;
+        }
     }
     if (strcmp(cmd, "passwd") == 0) {
         int clear = 0, i;

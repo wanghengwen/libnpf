@@ -119,23 +119,51 @@ static int unreadable(const char *path)
     return 0;
 }
 
-/* data_dir/node.json: {"number", "password"} of an enrolled identity */
-static int load_node(npf_t *n)
+/* a node.json: 0, -1 when it cannot be read, -2 when it is there but not
+ * npf's (damaged) */
+static int load_node_file(npf_t *n, const char *path)
 {
     npf_jtok tok[32];
     char *s, num[24];
-    long len = npf_file_read(n->node_path, &s);
+    long len = npf_file_read(path, &s);
     npf_json j;
     int ok;
     if (len < 0)
         return -1;
     ok = npf_json_parse(&j, s, (size_t)len, tok, 32) == 0 && npf_json_get_str(&j, 0, "number", num, sizeof num) > 0
-         && npf_json_get_str(&j, 0, "password", n->default_pw, sizeof n->default_pw) > 0;
+         && npf_json_get_str(&j, 0, "password", n->default_pw, sizeof n->default_pw) > 0
+         && strtoull(num, NULL, 10) != 0;
     npf_wipe(s, (size_t)len);           /* the default password */
     free(s);
-    if (!ok)
-        return -1;
+    if (!ok) {
+        n->default_pw[0] = 0;
+        return -2;
+    }
     n->number = strtoull(num, NULL, 10);
+    return 0;
+}
+
+/* data_dir/node.json: {"number", "password"} of an enrolled identity; a
+ * damaged one: its copy (node.json.bak, written with it), and the file
+ * written again from it. 0, -1 none (or unreadable), -2 damaged, its copy too */
+static int load_node(npf_t *n)
+{
+    char bak[1100];
+    int r = load_node_file(n, n->node_path);
+    if (r != -2)
+        return r;
+    snprintf(bak, sizeof bak, "%s.bak", n->node_path);
+    if (load_node_file(n, bak) != 0)
+        return -2;
+    npf_logw("%s is damaged: its copy %s taken (written again)", n->node_path, bak);
+    {
+        char out[128];
+        int len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n",
+                           (unsigned long long)n->number, n->default_pw);
+        if (npf_file_write(n->node_path, out, (size_t)len, 0600) < 0)
+            npf_logw("cannot write %s", n->node_path);
+        npf_wipe(out, sizeof out);
+    }
     return 0;
 }
 
@@ -366,6 +394,13 @@ int npf_become_node(npf_t *n, uint64_t number)
         npf_loge("cannot write %s: the number is lost at the next start", n->node_path);
         return -1;
     }
+    {   /* its copy: taken when the medium damages the file (load_node) */
+        char bak[1100];
+        snprintf(bak, sizeof bak, "%s.bak", n->node_path);
+        if (npf_file_write(bak, out, (size_t)len, 0600) < 0)
+            npf_logw("cannot write %s", bak);
+    }
+    npf_wipe(out, sizeof out);
     n->number = number;
     n->has_number = 1;
     /* callable from now on here too, as in the node's own copy (node_signal.c):
@@ -422,7 +457,16 @@ int npf_engine_identity_load(npf_t *n, char *err, size_t errcap)
             snprintf(err, errcap, "cannot read or make %s", seed_path);
             return -1;
         }
-        n->has_number = load_node(n) == 0;
+        int ln = load_node(n);
+        n->has_number = ln == 0;
+        if (ln == -2) {
+            /* not taken for "not enrolled": that would enroll again (another
+             * number, the owner's binding and the pairings gone with it) */
+            snprintf(err, errcap, "%s is damaged (and its copy): repair it, or move it away to enroll again "
+                     "(a new number)", n->node_path);
+            npf_wipe(seed, sizeof seed);
+            return -1;
+        }
         if (!n->has_number && unreadable(n->node_path)) {
             /* there but not readable now: not enrolled again over it */
             snprintf(err, errcap, "cannot read %s", n->node_path);

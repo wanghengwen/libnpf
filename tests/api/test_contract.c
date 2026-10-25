@@ -197,11 +197,73 @@ static void file_only(void)
     rmdir(dir);
 }
 
+/* a damaged node.json (an enrolled identity's number) is not "not enrolled",
+ * which would enroll again under another number: its copy node.json.bak is
+ * taken, and without one npf_create says so */
+static void put_file(const char *dir, const char *name, const char *text)
+{
+    char path[400];
+    FILE *f;
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    if ((f = fopen(path, "w"))) {
+        fputs(text, f);
+        fclose(f);
+    }
+}
+
+static void node_json(void)
+{
+    static const char *const files[] = {"identity", "seed", "local.json", "node.json", "node.json.bak", "state.json",
+                                        "state.json.bak", "npf.conf"};
+    char dir[] = "/tmp/npf-contract-XXXXXX", err[300], path[400];
+    npf_options o;
+    npf_t *n = NULL;
+    size_t i;
+    int rc;
+    if (!mkdtemp(dir)) {
+        check(0, "a directory");
+        return;
+    }
+    npf_options_init(&o);
+    o.conf_dir = dir;
+    o.role = NPF_ROLE_NODE;
+    o.overrides = "udp_port = 0\n";
+    put_file(dir, "npf.conf", "root = nvwgWTOBpFl_zXsDesOy2N9KGi56wOLQRngcgZkD_xM\n");
+    put_file(dir, "node.json", "{\"number\":\"1234");
+    rc = npf_create(&o, &n, err, sizeof err);
+    check(rc != NPF_OK && strstr(err, "node.json is damaged"), "a damaged node.json: npf_create says so");
+    if (rc == NPF_OK)
+        npf_destroy(n);
+    n = NULL;
+    put_file(dir, "node.json.bak", "{\"number\":\"123456789\",\"password\":\"ABCD-EFGH\"}\n");
+    rc = npf_create(&o, &n, err, sizeof err);
+    {
+        char text[200] = "";
+        FILE *f;
+        snprintf(path, sizeof path, "%s/node.json", dir);
+        if ((f = fopen(path, "r"))) {
+            if (!fgets(text, sizeof text, f))
+                text[0] = 0;
+            fclose(f);
+        }
+        /* (no server list here: npf_create stops later, at the configuration) */
+        check(!strstr(err, "damaged") && strstr(text, "123456789"), "its copy taken, and the file written again");
+    }
+    if (rc == NPF_OK)
+        npf_destroy(n);
+    for (i = 0; i < sizeof files / sizeof files[0]; i++) {
+        snprintf(path, sizeof path, "%s/%s", dir, files[i]);
+        unlink(path);
+    }
+    rmdir(dir);
+}
+
 int main(void)
 {
     alarm(30);
     inits();
     unsaved();
     file_only();
+    node_json();
     return fails != 0;
 }
