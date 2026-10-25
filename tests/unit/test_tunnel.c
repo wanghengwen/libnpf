@@ -402,6 +402,7 @@ static int listen_lo(int backlog, uint16_t *port)
     return fd;
 }
 
+#ifdef __linux__ /* the happy eyeballs case below is Linux only */
 /* the test resolver: "he.test" is a port that never answers, then the target */
 static uint16_t he_dead, he_live;
 static int he_resolve(const char *host, uint16_t port, struct sockaddr_storage *out, socklen_t *lens, int max)
@@ -421,6 +422,7 @@ static int he_resolve(const char *host, uint16_t port, struct sockaddr_storage *
     }
     return 2;
 }
+#endif
 
 static void v6(struct sockaddr_storage *a, int tag)
 {
