@@ -54,6 +54,8 @@ static char *query(npf_t *n, int what, int max)
     memset(&q, 0, sizeof q);
     q.what = what;
     q.max = max > 0 ? max : 16384;
+    if (q.max > NPF_LOG_RING)
+        q.max = NPF_LOG_RING;                /* no query can return more bytes than the ring holds */
     if (!n)
         return NULL;
     if (sync_call(n, q_run, &q) < 0 || q.o.failed) {

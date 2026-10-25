@@ -19,7 +19,9 @@ static void rg_refill(rgroup *g)
     int64_t now = npf_mono_ms(), add;
     if (now <= g->at_ms)
         return;
-    add = (now - g->at_ms) * (int64_t)g->rate / 1000;
+    /* The bucket holds at most a second. A high-rate group idle for weeks
+     * must not overflow elapsed_ms * rate just to fill that bucket. */
+    add = now - g->at_ms >= 1000 ? g->rate : (now - g->at_ms) * (int64_t)g->rate / 1000;
     if (add <= 0)
         return;
     g->at_ms = now;

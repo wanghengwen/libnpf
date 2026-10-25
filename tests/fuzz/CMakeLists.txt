@@ -17,3 +17,7 @@ add_test(NAME npf_fuzz_media COMMAND npf_fuzz media 50000 1)
 
 add_test(NAME npf_fuzz_http COMMAND npf_fuzz http 20000 1)
 add_test(NAME npf_fuzz_ws COMMAND npf_fuzz ws 20000 1)
+
+add_executable(npf_anliu_fuzz anliu.c)
+npf_target_options(npf_anliu_fuzz)
+add_test(NAME npf_fuzz_anliu COMMAND npf_anliu_fuzz 10000 1)

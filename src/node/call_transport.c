@@ -6,6 +6,7 @@
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -188,7 +189,23 @@ static void tun_ready(void *arg)
     npf_call *c = arg;
     if (c->caller && c->auth == AUTH_PAKE && c->n->hooks.on_paired)
         c->n->hooks.on_paired(c->n, c->number, c->peer_pub, c->n->hook_arg);
-    call_set_state(c, NPF_CALL_ESTABLISHED, NULL);
+    if (!c->ended)
+        call_set_state(c, NPF_CALL_ESTABLISHED, NULL);
+}
+
+/* Only ids emitted by ctl_request match a pending request. atoi accepted
+ * arbitrary prefixes / suffixes and overflowing numbers from the peer. */
+static int ctl_id(const char *s)
+{
+    int id = 0;
+    if (*s++ != 'c' || *s < '1' || *s > '9')
+        return -1;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9' || id > (INT_MAX - (*s - '0')) / 10)
+            return -1;
+        id = id * 10 + (*s - '0');
+    }
+    return id;
 }
 
 static void tun_control(void *arg, const npf_json *j)
@@ -199,7 +216,7 @@ static void tun_control(void *arg, const npf_json *j)
     if (npf_json_get_str(j, 0, "type", type, sizeof type) <= 0)
         return;
     if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) > 0) {
-        int id = atoi(rt + 1);
+        int id = ctl_id(rt);
         for (i = 0; i < NPF_CALL_CTL_MAX; i++) {
             if (c->ctl[i].fn && c->ctl[i].id == id) {
                 npf_ctl_fn fn = c->ctl[i].fn;
@@ -259,53 +276,76 @@ void call_ctl_fail_all(npf_call *c)
         }
 }
 
-int npf_call_ctl_request(npf_call *c, const char *type, const char *data_json, npf_ctl_fn fn, void *arg)
+static int ctl_send(npf_call *c, const char *type, const char *id_key, const char *id,
+                    const char *status, const char *error, const char *data_json)
 {
     char *buf;
-    int i, n, r;
-    for (i = 0; i < NPF_CALL_CTL_MAX; i++)
-        if (!c->ctl[i].fn)
-            break;
-    if (i == NPF_CALL_CTL_MAX || c->ended || !c->tun || !npf_tunnel_is_ready(c->tun) || !(buf = npf_scratch(NPF_CTRL_MAX)))
+    npf_jw w;
+    int n, r;
+    if (!c->tun || !(buf = npf_scratch(NPF_CTRL_MAX)))
         return -1;
-    c->ctl_seq++;
-    n = snprintf(buf, NPF_CTRL_MAX, "{\"v\":1,\"type\":\"%s\",\"id\":\"c%d\",\"data\":%s}", type, c->ctl_seq,
-                 data_json ? data_json : "{}");
-    r = n < 0 || n >= NPF_CTRL_MAX || npf_tunnel_control(c->tun, buf, (size_t)n) < 0 ? -1 : 0;
+    npf_jw_init(&w, buf, NPF_CTRL_MAX);
+    npf_jw_obj(&w);
+    npf_jw_kint(&w, "v", 1);
+    npf_jw_kstr(&w, "type", type);
+    if (id_key)
+        npf_jw_kstr(&w, id_key, id);
+    if (status)
+        npf_jw_kstr(&w, "status", status);
+    if (error)
+        npf_jw_kstr(&w, "error", error);
+    npf_jw_key(&w, "data");
+    npf_jw_raw(&w, data_json ? data_json : "{}", data_json ? strlen(data_json) : 2);
+    npf_jw_end(&w);
+    n = npf_jw_finish(&w);
+    r = n < 0 ? -1 : npf_tunnel_control(c->tun, buf, (size_t)n);
     npf_scratch_done(buf);
-    if (r < 0)
+    return r;
+}
+
+int npf_call_ctl_request(npf_call *c, const char *type, const char *data_json, npf_ctl_fn fn, void *arg)
+{
+    char id[24];
+    int i, k, seq;
+    if (!fn || c->ended || !c->tun || !npf_tunnel_is_ready(c->tun))
         return -1;
-    c->ctl[i].id = c->ctl_seq;
+    for (i = 0; i < NPF_CALL_CTL_MAX && c->ctl[i].fn; i++)
+        ;
+    if (i == NPF_CALL_CTL_MAX)
+        return -1;
+    do {
+        c->ctl_seq = c->ctl_seq == INT_MAX ? 1 : c->ctl_seq + 1;
+        for (k = 0; k < NPF_CALL_CTL_MAX; k++)
+            if (c->ctl[k].fn && c->ctl[k].id == c->ctl_seq)
+                break;
+    } while (k != NPF_CALL_CTL_MAX);
+    seq = c->ctl_seq;
+    snprintf(id, sizeof id, "c%d", seq);
+    c->ctl[i].id = seq;
     c->ctl[i].fn = fn;
     c->ctl[i].arg = arg;
+    if (ctl_send(c, type, "id", id, NULL, NULL, data_json) < 0) {
+        if (c->ctl[i].id == seq)
+            c->ctl[i].fn = NULL;
+        return -1;
+    }
     return 0;
 }
 
 int npf_call_ctl_event(npf_call *c, const char *type, const char *data_json)
 {
-    char *buf;
-    int n, r;
-    if (c->ended || !c->tun || !npf_tunnel_is_ready(c->tun) || !(buf = npf_scratch(NPF_CTRL_MAX)))
+    if (c->ended || !c->tun || !npf_tunnel_is_ready(c->tun))
         return -1;
-    n = snprintf(buf, NPF_CTRL_MAX, "{\"v\":1,\"type\":\"%s\",\"data\":%s}", type, data_json ? data_json : "{}");
-    r = n < 0 || n >= NPF_CTRL_MAX || npf_tunnel_control(c->tun, buf, (size_t)n) < 0 ? -1 : 0;
-    npf_scratch_done(buf);
-    return r;
+    return ctl_send(c, type, NULL, NULL, NULL, NULL, data_json);
 }
 
 int npf_call_ctl_reply(npf_call *c, const char *type, const npf_json *req, const char *status, const char *error,
                        const char *data_json)
 {
-    char *buf, id[24];
-    int n, r;
-    if (npf_json_get_str(req, 0, "id", id, sizeof id) <= 0 || !c->tun || !(buf = npf_scratch(NPF_CTRL_MAX)))
+    char id[24];
+    if (npf_json_get_str(req, 0, "id", id, sizeof id) <= 0)
         return -1;
-    n = snprintf(buf, NPF_CTRL_MAX, "{\"v\":1,\"type\":\"%s\",\"reply_to\":\"%s\",\"status\":\"%s\"%s%s%s,\"data\":%s}",
-                 type, id, status, error ? ",\"error\":\"" : "", error ? error : "", error ? "\"" : "",
-                 data_json ? data_json : "{}");
-    r = n < 0 || n >= NPF_CTRL_MAX ? -1 : npf_tunnel_control(c->tun, buf, (size_t)n);
-    npf_scratch_done(buf);
-    return r;
+    return ctl_send(c, type, "reply_to", id, status, error, data_json);
 }
 /* the target policy of this session's tunnel: a callee's, the published
  * resources; a caller's, none (its -R reaches what it registered, 7.1) */
@@ -563,7 +603,7 @@ static const npf_media_io media_io = {m_unit, m_ws_write, m_ws_backlog, m_kick, 
 /* the session's media streams, made on first use on its transport */
 npf_media *call_media_of(npf_call *c)
 {
-    if (!c->media && !c->ended && (c->ws_mode || c->anl))
+    if (!c->media && !c->ended && c->tun && (c->ws_mode || c->anl))
         c->media = npf_media_new(c->n->loop, c->ws_mode ? NULL : c->anl, !c->caller, &media_io, c);
     return c->media;
 }
@@ -598,7 +638,7 @@ static const npf_udpf_io udp_io = {u_unit, u_ws_write, u_ws_backlog, m_kick, u_a
 
 npf_udpf *call_udp_of(npf_call *c)
 {
-    if (!c->udp && !c->ended && (c->ws_mode || c->anl)) {
+    if (!c->udp && !c->ended && c->tun && (c->ws_mode || c->anl)) {
         c->udp = npf_udpf_new(c->n->loop, c->ws_mode ? NULL : c->anl, c->caller, call_policy(c), &udp_io, c);
         if (c->udp) {
             npf_udpf_set_shared(c->udp, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
@@ -741,7 +781,6 @@ int call_start_transport(npf_call *c)
 {
     anl_config cfg;
     uint8_t psk[32], cv[32];
-    npf_kdf(psk, c->k12, 64, "npf anliu psk v1", 16);
     npf_kdf(cv, c->k12, 64, "npf anliu conv v1", 17);
     npf_kdf(c->nominate_key, c->k12, 64, "npf nominate v1", 15);
     {
@@ -752,6 +791,7 @@ int call_start_transport(npf_call *c)
         c->path_ready = 1;
     }
     c->conv = npf_rd32(cv);
+    npf_wipe(cv, sizeof cv);
     if (c->conv == 0)
         c->conv = 1;
     c->keys_ready = 1;
@@ -766,6 +806,7 @@ int call_start_transport(npf_call *c)
         return 0;
     }
     anl_config_default(&cfg, c->caller ? ANL_ROLE_CLIENT : ANL_ROLE_SERVER);
+    npf_kdf(psk, c->k12, 64, "npf anliu psk v1", 16);
     memcpy(cfg.psk, psk, 32);
     cfg.mtu = ANL_MTU;
     cfg.default_rcv_wnd = NPF_ANL_CTRL_WND;
@@ -779,6 +820,7 @@ int call_start_transport(npf_call *c)
     }
     npf_wipe(psk, 32);
     c->anl = anl_create(c->conv, &cfg, c);
+    npf_wipe(&cfg, sizeof cfg);
     if (!c->anl)
         return -1;
     conv_link(c);

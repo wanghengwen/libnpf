@@ -447,6 +447,7 @@ npf_http *npf_http_get(npf_loop *loop, const char *url, const struct sockaddr_st
 
 void npf_http_cancel(npf_http *h)
 {
-    if (h)
+    /* Completion already owns the final free while fn is running. */
+    if (h && h->fn)
         h_free(h);
 }

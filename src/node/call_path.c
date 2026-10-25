@@ -237,9 +237,10 @@ void call_standby_done(npf_loop *loop, void *arg)
 void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     npf_call *c = arg;
+    int k;
     (void)loop;
     (void)ev;
-    for (;;) {
+    for (k = 0; k < 256; k++) {         /* level-triggered: leave time for timers and other sessions */
         uint8_t buf[2048];
         struct sockaddr_storage from;
         socklen_t fl = sizeof from;

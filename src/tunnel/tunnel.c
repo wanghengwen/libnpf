@@ -23,6 +23,8 @@ void npf_tunnel_dump(const npf_tunnel *t);
 
 int tunnel_wb_put(wbuf *b, const void *p, size_t n)
 {
+    if (b->off > SIZE_MAX - b->len || n > SIZE_MAX - b->off - b->len)
+        return -1;
     /* the tail full: the room written out at the front taken back when it is
      * as much as what stays (a byte moved for a byte written out at most;
      * at each full tail a local end that reads slowly had about three); else
@@ -34,8 +36,13 @@ int tunnel_wb_put(wbuf *b, const void *p, size_t n)
     if (b->off + b->len + n > b->cap) {
         size_t c = b->cap ? b->cap : 16384;
         uint8_t *q;
-        while (c < b->off + b->len + n)
+        while (c < b->off + b->len + n) {
+            if (c > SIZE_MAX / 2) {
+                c = b->off + b->len + n;
+                break;
+            }
             c *= 2;
+        }
         q = realloc(b->p, c);
         if (!q)
             return -1;
@@ -142,7 +149,7 @@ void tunnel_update_ev(sublink *s)
 {
     npf_tunnel *t = s->t;
     unsigned ev = 0;
-    if (s->fd < 0 && !s->v)
+    if (t->dead || (s->fd < 0 && !s->v))
         return;
     if (s->state == SL_LOCAL_GREETING) {
         ev = NPF_EV_READ;
@@ -174,15 +181,6 @@ void tunnel_sub_free(sublink *s, int rst)
 {
     npf_tunnel *t = s->t;
     int i;
-    if (!s->server && t->io.sublink_done) {    /* one we opened (npf_tunnel_open) ends (reverse: a server one) */
-        npf_sublink_stats st;
-        st.in = s->in;
-        st.out = s->out;
-        st.connect_ms = s->t_ok ? (int)(s->t_ok - s->t_open) : -1;
-        st.first_byte_ms = s->t_first ? (int)(s->t_first - s->t_open) : -1;
-        st.end = s->end ? s->end : !rst && s->fin_first == 2 ? "peer_closed" : !rst ? "local_closed" : "local_reset";
-        t->io.sublink_done(t->arg, s->id, &st);
-    }
     rx_add(t, -(int64_t)s->rx_window);
     for (i = 0; s->shared && i < 2; i++)
         if (t->shared[i])
@@ -194,6 +192,17 @@ void tunnel_sub_free(sublink *s, int rst)
             t->ids[i] = t->ids[t->nsubs];
             break;
         }
+    /* A callback may reset this id again or reset its whole group. Remove
+     * the sublink first, so it cannot be destroyed a second time. */
+    if (!s->server && s->t_open && t->io.sublink_done) {
+        npf_sublink_stats st;
+        st.in = s->in;
+        st.out = s->out;
+        st.connect_ms = s->t_ok ? (int)(s->t_ok - s->t_open) : -1;
+        st.first_byte_ms = s->t_first ? (int)(s->t_first - s->t_open) : -1;
+        st.end = s->end ? s->end : !rst && s->fin_first == 2 ? "peer_closed" : !rst ? "local_closed" : "local_reset";
+        t->io.sublink_done(t->arg, s->id, &st);
+    }
     if (s->t_connect)
         npf_timer_cancel(t->loop, s->t_connect);
     if (s->t_greet)
@@ -338,6 +347,8 @@ static ssize_t local_write(sublink *s, const uint8_t *p, size_t len)
 {
     size_t n;
     ssize_t w;
+    if (s->t->dead)
+        return -1;
     if (!s->v && s->fd < 0)
         return (ssize_t)len;            /* its virtual end closed (npf_tunnel_vclose): nobody reads it */
     n = tunnel_rate_allow(s, 0, len);
@@ -477,8 +488,10 @@ static void data_in(sublink *s, const uint8_t *p, size_t n)
         tunnel_sub_reset(s, NPF_RST_PROTOCOL);
         return;
     }
-    if (s->gone)
+    if (s->gone || s->vgone) {
+        s->rx_freed += (uint32_t)n;  /* consumed without granting any more window */
         return;   /* its local end closed: dropped, no credit back (the peer's window runs out) */
+    }
     if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
         /* into the parse buffer what fits (a greeting and a request are
          * 519 bytes at most); data pipelined after the request, in this
@@ -617,7 +630,10 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         tunnel_sub_free(s, 1);
         return 0;
     case FR_WINDOW:
-        if (n != 4)
+        /* WINDOW may overtake DATA, but credit can never exceed the
+         * largest window the peer is allowed to grant. */
+        if (n != 4 || npf_rd32(p) > (t->peer_window > NPF_MAX_WINDOW ? t->peer_window : NPF_MAX_WINDOW)
+            || s->tx_credit > (int64_t)(t->peer_window > NPF_MAX_WINDOW ? t->peer_window : NPF_MAX_WINDOW) - npf_rd32(p))
             goto proto;
         s->tx_credit += npf_rd32(p);
         tunnel_update_ev(s);
@@ -896,11 +912,18 @@ void tunnel_io_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 void npf_tunnel_kick(npf_tunnel *t)
 {
     int i;
-    if (!t->paused || t->io.backlog(t->arg) > BACKLOG_PAUSE / 2)
+    if (t->dead)
         return;
-    t->paused = 0;
-    for (i = 0; i < t->nsubs; i++)
-        tunnel_update_ev(t->subs[i]);
+    t->depth++;
+    if (!t->paused || t->io.backlog(t->arg) > BACKLOG_PAUSE / 2)
+        goto out;
+    if (!t->dead) {
+        t->paused = 0;
+        for (i = 0; i < t->nsubs && !t->dead; i++)
+            tunnel_update_ev(t->subs[i]);
+    }
+out:
+    tunnel_leave(t);
 }
 
 /* ---- public ---- */
@@ -950,7 +973,7 @@ int npf_tunnel_sub_bytes(npf_tunnel *t, uint32_t id, uint64_t *in, uint64_t *out
 
 int npf_tunnel_sub_reset(npf_tunnel *t, uint32_t id, const char *why)
 {
-    sublink *s = tunnel_find(t, id);
+    sublink *s = t->dead ? NULL : tunnel_find(t, id);
     if (!s)
         return -1;
     t->depth++;                             /* sublink_done may free the tunnel */
@@ -1036,12 +1059,15 @@ void npf_tunnel_start(npf_tunnel *t)
     int n = snprintf(buf, sizeof buf,
                      "{\"v\":2,\"type\":\"hello\",\"data\":{\"init_window\":%d,\"max_sublinks\":%d%s}}",
                      NPF_INIT_WINDOW, NPF_MAX_SUBLINKS, t->caller ? "" : ",\"socks\":[\"connect\"]");
-    if (t->hello_sent)
+    if (t->hello_sent || t->dead)
         return;
+    t->depth++;
     t->hello_sent = 1;
-    npf_tunnel_control(t, buf, (size_t)n);
-    if (t->hello_recv && t->io.ready)
+    if (npf_tunnel_control(t, buf, (size_t)n) < 0 && !t->dead)
+        broken(t, "cannot send hello");
+    if (!t->dead && t->hello_recv && t->io.ready)
         t->io.ready(t->arg);
+    tunnel_leave(t);
 }
 
 int npf_tunnel_is_ready(const npf_tunnel *t)
@@ -1102,12 +1128,18 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
 int npf_tunnel_open_rated(npf_tunnel *t, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
                           uint32_t rate)
 {
-    return open_sub(t, fd, NULL, NULL, passthrough, host, port, group, rate);
+    int r;
+    t->depth++;
+    r = open_sub(t, fd, NULL, NULL, passthrough, host, port, group, rate);
+    return tunnel_leave(t) ? -1 : r;
 }
 
 int npf_tunnel_open_v(npf_tunnel *t, const npf_vend_io *v, void *varg, const char *host, uint16_t port)
 {
-    return open_sub(t, -1, v, varg, 0, host, port, 0, 0);
+    int r;
+    t->depth++;
+    r = open_sub(t, -1, v, varg, 0, host, port, 0, 0);
+    return tunnel_leave(t) ? -1 : r;
 }
 
 /* a port mapping's greeting and CONNECT, pipelined; -1 for a host that
@@ -1149,7 +1181,7 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
     uint8_t req[300];
     size_t rl = 0;
     int i;
-    if (!npf_tunnel_is_ready(t) || t->nsubs >= t->peer_max || t->next_id > 0x7ffffff0u)
+    if (!npf_tunnel_is_ready(t) || t->nsubs >= t->peer_max || t->nsubs >= NPF_MAX_SUBLINKS || t->next_id > 0x7ffffff0u)
         return -1;
     /* checked first: on -1 the caller keeps its local end (a bad host freed
      * the sublink, closing the fd the caller then closed again) */
@@ -1179,7 +1211,7 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
         npf_set_nonblock(fd);
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     }
-    s = sub_new(t, t->next_id, fd, 0);
+    s = sub_new(t, t->next_id, -1, 0);  /* local end stays borrowed until open succeeds */
     if (!s)
         return -1;
     if (passthrough && !(s->hs = calloc(1, sizeof *s->hs))) {     /* its application's greeting */
@@ -1188,18 +1220,30 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
         return -1;
     }
     s->rg = g;
-    s->v = v;
-    s->varg = varg;
-    s->t_open = npf_mono_ms();
     t->next_id += 2;
     if (passthrough) {
         s->state = SL_LOCAL_GREETING;       /* -D: a SOCKS5 application */
         tunnel_greet_wait(s);
     } else {
-        tunnel_send_frame(t, s->id, FR_DATA, req, rl);
+        if (tunnel_send_frame(t, s->id, FR_DATA, req, rl) < 0 || t->dead) {
+            tunnel_sub_free(s, 0);
+            return -1;
+        }
         s->tx_credit -= (int64_t)rl;
         s->state = SL_CLIENT_WAIT;
     }
+    s->fd = fd;
+    s->v = v;
+    s->varg = varg;
     tunnel_update_ev(s);
+    if (t->dead) {
+        if (s->ev && fd >= 0)
+            npf_loop_del(t->loop, fd);
+        s->fd = -1;
+        s->v = NULL;
+        tunnel_sub_free(s, 0);
+        return -1;
+    }
+    s->t_open = npf_mono_ms();
     return (int)s->id;
 }

@@ -28,6 +28,23 @@ npf_target_options(npf_unit_tests)
 
 add_test(NAME npf_unit_tests COMMAND npf_unit_tests)
 
+add_executable(npf_audit_test test_audit.c)
+target_link_libraries(npf_audit_test PRIVATE npf_common)
+target_include_directories(npf_audit_test PRIVATE ${NPF_LIB_DIR}/src/node)
+npf_target_options(npf_audit_test)
+add_test(NAME audit COMMAND npf_audit_test)
+
+add_executable(npf_wire_audit_test test_wire_audit.c)
+target_link_libraries(npf_wire_audit_test PRIVATE npf_common)
+npf_target_options(npf_wire_audit_test)
+add_test(NAME wire_audit COMMAND npf_wire_audit_test)
+
+add_executable(npf_anliu_audit_test test_anliu_audit.c)
+target_link_libraries(npf_anliu_audit_test PRIVATE npf_common Threads::Threads)
+target_include_directories(npf_anliu_audit_test PRIVATE ${NPF_LIB_DIR}/src/node)
+npf_target_options(npf_anliu_audit_test)
+add_test(NAME anliu_audit COMMAND npf_anliu_audit_test)
+
 foreach(name net faults)
   add_executable(npf_${name}_test test_${name}.c)
   target_link_libraries(npf_${name}_test PRIVATE npf_common)

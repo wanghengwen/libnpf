@@ -338,9 +338,19 @@ int main(int argc, char **argv)
     opened = 0;
     for (i = 0; i < CYCLES; i++) {
         uint32_t m;
+        int retry;
         mo.tag = 100 + i % 7;
         mo.prio = i % 2;                    /* two sets of options */
-        if (!(m = npf_media_open(nb, b.session, &mo, &e))) {
+        /* CLOSE still occupies a transport slot until its acknowledgement.
+         * A busy loop may produce streams faster than the peer can retire
+         * them; respect that backpressure while testing repeated reuse. */
+        for (retry = 0; retry < 500; retry++) {
+            m = npf_media_open(nb, b.session, &mo, &e);
+            if (m || e != NPF_EBUSY)
+                break;
+            sleep_ms(10);
+        }
+        if (!m) {
             printf("cycle %d: open failed %d\n", i, e);
             break;
         }

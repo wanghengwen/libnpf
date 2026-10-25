@@ -81,6 +81,12 @@ int test_callee(void)
         CHECK(npf_callee_unpair_key(&d, nobody) == -1, "a command reads it (nothing to unpair)");
     }
     CHECK(strcmp(d.password, "local-pw-22") == 0, "the state in force kept (%s)", d.password);
+    {
+        static npf_callee first;
+        CHECK(npf_callee_init(&first, path, 123, seed, "default-pw") < 0,
+              "a corrupt file at startup does not restore the default password and clear revocations");
+        CHECK(!first.password[0], "no default password in force after failed initialization");
+    }
 
     /* the identity seed: unreadable now, not replaced */
     snprintf(seedp, sizeof seedp, "%s/identity", dir);

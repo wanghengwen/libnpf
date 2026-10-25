@@ -51,7 +51,7 @@ typedef struct npf_callee {
     struct npf_timer *t_watch;          /* the state file looked at (local changes) */
 } npf_callee;
 
-/* load the state file (defaults when missing) */
+/* load the state file (defaults only when missing); -1 if unreadable or invalid */
 int  npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, const uint8_t seed[32],
                      const char *default_pw);
 int  npf_callee_save(npf_callee *d);

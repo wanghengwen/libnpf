@@ -219,8 +219,12 @@ static void free_flow(npf_udpf *u, uflow *f)
 static void drop_flow(npf_udpf *u, uflow *f, int send, int reason)
 {
     unlink_flow(u, f);
-    if (!f->out)
-        u->closed[u->nclosed++ % CLOSED_RING] = f->id;
+    if (!f->out) {
+        u->closed[u->nclosed % CLOSED_RING] = f->id;
+        /* Keep the ring full after its first wrap, without signed overflow. */
+        if (++u->nclosed == 2 * CLOSED_RING)
+            u->nclosed = CLOSED_RING;
+    }
     if (send)
         unit(u, NPF_UDP_CLOSE, f->id, reason);
     free_flow(u, f);
@@ -615,6 +619,10 @@ static void frame_in(npf_udpf *u, const uint8_t *p, size_t n)
     }
     p += off;
     n -= off;
+    if (n > NPF_UDP_PAYLOAD_MAX) {
+        u->st.dropped++;
+        return;
+    }
     u->st.dgrams_in++;
     u->st.bytes_in += n;
     if (!(f = find_id(u, id))) {
@@ -685,6 +693,12 @@ void npf_udpf_drain(npf_udpf *u, anl_stream_t *s)
         }
         if (sz < 0)
             return;
+        if (sz > BUF_MAX) {                /* reject before allocating a peer-sized reassembly copy */
+            anl_stream_close(s);
+            u->s = NULL;
+            u->st.dropped++;
+            return;
+        }
         if (!(buf = npf_scratch((size_t)sz + 1)))  /* reused, not a malloc per datagram (nested use: its own) */
             return;
         r = anl_stream_recv_frame(s, (char *)buf, sz + 1, &fi);

@@ -20,11 +20,12 @@
  * nothing else runs meanwhile, timers come late (a ping, a watch) */
 #define SLOW_CB_MS 1000
 #define TIMED(fnp, call) do {                                                                       \
+        uintptr_t fn_ = (uintptr_t)(fnp);                                                          \
         int64_t t0_ = npf_mono_ms(), d_;                                                            \
         call;                                                                                       \
         if ((d_ = npf_mono_ms() - t0_) >= SLOW_CB_MS)                                               \
             npf_logw("loop: a callback held the loop %lld ms (%#lx; npf_loop_new %#lx)", (long long)d_, \
-                     (unsigned long)(uintptr_t)(fnp), (unsigned long)(uintptr_t)npf_loop_new);      \
+                     (unsigned long)fn_, (unsigned long)(uintptr_t)npf_loop_new);                   \
     } while (0)
 
 #ifdef _WIN32
@@ -1105,6 +1106,7 @@ void npf_loop_stop(npf_loop *l)
 npf_timer *npf_timer_add(npf_loop *l, int64_t delay_ms, npf_timer_fn fn, void *arg)
 {
     npf_timer *t;
+    int64_t now;
     if (l->nheap == l->capheap) {
         int cap = l->capheap ? 2 * l->capheap : 64;
         npf_timer **h = realloc(l->heap, (size_t)cap * sizeof *h);
@@ -1116,7 +1118,10 @@ npf_timer *npf_timer_add(npf_loop *l, int64_t delay_ms, npf_timer_fn fn, void *a
     t = calloc(1, sizeof *t);
     if (!t)
         return NULL;
-    t->due = npf_mono_ms() + (delay_ms < 0 ? 0 : delay_ms);
+    now = npf_mono_ms();
+    if (delay_ms < 0)
+        delay_ms = 0;
+    t->due = delay_ms > INT64_MAX - now ? INT64_MAX : now + delay_ms;
     t->seq = l->tseq++;
     t->fn = fn;
     t->arg = arg;

@@ -175,7 +175,8 @@ static void sink(log_Event *ev)
         g_log_size += n;
     }
     if (!g_logf || g_echo) {
-        fwrite(line + 11, 1, (size_t)n - 11, stderr);
+        size_t skip = n > 11 ? 11 : 0;     /* make_line returns one byte on a formatting error */
+        fwrite(line + skip, 1, (size_t)n - skip, stderr);
         fflush(stderr);
     }
     if (g_logf && g_log_size > g_log_rot)

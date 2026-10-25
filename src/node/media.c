@@ -402,6 +402,12 @@ int npf_media_drain(npf_media *m, anl_stream_t *s)
         }
         if (sz < 0 || m->st[i]->out || !m->st[i]->asked)
             return 0;                       /* ours sends only; not taken yet: it waits in AnLiu */
+        if (sz > NPF_MEDIA_FRAME_MAX) {
+            anl_stream_close(s);
+            drop_stream(m, i);
+            m->io.on_closed(m->arg, id);
+            return m->io.ended && m->io.ended(m->arg) ? -1 : 0;
+        }
         if (sz > (int)sizeof small && !(buf = malloc((size_t)sz)))
             return 0;
         r = anl_stream_recv_frame(s, buf, sz > (int)sizeof small ? sz : (int)sizeof small, &fi);

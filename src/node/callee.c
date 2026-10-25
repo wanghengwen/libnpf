@@ -78,26 +78,32 @@ static int state_changed(npf_callee *d)
 
 static int state_load(npf_callee *d)
 {
-    npf_jtok *tok;
+    npf_jtok *tok = NULL;
     char *s;
     long n = npf_file_read(d->state_path, &s);
     npf_json j;
     int arr, i;
     int64_t v;
-    if (n >= 0 && d->state_loaded) {
-        /* a reload: a file that does not parse (a hand edit, a tool's bad
-         * write) leaves what is in force as it is, not the defaults (the
-         * default password, nobody paired, no lock) */
+    if (n < 0) {
+        struct stat st;
+        if (stat(d->state_path, &st) == 0 || errno != ENOENT) {
+            npf_loge("state: cannot read %s", d->state_path);
+            return -1;                     /* only a missing file means first run */
+        }
+    } else {
+        /* Parse once, before changing anything. A failed second parse used
+         * to reset live authorization state to defaults under memory pressure. */
         if (!(tok = malloc(2048 * sizeof *tok)) || npf_json_parse(&j, s, (size_t)n, tok, 2048) < 0
             || tok[0].type != NPF_JT_OBJECT) {
-            npf_loge("state: %s is corrupt, kept the state in force (fix or remove the file)", d->state_path);
+            npf_loge("state: %s cannot be parsed; %s", d->state_path,
+                     d->state_loaded ? "kept the state in force" : "refusing to use default authorization");
             free(tok);
-            stamp(d, s, (size_t)n);         /* told once, not at every check */
+            if (d->state_loaded)
+                stamp(d, s, (size_t)n);     /* told once, not at every check */
             npf_wipe(s, (size_t)n);
             free(s);
             return -1;
         }
-        free(tok);
     }
     d->state_loaded = 1;
     snprintf(d->password, sizeof d->password, "%s", d->default_pw);
@@ -112,14 +118,6 @@ static int state_load(npf_callee *d)
     if (n < 0)
         return 0;   /* first run: defaults */
     stamp(d, s, (size_t)n);
-    if (!(tok = malloc(2048 * sizeof *tok)) || npf_json_parse(&j, s, (size_t)n, tok, 2048) < 0
-        || tok[0].type != NPF_JT_OBJECT) {
-        npf_loge("state: %s is corrupt, using defaults", d->state_path);
-        free(tok);
-        npf_wipe(s, (size_t)n);
-        free(s);
-        return 0;
-    }
     if (npf_json_get_str(&j, 0, "password", d->password, sizeof d->password) <= 0)
         snprintf(d->password, sizeof d->password, "%s", d->default_pw);
     arr = npf_json_get(&j, 0, "paired");
@@ -381,9 +379,8 @@ static void op_pair_failed(npf_node *n, void *arg)
     state_refresh(d);                   /* a local change first: not saved over */
     d->fails++;
     if (d->fails >= 5) {
-        d->lock_secs = d->lock_secs ? d->lock_secs * 2 : 15 * 60;
-        if (d->lock_secs > 24 * 3600)
-            d->lock_secs = 24 * 3600;
+        d->lock_secs = d->lock_secs >= 12 * 3600 ? 24 * 3600
+                       : d->lock_secs ? d->lock_secs * 2 : 15 * 60;
         d->locked_until = time(NULL) + d->lock_secs;
         state_watch_start(d);
         npf_logw("pairing locked for %lld s after repeated wrong passwords", (long long)d->lock_secs);
@@ -528,8 +525,16 @@ void npf_callee_show(npf_callee *d, npf_out *o)
     for (i = 0; i < d->npaired; i++) {
         char b[64], t[32];
         time_t a = (time_t)d->paired[i].added;
+        struct tm tm;
+        int valid;
         npf_b64url_encode(d->paired[i].pub, 32, b);
-        strftime(t, sizeof t, "%Y-%m-%d %H:%M", localtime(&a));
+#ifdef _WIN32
+        valid = localtime_s(&tm, &a) == 0;
+#else
+        valid = localtime_r(&a, &tm) != NULL;
+#endif
+        if (!valid || !strftime(t, sizeof t, "%Y-%m-%d %H:%M", &tm))
+            snprintf(t, sizeof t, "unknown");
         npf_out_printf(o, "  %2d  %016llx  %s  %s\n", i + 1, (unsigned long long)npf_fp(d->paired[i].pub), t, b);
     }
 }

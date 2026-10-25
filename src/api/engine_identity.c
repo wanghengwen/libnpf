@@ -356,6 +356,11 @@ int npf_become_node(npf_t *n, uint64_t number)
         return -1;                          /* before the number: has_number means a callee (cmd.c) */
     }
     random_password(pw);
+    if (npf_callee_init(n->callee, n->state_path, number, n->node.id.seed, pw) < 0) {
+        npf_loge("cannot load authorization state %s", n->state_path);
+        npf_wipe(pw, sizeof pw);
+        return -1;
+    }
     len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n", (unsigned long long)number, pw);
     if (npf_file_write(n->node_path, out, (size_t)len, 0600) < 0) {
         npf_loge("cannot write %s: the number is lost at the next start", n->node_path);
@@ -369,7 +374,6 @@ int npf_become_node(npf_t *n, uint64_t number)
     n->cfg.callable = 1;
     n->cfg.number = number;
     snprintf(n->default_pw, sizeof n->default_pw, "%s", pw);
-    npf_callee_init(n->callee, n->state_path, number, n->node.id.seed, pw);
     /* the published resources make the callee's policy now; without it an
      * exit node enrolled at run time refused every internet target until a
      * restart (2026-10-13) */
@@ -437,7 +441,11 @@ int npf_engine_identity_load(npf_t *n, char *err, size_t errcap)
             snprintf(err, errcap, "no memory");
             return -1;
         }
-        npf_callee_init(n->callee, n->state_path, n->number, seed, n->default_pw);
+        if (npf_callee_init(n->callee, n->state_path, n->number, seed, n->default_pw) < 0) {
+            npf_wipe(seed, 32);
+            snprintf(err, errcap, "cannot load authorization state %s", n->state_path);
+            return -1;
+        }
     }
     npf_wipe(seed, 32);
     return 0;

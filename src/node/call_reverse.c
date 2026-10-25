@@ -38,9 +38,10 @@ static int rev_allowed(struct rev_listener *l)
 static void rev_accept(npf_loop *loop, int lfd, unsigned ev, void *arg)
 {
     struct rev_listener *l = arg;
+    int k;
     (void)loop;
     (void)ev;
-    for (;;) {
+    for (k = 0; k < 64; k++) {
         int fd = npf_accept(lfd);
         if (fd < 0)
             break;
@@ -51,7 +52,7 @@ static void rev_accept(npf_loop *loop, int lfd, unsigned ev, void *arg)
         if (l->lan) {
             /* listening on every address: from this host and its LAN only, as
              * the reverse resource says ("lan:"), not the internet */
-            struct sockaddr_storage from;
+            struct sockaddr_storage from = {0};
             socklen_t fl = sizeof from;
             struct npf_policy *p = call_policy(l->c);
             if (getpeername(fd, (struct sockaddr *)&from, &fl) < 0 || !p

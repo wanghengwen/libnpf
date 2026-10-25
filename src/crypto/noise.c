@@ -1,5 +1,6 @@
 /* Noise handshake state machine (Noise spec rev 34, sections 5 and 7). */
 #include <string.h>
+#include <limits.h>
 
 #include "npf/noise.h"
 #include "npf/platform.h"
@@ -89,7 +90,7 @@ int npf_noise_encrypt(npf_noise_cs *cs, const uint8_t *ad, size_t ad_len,
                       const uint8_t *in, size_t len, uint8_t *out)
 {
     uint8_t nonce[12];
-    if (cs->n == UINT64_MAX)
+    if (cs->n == UINT64_MAX || len > INT_MAX - NPF_AEAD_TAG_SIZE)
         return -1;
     nonce_of(nonce, cs->n++);
     if (npf_aead_seal(cs->k, nonce, ad, ad_len, in, len, out) < 0)
@@ -101,7 +102,7 @@ int npf_noise_decrypt(npf_noise_cs *cs, const uint8_t *ad, size_t ad_len,
                       const uint8_t *in, size_t len, uint8_t *out)
 {
     uint8_t nonce[12];
-    if (cs->n == UINT64_MAX || len < NPF_AEAD_TAG_SIZE)
+    if (cs->n == UINT64_MAX || len < NPF_AEAD_TAG_SIZE || len - NPF_AEAD_TAG_SIZE > INT_MAX)
         return -1;
     nonce_of(nonce, cs->n);
     if (npf_aead_open(cs->k, nonce, ad, ad_len, in, len, out))
@@ -233,7 +234,7 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
     const int *tok;
     size_t o = 0;
     int i, n;
-    if (!npf_noise_my_turn(hs) || hs->step >= p->nmsg)
+    if (!npf_noise_my_turn(hs) || hs->step >= p->nmsg || plen > cap || plen > INT_MAX - NPF_AEAD_TAG_SIZE)
         return -1;
     tok = p->tok[hs->step];
     for (i = 0; i < MAX_TOKENS && tok[i] != T_END; i++) {
@@ -269,7 +270,7 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
                 return -1;
         }
     }
-    if (o + plen + (hs->cs.has_key ? 16 : 0) > cap)
+    if (plen > cap - o || (hs->cs.has_key && cap - o - plen < 16))
         return -1;
     n = enc_hash(hs, payload, plen, out + o);
     if (n < 0)

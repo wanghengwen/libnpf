@@ -495,7 +495,7 @@ int npf_json_get_b64(const npf_json *j, int obj, const char *key, uint8_t *out, 
 
 static void put(npf_jw *w, const char *s, size_t n)
 {
-    if (w->err || w->len + n + 1 > w->cap) {
+    if (w->err || w->len >= w->cap || n > w->cap - w->len - 1) {
         w->err = 1;
         return;
     }

@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,8 @@ int npf_node_send(npf_node *n, const char *type, int request, const char *data_j
     char id[16];
     if (!request)
         return send_env(n, type, NULL, NULL, NULL, NULL, data_json) < 0 ? -1 : 0;
+    if (n->req_seq == INT_MAX)
+        return -1;                         /* never wrap into negative / reused request ids */
     n->req_seq++;
     snprintf(id, sizeof id, "r%d", n->req_seq);
     return send_env(n, type, id, NULL, NULL, NULL, data_json) < 0 ? -1 : n->req_seq;
@@ -100,7 +103,7 @@ int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_r
     for (i = 0; i < NPF_PENDING_MAX; i++)
         if (!n->pending[i].fn)
             break;
-    if (i == NPF_PENDING_MAX)
+    if (!fn || i == NPF_PENDING_MAX)
         return -1;
     id = npf_node_send(n, type, 1, data_json);
     if (id < 0)
@@ -802,9 +805,12 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         char rt[24];
         int i;
         if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) > 0 && rt[0] == 'r') {
-            int id = atoi(rt + 1);
             for (i = 0; i < NPF_PENDING_MAX; i++) {
-                if (n->pending[i].fn && n->pending[i].id == id) {
+                char expected[24];
+                if (!n->pending[i].fn)
+                    continue;
+                snprintf(expected, sizeof expected, "r%d", n->pending[i].id);
+                if (strcmp(rt, expected) == 0) {
                     npf_reply_fn fn = n->pending[i].fn;
                     n->pending[i].fn = NULL;
                     fn(n, j, npf_json_eq(j, npf_json_get(j, 0, "status"), "ok"), n->pending[i].arg);

@@ -57,11 +57,18 @@ static int connect_next(npf_ws *ws);
 /* at least n bytes free after len */
 static int buf_room(buf *b, size_t n)
 {
+    if (n > SIZE_MAX - b->len)
+        return -1;
     if (b->len + n > b->cap) {
         size_t c = b->cap ? b->cap : 4096;
         uint8_t *q;
-        while (c < b->len + n)
+        while (c < b->len + n) {
+            if (c > SIZE_MAX / 2) {
+                c = b->len + n;
+                break;
+            }
             c *= 2;
+        }
         q = realloc(b->p, c);
         if (!q)
             return -1;
@@ -159,6 +166,10 @@ int npf_url_parse(const char *url, int *tls, char *host, size_t hcap, int *port,
 {
     const char *p, *h, *he, *ps;
     size_t hl;
+    /* These components are copied into HTTP request lines and headers. */
+    for (p = url; *p; p++)
+        if ((unsigned char)*p <= 0x20 || (unsigned char)*p == 0x7f)
+            return -1;
     if (strncmp(url, "wss://", 6) == 0) { *tls = 1; p = url + 6; *port = 443; }
     else if (strncmp(url, "ws://", 5) == 0) { *tls = 0; p = url + 5; *port = 80; }
     else if (strncmp(url, "https://", 8) == 0) { *tls = 1; p = url + 8; *port = 443; }   /* npf_http */
@@ -202,15 +213,19 @@ int npf_url_parse(const char *url, int *tls, char *host, size_t hcap, int *port,
 
 /* ---- I/O ---- */
 
-/* only called from on_io (busy > 0): the memory is released when it returns */
+/* Resolution and connect timers can fail outside on_io too. Hold the
+ * handle across on_close, which is allowed to call npf_ws_free itself. */
 static void ws_fail(npf_ws *ws, int code, const char *why)
 {
     if (ws->state == ST_DEAD)
         return;
     ws->state = ST_DEAD;
+    ws->busy++;
     if (ws->cbs.on_close)
         ws->cbs.on_close(ws, code, why, ws->arg);
     npf_ws_free(ws);
+    if (--ws->busy == 0)
+        real_free(ws);
 }
 
 static ssize_t raw_read(npf_ws *ws, void *p, size_t n)
@@ -268,7 +283,10 @@ static int flush_out(npf_ws *ws)
 static int send_frame2(npf_ws *ws, int opcode, const void *head, size_t hlen, const void *data, size_t dlen)
 {
     uint8_t h[14], mask[4];
-    size_t hl = 2, i, start, len = hlen + dlen;
+    size_t hl = 2, i, start, len;
+    if (hlen > NPF_WS_MAX_MESSAGE || dlen > NPF_WS_MAX_MESSAGE - hlen)
+        return -1;
+    len = hlen + dlen;
     h[0] = (uint8_t)(0x80 | opcode);
     if (len < 126) {
         h[1] = (uint8_t)(0x80 | len);
@@ -286,8 +304,11 @@ static int send_frame2(npf_ws *ws, int opcode, const void *head, size_t hlen, co
     npf_random(mask, 4);
     memcpy(h + hl, mask, 4);
     hl += 4;
-    if (buf_put(&ws->out, h, hl))
+    /* Reserve the entire frame before changing out: an allocation failure
+     * must not leave an orphan header in front of the next message. */
+    if (buf_room(&ws->out, hl + len))
         return -1;
+    buf_put(&ws->out, h, hl);
     start = ws->out.len;
     if (buf_put(&ws->out, head, hlen) || buf_put(&ws->out, data, dlen))
         return -1;
@@ -322,7 +343,10 @@ static int start_upgrade(npf_ws *ws)
         return -1;
     }
     ws->state = ST_UPGRADE;
-    buf_put(&ws->out, req, (size_t)n);
+    if (buf_put(&ws->out, req, (size_t)n) < 0) {
+        ws_fail(ws, 0, "no memory");
+        return -1;
+    }
     return 0;
 }
 

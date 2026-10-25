@@ -70,6 +70,7 @@ static void run_until(npf_loop *loop, int *flag, int want, int ms)
 typedef struct move_rec {
     int fails, again_ok, end_it;
     int sub_done, sub_closed, saw_tun;
+    int made_transport;
 } move_rec;
 
 static void move_ctl(npf_call *c, const npf_json *j, int ok, void *arg)
@@ -90,6 +91,7 @@ static void move_sub_done(npf_call *c, uint32_t sid, const npf_sublink_stats *st
     (void)st;
     r->sub_done++;
     r->saw_tun += c->tun != NULL;
+    r->made_transport += call_media_of(c) != NULL || call_udp_of(c) != NULL;
 }
 
 static move_rec *vrec;
@@ -141,6 +143,7 @@ static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, 
         CHECK(r1.again_ok == 0, "no request from a failure (%d)", r1.again_ok);
         CHECK(r1.sub_done == 1 && r1.sub_closed == 1, "sublink ended (%d/%d)", r1.sub_done, r1.sub_closed);
         CHECK(r1.saw_tun == 0, "the ends saw no tunnel (%d)", r1.saw_tun);
+        CHECK(r1.made_transport == 0, "end callbacks cannot create adapters on the retiring transport");
         CHECK(!c->tun && !c->anl && !c->stream && c->ws_mode && !c->ended, "transport gone, session on");
         /* the -R mappings in use go on in the tunnel the WS relay brings */
         call_crev_add(c, 7, "127.0.0.1", 8080, 0);

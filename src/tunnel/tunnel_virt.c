@@ -46,7 +46,9 @@ static void vend_close(sublink *s)
         tunnel_sub_reset(s, NPF_RST_LOCAL);
         return;
     }
-    s->wq.off = s->wq.len = 0;          /* nobody reads it now */
+    s->rx_freed += (uint32_t)s->wq.len; /* discarded bytes still used the peer's window */
+    free(s->wq.p);                     /* nobody reads it now; do not retain up to 4 MB until FIN */
+    memset(&s->wq, 0, sizeof s->wq);
     if (!s->local_eof) {
         s->local_eof = 1;
         if (!s->fin_first)
@@ -81,12 +83,12 @@ static void virt_poll(npf_loop *loop, void *arg)
     t->in_poll = 1;
     t->depth++;
     vends_closed(t);
-    for (round = 0; round < VIRT_ROUNDS && busy && !t->free_later; round++) {
+    for (round = 0; round < VIRT_ROUNDS && busy && !t->dead; round++) {
         int i;
         busy = 0;
         /* from the end: tunnel_io_cb releases s at most, never another, and the
          * last one (seen already) takes its place */
-        for (i = t->nsubs - 1; i >= 0 && !t->free_later; i--) {
+        for (i = t->nsubs - 1; i >= 0 && !t->dead; i--) {
             sublink *s;
             unsigned ev;
             if (i >= t->nsubs)
@@ -98,7 +100,7 @@ static void virt_poll(npf_loop *loop, void *arg)
             tunnel_io_cb(t->loop, -1, ev, s);
         }
     }
-    if (!t->free_later)
+    if (!t->dead)
         vends_closed(t);                /* the ends closed meanwhile */
     t->in_poll = 0;
     if (tunnel_leave(t))

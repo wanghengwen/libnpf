@@ -252,7 +252,8 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
     if (ml < 0)
         goto out;
     npf_kdf(h1, NULL, 0, buf, len);
-    i = d->nseen_next++ % DIRECT_SEEN;
+    i = d->nseen_next;
+    d->nseen_next = (i + 1) % DIRECT_SEEN;
     memcpy(d->seen[i].e, buf, 32);
     memcpy(d->seen[i].h1, h1, sizeof h1);
     d->seen[i].at = now;
