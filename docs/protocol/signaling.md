@@ -377,7 +377,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | 步骤 | 消息或动作 | 检查 |
 |---|---|---|
 | 1 | 客户端发送 `bind_begin{device_id}` | 已登录、限流、当前关联约束 |
-| 2 | 平台返回 `operation_id`（16 字节）、`challenge`（16 字节）、`account_id` 和 `expires` | 平台记录目标账户、设备及绑定版本 |
+| 2 | 平台返回 `operation_id`（16 字节）、`challenge`（16 字节）、`account_id` 和 `expires`；设备的所有者已经是本账户时（例如上一次 `bind_commit` 的应答丢了，客户端重新绑定）直接返回 `already: true` 与设备信息（同 `device_list` 的一项），流程到此结束 | 平台记录目标账户、设备及绑定版本 |
 | 3 | 客户端经端到端通道（隧道控制通道）向设备发 `bind_approve` | 设备确认该会话已通过被叫闸门、本地没有所有者；把目标账户记为待确认 |
 | 4 | 设备返回 `{proof, key_gen}`，客户端用 `bind_commit{operation_id, proof, key_gen}` 提交 | 平台验签、检查身份密钥代数、声明中的账户等于请求账户、原子消费挑战（每个挑战只能提交一次） |
 | 5 | 平台提交关联，向设备发送 `bind_committed{account_id, operation_id}` | 设备收到后才正式记录所有者；返回 `ok` 或带操作号的 `pending`，可以查询恢复 |
@@ -920,7 +920,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
-| 2026-10-25 | 0.33 | 托管服务：只有当前这次登记的连接断开才标为离线；`hosted_stats` 兼作心跳，登记已不在时回 `not_found`（`registration`）、托管服务重新登记；所在服务器宕机后托管服务按失联处理，隔离后迁移；迁移时原服务也收到 `hosted_changed` |
+| 2026-10-25 | 0.33 | `bind_begin`：设备已属于本账户时回 `already: true` 与设备信息（重试不再报 `conflict`）。托管服务：只有当前这次登记的连接断开才标为离线；`hosted_stats` 兼作心跳，登记已不在时回 `not_found`（`registration`）、托管服务重新登记；所在服务器宕机后托管服务按失联处理，隔离后迁移；迁移时原服务也收到 `hosted_changed` |
 | 2026-10-24 | 0.32 | 安全加固：`login_method_bind` / `login_method_unbind` 要再次证明是本人（`current_password`，或 `confirm_transaction_id` + `confirm_code`，或 `current_verification_id`；否则 `forbidden` `reauth`），成功后通知旧邮箱；平台按账户与按来源（IPv6 按 /64）限制密码错误、匿名登录、呼叫频率与连接数（`rate_limited`，`credentials` / `busy`）；被拒或超时的呼叫 30 秒后删除；`punch_request` 至少间隔 2 秒、每个呼叫最多 24 次；候选最多 16 个、类型与地址经过检查 |
 | 2026-10-23 | 0.31 | 账户请求被拒时给出原因：`account_login` 的 `credentials`，`password_change` 的 `password` / `no_password`，`account_delete` 的 `password` / `verification`，`password_reset_finish` 地址不属于任何账户时也是 `verification`（与验证码不对相同） |
 | 2026-10-23 | 0.30 | 设备自己的名称：新增 `node_name`（节点起名字或查询），设备信息增加 `name`（起的名字，没有时为登录上报的主机名），`alias` 只是账户的备注，不再用注册时的名字补位 |
