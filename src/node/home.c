@@ -470,13 +470,9 @@ static void bind_timer(npf_loop *loop, void *arg)
         h->tries = 0;
         if (++h->cur >= h->nrelay) {
             h->cur = 0;
-            if (h->state == H_LOST && h->n->online) {
-                npf_log("home: the relay does not answer: a new binding");
-                h->has = 0;
-                home_open_send(h);
-                return;
-            }
             npf_log("home: the relay does not answer: binding again in %d s", again_s[h->backoff]);
+            if (h->state == H_LOST && h->n->online)
+                home_open_send(h);          /* does the server still have it (resume)? a new one if not */
             h->state = H_BACKOFF;
             h->t_retry = npf_timer_add(h->n->loop, again_s[h->backoff] * 1000, retry_timer, h);
             if (h->backoff < 3)
