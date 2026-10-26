@@ -818,10 +818,70 @@ static int sendto_loopback(int fd, const void *buf, size_t len, const struct soc
 }
 #endif
 
+/* ---- the main sockets' sends (npf_udp_watch) ---- */
+
+#define UDP_WATCH_MAX 4
+static NPF_THREAD_LOCAL struct {
+    int              fd;
+    npf_udp_watch   *w;
+} t_watch[UDP_WATCH_MAX];
+static NPF_THREAD_LOCAL int t_nwatch;
+
+void npf_udp_watch_on(int fd, npf_udp_watch *w)
+{
+    int i;
+    for (i = 0; i < t_nwatch; i++)
+        if (t_watch[i].fd == fd || t_watch[i].w == w) {
+            t_watch[i] = t_watch[--t_nwatch];
+            i--;
+        }
+    if (w && fd >= 0 && t_nwatch < UDP_WATCH_MAX) {
+        t_watch[t_nwatch].fd = fd;
+        t_watch[t_nwatch++].w = w;
+    }
+}
+
+void npf_udp_watch_mark(npf_udp_watch *w, int64_t now)
+{
+    w->mark = now;
+    w->n_relay = w->n_relay_ip = w->n_other = 0;
+    w->first_other = w->prev_other = w->gap_other = 0;
+}
+
+static void udp_watch_note(npf_udp_watch *w, const struct sockaddr *sa)
+{
+    int64_t now = npf_mono_ms();
+    const struct sockaddr_in *a = (const struct sockaddr_in *)sa;
+    if (sa->sa_family == AF_INET && w->relay_ip && a->sin_addr.s_addr == w->relay_ip) {
+        if (a->sin_port == w->relay_port) {
+            w->last_relay = now;
+            w->n_relay++;
+            return;
+        }
+        w->last_relay_ip = now;
+        w->n_relay_ip++;
+    } else {
+        w->last_other = now;
+        w->n_other++;
+    }
+    /* the gaps of the other sends (the relay's other ports refresh an EIM mapping too) */
+    if (!w->first_other)
+        w->first_other = now;
+    else if (now - w->prev_other > w->gap_other)
+        w->gap_other = now - w->prev_other;
+    w->prev_other = now;
+}
+
 int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
 {
     const struct sockaddr *sa = to;
     int err;
+    if (t_nwatch) {
+        int i;
+        for (i = 0; i < t_nwatch; i++)
+            if (t_watch[i].fd == fd)
+                udp_watch_note(t_watch[i].w, sa);
+    }
 #ifdef _WIN32
     if (npf_udp_hook_is_on() && is_loopback(sa)) {
         if (sendto_loopback(fd, buf, len, sa) >= 0)

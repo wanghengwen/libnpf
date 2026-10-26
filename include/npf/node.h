@@ -201,6 +201,14 @@ typedef struct npf_node_cfg {
      * allocation, a property of the NAT, kept from the full probe) */
     int         udp_on_demand;
     int         udp_public;
+    /* the persistent binding on the relay of the server (home-binding.md 17.1):
+     * home_off (home_bind = off) none; home_iv_max the longest keepalive
+     * interval (s, 0 = 150); home_learn_off (home_learn = 0) a fixed 25 s;
+     * home_store the learning per network (home.json, NULL none kept) */
+    int         home_off;
+    int         home_iv_max;
+    int         home_learn_off;
+    const char *home_store;
 } npf_node_cfg;
 
 /* a call_end waiting for the platform's answer (npf_node_call_end) */
@@ -354,6 +362,8 @@ struct npf_node {
     struct in_addr pub_ip;
     npf_cand      cands[NPF_MAX_CANDS];
     int           ncands;
+
+    struct npf_home *home;          /* the persistent binding on the relay (home.c), NULL none */
 
     npf_call     *calls;
     npf_call     *conv_tab[256];    /* calls with an AnLiu connection, by conv (datagram demux) */
@@ -588,6 +598,10 @@ void npf_node_write_nat(npf_node *n, struct npf_jw *w);
 void npf_node_write_cands(npf_node *n, struct npf_jw *w);
 /* nat_report: the profile (or, connect_mode secure, only that) to the platform */
 void npf_node_report_nat(npf_node *n);
+/* the persistent binding (home.c): the status's "home" object into buf (its
+ * length, 0 when there is no binding); a line for people ("" none) */
+size_t npf_node_home_json(npf_node *n, char *buf, size_t cap);
+void npf_node_home_text(npf_node *n, char *buf, size_t cap);
 /* connect_mode: 0 p2p (direct paths first, around a VPN), 1 secure (relays
  * only, no address to the peer, the VPN kept): the platform hears it, the
  * sessions open again under it */

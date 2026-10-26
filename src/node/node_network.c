@@ -19,6 +19,7 @@
 #include "npf/platform.h"
 
 #include "node_internal.h"
+#include "home.h"
 
 static void udp_new_port(npf_node *n);
 static void udp_failed(npf_node *n, int fd, const char *why);
@@ -379,6 +380,7 @@ static void node_net_check(npf_node *n, const char *why)
         }
     }
     npf_node_check_paths(n, why);
+    node_home_net_change(n);                /* the binding follows a new address at once */
     n->repunch_on_nat = 1;                  /* with the new NAT's candidates (nat.c) */
     node_portmap_net_change(n);             /* another router: its mapping, UPnP */
     if (n->hooks.on_net_change)

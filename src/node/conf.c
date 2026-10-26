@@ -157,7 +157,7 @@ const char *npf_conf_get_path(const npf_conf *c, const char *key, const char *de
 }
 
 static const char *const path_keys[] = {"dir", "state", "serverlist", "serverlist_saved", "direct_psk_file",
-                                        "log", "pidfile", NULL};
+                                        "log", "pidfile", "home_store", NULL};
 
 void npf_conf_set_rel(npf_conf *c, const char *conf_path, const char *k, const char *v)
 {
@@ -229,7 +229,8 @@ static const char *const known_keys[] = {
     "udp_on_demand", "udp_public",
     "doh_servers", "hw_info", "keep_awake", "log", "log_level", "max_calls", "model", "model_cred", "password", "node",
     "peer_idle", "pidfile", "portmap", "web_dir", "punch_lead_ms", "punch_sockets", "report_host", "resource", "root", "serial", "serial_file", "server", "server_pub",
-    "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", "upnp", "test_one_host", NULL};
+    "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", "upnp", "test_one_host",
+    "home_bind", "home_iv_max", "home_learn", "home_store", NULL};
 
 /* keys that say where to connect, what to trust or run, and which files
  * the program writes: only in npf.conf (whoever may write it may run the
@@ -239,7 +240,7 @@ static const char *const file_only_keys[] = {
     "control", "control_token", "web_dir", "log", "pidfile", "dir", "state", "root", "server", "server_pub",
     "serverlist", "serverlist_saved", "doh_servers", "report_host", "serial_file", "direct", "direct_psk",
     "direct_psk_file", "hosted_exec", "hosted_service", "hosted_ports", "model", "model_cred", "cred", "node", "resource",
-    "test_one_host", NULL};
+    "test_one_host", "home_store", NULL};
 
 int npf_conf_file_only(const char *key)
 {
