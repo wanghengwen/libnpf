@@ -57,8 +57,14 @@ typedef struct npf_punch_plan {
     int      pps;                   /* S3 easy spray rate; S5 both sides */
     int      timeout_ms;
     /* S2B (nat-traversal.md 7.6) */
-    int      own_delta, peer_delta; /* the NATs' allocation steps */
+    int      own_delta, peer_delta; /* the NATs' allocation steps (S2's easy side: the hard side's) */
     int      window, passes;        /* probes a pass, passes */
+    /* S2 (7.3): the hard side measures its first new socket's mapping
+     * (BIND_REQ to E1, punch_info port); the easy side, told it
+     * (npf_punch_peer_port), sprays the ports its peer_n sockets take after
+     * it, then every port */
+    int      measure;               /* hard: measure */
+    int      peer_n;                /* easy: the hard side's sockets, 0: not S2 */
 } npf_punch_plan;
 
 typedef struct npf_punch_result {
@@ -99,6 +105,7 @@ typedef struct npf_punch_cfg {
     npf_punch_plan plan;            /* peer_srflx unused: peers[] below */
     struct sockaddr_storage peers[NPF_PUNCH_MAX_PEERS];
     int      npeers;
+    uint8_t  prio[NPF_PUNCH_MAX_PEERS]; /* the peers' priority (10.1): host6 4, mapped 3, host4 2, else 1 */
     int      fd6;                   /* the node's IPv6 socket (S0: IPv6 peers are probed from it), -1: none */
     int      test_deaf;             /* tests: the peer's probes are dropped, so the round fails */
     /* S2B: the probe servers' E1 (the fresh socket's mapping) and E2 (the
@@ -122,8 +129,11 @@ int  npf_punch_input(npf_punch *p, int fd, const uint8_t *buf, size_t len, const
  * are closed at done. */
 void npf_punch_free(npf_punch *p);
 int  npf_punch_finished(const npf_punch *p);
-/* S2B: the peer's fresh mapping (its punch_info) */
+/* S2B: the peer's fresh mapping (its punch_info); S2's easy side: the hard
+ * side's measured port */
 void npf_punch_peer_port(npf_punch *p, uint16_t port);
+/* the peer let this round go (its punch_info stop): it ends now, failed */
+void npf_punch_stop(npf_punch *p);
 /* a candidate of the peer that came after the round started (its punch_info:
  * its mapping changed; ICE's trickled remote candidate): probed from now on
  * with the others. srflx: it is the peer's server-reflexive address, the S3

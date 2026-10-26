@@ -77,6 +77,9 @@ void node_nat_login(npf_node *n);
 
 /* call_punch.c: the srflx changed: the sessions not direct yet send it to their peers */
 void node_calls_srflx_changed(npf_node *n);
+/* a check of the NAT unanswered (call_punch.c): a sign it is short of ports
+ * if a hard-side punch held them or just did (nat-traversal.md 8) */
+void call_port_pressure(npf_node *n, const char *what);
 
 /* call.c */
 void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d);

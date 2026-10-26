@@ -110,6 +110,7 @@ static void relay_bind_timer(npf_loop *loop, void *arg)
                     c->call_id_s);
             c->relay_ports_waited = 1;
             c->relay_waits_ports = 1;
+            call_port_pressure(c->n, "the UDP relay unreachable");
             if (!c->t_ws_wait)
                 c->t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
             return;

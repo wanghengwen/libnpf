@@ -21,7 +21,7 @@ static int fails;
 typedef struct side {
     int        fd;
     npf_punch *p;
-    int        done, ok;
+    int        done, ok, ms;
 } side;
 
 static int last_probes_recv;
@@ -32,6 +32,7 @@ static void done_cb(npf_punch *p, const npf_punch_result *res, int fd, void *arg
     (void)fd;
     s->done = 1;
     s->ok = res->ok;
+    s->ms = res->elapsed_ms;
     last_probes_recv = res->probes_recv;
 }
 
@@ -265,6 +266,89 @@ int test_punch(void)
         npf_loop_del(loop, b.fd);
         npf_punch_free(e.p);
         npf_punch_free(f.p);
+    }
+    /* nominated at once when no pair of a higher priority is still probed
+     * (no 200 ms grace), else up to 200 ms for it (nat-traversal.md 10.1) */
+    {
+        side e = {0}, f = {0};
+        ca.peers[0] = ba;
+        cb.peers[0] = aa;
+        ca.npeers = cb.npeers = 1;
+        ca.prio[0] = cb.prio[0] = 1;
+        ca.plan.session_id = cb.plan.session_id = 44;
+        npf_loop_add(loop, a.fd, NPF_EV_READ, rx_cb, &e);
+        npf_loop_add(loop, b.fd, NPF_EV_READ, rx_cb, &f);
+        e.p = npf_punch_new(loop, &ca, a.fd, done_cb, &e);
+        f.p = npf_punch_new(loop, &cb, b.fd, done_cb, &f);
+        until = npf_mono_ms() + 2000;
+        while ((!e.done || !f.done) && npf_mono_ms() < until)
+            npf_loop_once(loop, 10);
+        CHECK(e.ok && f.ok && e.ms < 150, "no higher pair: nominated at once (%d %d, %d ms)", e.ok, f.ok, e.ms);
+        npf_punch_free(e.p);
+        npf_punch_free(f.p);
+        memset(&e, 0, sizeof e);
+        memset(&f, 0, sizeof f);
+        ca.peers[1] = nowhere;              /* a LAN candidate (host4) that does not answer */
+        ca.prio[1] = 2;
+        ca.npeers = 2;
+        ca.plan.session_id = cb.plan.session_id = 45;
+        e.p = npf_punch_new(loop, &ca, a.fd, done_cb, &e);
+        f.p = npf_punch_new(loop, &cb, b.fd, done_cb, &f);
+        until = npf_mono_ms() + 2000;
+        while ((!e.done || !f.done) && npf_mono_ms() < until)
+            npf_loop_once(loop, 10);
+        CHECK(e.ok && f.ok && e.ms >= 200 && e.ms < 400, "a higher pair still probed: waited for it (%d %d, %d ms)", e.ok,
+              f.ok, e.ms);
+        npf_loop_del(loop, a.fd);
+        npf_loop_del(loop, b.fd);
+        npf_punch_free(e.p);
+        npf_punch_free(f.p);
+        ca.npeers = 1;
+        ca.prio[0] = ca.prio[1] = cb.prio[0] = 0;
+    }
+    /* S1: nothing at all from the peer within 3 s: the round ends then, not
+     * at its timeout (nat-traversal.md 9) */
+    {
+        side e = {0};
+        ca.peers[0] = nowhere;
+        ca.plan.timeout_ms = 8000;
+        ca.plan.session_id = 46;
+        npf_loop_add(loop, a.fd, NPF_EV_READ, rx_cb, &e);
+        e.p = npf_punch_new(loop, &ca, a.fd, done_cb, &e);
+        until = npf_mono_ms() + 5000;
+        while (!e.done && npf_mono_ms() < until)
+            npf_loop_once(loop, 10);
+        CHECK(e.done && !e.ok && e.ms >= 2900 && e.ms < 3500, "S1 with nothing from the peer: ended after %d ms (done %d)",
+              e.ms, e.done);
+        npf_loop_del(loop, a.fd);
+        npf_punch_free(e.p);
+    }
+    /* S2's easy side: told the hard side's measured port q0, it sprays q0 + 1,
+     * q0 + 2, ... first (the ports its new sockets take), not at random */
+    {
+        side e = {0};
+        struct sockaddr_storage ta;
+        int t = udp_bound(&ta), got = 0, k;
+        uint8_t buf[512];
+        npf_punch_cfg cs = ca;
+        cs.plan.strategy = NPF_PUNCH_S3;
+        cs.plan.side = NPF_PUNCH_EASY;
+        cs.plan.m_total = 2000;
+        cs.plan.pps = 200;
+        cs.plan.peer_n = 8;
+        cs.plan.peer_delta = 1;
+        cs.plan.timeout_ms = 3000;
+        cs.plan.peer_ip4.s_addr = htonl(INADDR_LOOPBACK);
+        cs.plan.session_id = 47;
+        e.p = npf_punch_new(loop, &cs, a.fd, done_cb, &e);
+        npf_punch_peer_port(e.p, (uint16_t)(ntohs(((struct sockaddr_in *)&ta)->sin_port) - 1));
+        for (k = 0; k < 30 && !got; k++) {
+            npf_loop_once(loop, 10);
+            got = recv(t, buf, sizeof buf, MSG_DONTWAIT) > 0;
+        }
+        CHECK(got, "S2: the port after the measured one not sprayed first");
+        npf_punch_free(e.p);
+        npf_sock_close(t);
     }
     npf_sock_close(a.fd);
     npf_sock_close(b.fd);
