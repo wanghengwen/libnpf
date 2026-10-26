@@ -1,9 +1,9 @@
 /* The UDP relay client's RELAY_BIND_ACKs (data-channel.md 9.2, 9.3): only
- * an answer to one of its last binds counts (its txid and ts_ms echoed), and
+ * an answer to one of its last binds counts (its txid, ts_ms and kseq echoed), and
  * each once; a challenge to its RELAY_DATA (no txid) only when newer than the
  * last one taken and of about now. A replayed or foreign BIND_ACK makes the
- * client send nothing (it would burn the allocation's bind tokens and roll
- * the relay's txid ring) and binds nothing. A fake relay on loopback: the
+ * client send nothing (it would burn the allocation's bind tokens) and
+ * binds nothing. A fake relay on loopback: the
  * client's binds read from its socket, the answers fed to call_relay_input. */
 #define _GNU_SOURCE
 #include <poll.h>
@@ -31,6 +31,7 @@ static int fails;
 typedef struct bind_seen {
     uint8_t txid[NPF_TXID_SIZE];
     uint32_t ts;
+    uint64_t kseq;
     uint8_t cookie[RELAY_COOKIE_SIZE];
 } bind_seen;
 
@@ -57,26 +58,28 @@ static int next_bind(int fd, const npf_siv_keys *keys, int ms, bind_seen *b)
     while (poll(&p, 1, ms) > 0) {
         n = recv(fd, wire, sizeof wire, 0);
         if (n <= RELAY_HINT_SIZE || npf_pkt_open(keys, 0, wire + RELAY_HINT_SIZE, (size_t)n - RELAY_HINT_SIZE, plain, &pk) < 0
-            || pk.type != PKT_RELAY_BIND || pk.body_len < RELAY_COOKIE_SIZE)
+            || pk.type != PKT_RELAY_BIND || pk.body_len < RELAY_BIND_BODY)
             continue;
         memcpy(b->txid, pk.txid, NPF_TXID_SIZE);
         b->ts = pk.ts_ms;
         memcpy(b->cookie, pk.body, RELAY_COOKIE_SIZE);
+        b->kseq = npf_rd64(pk.body + 8);
         return 1;
     }
     return 0;
 }
 
 /* a RELAY_BIND_ACK as the relay sends it: body = family | port | addr |
- * srv_time_ms | state | cookie */
+ * srv_time_ms | state | cookie | kseq | flags | t_s | learn */
 static int ack(npf_call *c, const npf_siv_keys *keys, const struct sockaddr_storage *relay, const uint8_t *txid,
-               uint32_t ts, int64_t srv_ms, int state, const uint8_t cookie[RELAY_COOKIE_SIZE])
+               uint32_t ts, uint64_t kseq, int64_t srv_ms, int state, const uint8_t cookie[RELAY_COOKIE_SIZE])
 {
-    uint8_t body[3 + 4 + 8 + 1 + RELAY_COOKIE_SIZE] = {4, 0x12, 0x34, 127, 0, 0, 1}, out[128];
+    uint8_t body[3 + 4 + 8 + 1 + RELAY_COOKIE_SIZE + 8 + 1 + 3] = {4, 0x12, 0x34, 127, 0, 0, 1}, out[128];
     int n;
     npf_le64(body + 7, (uint64_t)srv_ms);
     body[15] = (uint8_t)state;
     memcpy(body + 16, cookie, RELAY_COOKIE_SIZE);
+    npf_le64(body + 24, kseq);
     n = npf_pkt_seal(keys, 1, PKT_RELAY_BIND_ACK, txid, ts, body, sizeof body, 80, out);
     return n > 0 ? call_relay_input(c, out, (size_t)n, relay) : -1;
 }
@@ -128,36 +131,37 @@ int test_relay(void)
     call_relay_setup(c, &j, 0);
     CHECK(c->relay.active && !c->relay.bound, "the relay taken");
 
-    /* the first bind; a challenge to a txid it never sent, and one with its
-     * txid but another ts_ms: nothing sent */
+    /* the first bind; a challenge to a txid it never sent, and ones with its
+     * txid but another ts_ms or kseq: nothing sent */
     CHECK(next_bind(fr, &keys, 500, &b1) == 1, "the first RELAY_BIND");
-    ack(c, &keys, &relay, foreign, b1.ts, npf_node_time(&node), 0, ck1);
-    ack(c, &keys, &relay, b1.txid, b1.ts - 5000, npf_node_time(&node), 0, ck1);
+    ack(c, &keys, &relay, foreign, b1.ts, b1.kseq, npf_node_time(&node), 0, ck1);
+    ack(c, &keys, &relay, b1.txid, b1.ts - 5000, b1.kseq, npf_node_time(&node), 0, ck1);
+    ack(c, &keys, &relay, b1.txid, b1.ts, b1.kseq + 1, npf_node_time(&node), 0, ck1);
     CHECK(next_bind(fr, &keys, 100, &b2) == 0, "a foreign challenge answered");
     /* its own: echoed at once with the cookie */
-    ack(c, &keys, &relay, b1.txid, b1.ts, npf_node_time(&node), 0, ck1);
+    ack(c, &keys, &relay, b1.txid, b1.ts, b1.kseq, npf_node_time(&node), 0, ck1);
     CHECK(next_bind(fr, &keys, 300, &b2) == 1 && memcmp(b2.cookie, ck1, sizeof ck1) == 0, "the challenge echoed");
     /* the same challenge again (a replay, past the 200 ms between echoes): nothing */
     usleep(250 * 1000);
-    ack(c, &keys, &relay, b1.txid, b1.ts, npf_node_time(&node), 0, ck1);
+    ack(c, &keys, &relay, b1.txid, b1.ts, b1.kseq, npf_node_time(&node), 0, ck1);
     CHECK(next_bind(fr, &keys, 100, &b3) == 0, "a replayed challenge answered");
     /* "bound" for a txid it did not send, or for none: not bound */
-    ack(c, &keys, &relay, foreign, b2.ts, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
-    ack(c, &keys, &relay, zero, b2.ts, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
+    ack(c, &keys, &relay, foreign, b2.ts, b2.kseq, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
+    ack(c, &keys, &relay, zero, b2.ts, 0, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
     CHECK(!c->relay.bound, "bound by a foreign BIND_ACK");
     /* the answer to the echo binds */
-    ack(c, &keys, &relay, b2.txid, b2.ts, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
+    ack(c, &keys, &relay, b2.txid, b2.ts, b2.kseq, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
     CHECK(c->relay.bound, "not bound by its own BIND_ACK");
 
     /* a challenge to its RELAY_DATA (no txid: the NAT gave a new port):
      * answered when newer than the last one and of about now, once */
     usleep(250 * 1000);
-    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), npf_node_time(&node), 0, ck2);
+    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, npf_node_time(&node), 0, ck2);
     CHECK(next_bind(fr, &keys, 300, &b3) == 1 && memcmp(b3.cookie, ck2, sizeof ck2) == 0, "a data challenge echoed");
     usleep(250 * 1000);
-    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), npf_node_time(&node) - 1000, 0, ck3);
-    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), npf_node_time(&node) - 120000, 0, ck3);
-    ack(c, &keys, &relay, b1.txid, b1.ts, npf_node_time(&node), 0, ck3);
+    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, npf_node_time(&node) - 1000, 0, ck3);
+    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, npf_node_time(&node) - 120000, 0, ck3);
+    ack(c, &keys, &relay, b1.txid, b1.ts, b1.kseq, npf_node_time(&node), 0, ck3);
     CHECK(next_bind(fr, &keys, 100, &b3) == 0, "an old data challenge answered");
     /* the cookie of what was refused was not taken */
     CHECK(memcmp(c->relay.cookie, ck2, sizeof ck2) == 0, "cookie of a refused BIND_ACK taken");

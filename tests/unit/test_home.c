@@ -1,10 +1,12 @@
-/* The persistent binding (home-binding.md v0.4): the packets against the
- * platform's vectors (home_test.go), and the node against a fake relay on
- * loopback: only answers to its own HOME_BINDs count, the challenge echoed;
+/* The spare allocation (home-binding.md v0.5): the packets against the
+ * platform's vectors (spare_test.go), and the node against a fake relay on
+ * loopback: only answers to its own RELAY_BINDs count (txid, ts_ms, kseq),
+ * the challenge echoed;
  * a ping answered at once (PONG with its id, "sent elsewhere" when the main
  * socket did), a replayed or stale ping not; R's change counted; the
  * watchdog binds again only when nothing came from the relay by the last
- * datagram + T + the relay's tries + a margin. */
+ * datagram + T + the relay's tries + a margin; a call takes the spare with
+ * its binding (kseq goes on), relay_spare brings the next one. */
 #define _GNU_SOURCE
 #include <poll.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include <sys/socket.h>
 
 #include "npf/bind.h"
+#include "npf/json.h"
 #include "npf/crypto.h"
 #include "npf/natprobe.h"
 #include "npf/node.h"
@@ -39,41 +42,41 @@ static void hex2bin(const char *h, uint8_t *out, size_t n)
     }
 }
 
-/* must equal TestHomeVectors in server/internal/relay/home_test.go */
-#define V_HOME_BIND "4ecd3cb9a7f2182efa5da1a961a609635708e224030b89b9e9af45e2cb6112e9611208af70baef33b15861b2dcf606e327b87822b0"
-#define V_HOME_ACK  "7d1e0181d511d021bfbb917e7974a7c125c06558415514e63a51dc704e5dec29608efaa0d601a198f31b55993079a29075f897d74be8" \
-                    "0f8af296414ccd6787c9d52cc52e"
-#define V_HOME_PING "5d4a5e46e25cf61dd5b515282e68e507204e7d65c6b682e801de55c6f8b3d23f1a1cbc59e76bea68a119544bbb260b62381f67438277be"
+/* must equal TestBindVectors in server/internal/relay/spare_test.go */
+#define V_BIND "67e11a510f117fab15ba88f2a0c7e2b2735bf0fccefd01c194277595c0f6a86c684305a3c9a34c227e2628895490980248e02c330c"
+#define V_ACK  "47b0f19b8e20a81a2c397fb70ee47ebc4ea3bb4422ccd83234770f138a009933a63c394396c878c0010a13d32917ac96cd44cf2750d5" \
+               "488944273edd441a541c37a722ca"
+#define V_PING "a37f1b33d14f85517f57b60941b98f30d77ffa9c50194e482f2c813d2ac0f7c71e73c7c37c6088d260e54b6cbbc3fa7df177885bb8764e"
 
 static void test_vectors(void)
 {
-    uint8_t key[32], txid[12], ck[8], body[HOME_BIND_BODY], out[64], exp[80], plain[NPF_PKT_MAX];
+    uint8_t key[32], txid[12], ck[8], body[RELAY_BIND_BODY], out[64], exp[80], plain[NPF_PKT_MAX];
     npf_siv_keys keys;
     npf_pkt pk;
-    home_ack a;
-    home_ping p;
+    relay_ack a;
+    relay_ping p;
     int i, n;
     for (i = 0; i < 32; i++) key[i] = (uint8_t)(0x60 + i);
     for (i = 0; i < 12; i++) txid[i] = (uint8_t)(0xa0 + i);
     for (i = 0; i < 8; i++) ck[i] = (uint8_t)(0x10 + i);
-    npf_siv_derive(&keys, key, LABEL_HOME);
-    home_bind_body(body, ck, 0x0102030405060708ULL, HOME_F_PONG | HOME_F_OTHER, 0xdeadbeefu);
-    n = npf_pkt_seal(&keys, NPF_DIR_REQ, PKT_HOME_BIND, txid, 0x11223344u, body, sizeof body,
+    npf_siv_derive(&keys, key, LABEL_RELAY);
+    relay_bind_body(body, ck, 0x0102030405060708ULL, RELAY_F_PONG | RELAY_F_OTHER, 0xdeadbeefu);
+    n = npf_pkt_seal(&keys, NPF_DIR_REQ, PKT_RELAY_BIND, txid, 0x11223344u, body, sizeof body,
                      NPF_SIV_TAG_SIZE + NPF_PKT_HDR_SIZE + sizeof body, out);
-    hex2bin(V_HOME_BIND, exp, (size_t)n);
-    CHECK(n == 53 && memcmp(out, exp, (size_t)n) == 0, "HOME_BIND vector (must match home_test.go)");
-    hex2bin(V_HOME_ACK, exp, 68);
-    CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 68, plain, &pk) == 0 && pk.type == PKT_HOME_ACK
-          && home_ack_parse(pk.body, pk.body_len, &a) == 0, "HOME_ACK vector opens");
+    hex2bin(V_BIND, exp, (size_t)n);
+    CHECK(n == 53 && memcmp(out, exp, (size_t)n) == 0, "RELAY_BIND vector (must match spare_test.go)");
+    hex2bin(V_ACK, exp, 68);
+    CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 68, plain, &pk) == 0 && pk.type == PKT_RELAY_BIND_ACK
+          && relay_ack_parse(pk.body, pk.body_len, &a) == 0, "RELAY_BIND_ACK vector opens");
     CHECK(a.addr.sin_addr.s_addr == inet_addr("198.51.100.7") && ntohs(a.addr.sin_port) == 40312
           && a.srv_ms == 1793000000123LL && a.state == 1 && memcmp(a.cookie, ck, 8) == 0
-          && a.kseq == 0x0102030405060708ULL && a.flags == HOME_A_MOVED && a.t_s == 45 && a.learn == HOME_LEARNING,
-          "HOME_ACK fields");
-    hex2bin(V_HOME_PING, exp, 55);
-    CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 55, plain, &pk) == 0 && pk.type == PKT_HOME_PING
-          && home_ping_parse(pk.body, pk.body_len, &p) == 0 && p.srv_ms == 1793000045123LL && p.ping_id == 0xdeadbeefu
-          && p.t_s == 45 && p.learn == HOME_LEARNED && p.try_n == 2 && ntohs(p.addr.sin_port) == 40312, "HOME_PING vector");
-    CHECK(npf_pkt_open(&keys, NPF_DIR_REQ, exp, 55, plain, &pk) < 0, "a reflected HOME_PING opens");
+          && a.kseq == 0x0102030405060708ULL && a.flags == RELAY_A_MOVED && a.t_s == 45 && a.learn == RELAY_LEARNING,
+          "RELAY_BIND_ACK fields");
+    hex2bin(V_PING, exp, 55);
+    CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 55, plain, &pk) == 0 && pk.type == PKT_RELAY_PING
+          && relay_ping_parse(pk.body, pk.body_len, &p) == 0 && p.srv_ms == 1793000045123LL && p.ping_id == 0xdeadbeefu
+          && p.t_s == 45 && p.learn == RELAY_LEARNED && p.try_n == 2 && ntohs(p.addr.sin_port) == 40312, "RELAY_PING vector");
+    CHECK(npf_pkt_open(&keys, NPF_DIR_REQ, exp, 55, plain, &pk) < 0, "a reflected RELAY_PING opens");
 }
 
 /* ---- the node against a fake relay ---- */
@@ -99,7 +102,7 @@ typedef struct seen {
     uint32_t ping_id;
 } seen;
 
-/* the next HOME_BIND the node sent within ms: 1, 0 none */
+/* the next RELAY_BIND the node sent within ms: 1, 0 none */
 static int next_bind(int fd, const npf_siv_keys *keys, const uint8_t id[8], int ms, seen *b)
 {
     uint8_t wire[2048], plain[NPF_PKT_MAX];
@@ -109,7 +112,7 @@ static int next_bind(int fd, const npf_siv_keys *keys, const uint8_t id[8], int 
     while (poll(&p, 1, ms) > 0) {
         n = recv(fd, wire, sizeof wire, 0);
         if (n <= 4 || memcmp(wire, id, 4) != 0 || npf_pkt_open(keys, 0, wire + 4, (size_t)n - 4, plain, &pk) < 0
-            || pk.type != PKT_HOME_BIND || pk.body_len < HOME_BIND_BODY)
+            || pk.type != PKT_RELAY_BIND || pk.body_len < RELAY_BIND_BODY)
             continue;
         memcpy(b->txid, pk.txid, NPF_TXID_SIZE);
         b->ts = pk.ts_ms;
@@ -152,8 +155,8 @@ static void answer(npf_node *n, const npf_siv_keys *keys, const struct sockaddr_
     body[32] = 0;
     body[33] = (uint8_t)t_s;
     body[34] = (uint8_t)(t_s >> 8);
-    body[35] = HOME_LEARNING;
-    feed(n, relay, out, npf_pkt_seal(keys, NPF_DIR_RESP, PKT_HOME_ACK, txid, ts, body, sizeof body, 80, out));
+    body[35] = RELAY_LEARNING;
+    feed(n, relay, out, npf_pkt_seal(keys, NPF_DIR_RESP, PKT_RELAY_BIND_ACK, txid, ts, body, sizeof body, 80, out));
 }
 
 static void ping(npf_node *n, const npf_siv_keys *keys, const struct sockaddr_in *relay, const struct sockaddr_in *R,
@@ -167,7 +170,7 @@ static void ping(npf_node *n, const npf_siv_keys *keys, const struct sockaddr_in
     body[20] = (uint8_t)(t_s >> 8);
     body[21] = (uint8_t)learn;
     body[22] = 1;
-    feed(n, relay, out, npf_pkt_seal(keys, NPF_DIR_RESP, PKT_HOME_PING, txid, (uint32_t)srv_ms, body, sizeof body,
+    feed(n, relay, out, npf_pkt_seal(keys, NPF_DIR_RESP, PKT_RELAY_PING, txid, (uint32_t)srv_ms, body, sizeof body,
                                      55, out));
 }
 
@@ -201,11 +204,12 @@ static void test_client(void)
     npf_random(bid, 8);
     npf_random(key, 32);
     npf_random(foreign, sizeof foreign);
-    npf_siv_derive(&keys, key, LABEL_HOME);
-    CHECK(node_home_test_take(&node, bid, key, &relay) == 0, "the binding taken");
-    /* the first HOME_BIND: its cookie zero, kseq 1, padded to 96 at least */
-    CHECK(next_bind(fr, &keys, bid, 500, &b1) == 1 && b1.kseq == 1 && b1.cookie[0] == 0 && !b1.flags && b1.len >= 96,
-          "the first HOME_BIND");
+    npf_siv_derive(&keys, key, LABEL_RELAY);
+    CHECK(node_home_test_take(&node, bid, key, &relay) == 0, "the spare taken");
+    /* the first RELAY_BIND: its cookie zero, kseq from the server time (above
+     * whatever the relay took before), padded to 96 at least */
+    CHECK(next_bind(fr, &keys, bid, 500, &b1) == 1 && b1.kseq > (uint64_t)(npf_node_time(&node) - 1000) << 10
+          && b1.cookie[0] == 0 && !b1.flags && b1.len >= 96, "the first RELAY_BIND");
     /* answers to what it did not send: nothing */
     answer(&node, &keys, &relay, &me, foreign, b1.ts, b1.kseq, 0, ck, 25);
     answer(&node, &keys, &relay, &me, b1.txid, b1.ts, b1.kseq + 5, 0, ck, 25);
@@ -213,34 +217,34 @@ static void test_client(void)
     CHECK(next_bind(fr, &keys, bid, 100, &b2) == 0, "a foreign challenge answered");
     /* its own challenge: echoed with the cookie, the next kseq; a replay of it not */
     answer(&node, &keys, &relay, &me, b1.txid, b1.ts, b1.kseq, 0, ck, 25);
-    CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && memcmp(b2.cookie, ck, 8) == 0 && b2.kseq == 2, "the challenge echoed");
+    CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && memcmp(b2.cookie, ck, 8) == 0 && b2.kseq == b1.kseq + 1, "the challenge echoed");
     usleep(250 * 1000);
     answer(&node, &keys, &relay, &me, b1.txid, b1.ts, b1.kseq, 0, ck, 25);
     CHECK(next_bind(fr, &keys, bid, 100, &b3) == 0 && node_home_state(&node) != 3, "a replayed challenge answered");
     answer(&node, &keys, &relay, &me, b2.txid, b2.ts, b2.kseq, 1, ck, 25);
-    CHECK(node_home_state(&node) == 3, "not bound by its own HOME_ACK");
+    CHECK(node_home_state(&node) == 3, "not bound by its own BIND_ACK");
 
-    /* a ping: answered at once, a PONG naming it, shorter than a HOME_BIND */
+    /* a ping: answered at once, a PONG naming it, shorter than a RELAY_BIND */
     t0 = npf_node_time(&node);
-    ping(&node, &keys, &relay, &me, t0, 0x1234, 25, HOME_LEARNING);
-    CHECK(next_bind(fr, &keys, bid, 300, &b1) == 1 && b1.flags == HOME_F_PONG && b1.ping_id == 0x1234 && b1.len < 96
-          && b1.kseq == 3, "the PONG: flags %d id %x len %d", b1.flags, b1.ping_id, b1.len);
+    ping(&node, &keys, &relay, &me, t0, 0x1234, 25, RELAY_LEARNING);
+    CHECK(next_bind(fr, &keys, bid, 300, &b1) == 1 && b1.flags == RELAY_F_PONG && b1.ping_id == 0x1234 && b1.len < 96
+          && b1.kseq == b2.kseq + 1, "the PONG: flags %d id %x len %d", b1.flags, b1.ping_id, b1.len);
     /* the same ping again, an older one, one far from now: not answered */
-    ping(&node, &keys, &relay, &me, t0, 0x1234, 25, HOME_LEARNING);
-    ping(&node, &keys, &relay, &me, t0 - 10, 0x1235, 25, HOME_LEARNING);
-    ping(&node, &keys, &relay, &me, t0 + 120000, 0x1236, 25, HOME_LEARNING);
+    ping(&node, &keys, &relay, &me, t0, 0x1234, 25, RELAY_LEARNING);
+    ping(&node, &keys, &relay, &me, t0 - 10, 0x1235, 25, RELAY_LEARNING);
+    ping(&node, &keys, &relay, &me, t0 + 120000, 0x1236, 25, RELAY_LEARNING);
     CHECK(next_bind(fr, &keys, bid, 100, &b2) == 0, "a replayed or stale ping answered");
     /* the main socket sends elsewhere: the next PONG says so; then not again */
     (void)npf_udp_send(fc, "x", 1, &other);
-    ping(&node, &keys, &relay, &me, t0 + 1000, 0x2000, 45, HOME_LEARNING);
-    CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && b2.flags == (HOME_F_PONG | HOME_F_OTHER) && b2.ping_id == 0x2000,
+    ping(&node, &keys, &relay, &me, t0 + 1000, 0x2000, 45, RELAY_LEARNING);
+    CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && b2.flags == (RELAY_F_PONG | RELAY_F_OTHER) && b2.ping_id == 0x2000,
           "a PONG after a send elsewhere: flags %d", b2.flags);
-    ping(&node, &keys, &relay, &me, t0 + 2000, 0x2001, 45, HOME_LEARNING);
-    CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && b2.flags == HOME_F_PONG, "the next PONG: flags %d", b2.flags);
+    ping(&node, &keys, &relay, &me, t0 + 2000, 0x2001, 45, RELAY_LEARNING);
+    CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && b2.flags == RELAY_F_PONG, "the next PONG: flags %d", b2.flags);
     /* R moved (a new port): counted; the status */
     R2 = me;
     R2.sin_port = htons((uint16_t)(ntohs(me.sin_port) + 1));
-    ping(&node, &keys, &relay, &R2, t0 + 3000, 0x2002, 36, HOME_LEARNED);
+    ping(&node, &keys, &relay, &R2, t0 + 3000, 0x2002, 36, RELAY_LEARNED);
     next_bind(fr, &keys, bid, 300, &b2);
     {
         size_t l = npf_node_home_json(&node, js, sizeof js);
@@ -252,7 +256,65 @@ static void test_client(void)
           "the watchdog before its deadline");
     CHECK(node_home_test_dog(&node, npf_mono_ms() + 36000 + HOME_RETRY_MS + 6000) == 1 && node_home_state(&node) == 4,
           "the watchdog after its deadline");
-    CHECK(next_bind(fr, &keys, bid, 300, &b3) == 1 && !(b3.flags & HOME_F_PONG), "the HOME_BIND of the watchdog");
+    CHECK(next_bind(fr, &keys, bid, 300, &b3) == 1 && !(b3.flags & RELAY_F_PONG), "the RELAY_BIND of the watchdog");
+    /* bound again; a call takes it: its binding moves (the kseq goes on),
+     * the spare is no longer the node's until relay_spare */
+    answer(&node, &keys, &relay, &me, b3.txid, b3.ts, b3.kseq, 1, ck, 36);
+    CHECK(node_home_state(&node) == 3, "bound again");
+    {
+        relay_c rc;
+        uint8_t nid[8], nkey[32];
+        char rb[16], kb[48], ra[64], ev[512];
+        npf_jtok tok[32];
+        npf_json j;
+        struct sockaddr_storage ss;
+        int len;
+        memset(&rc, 0, sizeof rc);
+        nid[0] = (uint8_t)~bid[0];
+        CHECK(!node_home_adopt(&node, nid, &rc), "another allocation adopted");
+        CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.bound && rc.kseq == b3.kseq && !rc.t_bind
+              && memcmp(rc.cookie, ck, 8) == 0 && node_home_state(&node) == 6, "the spare adopted");
+        CHECK(next_bind(fr, &keys, bid, 100, &b2) == 0, "the spare taken still binds");
+        /* relay_spare: the next one, bound from scratch */
+        npf_random(nid, 8);
+        npf_random(nkey, 32);
+        npf_siv_derive(&keys, nkey, LABEL_RELAY);
+        npf_b64url_encode(nid, 8, rb);
+        npf_b64url_encode(nkey, 32, kb);
+        memset(&ss, 0, sizeof ss);
+        memcpy(&ss, &relay, sizeof relay);
+        len = snprintf(ev, sizeof ev, "{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\","
+                       "\"udp\":[\"%s\"],\"spare\":true},\"why\":\"taken\"}", rb, kb, npf_addr_str(&ss, ra, sizeof ra));
+        CHECK(npf_json_parse(&j, ev, (size_t)len, tok, 32) >= 0, "relay_spare JSON");
+        node_home_spare(&node, &j, 0);
+        CHECK(node_home_state(&node) == 2 && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
+              "the next spare binds");
+        CHECK(npf_node_home_json(&node, js, sizeof js) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
+              "status %s", js);
+        /* the next one bound; its replacement (relay_spare{taken}) comes
+         * before the call's relay: the one taken is still handed over */
+        answer(&node, &keys, &relay, &me, b1.txid, b1.ts, b1.kseq, 1, ck, 36);
+        CHECK(node_home_state(&node) == 3, "the next spare bound");
+        {
+            uint8_t xid[8], xkey[32];
+            char rb2[16], kb2[48], ev2[512];
+            npf_jtok tok2[32];
+            npf_json j2;
+            npf_random(xid, 8);
+            npf_random(xkey, 32);
+            npf_b64url_encode(xid, 8, rb2);
+            npf_b64url_encode(xkey, 32, kb2);
+            len = snprintf(ev2, sizeof ev2, "{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\","
+                           "\"udp\":[\"%s\"],\"spare\":true},\"why\":\"taken\"}", rb2, kb2, ra);
+            CHECK(npf_json_parse(&j2, ev2, (size_t)len, tok2, 32) >= 0, "relay_spare JSON");
+            node_home_spare(&node, &j2, 0);
+            memset(&rc, 0, sizeof rc);
+            CHECK(node_home_adopt(&node, nid, &rc) == 1 && rc.bound && rc.kseq == b1.kseq
+                  && memcmp(rc.cookie, ck, 8) == 0 && node_home_state(&node) == 2,
+                  "the spare taken handed over after its replacement came");
+            CHECK(!node_home_adopt(&node, nid, &rc), "handed over twice");
+        }
+    }
     node_home_stop(&node);
     node.udp_fd = -1;
     npf_node_stop(&node);

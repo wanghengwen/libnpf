@@ -201,7 +201,7 @@ typedef struct npf_node_cfg {
      * allocation, a property of the NAT, kept from the full probe) */
     int         udp_on_demand;
     int         udp_public;
-    /* the persistent binding on the relay of the server (home-binding.md
+    /* the spare allocation on the relay of the server (home-binding.md
      * 17.1): home_off (home_bind = off) none */
     int         home_off;
 } npf_node_cfg;
@@ -360,7 +360,7 @@ struct npf_node {
     npf_cand      cands[NPF_MAX_CANDS];
     int           ncands;
 
-    struct npf_home *home;          /* the persistent binding on the relay (home.c), NULL none */
+    struct npf_home *home;          /* the spare allocation on the relay (home.c), NULL none */
 
     npf_call     *calls;
     npf_call     *conv_tab[256];    /* calls with an AnLiu connection, by conv (datagram demux) */
@@ -595,7 +595,7 @@ void npf_node_write_nat(npf_node *n, struct npf_jw *w);
 void npf_node_write_cands(npf_node *n, struct npf_jw *w);
 /* nat_report: the profile (or, connect_mode secure, only that) to the platform */
 void npf_node_report_nat(npf_node *n);
-/* the persistent binding (home.c): the status's "home" object into buf (its
+/* the spare allocation (home.c): the status's "home" object into buf (its
  * length, 0 when there is no binding); a line for people ("" none) */
 size_t npf_node_home_json(npf_node *n, char *buf, size_t cap);
 void npf_node_home_text(npf_node *n, char *buf, size_t cap);

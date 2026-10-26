@@ -130,7 +130,7 @@ int  npf_if_list(npf_ifaddr *out, int max);
 int  npf_udp_send(int fd, const void *buf, size_t len, const void *to);
 
 /* When a node's main socket last sent what may keep the mapping its
- * persistent binding's relay sees (home-binding.md 5.4): by the NAT's
+ * spare allocation's relay sees (home-binding.md 5.4): by the NAT's
  * mapping, anything but the relay's address (EIM, or not known), the
  * relay's IP on another port (ADM: its probe servers), nothing (APDM). */
 enum { NPF_WATCH_ANY, NPF_WATCH_IP, NPF_WATCH_NONE };

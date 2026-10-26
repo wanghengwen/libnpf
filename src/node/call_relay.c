@@ -7,27 +7,19 @@
 #include <string.h>
 
 #include "call_internal.h"
+#include "home.h"
 
 /* ---- UDP relay client (data-channel.md 9) ---- */
 
-/* RELAY_BIND: hint | sealed with alloc_key, body = the relay's cookie for
- * our address (zeros before the first BIND_ACK: the relay answers with a
- * challenge carrying it, and binds the address when a BIND echoes it) */
+/* RELAY_BIND (relay_bind.c): the relay's cookie for our address in it
+ * (zeros before the first BIND_ACK: the relay answers with a challenge
+ * carrying it, and binds the address when a BIND echoes it) */
 static void relay_bind_send(npf_call *c)
 {
-    uint8_t txid[NPF_TXID_SIZE], wire[256];
-    size_t len = npf_rand_range(96, 200);
-    uint32_t ts = (uint32_t)npf_node_time(c->n);
-    int n, k = c->relay.nsent++ % RELAY_SENT;
-    npf_random(txid, sizeof txid);
-    memcpy(c->relay.sent[k].txid, txid, sizeof txid);   /* its BIND_ACK echoes both (relay_ack_ours) */
-    c->relay.sent[k].ts = ts;
-    c->relay.sent[k].at = npf_mono_ms();
-    memcpy(wire, c->relay.relay_id, RELAY_HINT_SIZE);
-    n = npf_pkt_seal(&c->relay.keys, 0, PKT_RELAY_BIND, txid, ts, c->relay.cookie,
-                     RELAY_COOKIE_SIZE, len - RELAY_HINT_SIZE, wire + RELAY_HINT_SIZE);
+    uint8_t wire[256];
+    int n = relay_bind_pack(&c->relay, c->n, 0, 0, wire);
     if (n > 0 && !call_relay_addr_blocked(c))
-        call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], wire, (size_t)n + RELAY_HINT_SIZE);
+        call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], wire, (size_t)n);
 }
 
 /* RELAY_DATA: hint | tag | type | flags | seq | the AnLiu datagram */
@@ -83,11 +75,8 @@ static void relay_bind_timer(npf_loop *loop, void *arg)
         }
         return;
     }
-    if (++c->relay.tries > RELAY_BIND_TRIES) {
-        if (c->relay.cur + 1 < c->relay.naddr) {
-            c->relay.cur++;
-            c->relay.tries = 0;
-        } else if (c->caller && c->state == NPF_CALL_CALLING) {
+    if (relay_bind_next(&c->relay) < 0) {
+        if (c->caller && c->state == NPF_CALL_CALLING) {
             /* bound from the reply to the call, before the callee accepted:
              * the platform takes no relay_switch yet. The accept brings the
              * same allocation, which binds it again from its first address
@@ -132,7 +121,7 @@ static void relay_bind_timer(npf_loop *loop, void *arg)
         }
     }
     relay_bind_send(c);
-    c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_BIND_MS, relay_bind_timer, c);
 }
 
 /* the UDP relay bound again from its first address (a BIND every 700 ms) */
@@ -142,7 +131,7 @@ void call_relay_rebind(npf_call *c)
     c->relay.cur = 0;
     timer_stop(c->n->loop, &c->relay.t_bind);
     relay_bind_send(c);
-    c->relay.t_bind = npf_timer_add(c->n->loop, 700, relay_bind_timer, c);
+    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_BIND_MS, relay_bind_timer, c);
 }
 
 /* the binding refreshed every RELAY_KEEPALIVE_MS while the relay is in use */
@@ -152,6 +141,8 @@ static void relay_keepalive(npf_call *c)
     c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_bind_timer, c);
 }
 
+
+static void relay_bound(npf_call *c, const char *how);
 
 /* an allocation taken: the relay of the session from now on */
 static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const char *mode)
@@ -210,9 +201,20 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
         return;
     }
     relay_take(c, id, key, mode);
-    memcpy(c->relay.addr, addr, (size_t)naddr * sizeof addr[0]);
-    c->relay.naddr = naddr;
-    npf_siv_derive(&c->relay.keys, c->relay.alloc_key, LABEL_RELAY);
+    if (node_home_adopt(c->n, id, &c->relay)) {
+        /* the node's spare (home-binding.md v0.5, 7): bound already from
+         * the main socket, nothing to bind; the platform sends another */
+        c->relay.active = 1;
+        if (c->relay.bound) {
+            relay_bound(c, " (the node's spare)");
+        } else {
+            npf_log("call %s: UDP relay: the node's spare, binding it", c->call_id_s);
+            call_relay_rebind(c);
+            call_path_up(c);
+        }
+        return;
+    }
+    relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
     c->relay.active = 1;
     c->relay.bound = 0;
     call_relay_rebind(c);
@@ -220,21 +222,6 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
      * our key seals from an address it has not bound yet; only what comes to
      * us waits for the cookie's round trip (the callee's hello, call_path_up) */
     call_path_up(c);
-}
-
-int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
-{
-    if (a->ss_family != b->ss_family)
-        return 0;
-    if (a->ss_family == AF_INET) {
-        const struct sockaddr_in *x = (const void *)a, *y = (const void *)b;
-        return x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr;
-    }
-    if (a->ss_family == AF_INET6) {
-        const struct sockaddr_in6 *x = (const void *)a, *y = (const void *)b;
-        return x->sin6_port == y->sin6_port && memcmp(&x->sin6_addr, &y->sin6_addr, 16) == 0;
-    }
-    return 0;
 }
 
 /* the relay works (a BIND_ACK, or the peer's data through it): bound, the
@@ -252,71 +239,24 @@ static void relay_bound(npf_call *c, const char *how)
     call_path_up(c);
 }
 
-/* A BIND_ACK counts only when it answers one of our last binds (RELAY_SENT,
- * RELAY_ACK_AGE_MS old at most: its txid and ts_ms echoed), and once: a
- * replayed one (an old challenge, sent again by someone on the path with the
- * relay's address) would have us bind again each time, burning the
- * allocation's bind tokens and rolling the relay's ring of the txids it has
- * seen (a bind captured earlier could then pass again). A challenge to our
- * RELAY_DATA (a new NAT port) has no txid: it counts when its srv_time_ms is
- * newer than the last one taken and within RELAY_ACK_WINDOW_MS of now. */
-#define RELAY_ACK_AGE_MS    10000
-#define RELAY_ACK_WINDOW_MS 60000
-
-static int relay_ack_ours(npf_call *c, const uint8_t *plain, uint64_t srv_ms, int bound)
+/* RELAY_BIND_ACK of ours (relay_bind_ack): the cookie kept for the next
+ * binds; a challenge (the address is not ours on the relay yet, or no
+ * longer: a new NAT port) is answered at once with a BIND echoing it, 200 ms
+ * apart at most */
+static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
 {
-    static const uint8_t none[NPF_TXID_SIZE];
-    const uint8_t *txid = plain + 4;
-    uint32_t ts = npf_rd32(plain + 4 + NPF_TXID_SIZE);
-    int64_t now = npf_mono_ms(), d;
-    int i;
-    if (memcmp(txid, none, sizeof none) == 0) {
-        d = (int64_t)srv_ms - npf_node_time(c->n);
-        if (bound || srv_ms <= c->relay.chal_srv || d > RELAY_ACK_WINDOW_MS || d < -RELAY_ACK_WINDOW_MS)
-            return 0;
-        c->relay.chal_srv = srv_ms;
-        return 1;
-    }
-    for (i = 0; i < RELAY_SENT; i++)
-        if (c->relay.sent[i].at && now - c->relay.sent[i].at <= RELAY_ACK_AGE_MS && c->relay.sent[i].ts == ts
-            && npf_ct_eq(c->relay.sent[i].txid, txid, NPF_TXID_SIZE) == 0) {
-            c->relay.sent[i].at = 0;
-            return 1;
-        }
-    return 0;
-}
-
-/* RELAY_BIND_ACK: body = family(1) | port(2) | addr(4/16) | srv_time_ms(8) |
- * state(1) | cookie(8). The cookie is kept for the next binds; a challenge
- * (the address is not ours on the relay yet, or no longer: a new NAT port)
- * is answered at once with a BIND echoing it, 200 ms apart at most */
-static void relay_ack(npf_call *c, const uint8_t *plain, size_t pl)
-{
-    const uint8_t *b = plain + NPF_PKT_HDR_SIZE;
-    size_t blen, alen;
-    int64_t now;
-    if (pl < NPF_PKT_HDR_SIZE)
+    relay_ack a;
+    if (!relay_bind_ack(&c->relay, c->n, plain, pl, &a))
         return;
-    blen = (size_t)plain[2] | (size_t)plain[3] << 8;
-    if (blen < 1 || NPF_PKT_HDR_SIZE + blen > pl)
-        return;
-    alen = b[0] == 4 ? 4 : b[0] == 6 ? 16 : 0;
-    if (!alen || blen < 3 + alen + 8 + 1 + RELAY_COOKIE_SIZE
-        || !relay_ack_ours(c, plain, npf_rd64(b + 3 + alen), b[3 + alen + 8] == RELAY_ACK_BOUND))
-        return;
-    memcpy(c->relay.cookie, b + 3 + alen + 9, RELAY_COOKIE_SIZE);
-    if (b[3 + alen + 8] == RELAY_ACK_BOUND) {
+    if (a.state == RELAY_ACK_BOUND) {
         /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that confirms
          * the binding (the challenges still come: without one nothing binds) */
         if (!c->relay.bound && !getenv("NPF_TEST_DROP_BIND_ACK"))
             relay_bound(c, "");
         return;
     }
-    now = npf_mono_ms();
-    if (c->relay.active && now - c->relay.echo_ms >= 200) {
-        c->relay.echo_ms = now;
+    if (c->relay.active && relay_bind_echo_due(&c->relay))
         relay_bind_send(c);
-    }
 }
 
 /* The caller binds its relay from the reply to the call, before it has the
@@ -381,24 +321,13 @@ void call_relay_early_feed(npf_call *c)
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
     uint8_t plain[2048];
-    int pl, i;
+    int pl;
     /* a relay released here may still be in use by the peer: only the
      * caller releases the allocations on the server, and the peer may have
      * given up the direct path just after our standby ended (a path dead in
      * one direction looks fine from this side) */
-    for (i = 0; i < c->relay.naddr && !call_same_addr(from, &c->relay.addr[i]); i++)
-        ;
-    if (i == c->relay.naddr || len > sizeof plain + NPF_SIV_TAG_SIZE)
-        return 0;
-    pl = npf_siv_open(&c->relay.keys, 1, buf, len, plain);
-    if (pl < 6)
-        return 0;
-    /* an address tried earlier answered late (the binds moved on to the
-     * next one): the one that works is the one to use */
-    if (i != c->relay.cur && c->relay.active && !c->relay.bound)
-        c->relay.cur = i;
-    else if (i != c->relay.cur)
-        return 1;
+    if ((pl = relay_bind_open(&c->relay, buf, len, from, plain)) <= 0)
+        return pl == 0;
     if (plain[0] == PKT_RELAY_DATA) {
         if (c->caller && !c->keys_ready && c->relay.active) {
             relay_early_keep(c, plain + 6, (size_t)pl - 6);
@@ -427,7 +356,7 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
         return 1;
     }
     if (plain[0] == PKT_RELAY_BIND_ACK)
-        relay_ack(c, plain, (size_t)pl);
+        relay_ack_in(c, plain, (size_t)pl);
     return 1;
 }
 /* a round that did not go direct (failed, or none planned) while the UDP

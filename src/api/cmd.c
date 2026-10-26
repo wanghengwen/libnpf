@@ -313,7 +313,7 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
         jkstr(o, &g, "srflx", n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : NULL);
         npf_out_printf(o, "}");
     }
-    {   /* the persistent binding (home-binding.md 14.1) */
+    {   /* the spare allocation (home-binding.md 14.1) */
         char hb[1024];
         if (npf_node_home_json(n, hb, sizeof hb)) {
             jkey(o, &f, "home");

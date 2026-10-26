@@ -658,7 +658,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
             n->relay_hit = c;
             return 1;
         }
-    /* the persistent binding's keepalive answers and echoes (home.c): after
+    /* the spare allocation's pings and BIND_ACKs (home.c): after
      * the calls' relayed data, the bulk of what comes from the relay */
     if (node_home_input(n, fd, buf, len, from))
         return 1;
@@ -703,7 +703,7 @@ void npf_node_dump(npf_node *n)
 void npf_node_end_calls(npf_node *n, const char *reason)
 {
     npf_call *c;
-    node_home_close(n);             /* and the persistent binding: home_close goes out with the ends */
+    node_home_close(n);             /* and the spare: home_close goes out with the ends */
     for (c = n->calls; c; c = c->next)
         if (!c->ended)
             npf_call_end(c, reason);
