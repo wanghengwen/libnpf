@@ -213,13 +213,6 @@ typedef struct npf_key_share {
     npf_tunnel_shared sh;
 } npf_key_share;
 
-/* a timer stopped, if it runs, and forgotten */
-static inline void timer_stop(npf_loop *l, npf_timer **t)
-{
-    if (*t)
-        npf_timer_cancel(l, *t);
-    *t = NULL;
-}
 
 /* call.c: the state, the end, dispatch, the node's sessions */
 void call_accept_seen(npf_call *c);

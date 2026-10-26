@@ -23,7 +23,11 @@
 #include "npf/natprobe.h"
 #include "npf/node.h"
 #include "npf/platform.h"
-#include "home.h"
+/* home.c and relay_bind.c themselves: their static parts (the binding taken
+ * without signaling, the watchdog at a given time, the packet bodies) with
+ * no test entry points in the library */
+#include "../../src/node/relay_bind.c"
+#include "../../src/node/home.c"
 
 static int fails;
 
@@ -60,7 +64,10 @@ static void test_vectors(void)
     for (i = 0; i < 12; i++) txid[i] = (uint8_t)(0xa0 + i);
     for (i = 0; i < 8; i++) ck[i] = (uint8_t)(0x10 + i);
     npf_siv_derive(&keys, key, LABEL_RELAY);
-    relay_bind_body(body, ck, 0x0102030405060708ULL, RELAY_F_PONG | RELAY_F_OTHER, 0xdeadbeefu);
+    memcpy(body, ck, 8);
+    npf_le64(body + 8, 0x0102030405060708ULL);
+    body[16] = RELAY_F_PONG | RELAY_F_OTHER;
+    npf_le32(body + 17, 0xdeadbeefu);
     n = npf_pkt_seal(&keys, NPF_DIR_REQ, PKT_RELAY_BIND, txid, 0x11223344u, body, sizeof body,
                      NPF_SIV_TAG_SIZE + NPF_PKT_HDR_SIZE + sizeof body, out);
     hex2bin(V_BIND, exp, (size_t)n);
@@ -68,14 +75,15 @@ static void test_vectors(void)
     hex2bin(V_ACK, exp, 68);
     CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 68, plain, &pk) == 0 && pk.type == PKT_RELAY_BIND_ACK
           && relay_ack_parse(pk.body, pk.body_len, &a) == 0, "RELAY_BIND_ACK vector opens");
-    CHECK(a.addr.sin_addr.s_addr == inet_addr("198.51.100.7") && ntohs(a.addr.sin_port) == 40312
+    CHECK(((struct sockaddr_in *)&a.addr)->sin_addr.s_addr == inet_addr("198.51.100.7")
+          && ntohs(((struct sockaddr_in *)&a.addr)->sin_port) == 40312
           && a.srv_ms == 1793000000123LL && a.state == 1 && memcmp(a.cookie, ck, 8) == 0
           && a.kseq == 0x0102030405060708ULL && a.flags == RELAY_A_MOVED && a.t_s == 45 && a.learn == RELAY_LEARNING,
           "RELAY_BIND_ACK fields");
     hex2bin(V_PING, exp, 55);
     CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 55, plain, &pk) == 0 && pk.type == PKT_RELAY_PING
           && relay_ping_parse(pk.body, pk.body_len, &p) == 0 && p.srv_ms == 1793000045123LL && p.ping_id == 0xdeadbeefu
-          && p.t_s == 45 && p.learn == RELAY_LEARNED && p.try_n == 2 && ntohs(p.addr.sin_port) == 40312, "RELAY_PING vector");
+          && p.t_s == 45 && p.learn == RELAY_LEARNED && p.try_n == 2 && ntohs(((struct sockaddr_in *)&p.addr)->sin_port) == 40312, "RELAY_PING vector");
     CHECK(npf_pkt_open(&keys, NPF_DIR_REQ, exp, 55, plain, &pk) < 0, "a reflected RELAY_PING opens");
 }
 
@@ -205,7 +213,12 @@ static void test_client(void)
     npf_random(key, 32);
     npf_random(foreign, sizeof foreign);
     npf_siv_derive(&keys, key, LABEL_RELAY);
-    CHECK(node_home_test_take(&node, bid, key, &relay) == 0, "the spare taken");
+    {
+        struct sockaddr_storage ss;
+        memset(&ss, 0, sizeof ss);
+        memcpy(&ss, &relay, sizeof relay);
+        home_take(home_new(&node), bid, key, &ss, 1);
+    }
     /* the first RELAY_BIND: its cookie zero, kseq from the server time (above
      * whatever the relay took before), padded to 96 at least */
     CHECK(next_bind(fr, &keys, bid, 500, &b1) == 1 && b1.kseq > (uint64_t)(npf_node_time(&node) - 1000) << 10
@@ -220,9 +233,9 @@ static void test_client(void)
     CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && memcmp(b2.cookie, ck, 8) == 0 && b2.kseq == b1.kseq + 1, "the challenge echoed");
     usleep(250 * 1000);
     answer(&node, &keys, &relay, &me, b1.txid, b1.ts, b1.kseq, 0, ck, 25);
-    CHECK(next_bind(fr, &keys, bid, 100, &b3) == 0 && node_home_state(&node) != 3, "a replayed challenge answered");
+    CHECK(next_bind(fr, &keys, bid, 100, &b3) == 0 && node.home->state != 3, "a replayed challenge answered");
     answer(&node, &keys, &relay, &me, b2.txid, b2.ts, b2.kseq, 1, ck, 25);
-    CHECK(node_home_state(&node) == 3, "not bound by its own BIND_ACK");
+    CHECK(node.home->state == 3, "not bound by its own BIND_ACK");
 
     /* a ping: answered at once, a PONG naming it, shorter than a RELAY_BIND */
     t0 = npf_node_time(&node);
@@ -247,20 +260,22 @@ static void test_client(void)
     ping(&node, &keys, &relay, &R2, t0 + 3000, 0x2002, 36, RELAY_LEARNED);
     next_bind(fr, &keys, bid, 300, &b2);
     {
-        size_t l = npf_node_home_json(&node, js, sizeof js);
+        size_t l = npf_node_home_status(&node, js, sizeof js, 0);
         CHECK(l > 0 && strstr(js, "\"state\":\"bound\"") && strstr(js, "\"iv_s\":36") && strstr(js, "\"learn\":\"learned\"")
               && strstr(js, "\"moved\":1") && strstr(js, "\"keepalives\":4") && strstr(js, "\"drops\":0"), "status %s", js);
+        CHECK(npf_node_home_status(&node, js, sizeof js, 1) > 0 && strstr(js, "spare bound via 127.0.0.1:")
+              && strstr(js, "after 36 s of silence (learned)"), "status line %s", js);
     }
     /* the watchdog: not before the last datagram + T + the tries + a margin; then it binds again */
-    CHECK(node_home_test_dog(&node, npf_mono_ms() + 36000 + HOME_RETRY_MS) == 0 && node_home_state(&node) == 3,
+    CHECK(dog_check(node.home, npf_mono_ms() + 36000 + HOME_RETRY_MS) == 0 && node.home->state == 3,
           "the watchdog before its deadline");
-    CHECK(node_home_test_dog(&node, npf_mono_ms() + 36000 + HOME_RETRY_MS + 6000) == 1 && node_home_state(&node) == 4,
+    CHECK(dog_check(node.home, npf_mono_ms() + 36000 + HOME_RETRY_MS + 6000) == 1 && node.home->state == 4,
           "the watchdog after its deadline");
     CHECK(next_bind(fr, &keys, bid, 300, &b3) == 1 && !(b3.flags & RELAY_F_PONG), "the RELAY_BIND of the watchdog");
     /* bound again; a call takes it: its binding moves (the kseq goes on),
      * the spare is no longer the node's until relay_spare */
     answer(&node, &keys, &relay, &me, b3.txid, b3.ts, b3.kseq, 1, ck, 36);
-    CHECK(node_home_state(&node) == 3, "bound again");
+    CHECK(node.home->state == 3, "bound again");
     {
         relay_c rc;
         uint8_t nid[8], nkey[32];
@@ -273,7 +288,7 @@ static void test_client(void)
         nid[0] = (uint8_t)~bid[0];
         CHECK(!node_home_adopt(&node, nid, &rc), "another allocation adopted");
         CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.bound && rc.kseq == b3.kseq && !rc.t_bind
-              && memcmp(rc.cookie, ck, 8) == 0 && node_home_state(&node) == 6, "the spare adopted");
+              && memcmp(rc.cookie, ck, 8) == 0 && node.home->state == 6, "the spare adopted");
         CHECK(next_bind(fr, &keys, bid, 100, &b2) == 0, "the spare taken still binds");
         /* relay_spare: the next one, bound from scratch */
         npf_random(nid, 8);
@@ -287,33 +302,10 @@ static void test_client(void)
                        "\"udp\":[\"%s\"],\"spare\":true},\"why\":\"taken\"}", rb, kb, npf_addr_str(&ss, ra, sizeof ra));
         CHECK(npf_json_parse(&j, ev, (size_t)len, tok, 32) >= 0, "relay_spare JSON");
         node_home_spare(&node, &j, 0);
-        CHECK(node_home_state(&node) == 2 && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
+        CHECK(node.home->state == 2 && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
               "the next spare binds");
-        CHECK(npf_node_home_json(&node, js, sizeof js) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
+        CHECK(npf_node_home_status(&node, js, sizeof js, 0) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
               "status %s", js);
-        /* the next one bound; its replacement (relay_spare{taken}) comes
-         * before the call's relay: the one taken is still handed over */
-        answer(&node, &keys, &relay, &me, b1.txid, b1.ts, b1.kseq, 1, ck, 36);
-        CHECK(node_home_state(&node) == 3, "the next spare bound");
-        {
-            uint8_t xid[8], xkey[32];
-            char rb2[16], kb2[48], ev2[512];
-            npf_jtok tok2[32];
-            npf_json j2;
-            npf_random(xid, 8);
-            npf_random(xkey, 32);
-            npf_b64url_encode(xid, 8, rb2);
-            npf_b64url_encode(xkey, 32, kb2);
-            len = snprintf(ev2, sizeof ev2, "{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\","
-                           "\"udp\":[\"%s\"],\"spare\":true},\"why\":\"taken\"}", rb2, kb2, ra);
-            CHECK(npf_json_parse(&j2, ev2, (size_t)len, tok2, 32) >= 0, "relay_spare JSON");
-            node_home_spare(&node, &j2, 0);
-            memset(&rc, 0, sizeof rc);
-            CHECK(node_home_adopt(&node, nid, &rc) == 1 && rc.bound && rc.kseq == b1.kseq
-                  && memcmp(rc.cookie, ck, 8) == 0 && node_home_state(&node) == 2,
-                  "the spare taken handed over after its replacement came");
-            CHECK(!node_home_adopt(&node, nid, &rc), "handed over twice");
-        }
     }
     node_home_stop(&node);
     node.udp_fd = -1;

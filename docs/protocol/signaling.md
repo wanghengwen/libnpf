@@ -581,7 +581,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 - **`home_open`** 请求，`data = {"resume": "<relay_id>"?}`。应答 `{"relay": {"mode": "udp", "relay_id", "alloc_key", "udp": [...], "spare": true}, "time": <服务器毫秒>}`；`resume` 的备用分配还在且属于同一身份（节点编号或 `client_id`）时应答 `{"relay_id", "resumed": true, "time"}`，不换 hint 与密钥，否则当作新开。错误：`unavailable`（本机没有中转、`home_relay` 关闭、`home_max` 已满、匿名客户端、托管）、`rate_limited`（每连接每分钟 6 次）。节点在 `welcome` 之后发（与 NAT 探测并行），条件：有 UDP 主 socket、不是 `udp_on_demand`、不是托管服务或托管客户端、有账户或节点身份、`home_bind` 不为 `off`。
 - 每条连接至多一个（再开时旧的释放），每个身份每台服务器至多 2 个（第三个替换最早的）。备用分配**不随连接断开而释放**：重连到同一台服务器时 `resume`；连到别的服务器时在那里新开，旧的空闲回收（`max(2 × T + 15, 120)` 秒，至多 330 秒）。连接被替换（`replaced`）、节点退役、账户会话被撤销时立即释放。取用之前不计费、不计入每呼叫分配的配额（data-channel.md 9.3 第 5 条）。
 - **`home_close`** `{"relay_id"}`：释放（只释放本身份的）；节点退出时作为事件发出（尽力而为）。
-- **`relay_spare`** 事件 `{"relay": {..., "spare": true}, "why": "taken" | "rotated"}`：下一个备用分配。`taken`：上一个被呼叫取用了（与 `incoming` / `call` 应答同时或紧接着）；`rotated`：每小时换一个（新的 hint 与密钥），旧的再留 60 秒。节点立即绑定新的。取代 0.44 的 `home_rekey`。
+- **`relay_spare`** 事件 `{"relay": {..., "spare": true}, "why": "taken" | "rotated"}`：下一个备用分配。`taken`：上一个被呼叫取用了（在那条 `incoming` / `call` 应答之后发出，节点先把被取用的交给呼叫）；`rotated`：每小时换一个（新的 hint 与密钥），旧的再留 60 秒。节点立即绑定新的。取代 0.44 的 `home_rekey`。
 - **取用**：平台为呼叫的一侧分配中转时，这一侧的连接在本服务器上、它当前的备用分配新鲜（已绑定、最近 T + 约 10 秒内有它的报文、没有未应答的 ping），且账户与身份的配额还有余地，就用它；否则（还在绑定、刚被取用、跨服务器的主叫）照常新分配。取用的那一刻起它就是普通的分配：计费、`pending`、热备、`relay_release` 照旧。
 - 节点在每个 ping 与应答里看到中转眼中的地址 R、中转的 T 与学习状态；学习只在中转上（按身份，备用分配换了接着学），节点不在 `nat` 里报（呼叫记录的 `nat.home` 是平台从中转取的，见"呼叫记录"）。
 

@@ -14,8 +14,9 @@
 /* RELAY_BIND (relay_bind.c): the relay's cookie for our address in it
  * (zeros before the first BIND_ACK: the relay answers with a challenge
  * carrying it, and binds the address when a BIND echoes it) */
-static void relay_bind_send(npf_call *c)
+static void relay_bind_send(void *arg)
 {
+    npf_call *c = arg;
     uint8_t wire[256];
     int n = relay_bind_pack(&c->relay, c->n, 0, 0, wire);
     if (n > 0 && !call_relay_addr_blocked(c))
@@ -62,96 +63,82 @@ static void ws_wait_done(npf_loop *loop, void *arg)
     }
 }
 
-static void relay_bind_timer(npf_loop *loop, void *arg)
+/* refresh the binding (NAT mapping, server idle timer) while in use */
+static void relay_keepalive_timer(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
-    (void)loop;
     c->relay.t_bind = NULL;
-    if (c->relay.bound) {
-        /* refresh the binding (NAT mapping, server idle timer) while in use */
-        if (c->relay.active) {
-            relay_bind_send(c);
-            c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_bind_timer, c);
-        }
-        return;
+    if (c->relay.bound && c->relay.active) {
+        relay_bind_send(c);
+        c->relay.t_bind = npf_timer_add(loop, RELAY_KEEPALIVE_MS, relay_keepalive_timer, c);
     }
-    if (relay_bind_next(&c->relay) < 0) {
-        if (c->caller && c->state == NPF_CALL_CALLING) {
-            /* bound from the reply to the call, before the callee accepted:
-             * the platform takes no relay_switch yet. The accept brings the
-             * same allocation, which binds it again from its first address
-             * (call_relay_setup), the usual way on from there */
-            npf_log("call %s: UDP relay unreachable before the accept: binding it again then", c->call_id_s);
-            return;
-        } else if (c->p2p) {
-            /* in doubt (p2p_suspect): the verdict decides (lost: the WS
-             * relay, check_p2p); a WS relay session cannot go direct again */
-            npf_log("call %s: UDP relay unreachable; the direct path carries the session%s", c->call_id_s,
-                    c->p2p_suspect ? " while it is checked" : "");
-            return;
-        } else if (!c->relay_ports_waited && call_hard_punches(c) > 0) {
-            /* a hard-side punch holds hundreds of the NAT's ports: a carrier
-             * NAT with a quota of them (the phone's APDM CGNAT, about 500) then
-             * maps nothing new, the relay included. Measured: every relay bind
-             * failed while two punches ran, the next one after them bound at
-             * once. Again when they end (call_punch_sockets_back), WS_WAIT_MS at most */
-            npf_log("call %s: UDP relay unreachable while a punch holds the NAT's ports: trying again when it ends",
-                    c->call_id_s);
-            c->relay_ports_waited = 1;
-            c->relay_waits_ports = 1;
-            call_port_pressure(c->n, "the UDP relay unreachable");
-            if (!c->t_ws_wait)
-                c->t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
-            return;
-        } else if (!c->punched && !call_no_p2p(c)) {
-            /* a WS relay session cannot move to a direct path later (the
-             * transport is replaced): let the first punch round decide.
-             * Measured: a Linux node's UDP relay unreachable 2 s before the
-             * punch plan arrived, the direct path up 6 s later, the session
-             * stuck on the WS relay at 14 KB/s */
-            npf_log("call %s: UDP relay unreachable; waiting for the punch before asking for the WS relay",
-                    c->call_id_s);
-            if (!c->t_ws_wait)
-                c->t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
-            return;
-        } else {
-            npf_log("call %s: UDP relay unreachable", c->call_id_s);
-            call_ask_ws_relay(c);
-            return;
-        }
+}
+
+/* every address of the relay tried (relay_bind_run) */
+static void relay_gave_up(void *arg)
+{
+    npf_call *c = arg;
+    if (c->caller && c->state == NPF_CALL_CALLING) {
+        /* bound from the reply to the call, before the callee accepted:
+         * the platform takes no relay_switch yet. The accept brings the
+         * same allocation, which binds it again from its first address
+         * (call_relay_setup), the usual way on from there */
+        npf_log("call %s: UDP relay unreachable before the accept: binding it again then", c->call_id_s);
+    } else if (c->p2p) {
+        /* in doubt (p2p_suspect): the verdict decides (lost: the WS
+         * relay, check_p2p); a WS relay session cannot go direct again */
+        npf_log("call %s: UDP relay unreachable; the direct path carries the session%s", c->call_id_s,
+                c->p2p_suspect ? " while it is checked" : "");
+    } else if (!c->relay_ports_waited && call_hard_punches(c) > 0) {
+        /* a hard-side punch holds hundreds of the NAT's ports: a carrier
+         * NAT with a quota of them (the phone's APDM CGNAT, about 500) then
+         * maps nothing new, the relay included. Measured: every relay bind
+         * failed while two punches ran, the next one after them bound at
+         * once. Again when they end (call_punch_sockets_back), WS_WAIT_MS at most */
+        npf_log("call %s: UDP relay unreachable while a punch holds the NAT's ports: trying again when it ends",
+                c->call_id_s);
+        c->relay_ports_waited = 1;
+        c->relay_waits_ports = 1;
+        call_port_pressure(c->n, "the UDP relay unreachable");
+        if (!c->t_ws_wait)
+            c->t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
+    } else if (!c->punched && !call_no_p2p(c)) {
+        /* a WS relay session cannot move to a direct path later (the
+         * transport is replaced): let the first punch round decide.
+         * Measured: a Linux node's UDP relay unreachable 2 s before the
+         * punch plan arrived, the direct path up 6 s later, the session
+         * stuck on the WS relay at 14 KB/s */
+        npf_log("call %s: UDP relay unreachable; waiting for the punch before asking for the WS relay",
+                c->call_id_s);
+        if (!c->t_ws_wait)
+            c->t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
+    } else {
+        npf_log("call %s: UDP relay unreachable", c->call_id_s);
+        call_ask_ws_relay(c);
     }
-    relay_bind_send(c);
-    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_BIND_MS, relay_bind_timer, c);
 }
 
 /* the UDP relay bound again from its first address (a BIND every 700 ms) */
 void call_relay_rebind(npf_call *c)
 {
-    c->relay.tries = 0;
-    c->relay.cur = 0;
-    timer_stop(c->n->loop, &c->relay.t_bind);
-    relay_bind_send(c);
-    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_BIND_MS, relay_bind_timer, c);
+    relay_bind_run(&c->relay, c->n->loop, relay_bind_send, relay_gave_up, c);
 }
 
 /* the binding refreshed every RELAY_KEEPALIVE_MS while the relay is in use */
 static void relay_keepalive(npf_call *c)
 {
     timer_stop(c->n->loop, &c->relay.t_bind);
-    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_bind_timer, c);
+    c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_keepalive_timer, c);
 }
 
 
 static void relay_bound(npf_call *c, const char *how);
 
-/* an allocation taken: the relay of the session from now on */
-static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const char *mode)
+/* an allocation taken: the relay of the session from now on (addr NULL: a WS relay's) */
+static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const char *mode,
+                       const struct sockaddr_storage *addr, int naddr)
 {
-    memcpy(c->relay.relay_id, id, 8);
-    memcpy(c->relay.alloc_key, key, 32);
-    memset(c->relay.cookie, 0, sizeof c->relay.cookie);     /* a cookie is the allocation's */
-    memset(c->relay.sent, 0, sizeof c->relay.sent);         /* so are the binds answered */
-    c->relay.chal_srv = 0;
+    relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
     snprintf(c->relay.mode, sizeof c->relay.mode, "%s", mode);
     c->relay_asked = 0;
     timer_stop(c->n->loop, &c->t_standby);
@@ -162,34 +149,22 @@ static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], 
  * addresses with them) */
 void call_relay_setup(npf_call *c, const npf_json *j, int d)
 {
-    int r = npf_json_get(j, d, "relay"), arr, i, naddr = 0;
-    char mode[8] = "";
+    int r = npf_json_get(j, d, "relay"), naddr;
+    char mode[8];
     uint8_t id[8], key[32];
     struct sockaddr_storage addr[4];
-    if (r < 0 || j->tok[r].type != NPF_JT_OBJECT)
-        return;
-    npf_json_get_str(j, r, "mode", mode, sizeof mode);
-    if (npf_json_get_b64(j, r, "relay_id", id, 8) != 8 || npf_json_get_b64(j, r, "alloc_key", key, 32) != 32)
+    if (r < 0 || j->tok[r].type != NPF_JT_OBJECT || (naddr = relay_obj_parse(j, r, mode, id, key, addr)) < 0)
         return;
     if (strcmp(mode, "ws") == 0) {
         if (c->ws_mode && (c->wsr || c->ws_fail_wait) && memcmp(id, c->relay.relay_id, 8) == 0)
             return;                 /* the one in use, sent again (both sides asked; the reply to the
                                      * call, then call_accepted): its sublinks stay */
-        relay_take(c, id, key, mode);
+        relay_take(c, id, key, mode, NULL, 0);
         if (call_ws_setup(c, j, r) < 0)
             call_ws_failed(c, "cannot connect");
         return;
     }
-    if (strcmp(mode, "udp") != 0)
-        return;
-    arr = npf_json_get(j, r, "udp");
-    for (i = 0; arr >= 0 && i < j->tok[arr].size && naddr < 4; i++) {
-        char a[80];
-        if (npf_json_str(j, npf_json_item(j, arr, i), a, sizeof a) > 0 && npf_addr_parse(a, &addr[naddr]) == 0
-            && addr[naddr].ss_family == AF_INET)
-            naddr++;
-    }
-    if (!naddr)
+    if (strcmp(mode, "udp") != 0 || !naddr)
         return;
     if (c->relay.active && !c->ws_mode && strcmp(c->relay.mode, "udp") == 0 && memcmp(id, c->relay.relay_id, 8) == 0
         && npf_ct_eq(key, c->relay.alloc_key, 32) == 0) {
@@ -200,7 +175,8 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
             call_relay_rebind(c);
         return;
     }
-    relay_take(c, id, key, mode);
+    relay_take(c, id, key, mode, addr, naddr);
+    timer_stop(c->n->loop, &c->relay.t_bind);
     if (node_home_adopt(c->n, id, &c->relay)) {
         /* the node's spare (home-binding.md v0.5, 7): bound already from
          * the main socket, nothing to bind; the platform sends another */
@@ -214,7 +190,6 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
         }
         return;
     }
-    relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
     c->relay.active = 1;
     c->relay.bound = 0;
     call_relay_rebind(c);

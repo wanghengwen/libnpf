@@ -10,18 +10,11 @@
 #include "node_internal.h"
 #include "relay_bind.h"
 
-void relay_bind_body(uint8_t out[RELAY_BIND_BODY], const uint8_t cookie[8], uint64_t kseq, int flags, uint32_t ping_id)
-{
-    memcpy(out, cookie, 8);
-    npf_le64(out + 8, kseq);
-    out[16] = (uint8_t)flags;
-    npf_le32(out + 17, ping_id);
-}
-
 /* family(1) | port(2) | addr(4): IPv4 only; the bytes after it, or NULL */
-static const uint8_t *addr_parse(const uint8_t *b, size_t len, struct sockaddr_in *a)
+static const uint8_t *addr_parse(const uint8_t *b, size_t len, struct sockaddr_storage *ss)
 {
-    memset(a, 0, sizeof *a);
+    struct sockaddr_in *a = (struct sockaddr_in *)ss;
+    memset(ss, 0, sizeof *ss);
     if (len < 7 || b[0] != 4)
         return NULL;
     a->sin_family = AF_INET;
@@ -30,7 +23,7 @@ static const uint8_t *addr_parse(const uint8_t *b, size_t len, struct sockaddr_i
     return b + 7;
 }
 
-int relay_ack_parse(const uint8_t *b, size_t len, relay_ack *a)
+static int relay_ack_parse(const uint8_t *b, size_t len, relay_ack *a)
 {
     const uint8_t *p;
     memset(a, 0, sizeof *a);
@@ -65,10 +58,11 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
 {
     memcpy(r->relay_id, id, 8);
     memcpy(r->alloc_key, key, 32);
-    npf_siv_derive(&r->keys, key, LABEL_RELAY);
-    if (addr != r->addr)
+    if (addr) {
+        npf_siv_derive(&r->keys, key, LABEL_RELAY);
         memcpy(r->addr, addr, (size_t)naddr * sizeof addr[0]);
-    r->naddr = naddr;
+        r->naddr = naddr;
+    }
     r->cur = r->tries = 0;
     memset(r->cookie, 0, sizeof r->cookie);     /* a cookie is the allocation's */
     memset(r->sent, 0, sizeof r->sent);         /* so are the binds answered */
@@ -91,23 +85,58 @@ int relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_
     r->sent[k].ts = ts;
     r->sent[k].kseq = r->kseq;
     r->sent[k].at = r->last_tx = npf_mono_ms();
-    relay_bind_body(body, r->cookie, r->kseq, flags, ping_id);
+    memcpy(body, r->cookie, 8);                     /* cookie | kseq | flags | ping_id */
+    npf_le64(body + 8, r->kseq);
+    body[16] = (uint8_t)flags;
+    npf_le32(body + 17, ping_id);
     memcpy(wire, r->relay_id, RELAY_HINT_SIZE);
     w = npf_pkt_seal(&r->keys, NPF_DIR_REQ, PKT_RELAY_BIND, txid, ts, body, sizeof body, len - RELAY_HINT_SIZE,
                      wire + RELAY_HINT_SIZE);
     return w > 0 ? w + RELAY_HINT_SIZE : -1;
 }
 
-int relay_bind_next(relay_c *r)
+static void run_timer(npf_loop *l, void *arg)
 {
-    if (++r->tries <= RELAY_BIND_TRIES)
-        return 0;
-    if (r->cur + 1 < r->naddr) {
+    relay_c *r = arg;
+    r->t_bind = NULL;
+    if (++r->tries > 3) {               /* the first and 3 more to an address */
+        if (r->cur + 1 >= r->naddr) {
+            r->on_gave_up(r->arg);
+            return;
+        }
         r->cur++;
         r->tries = 0;
-        return 1;
     }
-    return -1;
+    r->on_send(r->arg);
+    r->t_bind = npf_timer_add(l, RELAY_BIND_MS, run_timer, r);
+}
+
+void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
+{
+    timer_stop(l, &r->t_bind);
+    r->on_send = on_send;
+    r->on_gave_up = on_gave_up;
+    r->arg = arg;
+    r->cur = r->tries = 0;
+    on_send(arg);
+    r->t_bind = npf_timer_add(l, RELAY_BIND_MS, run_timer, r);
+}
+
+int relay_obj_parse(const npf_json *j, int r, char mode[8], uint8_t id[8], uint8_t key[32],
+                    struct sockaddr_storage addr[4])
+{
+    int arr = npf_json_get(j, r, "udp"), i, naddr = 0;
+    mode[0] = 0;
+    npf_json_get_str(j, r, "mode", mode, 8);
+    if (npf_json_get_b64(j, r, "relay_id", id, 8) != 8 || npf_json_get_b64(j, r, "alloc_key", key, 32) != 32)
+        return -1;
+    for (i = 0; arr >= 0 && i < j->tok[arr].size && naddr < 4; i++) {
+        char a[80];
+        if (npf_json_str(j, npf_json_item(j, arr, i), a, sizeof a) > 0 && npf_addr_parse(a, &addr[naddr]) == 0
+            && addr[naddr].ss_family == AF_INET)
+            naddr++;
+    }
+    return naddr;
 }
 
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)

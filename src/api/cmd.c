@@ -315,7 +315,7 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
     }
     {   /* the spare allocation (home-binding.md 14.1) */
         char hb[1024];
-        if (npf_node_home_json(n, hb, sizeof hb)) {
+        if (npf_node_home_status(n, hb, sizeof hb, 0)) {
             jkey(o, &f, "home");
             npf_out_printf(o, "%s", hb);
         }
@@ -445,10 +445,9 @@ static void status_text(npf_t *c, npf_out *o)
     } else if (!n->cfg.offline) {
         npf_out_printf(o, "nat:     unknown (no answer from the probe servers)\n");
     }
-    {   /* the persistent binding */
+    {   /* the spare allocation */
         char hb[160];
-        npf_node_home_text(n, hb, sizeof hb);
-        if (hb[0])
+        if (npf_node_home_status(n, hb, sizeof hb, 1))
             npf_out_printf(o, "home:    %s\n", hb);
     }
     for (call = npf_node_calls(n); call; call = npf_call_next(call)) {

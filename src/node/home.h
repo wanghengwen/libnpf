@@ -5,18 +5,8 @@
 #ifndef NPF_HOME_H
 #define NPF_HOME_H
 
-#include <stdint.h>
-
-#include "npf/json.h"
-#include "npf/node.h"
-#include "npf/sys.h"
-
 #include "relay_bind.h"
 
-#define HOME_RETRY_MS      4500     /* the relay's tries of a ping: 3, 1.5 s apart */
-const char *home_learn_str(int learn);
-
-/* ---- the node (home.c) ---- */
 /* after welcome: home_open (a spare, or the one held resumed) when it may */
 void node_home_login(npf_node *n);
 /* the signaling connection went: the spare stays (U6) */
@@ -34,10 +24,5 @@ void node_home_spare(npf_node *n, const npf_json *j, int d);
 /* a call's allocation id: 1 when it is the spare, its binding then moved
  * into dst (bound already, or being bound) and the spare no longer here */
 int  node_home_adopt(npf_node *n, const uint8_t id[8], relay_c *dst);
-/* tests: a spare taken as from home_open (no signaling); the state (3:
- * bound); the watchdog as of now_ms (1: it bound again) */
-int  node_home_test_take(npf_node *n, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_in *relay);
-int  node_home_state(const npf_node *n);
-int  node_home_test_dog(npf_node *n, int64_t now_ms);
 
 #endif
