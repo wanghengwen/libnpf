@@ -135,6 +135,9 @@ struct npf_call {
     uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
     int         info_round;
     struct sockaddr_storage tcand;  /* the peer's new srflx (its punch_info "cand"): in this round and the next */
+    int         unsol_untrusted;    /* this round's unsolicited probes not reported: the main socket had
+                                       sprayed or gone direct to the peer's IP before (call_contact_recent) */
+    int         spray_refused_said; /* "not an address to spray" logged in this call */
     int         cand_later;         /* caller: our srflx changed before call_accepted: punch_info then */
     int         punch_wait_keys;
 
@@ -264,7 +267,12 @@ int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_stora
  * the public IP the sprays aim at */
 int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);
 int call_peer_spray_ok(const npf_call *c, struct in_addr ip);
+int call_peer_ip4_usable(const npf_node *n, struct in_addr ip);
 void call_test_punch_info(npf_call *c);
+/* the main socket sprayed ip or had a direct path with it (now); it did
+ * within CONTACT_MS (10 minutes) */
+void call_contact_note(npf_node *n, struct in_addr ip);
+int  call_contact_recent(const npf_node *n, struct in_addr ip);
 void call_set_state(npf_call *c, int st, const char *why);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);

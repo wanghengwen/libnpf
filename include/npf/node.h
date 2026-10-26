@@ -304,6 +304,12 @@ struct npf_node {
     int           nkshares;
     int64_t       hard_punch_end;   /* when a hard-side punch last gave its sockets back (monotonic ms), 0: none */
     npf_timer    *t_punch_gap;      /* the next hard-side punch once the gap after it is over */
+    /* the peer IPs the main socket sprayed or had a direct path with lately:
+     * the NAT's filter may still let in other ports of them than a round
+     * probed (natsim keeps them while the mapping lives, conntrack for its
+     * timeout), so a probe from such a port shows nothing of the filter
+     * (punch_result unsolicited, nat-traversal.md 7.8) */
+    struct { struct in_addr ip; int64_t at; } contact[8];
     int64_t       port_pressure;    /* the last sign that the NAT ran short of ports around a hard-side
                                        punch (a relay or NAT check unanswered; monotonic ms), 0: none */
 
