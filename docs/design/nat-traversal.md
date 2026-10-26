@@ -54,7 +54,7 @@
 会话建立（信令）：中转路径立即可用，AnLiu 连接先跑在 UDP 中转上（UDP 不通时走 WS 中转，不打洞）
    │
    ▼
-② 候选收集：host（IPv4/IPv6）、公网映射、端口映射（UPnP/PCP）、预测候选
+② 候选收集：host（IPv4/IPv6）、公网映射、端口映射（PCP / NAT-PMP）、预测候选
    │
    ▼
 ③ 经信令交换：NAT 画像 + 候选 + 打洞密钥
@@ -179,16 +179,34 @@ typedef struct npf_nat_profile {
 | 类型 | 来源 | 优先级 |
 |---|---|---|
 | `host6` | 本机全局 IPv6 地址 | 最高：通常只需在防火墙上打洞 |
-| `mapped` | UPnP IGD / NAT-PMP / PCP 在路由器上建立的端口映射 | 高：相当于公网地址 |
+| `mapped` | PCP / NAT-PMP 在路由器上建立的端口映射（UPnP IGD 只检测，见 5.1） | 高：相当于公网地址 |
 | `host4` | 本机私网 IPv4 地址（同一局域网或同一 NAT 下直连） | 高 |
 | `srflx` | 打洞所用 socket 向探测服务器请求得到的公网映射地址 | 中 |
 | `pred` | 按画像预测出的端口（顺序分配时为映射端口 + k × 步长） | 低 |
 
 说明：
 
-- **端口映射**：设备端启动时尝试 PCP → NAT-PMP（**不支持 UPnP**，见下），成功后定期续期（租期 1 小时，提前 10 分钟续期），退出时删除。NAS 大多在家庭路由器后面，这一项往往直接解决问题。已实现于 `src/ice/portmap.c`：PCP（RFC 6887）与 NAT-PMP（RFC 6886），都向默认网关 UDP 5351 发送，先试 PCP（较新、直接返回外部地址、支持 IPv6）再退回 NAT-PMP；网关从 `/proc/net/route` 读取；
+- **端口映射**：设备端启动时尝试 PCP → NAT-PMP（**UPnP 只检测、不用来映射**，见 5.1），成功后定期续期（租期 1 小时，提前 10 分钟续期），退出时删除；换了网络（默认网关或本机通往它的地址变了，2026-10-26）重新申请。NAS 大多在家庭路由器后面，这一项往往直接解决问题。已实现于 `src/ice/portmap.c`：PCP（RFC 6887）与 NAT-PMP（RFC 6886），都向默认网关 UDP 5351 发送，先试 PCP（较新、直接返回外部地址、支持 IPv6）再退回 NAT-PMP；网关在 Linux 上从 `/proc/net/route` 读取，macOS 查路由表，Windows 用 `GetBestRoute`，iOS、Android 不知道网关（不尝试）。网关怎么应答的（映射可用 / 外部地址不是公网 / 没有应答 / 不知道网关 / 关闭）随 NAT 画像的 `pm` 上报平台，供穿透统计（signaling.md `nat`）；
 - **只收集必要的 host 地址**：排除回环、链路本地、docker/虚拟网卡（按网卡名与地址段过滤，可配置）；
 - 候选中的地址经信令发给对端，对端能看到本端的内网地址。这是 ICE 的通常做法；有顾虑时可以只发送私网地址的哈希，由对端判断是否可能同网段，作为可选项。
+
+### 5.1 UPnP IGD：只检测（2026-10-26）
+
+**为什么不做 UPnP 映射**：UPnP IGD 要 SSDP 发现、HTTP 取设备描述、扫 XML、SOAP 控制，代码比 PCP / NAT-PMP 大得多，而且要解析局域网设备发来的 HTTP / XML（历来 UPnP 栈的漏洞多，SSRF 之类的问题也出在这一步）；建立的映射留在路由器上，进程异常退出时删不掉。值不值得做取决于有多少端点的网关是 IGD、而且 WAN 地址是公网，这个数字原来不知道。所以先只**检测**，由平台的穿透统计看出来再决定。
+
+**检测做什么**（`src/ice/upnp.c`，`npf/upnp.h`）：节点启动时、换了网络（同上）时各做一次，和 PCP 一样在工作线程里，不占事件循环；不知道网关时（`nogw`）随 PCP 的 30 分钟重试再试。从不调用 `AddPortMapping`、`DeletePortMapping` 等任何改动路由器的操作。
+
+1. SSDP `M-SEARCH`：发往组播 239.255.255.250:1900（从通往网关的网卡发出），同时单播给网关的 1900 端口；`ST` 为 IGD v1 / v2 与 `WANIPConnection` v1 / v2、`WANPPPConnection` v1；发两次（相隔 1 秒），共等 3 秒。**只接受来自默认网关地址的应答**，局域网里别的设备的应答丢弃。应答要是 `HTTP/1.1 200`、`ST` 或 `USN` 是 IGD 或 WAN 连接服务。
+2. `LOCATION` 必须是 `http://网关的 IP[:端口]/路径`：不接受主机名、别的地址、`https` 或别的 scheme、`user@` 之类；路径只能是可打印字符，不含空格和控制字符（它要写进请求行）。
+3. HTTP/1.1 `GET` 设备描述：只连网关，3 秒、最多 64 KB（超过就算失败），支持 `Content-Length` 与 `chunked`，不跟随重定向。
+4. 扫描描述：`URLBase`（有的话）必须同样指向网关，否则整份描述不用；找 `WANIPConnection` / `WANPPPConnection` 服务的 `controlURL`（绝对 URL 必须指向网关，相对路径用描述的端口）；`serviceType` 必须正好是 `urn:schemas-upnp-org:service:WAN{IP,PPP}Connection:数字`。
+5. SOAP `GetExternalIPAddress`（3 秒、最多 16 KB），最多试两个服务（常见的 PPP 拨号路由器同时列出没连上的 `WANIPConnection`）；整个检测最多约 12 秒。
+
+**结果**（随 NAT 画像的 `pm.upnp` 上报，只有枚举）：`public`（WAN 地址是公网且等于探测到的 `pub_ip`：UPnP 映射可以得到一个能用的 `mapped` 候选）、`other`（是公网但不是 `pub_ip`：多出口、策略路由，映射多半用不上）、`private`（私网或 100.64/10：双层 NAT、运营商 NAT）、`present`（有 IGD 但没取得 WAN 地址）、`none`（网关没有 IGD 应答）、`nogw`、`off`。与 `pub_ip` 的比较在写画像时用当时的探测结果做。
+
+**配置**：`upnp = 0` 关闭检测（`npf_setup.no_upnp`）；`portmap = 0` 时也不检测；编译选项 `NPF_UPNP`（默认开，随 `NPF_PORTMAP`）。代码 `upnp.c` 约 440 行，x86-64 `-O2` 目标代码约 11 KB（musl `-Os` 约 8 KB）。
+
+**测试**：解析器的单元测试（`tests/unit/test_upnp.c`：SSDP 应答、描述、SOAP、HTTP，包括别的主机、主机名、注入请求行、过大、截断、畸形的输入）和回环上的替身 IGD；集成测试 `punch.sh` 用 `NPF_TEST_UPNP_GW=IP:端口` 的替身（只单播，不在局域网上发 SSDP）；测试平台的节点配置 `upnp = 0`。调试工具 `npf-portmap -u` 在本机网络上做一次检测。
 
 ## 6. 报文格式
 
@@ -518,7 +536,8 @@ src/
 │   ├── bind.c              地址探测客户端：BIND_REQ / BIND_RESP、重传、票据（6.4）
 │   ├── natprobe.c          NAT 探测（4.x）
 │   ├── candidates.c        候选收集（host4 / host6，已实现）
-│   └── portmap.c           PCP / NAT-PMP（不含 UPnP），已实现
+│   ├── portmap.c           PCP / NAT-PMP，已实现
+│   └── upnp.c              UPnP IGD 检测（只检测，不映射，5.1），已实现
 ├── punch/                  打洞执行
 │   ├── punch.c             会话、状态机、选定与移交
 │   ├── strategy.c          决策表与各策略的发包计划

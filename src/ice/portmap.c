@@ -237,7 +237,7 @@ int npf_portmap_request(uint16_t internal_port, uint32_t lifetime, npf_portmap *
 {
     struct sockaddr_in gw;
     if (gateway(&gw) < 0)
-        return -1;
+        return -2;
     if (try_pcp(&gw, internal_port, lifetime, res, RETRIES) == 0)
         return 0;
     npf_logd("portmap: no PCP, trying NAT-PMP");
@@ -252,6 +252,20 @@ int npf_portmap_remove(uint16_t internal_port, int method)
         return -1;
     return method == NPF_PORTMAP_NATPMP ? try_natpmp(&gw, internal_port, 0, &res, 1)
                                          : try_pcp(&gw, internal_port, 0, &res, 1);
+}
+
+uint64_t npf_portmap_net(void)
+{
+    struct sockaddr_in gw;
+    struct in_addr local;
+    int fd;
+    if (gateway(&gw) < 0)
+        return 0;
+    if ((fd = udp_connect(&gw, &local)) < 0)
+        local.s_addr = 0;
+    else
+        npf_sock_close(fd);
+    return (uint64_t)gw.sin_addr.s_addr << 32 | local.s_addr;
 }
 
 const char *npf_portmap_method_str(int method)

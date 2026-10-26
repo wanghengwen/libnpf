@@ -524,8 +524,8 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 **NAT 画像 `nat`**（对应 `npf_nat_profile`，nat-traversal.md 4.3）：
 
 ```json
-{"udp": true, "map": "EIM", "alloc": "BLOCK", "delta": 0, "block": [20480, 22527], "filter": "APDF",
- "open": false, "ip_varies": false, "pub_ip": "1.2.3.4", "at": 1791100000}
+{"udp": true, "pm": {"m": "pcp", "gw": "map", "upnp": "public"}, "map": "EIM", "alloc": "BLOCK", "delta": 0,
+ "block": [20480, 22527], "filter": "APDF", "open": false, "ip_varies": false, "pub_ip": "1.2.3.4", "at": 1791100000}
 ```
 
 | 字段 | 说明 |
@@ -539,6 +539,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `lead` | 这一侧的主机防火墙要求本方先发（`punch_lead_ms` > 0，nat-traversal.md 9）：S1 仍按 `start_at` 同步开始；没有时不写 |
 | `pub_ip` | 探测到的公网 IPv4 |
 | `at` | 探测时间（Unix 秒） |
+| `pm` | 路由器端口映射的情况（2026-10-26，nat-traversal.md 5、5.1），只有枚举、没有地址，`secure` 时也有：`m` 应答的方法 `pcp` / `natpmp`（没有应答时省略）；`gw` PCP / NAT-PMP 的结果：`map`（映射可用，外部地址是公网，有 `mapped` 候选）、`private`（网关应答了，外部地址不是公网：双层 NAT、运营商 NAT，不用）、`none`（没有应答）、`nogw`（不知道默认 IPv4 网关：iOS、Android）、`off`（`portmap = 0`、离线、托管服务）；`upnp` UPnP IGD 的检测结果（只检测、从不映射）：`public`（WAN 地址是公网且就是 `pub_ip`）、`other`（是公网但不是 `pub_ip`）、`private`（不是公网）、`present`（有 IGD，没取得 WAN 地址）、`none`、`nogw`、`off`（另外 `upnp = 0` 时）。还没有结果的项省略。平台只记入呼叫记录（统计用），**不转给对方** |
 
 **候选 `cand`**（nat-traversal.md 第 5 节）：数组，最多 16 项，每项 `{"t": 类型, "a": 地址}`，类型为 `host6`、`mapped`、`host4`、`srflx`、`pred`。IPv4 候选来自主 UDP socket，IPv6 候选来自独立 IPv6 socket；选中的路径承载 AnLiu。当前节点也会在探测得到预测端口时上报 `pred`，平台可据画像进一步生成预测候选。
 
@@ -558,7 +559,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 可被呼叫的节点在在线状态下、NAT 探测完成后上报 `data = {"nat": {...}}`；登录、探测端点变化、网络变化、UDP socket 重开及失败重试等会触发测量，当前没有固定每 30 分钟执行一次完整 NAT 探测的计时器；呼叫时核对映射发现 `srflx` 变了也上报（nat-traversal.md 4.5）。纯客户端通过 `call` / `punch_request` 携带画像。平台保存最新画像，用于选择中转方式；打洞计划使用被叫在 `incoming` 应答中提供的最新画像。连接方式改变时（`connect_mode`，见下）也会更新上报。
 
-**连接方式 `connect_mode`**（2026-10-15）：节点的设置，`p2p`（默认，P2P 直连优先）或 `secure`（安全优先）。`secure` 的节点在 `nat`（`call`、`incoming` 应答、`nat_report`、`punch_request` 的应答里都一样）中只写 `{"udp": bool, "secure": true}`，没有映射类型、公网地址等，`cand` 为空数组，所以对方得不到它的任何地址。平台据此判定：主叫或被叫任一方是 `secure`，这个会话就是安全会话——
+**连接方式 `connect_mode`**（2026-10-15）：节点的设置，`p2p`（默认，P2P 直连优先）或 `secure`（安全优先）。`secure` 的节点在 `nat`（`call`、`incoming` 应答、`nat_report`、`punch_request` 的应答里都一样）中只写 `{"udp": bool, "pm": {...}, "secure": true}`（`pm` 只有枚举，平台不转给对方），没有映射类型、公网地址等，`cand` 为空数组，所以对方得不到它的任何地址。平台据此判定：主叫或被叫任一方是 `secure`，这个会话就是安全会话——
 
 - 主叫必须是有付费套餐（订阅级别 > 0）的账户（托管客户端除外：它自己承担转发）；否则立即回 `call_rejected`，`error = "secure_plan"`；账户本月额度用完时回 `quota`；
 - `incoming` 与 `call_accepted` 带 `"secure": true`，其中对方的 `nat` 只剩 `udp` 与 `secure`、`cand` 为空；
@@ -786,7 +787,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 接受时间 `accepted`、结果 `result` | `incoming` 的应答：`accepted`，或 `call_rejected` 的错误码 |
 | 结束时间 `end`、原因 `end_reason`、结束方 `ended_by` | 第一个 `call_end`（`caller` / `callee`），按 `ago_ms` 往前推，早于发起时间时取发起时间；平台终止的为 `server`（被叫未应答、没有路径） |
 | 双方的身份、所在服务器、源地址 | 各自的信令连接：节点编号或客户端 ID，主叫的计费账户，服务器编号，服务器看到的源 IP:端口。主叫连在另一台服务器上时，由那台服务器随呼叫转交 |
-| 双方的 NAT 类型 | `call` 与 `incoming` 应答中的 `nat` 和候选：UDP 是否可用，映射方式 `map`，端口分配 `alloc`，过滤行为 `filter`，端口块的大小 `block`，是否公网，公网 IP，是否有全局 IPv6 地址，是否在路由器上映射了端口（PCP / NAT-PMP） |
+| 双方的 NAT 类型 | `call` 与 `incoming` 应答中的 `nat` 和候选：UDP 是否可用，映射方式 `map`，端口分配 `alloc`，过滤行为 `filter`，端口块的大小 `block`，是否公网，公网 IP，是否有全局 IPv6 地址，是否在路由器上映射了端口（PCP / NAT-PMP：`mapped`，及映射地址 `mapped_addr`），路由器端口映射的情况 `pm`（PCP / NAT-PMP 与 UPnP，见上面 `nat` 的说明） |
 | 直连 `p2p`、`p2p_at`、`rounds` | `punch_result`：一方打通时报告的对端地址就是对方在直连路径上的地址；首次打通的时间；打洞轮数 |
 | 各轮的策略 `plans`、打通那一轮的 `p2p_plan` | 每一轮 `punch_start` 的策略（`S1` … `S5`，不打的一轮为 `skip:原因`） |
 | 中转分配 `relays` | 每次分配的方式（`udp` / `ws`）、所在服务器、时间 |
