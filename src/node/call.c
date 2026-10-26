@@ -224,6 +224,7 @@ void call_free(npf_call *c)
         }
     }
     call_rev_close_all(c);
+    call_relay_early_free(c);
     call_data_free(c);
     if (c->kshare)
         c->kshare->calls--;                 /* its counts went with the tunnel (or go when it does) */
@@ -516,19 +517,27 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
     if (strcmp(type, "call") == 0) {      /* reply to our call request */
         char rt[24], err[32] = "";
         npf_call *x;
+        int ok;
         if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) < 0)
             return;
-        if (npf_json_eq(j, npf_json_get(j, 0, "status"), "ok"))
-            return;
-        npf_json_get_str(j, 0, "error", err, sizeof err);
+        ok = npf_json_eq(j, npf_json_get(j, 0, "status"), "ok");
+        if (!ok)
+            npf_json_get_str(j, 0, "error", err, sizeof err);
         for (x = n->calls; x; x = x->next) {
             char id[24];
             snprintf(id, sizeof id, "r%d", x->call_req);
-            if (x->caller && strcmp(id, rt) == 0) {
-                npf_logw("call %s: rejected by the platform (%s)", x->call_id_s, err);
-                call_close_quiet(x, err);
+            if (!x->caller || x->ended || strcmp(id, rt) != 0)
+                continue;
+            if (ok) {
+                /* the call is taken; the reply brings our relay, bound now
+                 * while the callee is reached (call_accepted brings it again) */
+                if (x->state == NPF_CALL_CALLING)
+                    call_relay_setup(x, j, d);
                 return;
             }
+            npf_logw("call %s: rejected by the platform (%s)", x->call_id_s, err);
+            call_close_quiet(x, err);
+            return;
         }
         return;
     }

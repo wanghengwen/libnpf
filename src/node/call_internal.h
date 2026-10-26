@@ -26,9 +26,11 @@
 /* short names for npf_node.h's NPF_AUTH_* */
 enum { AUTH_IK = NPF_AUTH_IK, AUTH_PAKE = NPF_AUTH_PAKE, AUTH_GRANT = NPF_AUTH_GRANT, AUTH_DIRECT = NPF_AUTH_DIRECT };
 
+#define RELAY_SENT         8         /* the last RELAY_BINDs whose BIND_ACK is taken (call_relay.c) */
+
 typedef struct relay_c {
     int      active;
-    int      bound;
+    int      bound;             /* the relay sends to us: a BIND_ACK "bound", or the peer's data through it */
     uint8_t  relay_id[8];
     uint8_t  alloc_key[32];
     npf_siv_keys keys;
@@ -38,6 +40,13 @@ typedef struct relay_c {
     uint8_t  cookie[8];         /* the relay's cookie for our address (RELAY_BIND_ACK), echoed in RELAY_BIND */
     int64_t  echo_ms;           /* when a challenge was last answered at once (mono ms) */
     int      tries;
+    struct {                    /* the last binds: a BIND_ACK counts once, for one of them */
+        uint8_t  txid[NPF_TXID_SIZE];
+        uint32_t ts;
+        int64_t  at;            /* sent (mono ms); 0: answered */
+    } sent[RELAY_SENT];
+    int      nsent;
+    uint64_t chal_srv;          /* srv_time_ms of the last challenge to our RELAY_DATA taken */
     npf_timer *t_bind;
     int64_t  expires;
     char     mode[8];
@@ -116,6 +125,9 @@ struct npf_call {
                                        for again when another punch gives them back */
     npf_timer  *t_repunch, *t_standby;
     int         relay_asked;        /* relay_switch sent, waiting for a new allocation */
+    int         ws_fail_wait;       /* caller: the WS relay failed before the accept: asked about after it */
+    struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
+    int         nrearly;
     int         ws_paired_once;     /* the WS relay worked at least once */
     int         ws_round;           /* caller: a round began on this relay connection (one each: a
                                        repeated relay_paired starts none) */
@@ -317,6 +329,8 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 /* call_relay.c: the UDP relay client, the way to the WS relay (data-channel.md 9) */
 void call_ask_ws_relay(npf_call *c);
 void call_relay_rebind(npf_call *c);
+void call_relay_early_feed(npf_call *c);
+void call_relay_early_free(npf_call *c);
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);
