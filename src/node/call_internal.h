@@ -98,6 +98,7 @@ struct npf_call {
     npf_timer  *t_pcheck;
     int64_t     p2p_busy_since;     /* data in flight since (ms); 0 = nothing unacknowledged */
     npf_punch  *punch;
+    int         punch_of;           /* the round c->punch belongs to (a newer one may be planned meanwhile) */
     int         punch_socks;        /* S3 hard-side sockets of the running punch (node budget) */
     int64_t     up_ms;              /* established at (monotonic ms), 0 = not yet */
     uint64_t    tx_bytes, rx_bytes; /* tunnel bytes (sublink frames) */

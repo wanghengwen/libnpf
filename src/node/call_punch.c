@@ -110,7 +110,7 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
     npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kint(&w, "round", c->punch_round);
+    npf_jw_kint(&w, "round", c->punch_of);
     npf_jw_kbool(&w, "ok", res->ok);
     if (res->ok) {
         getsockname(fd, (struct sockaddr *)&ls, &ll);
@@ -141,7 +141,8 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
         npf_logw("call %s: punching failed after %d ms (%d probes sent, %d received)", c->call_id_s,
                 res->elapsed_ms, res->probes_sent, res->probes_recv);
         c->t_linger = npf_timer_add(c->n->loop, 0, linger_done, c);
-        call_schedule_repunch(c);
+        if (c->punch_of == c->punch_round)
+            call_schedule_repunch(c);   /* else the next round is planned already: it starts soon */
         return;
     }
     c->punch_retries = 0;
@@ -409,6 +410,7 @@ void call_start_punch_now(npf_call *c)
             call_punch_sockets_back(c->n);
     }
     c->punch_socks = 0;
+    c->punch_of = c->punch_round;
     if (c->pcfg->plan.strategy == NPF_PUNCH_S3 && c->pcfg->plan.side == NPF_PUNCH_HARD) {
         int want = c->pcfg->plan.n_sockets, budget = npf_node_punch_budget(c->n);
         int full = want < budget ? want : budget;      /* the most it could get with nothing else running */
@@ -489,7 +491,8 @@ static void punch_timer(npf_loop *loop, void *arg)
     npf_call *c = arg;
     (void)loop;
     c->t_punch = NULL;
-    call_start_punch_now(c);
+    if (!c->p2p && !c->ended)       /* the last round's punch may have gone direct meanwhile */
+        call_start_punch_now(c);
 }
 
 /* Behind a firewall that blocks a flow whose first packet is an unsolicited
@@ -578,11 +581,11 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         return;
     memset(c->pcfg, 0, sizeof *c->pcfg);
     pl = &c->pcfg->plan;
-    if (c->repunch_waiting) {       /* the round asked for: no longer waited for */
-        npf_timer_cancel(c->n->loop, c->t_repunch);
-        c->t_repunch = NULL;
-        c->repunch_waiting = 0;
-    }
+    if (c->caller && !c->repunch_waiting && v > 1)
+        c->punch_requests++;        /* the platform's own after a failed round (its plan changed): counted */
+    /* the round asked for, or the one the backoff waits for: this is it */
+    timer_stop(c->n->loop, &c->t_repunch);
+    c->repunch_waiting = 0;
     if (npf_json_eq(j, npf_json_get(j, d, "skip"), "no_candidates")) {
         empty_round(c);
         return;
