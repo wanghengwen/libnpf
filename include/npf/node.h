@@ -201,14 +201,9 @@ typedef struct npf_node_cfg {
      * allocation, a property of the NAT, kept from the full probe) */
     int         udp_on_demand;
     int         udp_public;
-    /* the persistent binding on the relay of the server (home-binding.md 17.1):
-     * home_off (home_bind = off) none; home_iv_max the longest keepalive
-     * interval (s, 0 = 150); home_learn_off (home_learn = 0) a fixed 25 s;
-     * home_store the learning per network (home.json, NULL none kept) */
+    /* the persistent binding on the relay of the server (home-binding.md
+     * 17.1): home_off (home_bind = off) none */
     int         home_off;
-    int         home_iv_max;
-    int         home_learn_off;
-    const char *home_store;
 } npf_node_cfg;
 
 /* a call_end waiting for the platform's answer (npf_node_call_end) */

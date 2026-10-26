@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.43。更新日期：2026-10-26。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.44。更新日期：2026-10-26。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -544,7 +544,6 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `lead` | 这一侧的主机防火墙要求本方先发（`punch_lead_ms` > 0，nat-traversal.md 9）：S1 仍按 `start_at` 同步开始；没有时不写 |
 | `pub_ip` | 探测到的公网 IPv4 |
 | `at` | 探测时间（Unix 秒） |
-| `home` | 常驻中转绑定的学习（2026-10-26，home-binding.md 5、14.1）：`map`（学习依据的映射方式）、`iv_quiet` / `iv_busy`（主 socket 安静时 / EIM 一直有别的流量时的保活间隔，秒）、`t_ok` / `t_fail`（安静时映射活过的最长等待 / 没活过的最短等待）、`refresh`（`out` / `both` / `unknown`：入站报文是否刷新映射）、`preserve`（过期后重建是否同一端口）、`per_flow`、`unstable`、`moved_24h`、`drops_24h`、`net`（网络键，16 位十六进制）；未知的项省略，有绑定时才有，`secure` 时没有。平台记入呼叫记录与 `home_daily`，**不转给对方** |
 | `pm` | 路由器端口映射的情况（2026-10-26，nat-traversal.md 5、5.1），只有枚举、没有地址，`secure` 时也有：`m` 应答的方法 `pcp` / `natpmp`（没有应答时省略）；`gw` PCP / NAT-PMP 的结果：`map`（映射可用，外部地址是公网，有 `mapped` 候选）、`private`（网关应答了，外部地址不是公网：双层 NAT、运营商 NAT，不用）、`none`（没有应答）、`nogw`（不知道默认 IPv4 网关：iOS、Android）、`off`（`portmap = 0`、离线、托管服务）；`upnp` UPnP IGD 的检测结果（只检测、从不映射）：`public`（WAN 地址是公网且就是 `pub_ip`）、`other`（是公网但不是 `pub_ip`）、`private`（不是公网）、`present`（有 IGD，没取得 WAN 地址）、`none`、`nogw`、`off`（另外 `upnp = 0` 时）。还没有结果的项省略。平台只记入呼叫记录（统计用），**不转给对方** |
 
 **候选 `cand`**（nat-traversal.md 第 5 节）：数组，最多 16 项，每项 `{"t": 类型, "a": 地址}`，类型为 `host6`、`mapped`、`host4`、`srflx`、`pred`。IPv4 候选来自主 UDP socket，IPv6 候选来自独立 IPv6 socket；选中的路径承载 AnLiu。当前节点也会在探测得到预测端口时上报 `pred`，平台可据画像进一步生成预测候选。
@@ -565,7 +564,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 ### `nat_report`
 
-可被呼叫的节点在在线状态下、NAT 探测完成后上报 `data = {"nat": {...}}`；登录、探测端点变化、网络变化、UDP socket 重开及失败重试等会触发测量，当前没有固定每 30 分钟执行一次完整 NAT 探测的计时器；呼叫时核对映射发现 `srflx` 变了也上报（nat-traversal.md 4.5）。纯客户端通过 `call` / `punch_request` 携带画像；有常驻绑定的客户端在学习结果变化时也发 `nat_report`（平台只用其中的 `home`）。平台保存最新画像，用于选择中转方式；打洞计划使用被叫在 `incoming` 应答中提供的最新画像。连接方式改变时（`connect_mode`，见下）也会更新上报。
+可被呼叫的节点在在线状态下、NAT 探测完成后上报 `data = {"nat": {...}}`；登录、探测端点变化、网络变化、UDP socket 重开及失败重试等会触发测量，当前没有固定每 30 分钟执行一次完整 NAT 探测的计时器；呼叫时核对映射发现 `srflx` 变了也上报（nat-traversal.md 4.5）。纯客户端通过 `call` / `punch_request` 携带画像。平台保存最新画像，用于选择中转方式；打洞计划使用被叫在 `incoming` 应答中提供的最新画像。连接方式改变时（`connect_mode`，见下）也会更新上报。
 
 **连接方式 `connect_mode`**（2026-10-15）：节点的设置，`p2p`（默认，P2P 直连优先）或 `secure`（安全优先）。`secure` 的节点在 `nat`（`call`、`incoming` 应答、`nat_report`、`punch_request` 的应答里都一样）中只写 `{"udp": bool, "pm": {...}, "secure": true}`（`pm` 只有枚举，平台不转给对方），没有映射类型、公网地址等，`cand` 为空数组，所以对方得不到它的任何地址。平台据此判定：主叫或被叫任一方是 `secure`，这个会话就是安全会话——
 
@@ -577,13 +576,13 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 ### 常驻中转绑定（`home_open`，2026-10-26）
 
-节点登录后在本服务器的中转上建立一个常驻绑定（home-binding.md），从主 UDP socket 保活，按测出的最长间隔发送；现在（P1）呼叫仍全部使用每呼叫分配，绑定只用于保活、学习间隔与统计。绑定的报文（`HOME_BIND` / `HOME_ACK` / `HOME_PING`）见数据通道协议 9.4。
+节点登录后在本服务器的中转上建立一个常驻绑定（home-binding.md v0.4），从主 UDP socket 绑定；保活由中转发起（节点静默 T 后 ping，节点立即应答），T 由中转自己学；现在（P1）呼叫仍全部使用每呼叫分配，绑定只用于保活、学习间隔与统计。绑定的报文（`HOME_BIND` / `HOME_ACK` / `HOME_PING`）见数据通道协议 9.4。
 
 - **`home_open`** 请求，`data = {"resume": "<bind_id>"?}`。应答 `{"bind_id": "<8 字节>", "bind_key": "<32 字节>", "udp": ["203.0.113.5:9920", ...], "time": <服务器毫秒>}`；`resume` 的绑定还在且属于同一身份（节点编号或 `client_id`）时应答 `{"bind_id", "resumed": true, "udp", "time"}`，不换 hint 与密钥、不带 `bind_key`，否则当作新开。错误：`unavailable`（本机没有中转、`home_relay` 关闭、`home_max` 已满、匿名客户端）、`rate_limited`（每连接每分钟 6 次）；托管客户端不能发。节点在 `welcome` 之后发（与 NAT 探测并行），条件：有 UDP 主 socket、不是 `udp_on_demand`、不是托管服务或托管客户端、不是匿名客户端、`home_bind` 不为 `off`。
 - 每条连接至多一个绑定（再开时旧的释放），每个身份每台服务器至多 2 个（第三个替换最早的）。绑定**不随连接断开而释放**：重连到同一台服务器时 `resume`；连到别的服务器时在那里新开，旧的空闲回收（`max(2 × iv + 15, 120)` 秒，至多 330 秒，iv 是保活报文带的间隔）。连接被替换（`replaced`）、节点退役、账户会话被撤销时立即释放。
 - **`home_close`** `{"bind_id"}`：释放（只释放本身份的）；节点退出时作为事件发出（尽力而为）。
 - **`home_rekey`** 事件 `{"bind_id", "new_id", "bind_key"}`：每 6 小时；中转把地址与 `kseq` 带到新 hint 上，旧的 60 秒内仍有效。
-- 节点在每个保活的应答里看到中转眼中的地址 R；学习的结果经 `nat.home` 上报。
+- 节点在每个 ping 与应答里看到中转眼中的地址 R、中转的 T 与学习状态；学习只在中转上，节点不在 `nat` 里报（呼叫记录的 `nat.home` 是平台从中转取的，见"呼叫记录"）。
 
 ### `call`
 
@@ -1001,6 +1000,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-26 | 0.44 | 常驻中转绑定 v0.4：保活由中转发起、学习在中转上；去掉节点报的 `nat.home`（呼叫记录的 `nat.home` 改为中转眼中的绑定），有绑定的客户端不再发 `nat_report` |
 | 2026-10-26 | 0.43 | 打洞优化（nat-traversal.md 7.1、7.3、7.4、7.6、8、9、10.1）：易侧过滤让难侧探测进来时（EIF / ADF / 无 NAT / 映射）及双难侧一方 EIF 时给 S1，失败后改表中策略；双方 `host6` 时 IPv4 照常规划、IPv6 并行；S2 难侧开始时测端口（`punch_info{port}`），易侧新增 `peer_n`；S3 / S4 默认 2000 个、`timeout_ms` 按喷包时长；S2B 失败后立即再来；S1、S2B 什么也没收到时提前报告失败（`punch_result{early}`，这一轮照旧跑满）；提名不再固定等 200 ms；主叫让出的一轮 `punch_result{deferred}`，平台向被叫发 `punch_info{stop}` |
 | 2026-10-26 | 0.42 | 常驻中转绑定（home-binding.md P1）：`home_open`（含 `resume`）、`home_close`、`home_rekey`；`nat.home`，记入呼叫记录、不转给对方；有绑定的客户端也发 `nat_report` |
 | 2026-10-26 | 0.41 | 新增 `call_established`（被叫 → 平台：会话已建立）；之前每个呼叫的 `relay_switch` 至多分配 2 次（安全评审 M-2）。主叫发出自己的 `hello` 即 `established`、可开子链路（首次口令配对与 WS 中转上除外），会话建立期限以对方的 `hello` 为准。被叫接受之前的中转字节不计费、每侧至多 64 KiB（安全评审 M-3） |

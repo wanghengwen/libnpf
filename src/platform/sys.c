@@ -841,35 +841,14 @@ void npf_udp_watch_on(int fd, npf_udp_watch *w)
     }
 }
 
-void npf_udp_watch_mark(npf_udp_watch *w, int64_t now)
-{
-    w->mark = now;
-    w->n_relay = w->n_relay_ip = w->n_other = 0;
-    w->first_other = w->prev_other = w->gap_other = 0;
-}
-
 static void udp_watch_note(npf_udp_watch *w, const struct sockaddr *sa)
 {
-    int64_t now = npf_mono_ms();
     const struct sockaddr_in *a = (const struct sockaddr_in *)sa;
-    if (sa->sa_family == AF_INET && w->relay_ip && a->sin_addr.s_addr == w->relay_ip) {
-        if (a->sin_port == w->relay_port) {
-            w->last_relay = now;
-            w->n_relay++;
-            return;
-        }
-        w->last_relay_ip = now;
-        w->n_relay_ip++;
-    } else {
-        w->last_other = now;
-        w->n_other++;
-    }
-    /* the gaps of the other sends (the relay's other ports refresh an EIM mapping too) */
-    if (!w->first_other)
-        w->first_other = now;
-    else if (now - w->prev_other > w->gap_other)
-        w->gap_other = now - w->prev_other;
-    w->prev_other = now;
+    int to_ip = sa->sa_family == AF_INET && w->relay_ip && a->sin_addr.s_addr == w->relay_ip;
+    if (to_ip && a->sin_port == w->relay_port)
+        return;                             /* the relay itself */
+    if (w->mode == NPF_WATCH_ANY || (w->mode == NPF_WATCH_IP && to_ip))
+        w->other = npf_mono_ms();
 }
 
 int npf_udp_send(int fd, const void *buf, size_t len, const void *to)

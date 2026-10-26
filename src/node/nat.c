@@ -12,7 +12,6 @@
 #include "npf/node.h"
 
 #include "node_internal.h"
-#include "home.h"
 
 static const char *alloc_str(int a)
 {
@@ -400,9 +399,7 @@ void npf_node_report_nat(npf_node *n)
 {
     char data[1024];
     npf_jw w;
-    /* a client's nat goes with its calls; it reports one only for the
-     * persistent binding's learning (nat.home, home-binding.md 14.3) */
-    if ((!n->cfg.callable && !node_home_reports(n)) || !n->online)
+    if (!n->cfg.callable || !n->online)
         return;
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
@@ -445,7 +442,6 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
     else if (n->nat_valid && n->nat_udp)
         npf_jw_kstr(w, "pub_ip", inet_ntop(AF_INET, &n->pub_ip, ip, sizeof ip));
     npf_jw_kint(w, "at", n->nat.measured_at);
-    node_home_write_nat(n, w);      /* the persistent binding's learning */
     npf_jw_end(w);
 }
 
