@@ -115,6 +115,9 @@ struct npf_call {
                                        for again when another punch gives them back */
     npf_timer  *t_repunch, *t_standby;
     int         relay_asked;        /* relay_switch sent, waiting for a new allocation */
+    int         ws_fail_wait;       /* caller: the WS relay failed before the accept: asked about after it */
+    struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
+    int         nrearly;
     int         ws_paired_once;     /* the WS relay worked at least once */
     int         ws_round;           /* caller: a round began on this relay connection (one each: a
                                        repeated relay_paired starts none) */
@@ -313,6 +316,8 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 /* call_relay.c: the UDP relay client, the way to the WS relay (data-channel.md 9) */
 void call_ask_ws_relay(npf_call *c);
 void call_relay_rebind(npf_call *c);
+void call_relay_early_feed(npf_call *c);
+void call_relay_early_free(npf_call *c);
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);

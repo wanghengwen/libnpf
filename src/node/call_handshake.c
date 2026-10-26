@@ -197,10 +197,20 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
         if (npf_noise_read(&c->hs->noise, msg, (size_t)ml, p, sizeof p) < 0)
             goto fail;
     }
+    npf_log("call %s: accepted%s", c->call_id_s,
+            c->ws_mode ? (c->wsr && !c->ws_fail_wait ? " (the WS relay connected since the reply)" : "")
+            : c->relay.bound ? " (the UDP relay bound since the reply)" : c->relay.active ? " (the UDP relay being bound)" : "");
     if (call_finish_handshake(c) < 0)
         goto fail;
+    if (c->ended)                   /* in what came early through the relay (call_relay_early_feed) */
+        return;
     call_set_state(c, NPF_CALL_CONNECTING, NULL);
     call_relay_setup(c, j, d);
+    if (c->ws_fail_wait && !c->ended) {
+        /* the WS relay failed before the accept: now it can be replaced */
+        c->ws_fail_wait = 0;
+        call_ws_failed(c, "unreachable (before the accept)");
+    }
     return;
 fail:
     npf_logw("call %s: handshake with the callee failed", c->call_id_s);

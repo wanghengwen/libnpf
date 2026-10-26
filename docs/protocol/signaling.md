@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.32。更新日期：2026-10-24。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.34。更新日期：2026-10-26。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -464,14 +464,14 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 ```
 主叫 A                           平台 P                              被叫 B
  │ call{call_id, 编号, hs=IK 消息1,│
- │      nat, cand} ───────────────►│ 服务器闸门（安全 8.3）
- │◄─── 应答 ok                      │ 记录 call_id，分配双方中转、punch_key
- │                                  │ incoming{call_id, 呼叫方, hs, ──────►│ 被叫闸门：IK 消息1 中的
+ │      nat, cand} ───────────────►│ 服务器闸门（安全 8.3），分配双方中转
+ │◄─── 应答 ok{A 的中转}            │ 写第一条呼叫记录（占用 call_id，与下面并行）
+ │ RELAY_BIND（被叫应答期间）       │ incoming{call_id, 呼叫方, hs, ──────►│ 被叫闸门：IK 消息1 中的
  │                                  │   A 的 nat/cand, B 的中转}           │ 主叫公钥在授权列表中
  │                                  │◄── 应答{hs=IK 消息2, nat, cand} ─────│ 握手完成（B 侧）
  │◄── call_accepted{hs, B 的 nat/   │                                       │ RELAY_BIND，创建 AnLiu，
- │      cand, A 的中转}              │                                       │ 路径可用后发 hello
- │ 握手完成（A 侧）；RELAY_BIND，创建 AnLiu 并打开共享数据流；收到 hello，回 hello → 会话可用
+ │      cand, A 的中转（同一份）}    │                                       │ 路径可用后发 hello
+ │ 握手完成（A 侧）；创建 AnLiu 并打开共享数据流（中转多半已经绑定）；收到 hello，回 hello → 会话可用
  │                                  │
  │◄── punch_start{计划, start_at} ──┼── punch_start{计划, start_at} ──────►│
  │ ═══════════ 在 start_at 同时开始打洞（PROBE / NOMINATE）════════════════ │
@@ -481,6 +481,8 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 - **密钥协商在信令阶段完成**（R21）：IK 的消息 1 放在 `call` 中，消息 2 放在 `incoming` 的应答中，端到端只需 1 个往返；首次配对需要 1.5 个往返（见"握手的承载"）；
 - **数据通道与打洞并行建立**：握手完成后创建传输，UDP 中转绑定或直连路径可用并完成 `hello` 交换后会话才可用；P2P 与 UDP 中转共用同一 AnLiu 实例；
+- **主叫的中转先行**（2026-10-26，如同 ICE 在发出 INVITE 之前先取得 TURN 中转候选）：平台在发出 `incoming` 之前就分配了双方的中转，主叫的那一份随 `call` 的应答下发，主叫立即绑定（UDP 中转两个往返：`RELAY_BIND`、质询、再 `RELAY_BIND`），与平台联系被叫、被叫处理并应答同时进行；`call_accepted` 再带一次同一份分配，主叫认出它，不重新绑定。接受之前主叫没有会话密钥，什么数据也不发，中转上只有绑定；
+- **记录与转发并行**（2026-10-26，如同 SIP 代理立即转发 INVITE）：平台不等第一条呼叫记录写进数据库就应答主叫、发出 `incoming`；记录写入之前，被叫的接受等它（见"呼叫记录"）；
 - **主叫始终是打洞的控制方**，由它发送 `NOMINATE`；易侧 / 难侧按画像另行决定，两者互不相关。
 
 ### 消息目录
@@ -489,7 +491,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 |---|---|---|---|
 | `nat_report` | 节点 → 平台 | 事件 | 上报 NAT 画像，平台据此在呼叫时选择中转方式 |
 | `grant_get` | 主叫 → 平台 | 请求 | 托管信任：取得被叫的节点证书与 10 分钟有效的 `grant`，用于紧接着的 `call` |
-| `call` | 主叫 → 平台 | 请求 | 发起呼叫，携带握手首条消息、画像与候选 |
+| `call` | 主叫 → 平台 | 请求 | 发起呼叫，携带握手首条消息、画像与候选；应答带主叫的中转分配 |
 | `incoming` | 平台 → 被叫 | 请求 | 通知新呼叫；被叫的应答携带握手回复、画像与候选 |
 | `call_accepted` | 平台 → 主叫 | 事件 | 被叫已接受：握手回复、被叫的画像与候选、主叫的中转分配 |
 | `call_rejected` | 平台 → 主叫 | 事件 | 呼叫失败：被叫拒绝、超时或不可用 |
@@ -587,9 +589,24 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 `grant_get`：`data = {"callee": "123456789"}`，应答 `{"cert": "<中间证书 | 被叫的节点证书>", "grant": "<grant，二进制格式见安全设计 8.2>", "expires": ...}`；主叫用根公钥验证证书链、检查证书的编号就是被叫，再用证书中的 `dh_pub` 跑 IK；主叫无权访问该节点（不是所有者或访问者）、被叫不存在时一律 `unavailable`。主叫不长期保存 `grant`，每次呼叫前重新取得；`grant` 绑定主叫连接的静态公钥，换了密钥就要重新取得。
 
-平台执行服务器闸门（安全 8.3）：限流、匿名客户端的配对次数、被叫锁定状态；`auth = grant` 时还验证 `grant` 是平台自己签发、未过期、绑定本连接的公钥与 `callee`。通过后立即应答 `ok`，呼叫的结果以 `call_accepted` 或 `call_rejected` 事件送达。
+平台执行服务器闸门（安全 8.3）：限流、匿名客户端的配对次数、被叫锁定状态；`auth = grant` 时还验证 `grant` 是平台自己签发、未过期、绑定本连接的公钥与 `callee`。通过后为双方分配中转，立即应答 `ok`，同时向被叫发出 `incoming`；呼叫的结果以 `call_accepted` 或 `call_rejected` 事件送达。
 
-失败的应答：`rate_limited`（超出限流或匿名配对次数）、`unavailable`（被叫不存在、无权访问或离线）、`conflict`（`call_id` 重复，主叫换一个重新生成握手消息）。对没有配对过的主叫，这三种情况一律返回 `unavailable`，不泄露被叫是否存在（安全第 6 节）；已配对的主叫可以收到 `offline`。
+成功的应答带主叫的中转分配（2026-10-26）：
+
+```json
+{"v": 1, "type": "call", "reply_to": "c1", "status": "ok", "data": {"relay": {...}}}
+```
+
+- `relay` 与 `incoming` 中的格式相同（见"公共字段"），是主叫自己的那一份，与之后 `call_accepted` 中的是**同一份分配**（`relay_id`、`alloc_key` 相同）。没有中转时（匿名主叫，D6；账户本月额度用完；中转分配失败）`data` 为 `{}`；
+- 主叫收到后立即绑定（`mode = udp` 时 `RELAY_BIND`，`ws` 时建立 WS 中转连接），不等 `call_accepted`。接受之前主叫没有会话密钥：中转上只有绑定（和绑定后的保活），不发数据；被叫在接受时才得到自己的那一份并绑定，中转在它绑定之前不向它转发任何东西。被叫经中转先到的数据（被叫一侧先绑定好时它的 `hello`）主叫暂存最多 8 个报文，拿到密钥后交给 AnLiu；
+- 接受之前平台不处理 `relay_switch`：UDP 中转的地址都没绑上时，主叫等 `call_accepted` 再从第一个地址重新绑定；WS 中转连接失败时，等 `call_accepted` 后再按"中转方式的选择"请求另一个；
+- `call_accepted` 带来的分配与应答中的相同时，正在绑定或已经绑定的保持原样（不重置绑定、不断开 WS 中转连接）；不同（例如应答里没有）时按新的分配建立；
+- 呼叫被拒（`call_rejected`）、超时或主叫取消时，平台释放双方的中转（`call_end` / 超时 / 拒绝的处理与以前相同），主叫停止绑定，释放本地的中转状态；
+- 被叫在另一台服务器上时（多服务器设计第 6 节），主叫所在的服务器等被叫所在的服务器（呼叫的属主，中转在那里分配）答复后才应答，应答同样带 `relay`；对方 3 秒内没有答复时应答不带 `relay`，主叫从 `call_accepted` 得到它。
+
+失败的应答：`rate_limited`（超出限流或匿名配对次数）、`unavailable`（被叫不存在、无权访问或离线）、`conflict`（`call_id` 与平台上进行中的呼叫重复，主叫换一个重新生成握手消息）。对没有配对过的主叫，这三种情况一律返回 `unavailable`，不泄露被叫是否存在（安全第 6 节）；已配对的主叫可以收到 `offline`。
+
+`call_id` 由主叫选择，已经有呼叫记录的 ID 不再占用（另一个呼叫的记录会被改写）。平台在发出 `incoming` 的同时写第一条呼叫记录，发现 ID 已有记录（`call_rejected` 的 `error = "conflict"`）或记录写不进去（`internal_error`，不留记录的呼叫不进行）时呼叫结束：应答之后主叫收到 `call_rejected`，被叫收到 `call_ended`（`reason` 为同一个错误码，即使它已经应答了 `incoming`），双方的中转释放，这个呼叫在记录里什么也不写。
 
 ### `incoming`
 
@@ -625,7 +642,9 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
   "call_id": "...", "hs": "...", "nat": {...}, "cand": [...], "relay": {...}}}
 ```
 
-`call_rejected`：`data = {"call_id", "error"}`，`error` 可为被叫给出的 `unauthorized`、`locked`、`busy`、`conflict`、`bad_request`，或平台给出的 `timeout`、`unavailable`、`no_path`、`quota`、`secure_plan`（安全会话而主叫没有付费套餐，见 `nat_report` 下的连接方式）。匿名主叫没有中转（D6），双方都能用 UDP 才可能打通：主叫自己 UDP 不可用时平台立即回 `no_path`；只有被叫不可用时回 `unavailable`（不向未配对的主叫透露号码存在）。主叫收到 `unauthorized` 后可以改用口令配对重新呼叫。
+`relay` 与 `call` 的应答中的是同一份分配（主叫识别它，见 `call`）。
+
+`call_rejected`：`data = {"call_id", "error"}`，`error` 可为被叫给出的 `unauthorized`、`locked`、`busy`、`conflict`、`bad_request`，或平台给出的 `timeout`、`unavailable`、`no_path`、`quota`、`secure_plan`（安全会话而主叫没有付费套餐，见 `nat_report` 下的连接方式）、`conflict`（`call_id` 已有呼叫记录）、`internal_error`（呼叫记录写不进去）。匿名主叫没有中转（D6），双方都能用 UDP 才可能打通：主叫自己 UDP 不可用时平台立即回 `no_path`；只有被叫不可用时回 `unavailable`（不向未配对的主叫透露号码存在）。主叫收到 `unauthorized` 后可以改用口令配对重新呼叫。
 
 ### 握手的承载
 
@@ -743,12 +762,12 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 |---|---|---|
 | `call_id` 记录 | `call` 通过服务器闸门 | `call_end` 后保留 10 分钟（过滤迟到的消息） |
 | `punch_key` | 每轮 `punch_start` | 平台约定本轮超时后作废；节点在打洞成功后另保留处理器 10 秒接收迟到报文，失败后安排释放 |
-| 中转分配 | 生成 `incoming` 时同时为双方分配 | `call_end`；或空闲超过回收时间（data-channel.md 第 11 节） |
+| 中转分配 | 生成 `incoming` 之前同时为双方分配（主叫的那一份随 `call` 的应答下发） | `call_end`、拒绝或超时；或空闲超过回收时间（data-channel.md 第 11 节） |
 | 呼叫记录 | 呼叫到达被叫所在的服务器 | 保存 1 年（下一节） |
 
 ### 呼叫记录
 
-平台为每个到达被叫所在服务器的呼叫写一条记录，用于运维和计费，存放在中心数据库，`npf-admin calls` 查询：
+平台为每个到达被叫所在服务器的呼叫写一条记录，用于运维和计费，存放在中心数据库，`npf-admin calls` 查询。第一条记录（`insert ... on conflict`，占用 `call_id`）与应答主叫、发出 `incoming` 同时写入，不在呼叫建立的路径上（数据库在另一台机器上时省下一个往返）；写入之前这个呼叫的后续改动（接受、结束等）都排在它后面，被叫的接受也等它写完再发 `call_accepted`；ID 已有记录或写入失败时呼叫结束，见 `call`。
 
 | 内容 | 来源 |
 |---|---|
@@ -920,6 +939,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-26 | 0.34 | 呼叫建立提速：`call` 的成功应答带主叫的中转分配 `{"relay"}`（与 `call_accepted` 中的是同一份），主叫立即绑定，与被叫的应答并行，`call_accepted` 带来同一份分配时不重新绑定；被叫在另一台服务器上时应答等属主答复。平台不等第一条呼叫记录写入就应答并发出 `incoming`，记录写入前的改动与接受都等它；`call_id` 已有记录或记录写不进去时在应答之后以 `call_rejected`（`conflict` / `internal_error`）结束呼叫，被叫收到 `call_ended` |
 | 2026-10-25 | 0.33 | `bind_begin`：设备已属于本账户时回 `already: true` 与设备信息（重试不再报 `conflict`）。托管服务：只有当前这次登记的连接断开才标为离线；`hosted_stats` 兼作心跳，登记已不在时回 `not_found`（`registration`）、托管服务重新登记；所在服务器宕机后托管服务按失联处理，隔离后迁移；迁移时原服务也收到 `hosted_changed` |
 | 2026-10-24 | 0.32 | 安全加固：`login_method_bind` / `login_method_unbind` 要再次证明是本人（`current_password`，或 `confirm_transaction_id` + `confirm_code`，或 `current_verification_id`；否则 `forbidden` `reauth`），成功后通知旧邮箱；平台按账户与按来源（IPv6 按 /64）限制密码错误、匿名登录、呼叫频率与连接数（`rate_limited`，`credentials` / `busy`）；被拒或超时的呼叫 30 秒后删除；`punch_request` 至少间隔 2 秒、每个呼叫最多 24 次；候选最多 16 个、类型与地址经过检查 |
 | 2026-10-23 | 0.31 | 账户请求被拒时给出原因：`account_login` 的 `credentials`，`password_change` 的 `password` / `no_password`，`account_delete` 的 `password` / `verification`，`password_reset_finish` 地址不属于任何账户时也是 `verification`（与验证码不对相同） |

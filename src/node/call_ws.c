@@ -237,6 +237,12 @@ void call_ws_failed(npf_call *c, const char *why)
         npf_call_end(c, "transport_lost");
         return;
     }
+    if (c->caller && c->state == NPF_CALL_CALLING) {
+        /* connected from the reply to the call: the platform takes no
+         * relay_switch before the accept (call_caller_accepted asks then) */
+        c->ws_fail_wait = 1;
+        return;
+    }
     if (c->caller && !c->relay_asked) {
         snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"unreachable\":true}", c->call_id_s);
         npf_node_send(c->n, "relay_switch", 0, data);
