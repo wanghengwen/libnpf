@@ -562,15 +562,15 @@ static void empty_round(npf_call *c)
     c->t_repunch = npf_timer_add(c->n->loop, EMPTY_ROUND_MS, call_repunch_timer, c);
 }
 
-/* the platform runs on this host (its probe answered from loopback: the
- * integration tests): loopback is this host's network */
+/* a test platform on this host (test_one_host = 1, tests only): loopback
+ * is this host's network */
 static int lab_loopback(const npf_node *n)
 {
-    return (ntohl(n->srflx.sin_addr.s_addr) >> 24) == 127;
+    return n->cfg.test_one_host;
 }
 
 /* an IPv4 address the node may send probes to (security.md H-1, under the
- * platform's own check): not unspecified, 0/8, loopback (but on one host),
+ * platform's own check): not unspecified, 0/8, loopback (but in tests on one host),
  * link-local, multicast, reserved or the broadcast */
 static int peer_ip4_ok(const npf_node *n, struct in_addr ip)
 {

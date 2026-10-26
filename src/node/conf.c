@@ -229,7 +229,7 @@ static const char *const known_keys[] = {
     "udp_on_demand", "udp_public",
     "doh_servers", "hw_info", "keep_awake", "log", "log_level", "max_calls", "model", "model_cred", "password", "node",
     "peer_idle", "pidfile", "portmap", "web_dir", "punch_lead_ms", "punch_sockets", "report_host", "resource", "root", "serial", "serial_file", "server", "server_pub",
-    "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", "upnp", NULL};
+    "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", "upnp", "test_one_host", NULL};
 
 /* keys that say where to connect, what to trust or run, and which files
  * the program writes: only in npf.conf (whoever may write it may run the
@@ -238,7 +238,8 @@ static const char *const known_keys[] = {
 static const char *const file_only_keys[] = {
     "control", "control_token", "web_dir", "log", "pidfile", "dir", "state", "root", "server", "server_pub",
     "serverlist", "serverlist_saved", "doh_servers", "report_host", "serial_file", "direct", "direct_psk",
-    "direct_psk_file", "hosted_exec", "hosted_service", "hosted_ports", "model", "model_cred", "cred", "node", "resource", NULL};
+    "direct_psk_file", "hosted_exec", "hosted_service", "hosted_ports", "model", "model_cred", "cred", "node", "resource",
+    "test_one_host", NULL};
 
 int npf_conf_file_only(const char *key)
 {

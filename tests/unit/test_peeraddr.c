@@ -133,10 +133,13 @@ int test_peeraddr(void)
         call_handle_punch_info(c, &j, 0);
         CHECK(c->tcand.ss_family == AF_INET, "a public srflx not taken");
     }
-    /* the platform on this host (the probe answered from loopback): loopback is its network */
+    /* this node's srflx on loopback does not make loopback usable; the tests' switch does */
     inet_pton(AF_INET, "127.0.0.1", &node.srflx.sin_addr);
-    CHECK(start(c, 6, "{\"t\":\"srflx\",\"a\":\"127.0.0.1:5000\"}", "127.0.0.1") == 1 && c->pcfg->plan.peer_ip4.s_addr != 0,
-          "loopback on a platform on this host");
+    CHECK(start(c, 6, "{\"t\":\"srflx\",\"a\":\"127.0.0.1:5000\"}", "127.0.0.1") == 0 && c->pcfg->plan.peer_ip4.s_addr == 0,
+          "loopback usable from the srflx");
+    node.cfg.test_one_host = 1;
+    CHECK(start(c, 7, "{\"t\":\"srflx\",\"a\":\"127.0.0.1:5000\"}", "127.0.0.1") == 1 && c->pcfg->plan.peer_ip4.s_addr != 0,
+          "loopback with test_one_host");
 
     call_free(c);
     if (node.udp6_fd >= 0)

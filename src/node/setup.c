@@ -48,6 +48,7 @@ int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
     npf_udp_hook_on(!cfg->secure);         /* p2p: the UDP sockets go around a VPN */
     cfg->no_portmap = strcmp(npf_conf_get(conf, "portmap", "1"), "0") == 0;
     cfg->no_upnp = strcmp(npf_conf_get(conf, "upnp", "1"), "0") == 0;
+    cfg->test_one_host = strcmp(npf_conf_get(conf, "test_one_host", "0"), "1") == 0;   /* tests only */
     cfg->no_host_report = strcmp(npf_conf_get(conf, "report_host", "1"), "0") == 0;
     cfg->hosted_service = strcmp(npf_conf_get(conf, "hosted_service", "0"), "1") == 0;
     cfg->hosted_exec = strtoull(npf_conf_get(conf, "hosted_exec", "0"), NULL, 10);

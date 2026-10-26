@@ -176,6 +176,8 @@ typedef struct npf_node_cfg {
     const npf_enroll_req *enroll;   /* number 0: enrol first, then log in as the node */
     int         no_portmap;         /* portmap = 0: no PCP / NAT-PMP mapping on the router (nor UPnP) */
     int         no_upnp;            /* upnp = 0: no UPnP IGD detection (nodemap.c; never a mapping) */
+    int         test_one_host;      /* test_one_host = 1, TESTS ONLY: the platform and the peers on this
+                                       host: a peer's loopback addresses are probed (security.md 11.1) */
     int         secure;             /* connect_mode secure: relays only, no address to peers, a VPN
                                        kept (npf_node_set_secure at run time) */
     /* npf-hosted (security.md 8.4): hosted_service = 1 logs in as the hosted
