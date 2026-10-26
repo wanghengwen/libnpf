@@ -150,13 +150,21 @@ typedef struct npf_tunnel_io {
 npf_tunnel *npf_tunnel_new(npf_loop *loop, int caller, const npf_tunnel_io *io, void *arg, npf_policy *policy);
 /* resets every sublink (local sockets get RST) and frees */
 void npf_tunnel_free(npf_tunnel *t);
-/* callee: send hello right after the transport exists */
+/* send hello once the transport has a path (the callee first; the caller
+ * does not wait for the callee's) */
 void npf_tunnel_start(npf_tunnel *t);
+/* caller, a peer the handshake authenticated already (IK, a grant, the
+ * direct path's): the tunnel is ready (sublinks, control requests) once our
+ * hello is sent, before the peer's comes (data-channel.md 8); io.ready
+ * still waits for both. Not for a first pairing: the callee's hello is the
+ * proof that it took message 3 */
+void npf_tunnel_open_early(npf_tunnel *t);
 /* control channel bytes / one data message received; 0 or -1 (the transport is broken) */
 int  npf_tunnel_input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len);
 int  npf_tunnel_input_data(npf_tunnel *t, const uint8_t *msg, size_t len);
 /* the transport drained: resume local reads */
 void npf_tunnel_kick(npf_tunnel *t);
+/* sublinks and control requests may go: our hello sent and the peer's come (or early) */
 int  npf_tunnel_is_ready(const npf_tunnel *t);
 int  npf_tunnel_control(npf_tunnel *t, const char *json, size_t len);
 /* an APP, MEDIA or UDP unit on the control channel (<= NPF_CTRL_MAX) */

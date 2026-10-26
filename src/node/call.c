@@ -81,15 +81,18 @@ void call_relay_leave(npf_call *c)
 
 void call_set_state(npf_call *c, int st, const char *why)
 {
+    /* the time limit ends with the peer's hello: a caller is established
+     * with its own (call_hello), and a callee that never answers it still
+     * ends the call in time */
+    if (st == NPF_CALL_ESTABLISHED && c->t_timeout && c->peer_hello) {
+        npf_timer_cancel(c->n->loop, c->t_timeout);
+        c->t_timeout = NULL;
+    }
     if (c->state == st)
         return;
     c->state = st;
     if (st == NPF_CALL_ESTABLISHED)
         c->up_ms = npf_mono_ms();
-    if (st == NPF_CALL_ESTABLISHED && c->t_timeout) {
-        npf_timer_cancel(c->n->loop, c->t_timeout);
-        c->t_timeout = NULL;
-    }
     if (c->n->hooks.on_call_state)
         c->n->hooks.on_call_state(c->n, c, st, why, c->n->hook_arg);
 }

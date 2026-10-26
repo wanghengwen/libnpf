@@ -184,12 +184,43 @@ static size_t tun_backlog(void *arg)
     return (c->stream ? (size_t)anl_stream_waitsnd(c->stream) * ANL_MTU : 0) + c->dpend_bytes;
 }
 
+/* both hellos: the peer's came (ours went before) */
 static void tun_ready(void *arg)
 {
     npf_call *c = arg;
+    c->peer_hello = 1;
     if (c->caller && c->auth == AUTH_PAKE && c->n->hooks.on_paired)
         c->n->hooks.on_paired(c->n, c->number, c->peer_pub, c->n->hook_arg);
-    if (!c->ended)
+    if (c->ended)
+        return;
+    call_set_state(c, NPF_CALL_ESTABLISHED, NULL);
+    /* the callee tells the platform: the caller's hello came under the
+     * session's keys, so the E2E handshake held (a first pairing's password
+     * too); relay_switch allocates freely only from then on (security
+     * review M-2) */
+    if (!c->caller && !c->direct && !c->up_told && !c->ended) {
+        char data[64];
+        c->up_told = 1;
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
+        npf_node_send(c->n, "call_established", 0, data);
+    }
+}
+
+/* our hello, once the session has a path (sent into nothing it would sit
+ * out an RTO): the callee's first, the caller's without waiting for it
+ * (data-channel.md 8). A caller whose peer the handshake authenticated
+ * (npf_tunnel_open_early) is established with its own: its requests go
+ * while the callee's hello is on its way. The time limit waits for that
+ * (call_set_state). A first pairing's caller answers the callee's hello
+ * (the tunnel does): before it the callee may not have the keys yet
+ * (message 3 goes with the signaling), and AnLiu would send ours again
+ * only after its first RTO, holding up all that follows */
+void call_hello(npf_call *c)
+{
+    if (!c->tun || c->ended || (c->caller && c->auth == AUTH_PAKE))
+        return;
+    npf_tunnel_start(c->tun);
+    if (c->caller && !c->ended && c->tun && npf_tunnel_is_ready(c->tun))
         call_set_state(c, NPF_CALL_ESTABLISHED, NULL);
 }
 
@@ -771,6 +802,8 @@ npf_tunnel *call_tunnel_new(npf_call *c)
         && (c->kshare = key_share(c->n, c->peer_pub)))
         c->kshare->calls++;
     npf_tunnel_set_shared(t, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
+    if (c->caller && c->auth != AUTH_PAKE)
+        npf_tunnel_open_early(t);           /* a first pairing waits for the callee's hello (call_hello) */
     call_crev_restore(c, t, NULL);          /* a new tunnel of the session: its -R mappings go on */
     return t;
 }
@@ -849,8 +882,8 @@ int call_start_transport(npf_call *c)
      * the direct one, or the UDP relay as soon as it is ours (not bound yet:
      * the relay forwards what our key seals from an address it has not
      * bound, call_relay_setup) */
-    if (!c->caller && (c->p2p || c->relay.active))
-        npf_tunnel_start(c->tun);
+    if (c->p2p || c->relay.active)
+        call_hello(c);
     anl_schedule(c);
     if (c->punch_wait_keys) {
         c->punch_wait_keys = 0;
@@ -863,8 +896,10 @@ void call_path_up(npf_call *c)
 {
     if (!c->anl)
         return;
-    if (!c->caller && c->tun && !npf_tunnel_is_ready(c->tun))
-        npf_tunnel_start(c->tun);
+    if (c->tun && !npf_tunnel_is_ready(c->tun))
+        call_hello(c);
+    if (c->ended || !c->anl)
+        return;
     anl_update(c->anl, (uint32_t)npf_mono_ms());
     anl_flush(c->anl);
     timer_stop(c->n->loop, &c->t_anl);

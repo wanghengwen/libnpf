@@ -110,6 +110,8 @@ struct npf_call {
     int         punch_of;           /* the round c->punch belongs to (a newer one may be planned meanwhile) */
     int         punch_socks;        /* S3 hard-side sockets of the running punch (node budget) */
     int64_t     up_ms;              /* established at (monotonic ms), 0 = not yet */
+    int         peer_hello;         /* the peer's hello came (a caller is established before, call_hello) */
+    int         up_told;            /* callee: call_established sent to the platform */
     uint64_t    tx_bytes, rx_bytes; /* tunnel bytes (sublink frames) */
     int         punch_round;
     int         accepted;           /* the platform's accept arrived: t_timeout counts from it */
@@ -289,6 +291,7 @@ void call_handle_handshake(npf_call *c, const npf_json *j, int d);
 /* call_transport.c: AnLiu, the WS mux, the tunnel's callbacks, media and UDP adapters */
 int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len);
 void call_path_up(npf_call *c);
+void call_hello(npf_call *c);         /* our hello, the session has a path (a caller established with it) */
 void call_dpend_free(npf_call *c);
 struct npf_policy *call_policy(npf_call *c);
 void call_conv_unlink(npf_call *c);

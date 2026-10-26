@@ -139,7 +139,8 @@ void call_wsr_start(npf_wsr *r, const uint8_t salt[16], void *arg)
         ws_key(c, "b2a", salt, c->ws_krx);
         c->ws_ctr_rx = 0;       /* the callee's records of this key count from 0 */
         c->ws_rx_ready = 1;
-        return;                 /* now wait for the callee's hello */
+        return;                 /* now wait for the callee's hello: ours answers it here (records
+                                 * before the callee has the keys would be lost: no retransmission) */
     }
     if (ws_reset(c) < 0)
         return;

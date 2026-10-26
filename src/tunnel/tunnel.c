@@ -420,6 +420,14 @@ static int handle_control_with(npf_tunnel *t, const uint8_t *p, size_t n, npf_jt
             return -1;
         npf_json_get_int(&j, d, "init_window", 4096, 16 << 20, &w);
         npf_json_get_int(&j, d, "max_sublinks", 1, 4096, &m);
+        if ((uint32_t)w != t->peer_window) {
+            /* sublinks opened before the hello got the default credit (ours
+             * opened early, the peer's whose first data came first): the
+             * difference now (negative: they wait for WINDOWs) */
+            int i;
+            for (i = 0; i < t->nsubs; i++)
+                t->subs[i]->tx_credit += (int64_t)w - (int64_t)t->peer_window;
+        }
         t->peer_window = (uint32_t)w;
         t->peer_max = (int)m;
         t->hello_recv = 1;
@@ -567,8 +575,9 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
     if (id == 0)
         return -1;                  /* not a sublink */
     /* the channels are independent: a sublink's first data can come before
-     * the peer's hello, but never before ours (the callee starts first, the
-     * caller opens sublinks only after it) */
+     * the peer's hello, but not before ours: the callee says hello as soon
+     * as it has a path (or when the caller's input comes first, callee_hello),
+     * and the caller opens sublinks only after its own */
     if (!t->hello_sent)
         return -1;
     s = tunnel_find(t, id);
@@ -664,13 +673,23 @@ static int input_data(npf_tunnel *t, const uint8_t *msg, size_t len)
     return 0;
 }
 
+/* a callee that has the caller's input before its own hello went has a
+ * path: its hello goes first (the caller does not wait for it, and a
+ * sublink frame before it used to break the tunnel) */
+static void callee_hello(npf_tunnel *t)
+{
+    if (!t->caller && !t->hello_sent)
+        npf_tunnel_start(t);
+}
+
 int npf_tunnel_input_data(npf_tunnel *t, const uint8_t *msg, size_t len)
 {
     int r;
     if (t->dead)
         return -1;
     t->depth++;
-    r = input_data(t, msg, len);
+    callee_hello(t);
+    r = t->dead ? -1 : input_data(t, msg, len);
     return tunnel_leave(t) ? -1 : r;
 }
 
@@ -770,7 +789,8 @@ int npf_tunnel_input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len)
     if (t->dead)
         return -1;
     t->depth++;
-    r = input_ctrl(t, buf, len);
+    callee_hello(t);
+    r = t->dead ? -1 : input_ctrl(t, buf, len);
     return tunnel_leave(t) ? -1 : r;
 }
 
@@ -939,7 +959,8 @@ npf_tunnel *npf_tunnel_new(npf_loop *loop, int caller, const npf_tunnel_io *io, 
     t->arg = arg;
     t->policy = policy;
     t->next_id = caller ? 1 : 2;
-    t->peer_window = NPF_INIT_WINDOW;
+    t->peer_window = NPF_INIT_WINDOW;   /* what the peer declares (data-channel.md 8), until its hello */
+    t->peer_max = NPF_MAX_SUBLINKS;
     return t;
 }
 
@@ -1072,7 +1093,13 @@ void npf_tunnel_start(npf_tunnel *t)
 
 int npf_tunnel_is_ready(const npf_tunnel *t)
 {
-    return t->hello_sent && t->hello_recv && !t->dead;
+    return t->hello_sent && (t->hello_recv || t->early) && !t->dead;
+}
+
+void npf_tunnel_open_early(npf_tunnel *t)
+{
+    if (t->caller)
+        t->early = 1;
 }
 
 void npf_tunnel_dump(const npf_tunnel *t)
