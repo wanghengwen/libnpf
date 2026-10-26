@@ -138,8 +138,11 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
             npf_jw_int(&w, res->seen[i]);
         npf_jw_end(&w);
     }
-    if (res->unsolicited > 0)
+    if (res->unsolicited > 0 && !c->unsol_untrusted)
         npf_jw_kint(&w, "unsolicited", res->unsolicited);
+    else if (res->unsolicited > 0)
+        npf_logd("call %s: %d probes from ports this round did not probe, not reported: this socket sent to other ports of "
+                 "that IP lately (the NAT may still let them in)", c->call_id_s, res->unsolicited);
     npf_jw_end(&w);
     if (npf_jw_finish(&w) > 0)
         npf_node_send(c->n, "punch_result", 0, data);
@@ -152,6 +155,8 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
         return;
     }
     c->punch_retries = 0;
+    if (fd == c->n->udp_fd && res->peer.ss_family == AF_INET)
+        call_contact_note(c->n, ((const struct sockaddr_in *)&res->peer)->sin_addr);
     npf_log("call %s: direct path %s (%d ms)", c->call_id_s, npf_addr_str(&res->peer, a, sizeof a),
             res->elapsed_ms);
     c->p2p = 1;
@@ -586,6 +591,14 @@ void call_start_punch_now(npf_call *c)
     }
     c->pcfg->fd6 = c->n->udp6_fd;
     c->pcfg->test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;
+    /* what an unsolicited probe shows (7.8): nothing when this socket sent
+     * to the peer's IP before this round; then this round's spray is such */
+    {
+        npf_punch_plan *pl = &c->pcfg->plan;
+        c->unsol_untrusted = pl->peer_ip4.s_addr && call_contact_recent(c->n, pl->peer_ip4);
+        if (pl->peer_ip4.s_addr && pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY)
+            call_contact_note(c->n, pl->peer_ip4);
+    }
     c->pcfg->quiet = punch_quiet;
     if (c->pcfg->plan.measure) {        /* S2's hard side: its first new socket's mapping, from E1 */
         const uint8_t *pk = node_day_key(c->n, c->n->probe_keys);
@@ -656,6 +669,32 @@ static void firewall_open(npf_call *c)
     npf_logd("call %s: firewall: flows to %d peer candidates opened before the punch", c->call_id_s, c->pcfg->npeers);
 }
 
+
+#define CONTACT_MS (10 * 60 * 1000)     /* a NAT's filter keeps an endpoint at most this long (conntrack) */
+
+void call_contact_note(npf_node *n, struct in_addr ip)
+{
+    int i, old = 0;
+    for (i = 0; i < 8; i++) {
+        if (n->contact[i].ip.s_addr == ip.s_addr)
+            break;
+        if (n->contact[i].at < n->contact[old].at)
+            old = i;
+    }
+    if (i == 8)
+        i = old;
+    n->contact[i].ip = ip;
+    n->contact[i].at = npf_mono_ms();
+}
+
+int call_contact_recent(const npf_node *n, struct in_addr ip)
+{
+    int i;
+    for (i = 0; i < 8; i++)
+        if (n->contact[i].ip.s_addr == ip.s_addr && n->contact[i].at && npf_mono_ms() - n->contact[i].at < CONTACT_MS)
+            return 1;
+    return 0;
+}
 
 /* a round the platform let go: a side had no candidates yet (it has just come
  * up, its NAT not measured; it would have probed nothing for 8 s, then the
@@ -728,6 +767,12 @@ int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a)
                && !IN6_IS_ADDR_LINKLOCAL(v) && !IN6_IS_ADDR_MULTICAST(v) && !IN6_IS_ADDR_V4MAPPED(v);
     }
     return 0;
+}
+
+/* an IPv4 address that may be sent to at all (peer_ip4_ok) */
+int call_peer_ip4_usable(const npf_node *n, struct in_addr ip)
+{
+    return ip.s_addr != 0 && peer_ip4_ok(n, ip);
 }
 
 /* the peer's public IPv4 the sprays aim at: as a candidate, and not one of
@@ -839,7 +884,18 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
     }
     if (npf_json_get_str(j, peer, "pub_ip", s, sizeof s) > 0 && inet_pton(AF_INET, s, &pl->peer_ip4) == 1
         && !call_peer_spray_ok(c, pl->peer_ip4)) {
-        npf_logw("call %s: the peer's public IP %s is not an address to spray: none sprayed", c->call_id_s, s);
+        /* said once a call, when the plan sprays: a WARN when the address
+         * is none to send to at all, INFO when it is the platform's (a peer
+         * on a server's host: nothing wrong) */
+        int sprays = (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY) || pl->strategy == NPF_PUNCH_S2B
+                     || pl->strategy == NPF_PUNCH_S5;
+        if (sprays && !c->spray_refused_said) {
+            c->spray_refused_said = 1;
+            if (call_peer_ip4_usable(c->n, pl->peer_ip4))
+                npf_log("call %s: the peer's public IP %s is the platform's: none sprayed at it", c->call_id_s, s);
+            else
+                npf_logw("call %s: the peer's public IP %s is not an address to spray: none sprayed", c->call_id_s, s);
+        }
         pl->peer_ip4.s_addr = 0;
     }
     arr = npf_json_get(j, d, "range");

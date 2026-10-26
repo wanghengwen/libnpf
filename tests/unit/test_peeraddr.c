@@ -141,6 +141,22 @@ int test_peeraddr(void)
     CHECK(start(c, 7, "{\"t\":\"srflx\",\"a\":\"127.0.0.1:5000\"}", "127.0.0.1") == 1 && c->pcfg->plan.peer_ip4.s_addr != 0,
           "loopback with test_one_host");
 
+    /* the IPs the main socket sent to lately (sprays, direct paths): an
+     * unsolicited probe from them shows nothing of the filter (7.8) */
+    {
+        struct in_addr x, y;
+        inet_pton(AF_INET, "198.51.100.30", &x);
+        inet_pton(AF_INET, "198.51.100.31", &y);
+        CHECK(!call_contact_recent(&node, x), "no contact yet");
+        call_contact_note(&node, x);
+        CHECK(call_contact_recent(&node, x) && !call_contact_recent(&node, y), "the contact noted, only its IP");
+        for (i = 0; i < 9; i++) {           /* eight kept: the oldest goes */
+            struct in_addr z;
+            z.s_addr = htonl(0xc6336400u + 40 + (unsigned)i);
+            call_contact_note(&node, z);
+        }
+        CHECK(!call_contact_recent(&node, x), "the oldest of nine contacts kept");
+    }
     call_free(c);
     if (node.udp6_fd >= 0)
         close(node.udp6_fd);
