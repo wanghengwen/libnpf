@@ -20,6 +20,7 @@
 #include "npf/platform.h"
 
 #include "node_internal.h"
+#include "home.h"
 
 static void ends_flush(npf_node *n);
 static void sig_expect(npf_node *n, int ms, int probed);
@@ -265,6 +266,7 @@ void node_sig_drop(npf_node *n)
  * calls being set up end, the next attempt is due, the application told */
 static void sig_gone(npf_node *n, const char *why, int was_online)
 {
+    node_home_sig_lost(n);              /* the binding stays (home-binding.md 9.3) */
     node_sig_fail_pending(n);
     node_sig_lost(n);
     schedule_reconnect(n);
@@ -759,6 +761,7 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     n->t_ping = npf_timer_add(n->loop, (n->ping_s > 0 ? n->ping_s : 25) * 1000, ping_cb, n);
     ends_flush(n);                      /* call ends from while signaling was down */
     idle_watch(n);
+    node_home_login(n);                 /* the persistent binding, while the NAT is measured */
     node_nat_login(n);                  /* calls hooks.on_login, at once or after the first probe */
 }
 
@@ -850,6 +853,10 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
     }
     if (strcmp(type, "replaced") == 0) {    /* the server closes this connection next */
         n->replaced = 1;
+        return;
+    }
+    if (strcmp(type, "home_rekey") == 0) {
+        node_home_rekey(n, j, d);
         return;
     }
     if (strcmp(type, "keys") == 0) {

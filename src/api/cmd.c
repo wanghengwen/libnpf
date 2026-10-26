@@ -313,6 +313,13 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
         jkstr(o, &g, "srflx", n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : NULL);
         npf_out_printf(o, "}");
     }
+    {   /* the persistent binding (home-binding.md 14.1) */
+        char hb[1024];
+        if (npf_node_home_json(n, hb, sizeof hb)) {
+            jkey(o, &f, "home");
+            npf_out_printf(o, "%s", hb);
+        }
+    }
     jkstr(o, &f, "log_level", npf_log_level_name(npf_log_get_level()));
     jkey(o, &f, "lan_addrs");               /* where the LAN reaches a forward open to it */
     lan_addrs_json(o);
@@ -437,6 +444,12 @@ static void status_text(npf_t *c, npf_out *o)
                        npf_nat_filter_str(n->nat.filtering), npf_addr_str(&ss, a, sizeof a));
     } else if (!n->cfg.offline) {
         npf_out_printf(o, "nat:     unknown (no answer from the probe servers)\n");
+    }
+    {   /* the persistent binding */
+        char hb[160];
+        npf_node_home_text(n, hb, sizeof hb);
+        if (hb[0])
+            npf_out_printf(o, "home:    %s\n", hb);
     }
     for (call = npf_node_calls(n); call; call = npf_call_next(call)) {
         npf_call_info i;

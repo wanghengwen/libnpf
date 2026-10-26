@@ -58,6 +58,15 @@ int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
         cfg->udp_public = strcmp(npf_conf_get(conf, "udp_public", "0"), "1") == 0;
     }
     cfg->doh_servers = npf_conf_get(conf, "doh_servers", NULL);
+    /* the persistent binding (home-binding.md 17.1) */
+    cfg->home_off = strcmp(npf_conf_get(conf, "home_bind", "auto"), "off") == 0;
+    cfg->home_iv_max = atoi(npf_conf_get(conf, "home_iv_max", "150"));
+    if (cfg->home_iv_max < 8 || cfg->home_iv_max > 300)
+        cfg->home_iv_max = 150;
+    cfg->home_learn_off = strcmp(npf_conf_get(conf, "home_learn", "1"), "0") == 0;
+    cfg->home_store = npf_conf_get(conf, "home_store", NULL);
+    if (cfg->home_store && (!*cfg->home_store || strcmp(cfg->home_store, "off") == 0))
+        cfg->home_store = NULL;
     return 0;
 }
 

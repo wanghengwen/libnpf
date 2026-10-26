@@ -19,6 +19,7 @@
 #include "npf/platform.h"
 
 #include "node_internal.h"
+#include "home.h"
 
 /* ---- addresses ---- */
 
@@ -140,6 +141,7 @@ void npf_node_start(npf_node *n)
 
 void npf_node_stop(npf_node *n)
 {
+    node_home_stop(n);                      /* home_close while the signaling is there */
     node_portmap_stop(n);
     node_calls_free(n);
     call_key_shares_free(n);

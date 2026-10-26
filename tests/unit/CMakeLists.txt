@@ -19,6 +19,7 @@ add_executable(npf_unit_tests
   test_creply.c
   test_callee.c
   test_relay.c
+  test_home.c
 )
 if(NPF_PORTMAP)
   target_sources(npf_unit_tests PRIVATE test_portmap.c)

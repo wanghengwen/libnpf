@@ -266,6 +266,15 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
         snprintf(err, errcap, "no memory");
         return NPF_EFAIL;
     }
+    if (!npf_conf_get(&n->conf, "home_store", NULL)) {
+        /* the persistent binding's learning per network (home-binding.md 5.7) */
+        char p[1200];
+        snprintf(p, sizeof p, "%s/home.json", n->data_dir);
+        if (npf_conf_set(&n->conf, "home_store", p) < 0) {
+            snprintf(err, errcap, "no memory");
+            return NPF_EFAIL;
+        }
+    }
     if (!npf_conf_get(&n->conf, "serverlist_saved", NULL)) {
         /* the lists the platform sends are kept with what changes ("off": not kept) */
         char p[1200];
