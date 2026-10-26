@@ -229,6 +229,7 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
     } else {
         n->nat_udp = 0;
         memset(&n->nat, 0, sizeof n->nat);
+        call_port_pressure(n, "the NAT probe unanswered");
         /* no answer: perhaps passing (a carrier NAT's ports all held by a
          * punch; the phone thought it had no UDP for an hour, every session
          * on the WS relay; once after the app's restart, the network not
@@ -278,6 +279,7 @@ static void check_done(int ok, const npf_natprobe_result *res, void *arg)
     n->mapcheck_ms = npf_mono_ms();
     if (!ok) {
         npf_logd("nat: mapping check: no answer from the probe server (the srflx kept)");
+        call_port_pressure(n, "a mapping check unanswered");
         return;
     }
     memset(&x, 0, sizeof x);

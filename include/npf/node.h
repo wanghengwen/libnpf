@@ -312,6 +312,8 @@ struct npf_node {
     int           nkshares;
     int64_t       hard_punch_end;   /* when a hard-side punch last gave its sockets back (monotonic ms), 0: none */
     npf_timer    *t_punch_gap;      /* the next hard-side punch once the gap after it is over */
+    int64_t       port_pressure;    /* the last sign that the NAT ran short of ports around a hard-side
+                                       punch (a relay or NAT check unanswered; monotonic ms), 0: none */
 
     /* UDP */
     int           udp_fd;
