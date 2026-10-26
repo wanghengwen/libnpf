@@ -435,4 +435,11 @@ void call_handle_handshake(npf_call *c, const npf_json *j, int d)
     if (c->n->callee->paired)
         c->n->callee->paired(c->n, c->peer_pub, c->n->callee_arg);
     npf_log("call %s: paired", c->call_id_s);
+    /* the platform plans no punching round before this (signaling.md
+     * handshake_done, security.md 8.3) */
+    {
+        char data[96];
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
+        npf_node_send(c->n, "handshake_done", 0, data);
+    }
 }

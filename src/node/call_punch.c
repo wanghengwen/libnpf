@@ -526,13 +526,16 @@ static void punch_timer(npf_loop *loop, void *arg)
  * with a password (three handshake messages, the last one from the caller)
  * gets them after the start time: the peer's first probes would arrive
  * first and the flow stay blocked (a Mac callee <-> a Linux caller, 5 of
- * 5). One byte, twice: nothing the peer reads (a node drops it silently) */
+ * 5). One byte, twice: nothing the peer reads (a node drops it silently).
+ * Only once the keys are there: the platform plans a pairing's rounds after
+ * its handshake checked out (handshake_done), and a call the handshake has
+ * not admitted gets nothing */
 static void firewall_open(npf_call *c)
 {
     static const uint8_t one[1] = {0};
     int i, k;
-    if (!c->pcfg)
-        return;
+    if (!c->pcfg || !c->keys_ready)
+        return;                     /* nothing to anyone the handshake has not admitted */
     for (k = 0; k < 2; k++)
         for (i = 0; i < c->pcfg->npeers; i++)
             if (c->pcfg->peers[i].ss_family == AF_INET || c->n->udp6_fd >= 0)
