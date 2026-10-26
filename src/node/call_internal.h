@@ -22,35 +22,11 @@
 #include "media.h"
 #include "udpfwd.h"
 #include "node_internal.h"
+#include "relay_bind.h"
 
 /* short names for npf_node.h's NPF_AUTH_* */
 enum { AUTH_IK = NPF_AUTH_IK, AUTH_PAKE = NPF_AUTH_PAKE, AUTH_GRANT = NPF_AUTH_GRANT, AUTH_DIRECT = NPF_AUTH_DIRECT };
 
-#define RELAY_SENT         8         /* the last RELAY_BINDs whose BIND_ACK is taken (call_relay.c) */
-
-typedef struct relay_c {
-    int      active;
-    int      bound;             /* the relay sends to us: a BIND_ACK "bound", or the peer's data through it */
-    uint8_t  relay_id[8];
-    uint8_t  alloc_key[32];
-    npf_siv_keys keys;
-    struct sockaddr_storage addr[4];
-    int      naddr, cur;
-    uint32_t seq;
-    uint8_t  cookie[8];         /* the relay's cookie for our address (RELAY_BIND_ACK), echoed in RELAY_BIND */
-    int64_t  echo_ms;           /* when a challenge was last answered at once (mono ms) */
-    int      tries;
-    struct {                    /* the last binds: a BIND_ACK counts once, for one of them */
-        uint8_t  txid[NPF_TXID_SIZE];
-        uint32_t ts;
-        int64_t  at;            /* sent (mono ms); 0: answered */
-    } sent[RELAY_SENT];
-    int      nsent;
-    uint64_t chal_srv;          /* srv_time_ms of the last challenge to our RELAY_DATA taken */
-    npf_timer *t_bind;
-    int64_t  expires;
-    char     mode[8];
-} relay_c;
 
 /* control requests awaiting a reply in a session: a reverse_listen for each
  * -R (NPF_MAX_REVERSE) and a few more (grant_update) */
@@ -219,18 +195,10 @@ typedef struct call_hs {
 } call_hs;
 
 /* shared by call.c, call_punch.c, call_relay.c */
-#define RELAY_BIND_TRIES   3
 #define RELAY_KEEPALIVE_MS 25000     /* RELAY_BIND refresh while the relay is in use */
 #define RELAY_STANDBY_MS   30000     /* relay kept after the direct path is up, then released */
 #define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
 #define PUNCH_LINGER_MS    10000
-#define LABEL_RELAY        "NPF-RELAY-v1"
-#define PKT_RELAY_BIND     7
-#define PKT_RELAY_BIND_ACK 8
-#define PKT_RELAY_DATA     9
-#define RELAY_HINT_SIZE    4         /* relay_id[0..3] in the clear before every datagram to the relay */
-#define RELAY_COOKIE_SIZE  8
-#define RELAY_ACK_BOUND    1         /* RELAY_BIND_ACK state: the relay sends to this address (0: a challenge) */
 #define RELAY_DATA_OVERHEAD (RELAY_HINT_SIZE + NPF_SIV_TAG_SIZE + 6)
 #define PUNCH_ROUNDS_MAX 10
 #define LABEL_PATH         "NPF-PCHECK-1"       /* the direct path check (call_path.c), its keys from the session's */
@@ -248,23 +216,14 @@ typedef struct npf_key_share {
     npf_tunnel_shared sh;
 } npf_key_share;
 
-/* a timer stopped, if it runs, and forgotten */
-static inline void timer_stop(npf_loop *l, npf_timer **t)
-{
-    if (*t)
-        npf_timer_cancel(l, *t);
-    *t = NULL;
-}
 
 /* call.c: the state, the end, dispatch, the node's sessions */
 void call_accept_seen(npf_call *c);
 void call_b64_of(const uint8_t *b, size_t n, char *out);
 npf_call *call_find(npf_node *n, const npf_json *j, int d);
 int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len);
-int call_relay_blocked(const npf_node *n, const char *what);
 int call_relay_addr_blocked(const npf_call *c);
 void call_relay_leave(npf_call *c);
-int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
 /* the peer's addresses this node sends to (security.md H-1): a candidate;
  * the public IP the sprays aim at */
 int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);

@@ -134,7 +134,7 @@ add_library(npf_common STATIC
   src/node/node_network.c
   src/node/nat.c
   src/node/home.c
-  src/node/home_learn.c
+  src/node/relay_bind.c
   src/node/sources.c
   src/node/setup.c
   src/node/callee.c

@@ -129,24 +129,20 @@ int  npf_if_list(npf_ifaddr *out, int max);
  * it. 0 or -1. */
 int  npf_udp_send(int fd, const void *buf, size_t len, const void *to);
 
-/* What a node's main socket sends, as its persistent binding's learning
- * needs to know it (home-binding.md 5.4): datagrams to the relay's address,
- * to other ports of its IP (the probe servers), to anything else; the
- * times in npf_mono_ms. The counts and the gaps between the other sends
- * start again at npf_udp_watch_mark. */
+/* When a node's main socket last sent what may keep the mapping its
+ * spare allocation's relay sees (home-binding.md 5.4): by the NAT's
+ * mapping, anything but the relay's address (EIM, or not known), the
+ * relay's IP on another port (ADM: its probe servers), nothing (APDM). */
+enum { NPF_WATCH_ANY, NPF_WATCH_IP, NPF_WATCH_NONE };
 typedef struct npf_udp_watch {
     uint32_t relay_ip;                          /* network order; 0: none yet */
     uint16_t relay_port;                        /* network order */
-    int64_t  last_relay, last_relay_ip, last_other;     /* the last send of each kind, 0: none */
-    int64_t  mark;                              /* since then: */
-    int      n_relay, n_relay_ip, n_other;
-    int64_t  first_other, prev_other, gap_other;/* the other sends (and those to the relay's IP): the
-                                                   first, the last and the longest gap between two */
+    int      mode;                              /* NPF_WATCH_* */
+    int64_t  other;                             /* npf_mono_ms of the last such datagram, 0: none */
 } npf_udp_watch;
-/* npf_udp_send counts the datagrams it sends on fd into w, on this thread
+/* npf_udp_send notes the datagrams it sends on fd into w, on this thread
  * (each libnpf instance runs on one of its own; 4 at most); NULL: no more */
 void npf_udp_watch_on(int fd, npf_udp_watch *w);
-void npf_udp_watch_mark(npf_udp_watch *w, int64_t now);
 
 /* How early to start punching because of a host firewall that blocks a UDP
  * flow whose first packet is unsolicited inbound (and keeps blocking it):
