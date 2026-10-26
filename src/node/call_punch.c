@@ -335,6 +335,31 @@ void call_cand_send(npf_call *c)
     cand_round(c);
 }
 
+/* tests: NPF_TEST_PUNCH_INFO_EXTRA="addr,...": forged srflx candidates
+ * sent to the peer once the call is accepted (the platform must drop them) */
+void call_test_punch_info(npf_call *c)
+{
+    char buf[256], data[256], *tok, *save;
+    npf_jw w;
+    if (!getenv("NPF_TEST_PUNCH_INFO_EXTRA"))
+        return;
+    snprintf(buf, sizeof buf, "%s", getenv("NPF_TEST_PUNCH_INFO_EXTRA"));
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        npf_jw_init(&w, data, sizeof data);
+        npf_jw_obj(&w);
+        npf_jw_kstr(&w, "call_id", c->call_id_s);
+        npf_jw_kint(&w, "round", c->punch_round);
+        npf_jw_key(&w, "cand");
+        npf_jw_obj(&w);
+        npf_jw_kstr(&w, "t", "srflx");
+        npf_jw_kstr(&w, "a", tok);
+        npf_jw_end(&w);
+        npf_jw_end(&w);
+        if (npf_jw_finish(&w) > 0)
+            npf_node_send(c->n, "punch_info", 0, data);
+    }
+}
+
 void node_calls_srflx_changed(npf_node *n)
 {
     npf_call *c;
@@ -537,10 +562,75 @@ static void empty_round(npf_call *c)
     c->t_repunch = npf_timer_add(c->n->loop, EMPTY_ROUND_MS, call_repunch_timer, c);
 }
 
+/* the platform runs on this host (its probe answered from loopback: the
+ * integration tests): loopback is this host's network */
+static int lab_loopback(const npf_node *n)
+{
+    return (ntohl(n->srflx.sin_addr.s_addr) >> 24) == 127;
+}
+
+/* an IPv4 address the node may send probes to (security.md H-1, under the
+ * platform's own check): not unspecified, 0/8, loopback (but on one host),
+ * link-local, multicast, reserved or the broadcast */
+static int peer_ip4_ok(const npf_node *n, struct in_addr ip)
+{
+    uint32_t a = ntohl(ip.s_addr);
+    if ((a >> 24) == 127)
+        return lab_loopback(n);
+    return (a >> 24) != 0 && (a >> 16) != 0xa9fe && (a >> 28) < 0xe;
+}
+
+/* one of the platform's addresses this node knows (its probes, the call's
+ * relays): ip only (port 0), or ip:port */
+static int platform_addr(const npf_call *c, struct in_addr ip, uint16_t port)
+{
+    int i;
+    for (i = 0; i < c->n->nprobe_ep && i < 3; i++)
+        if (c->n->probe_ep[i].sin_addr.s_addr == ip.s_addr && (!port || ntohs(c->n->probe_ep[i].sin_port) == port))
+            return 1;
+    for (i = 0; i < c->relay.naddr && i < 4; i++) {
+        const struct sockaddr_in *r = (const struct sockaddr_in *)&c->relay.addr[i];
+        if (r->sin_family == AF_INET && r->sin_addr.s_addr == ip.s_addr && (!port || ntohs(r->sin_port) == port))
+            return 1;
+    }
+    return 0;
+}
+
+/* a peer candidate the node may probe: an IPv4 one as above and not one of
+ * the platform's endpoints; an IPv6 one not unspecified, loopback (but on
+ * one host), link-local, multicast or v4-mapped */
+int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a)
+{
+    if (a->ss_family == AF_INET) {
+        const struct sockaddr_in *v = (const struct sockaddr_in *)a;
+        return v->sin_port != 0 && peer_ip4_ok(c->n, v->sin_addr) && !platform_addr(c, v->sin_addr, ntohs(v->sin_port));
+    }
+    if (a->ss_family == AF_INET6) {
+        const struct in6_addr *v = &((const struct sockaddr_in6 *)a)->sin6_addr;
+        if (IN6_IS_ADDR_LOOPBACK(v))
+            return lab_loopback(c->n);
+        return ((const struct sockaddr_in6 *)a)->sin6_port != 0 && !IN6_IS_ADDR_UNSPECIFIED(v)
+               && !IN6_IS_ADDR_LINKLOCAL(v) && !IN6_IS_ADDR_MULTICAST(v) && !IN6_IS_ADDR_V4MAPPED(v);
+    }
+    return 0;
+}
+
+/* the peer's public IPv4 the sprays aim at: as a candidate, and not one of
+ * the platform's IPs (whatever the port) */
+int call_peer_spray_ok(const npf_call *c, struct in_addr ip)
+{
+    return ip.s_addr != 0 && peer_ip4_ok(c->n, ip) && !platform_addr(c, ip, 0);
+}
+
 /* a peer candidate a module says is no use here (npf_node.skip_cand: one
- * this host would send into a virtual interface of its own) */
+ * this host would send into a virtual interface of its own), or one this
+ * node never sends to (call_peer_addr_ok) */
 static int cand_skipped(const npf_call *c, const struct sockaddr_storage *to, const char *shown)
 {
+    if (!call_peer_addr_ok(c, to)) {
+        npf_logw("call %s: the peer's candidate %s is not an address to send to: dropped", c->call_id_s, shown);
+        return 1;
+    }
     return c->n->skip_cand && c->n->skip_cand(c->n->skip_cand_arg, to, shown, c->call_id_s);
 }
 
@@ -628,8 +718,11 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
             c->pcfg->npeers++;
         }
     }
-    if (npf_json_get_str(j, peer, "pub_ip", s, sizeof s) > 0)
-        inet_pton(AF_INET, s, &pl->peer_ip4);
+    if (npf_json_get_str(j, peer, "pub_ip", s, sizeof s) > 0 && inet_pton(AF_INET, s, &pl->peer_ip4) == 1
+        && !call_peer_spray_ok(c, pl->peer_ip4)) {
+        npf_logw("call %s: the peer's public IP %s is not an address to spray: none sprayed", c->call_id_s, s);
+        pl->peer_ip4.s_addr = 0;
+    }
     arr = npf_json_get(j, d, "range");
     if (arr >= 0 && j->tok[arr].size == 2) {
         int64_t lo, hi;

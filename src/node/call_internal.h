@@ -260,6 +260,11 @@ int call_relay_blocked(const npf_node *n, const char *what);
 int call_relay_addr_blocked(const npf_call *c);
 void call_relay_leave(npf_call *c);
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
+/* the peer's addresses this node sends to (security.md H-1): a candidate;
+ * the public IP the sprays aim at */
+int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);
+int call_peer_spray_ok(const npf_call *c, struct in_addr ip);
+void call_test_punch_info(npf_call *c);
 void call_set_state(npf_call *c, int st, const char *why);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);

@@ -357,8 +357,8 @@ static void s2b_tick(npf_punch *p, int64_t now)
         }
         return;
     }
-    if (!p->peer_port)
-        return;
+    if (!p->peer_port || !pl->peer_ip4.s_addr)
+        return;                     /* no public IP of the peer's to send to: nothing (H-1) */
     if (p->pass < (pl->passes > 0 ? pl->passes : 4) && now >= p->pass_next) {
         s2b_pass(p);
         p->pass++;
@@ -499,7 +499,8 @@ static void tick_cb(npf_loop *loop, void *arg)
             ivl = 1;
         if (p->spray_next < now - SPRAY_LAG_MS)
             p->spray_next = now - SPRAY_LAG_MS;     /* after a stall: not everything that came due at once */
-        for (burst = 0; burst < SPRAY_BURST && p->sprayed < pl->m_total && now >= p->spray_next; burst++) {
+        for (burst = 0; burst < SPRAY_BURST && p->sprayed < pl->m_total && pl->peer_ip4.s_addr && now >= p->spray_next;
+             burst++) {
             probe(p, 0, peer_at(p, rand_port(lo, hi), &pa));
             p->sprayed++;
             p->spray_next += ivl;
@@ -518,7 +519,7 @@ static void tick_cb(npf_loop *loop, void *arg)
             ivl = S5_MIN_IVL;           /* "a few a second": a plan cannot make it a flood */
         if (p->spray_next < now - SPRAY_LAG_MS)
             p->spray_next = now - SPRAY_LAG_MS;
-        for (burst = 0; burst < SPRAY_BURST && p->sprayed < total && now >= p->spray_next; burst++) {
+        for (burst = 0; burst < SPRAY_BURST && p->sprayed < total && pl->peer_ip4.s_addr && now >= p->spray_next; burst++) {
             probe(p, 1, peer_at(p, rand_port(lo, hi), &pa));
             p->sprayed++;
             p->spray_next += ivl;
@@ -560,7 +561,7 @@ static int64_t next_due(const npf_punch *p, int64_t now)
     if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD)
         for (i = 1; i < p->nsock; i++)
             DUE(p->socks[i].next_send);
-    if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY && p->sprayed < pl->m_total) {
+    if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY && p->sprayed < pl->m_total && pl->peer_ip4.s_addr) {
         int64_t ivl = pl->pps > 0 ? 1000 / pl->pps : 5;
         DUE(spray_due(p->spray_next, ivl < 1 ? 1 : ivl, now));
     }
@@ -568,7 +569,7 @@ static int64_t next_due(const npf_punch *p, int64_t now)
         if (!p->own_port) {
             if (p->bsent < 4)
                 DUE(p->bnext);
-        } else if (p->peer_port) {
+        } else if (p->peer_port && pl->peer_ip4.s_addr) {
             if (p->pass < (pl->passes > 0 ? pl->passes : 4))
                 DUE(p->pass_next);
             if (p->resend_next)
@@ -578,7 +579,7 @@ static int64_t next_due(const npf_punch *p, int64_t now)
     if (pl->strategy == NPF_PUNCH_S5 && p->nsock > 1) {
         int64_t ivl = 1000 / (pl->pps > 0 ? pl->pps : 4);
         int total = pl->m_total > 0 && pl->m_total < S5_MAX ? pl->m_total : S5_MAX;
-        if (p->sprayed < total)
+        if (p->sprayed < total && pl->peer_ip4.s_addr)
             DUE(spray_due(p->spray_next, ivl < S5_MIN_IVL ? S5_MIN_IVL : ivl, now));
     }
     if (pl->role == NPF_PUNCH_CONTROLLING && p->have_valid)

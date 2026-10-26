@@ -214,6 +214,8 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
      * connecting (its hello may establish the session at once) */
     if (!c->ended)
         call_relay_early_feed(c);
+    if (!c->ended)
+        call_test_punch_info(c);
     return;
 fail:
     npf_logw("call %s: handshake with the callee failed", c->call_id_s);

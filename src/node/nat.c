@@ -435,7 +435,9 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
     npf_jw_kbool(w, "ip_varies", n->nat.ip_varies);
     if (n->punch_lead_ms > 0)       /* a host firewall: this side sends first, S1 keeps the agreed start */
         npf_jw_kbool(w, "lead", 1);
-    if (n->nat_valid && n->nat_udp)
+    if (getenv("NPF_TEST_PUB_IP"))      /* tests: a forged public IP (the platform must not spray it) */
+        npf_jw_kstr(w, "pub_ip", getenv("NPF_TEST_PUB_IP"));
+    else if (n->nat_valid && n->nat_udp)
         npf_jw_kstr(w, "pub_ip", inet_ntop(AF_INET, &n->pub_ip, ip, sizeof ip));
     npf_jw_kint(w, "at", n->nat.measured_at);
     npf_jw_end(w);
@@ -459,6 +461,18 @@ void npf_node_write_cands(npf_node *n, npf_jw *w)
         npf_jw_kstr(w, "t", n->cands[i].t);
         npf_jw_kstr(w, "a", npf_addr_str(&n->cands[i].a, a, sizeof a));
         npf_jw_end(w);
+    }
+    if (getenv("NPF_TEST_CANDS_EXTRA") && !none) {     /* tests: forged candidates "t=addr,..." */
+        char buf[512], *tok, *save, *eq;
+        snprintf(buf, sizeof buf, "%s", getenv("NPF_TEST_CANDS_EXTRA"));
+        for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
+            if ((eq = strchr(tok, '=')) != NULL) {
+                *eq = 0;
+                npf_jw_obj(w);
+                npf_jw_kstr(w, "t", tok);
+                npf_jw_kstr(w, "a", eq + 1);
+                npf_jw_end(w);
+            }
     }
     npf_jw_end(w);
 }
