@@ -29,6 +29,7 @@ int test_text(void);
 int test_creply(void);
 int test_portmap_gw(void);
 int test_callee(void);
+int test_relay(void);
 
 #define CHECK(cond, ...) do { \
     if (!(cond)) { failures++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
@@ -234,6 +235,7 @@ int main(void)
     failures += test_portmap_gw();
 #endif
     failures += test_callee();
+    failures += test_relay();
     failures += test_punch();
     { struct in6_addr v6[8]; struct in_addr v4[8];
       int c6 = npf_gather_host6(v6, 8), c4 = npf_gather_host4(v4, 8);

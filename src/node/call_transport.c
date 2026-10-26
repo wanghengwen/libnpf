@@ -845,8 +845,11 @@ int call_start_transport(npf_call *c)
         if (!c->stream)
             return -1;
     }
-    /* hello waits for a path: sent into nothing it would sit out an RTO */
-    if (!c->caller && (c->p2p || c->relay.bound))
+    /* hello waits for a path (sent into nothing it would sit out an RTO):
+     * the direct one, or the UDP relay as soon as it is ours (not bound yet:
+     * the relay forwards what our key seals from an address it has not
+     * bound, call_relay_setup) */
+    if (!c->caller && (c->p2p || c->relay.active))
         npf_tunnel_start(c->tun);
     anl_schedule(c);
     call_relay_early_feed(c);               /* what the peer sent through the relay before the keys */
@@ -858,7 +861,7 @@ int call_start_transport(npf_call *c)
     }
     return 0;
 }
-/* a path (relay bound or direct) became usable */
+/* a path became usable: direct, the relay taken (call_relay_setup) or bound */
 void call_path_up(npf_call *c)
 {
     if (!c->anl)

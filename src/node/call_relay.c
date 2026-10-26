@@ -17,10 +17,14 @@ static void relay_bind_send(npf_call *c)
 {
     uint8_t txid[NPF_TXID_SIZE], wire[256];
     size_t len = npf_rand_range(96, 200);
-    int n;
+    uint32_t ts = (uint32_t)npf_node_time(c->n);
+    int n, k = c->relay.nsent++ % RELAY_SENT;
     npf_random(txid, sizeof txid);
+    memcpy(c->relay.sent[k].txid, txid, sizeof txid);   /* its BIND_ACK echoes both (relay_ack_ours) */
+    c->relay.sent[k].ts = ts;
+    c->relay.sent[k].at = npf_mono_ms();
     memcpy(wire, c->relay.relay_id, RELAY_HINT_SIZE);
-    n = npf_pkt_seal(&c->relay.keys, 0, PKT_RELAY_BIND, txid, (uint32_t)npf_node_time(c->n), c->relay.cookie,
+    n = npf_pkt_seal(&c->relay.keys, 0, PKT_RELAY_BIND, txid, ts, c->relay.cookie,
                      RELAY_COOKIE_SIZE, len - RELAY_HINT_SIZE, wire + RELAY_HINT_SIZE);
     if (n > 0 && !call_relay_addr_blocked(c))
         call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], wire, (size_t)n + RELAY_HINT_SIZE);
@@ -154,6 +158,8 @@ static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], 
     memcpy(c->relay.relay_id, id, 8);
     memcpy(c->relay.alloc_key, key, 32);
     memset(c->relay.cookie, 0, sizeof c->relay.cookie);     /* a cookie is the allocation's */
+    memset(c->relay.sent, 0, sizeof c->relay.sent);         /* so are the binds answered */
+    c->relay.chal_srv = 0;
     snprintf(c->relay.mode, sizeof c->relay.mode, "%s", mode);
     c->relay_asked = 0;
     timer_stop(c->n->loop, &c->t_standby);
@@ -209,6 +215,10 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
     c->relay.active = 1;
     c->relay.bound = 0;
     call_relay_rebind(c);
+    /* our data may go at once, with the first bind: the relay forwards what
+     * our key seals from an address it has not bound yet; only what comes to
+     * us waits for the cookie's round trip (the callee's hello, call_path_up) */
+    call_path_up(c);
 }
 
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
@@ -241,6 +251,40 @@ static void relay_bound(npf_call *c, const char *how)
     call_path_up(c);
 }
 
+/* A BIND_ACK counts only when it answers one of our last binds (RELAY_SENT,
+ * RELAY_ACK_AGE_MS old at most: its txid and ts_ms echoed), and once: a
+ * replayed one (an old challenge, sent again by someone on the path with the
+ * relay's address) would have us bind again each time, burning the
+ * allocation's bind tokens and rolling the relay's ring of the txids it has
+ * seen (a bind captured earlier could then pass again). A challenge to our
+ * RELAY_DATA (a new NAT port) has no txid: it counts when its srv_time_ms is
+ * newer than the last one taken and within RELAY_ACK_WINDOW_MS of now. */
+#define RELAY_ACK_AGE_MS    10000
+#define RELAY_ACK_WINDOW_MS 60000
+
+static int relay_ack_ours(npf_call *c, const uint8_t *plain, uint64_t srv_ms, int bound)
+{
+    static const uint8_t none[NPF_TXID_SIZE];
+    const uint8_t *txid = plain + 4;
+    uint32_t ts = npf_rd32(plain + 4 + NPF_TXID_SIZE);
+    int64_t now = npf_mono_ms(), d;
+    int i;
+    if (memcmp(txid, none, sizeof none) == 0) {
+        d = (int64_t)srv_ms - npf_node_time(c->n);
+        if (bound || srv_ms <= c->relay.chal_srv || d > RELAY_ACK_WINDOW_MS || d < -RELAY_ACK_WINDOW_MS)
+            return 0;
+        c->relay.chal_srv = srv_ms;
+        return 1;
+    }
+    for (i = 0; i < RELAY_SENT; i++)
+        if (c->relay.sent[i].at && now - c->relay.sent[i].at <= RELAY_ACK_AGE_MS && c->relay.sent[i].ts == ts
+            && npf_ct_eq(c->relay.sent[i].txid, txid, NPF_TXID_SIZE) == 0) {
+            c->relay.sent[i].at = 0;
+            return 1;
+        }
+    return 0;
+}
+
 /* RELAY_BIND_ACK: body = family(1) | port(2) | addr(4/16) | srv_time_ms(8) |
  * state(1) | cookie(8). The cookie is kept for the next binds; a challenge
  * (the address is not ours on the relay yet, or no longer: a new NAT port)
@@ -256,7 +300,8 @@ static void relay_ack(npf_call *c, const uint8_t *plain, size_t pl)
     if (blen < 1 || NPF_PKT_HDR_SIZE + blen > pl)
         return;
     alen = b[0] == 4 ? 4 : b[0] == 6 ? 16 : 0;
-    if (!alen || blen < 3 + alen + 8 + 1 + RELAY_COOKIE_SIZE)
+    if (!alen || blen < 3 + alen + 8 + 1 + RELAY_COOKIE_SIZE
+        || !relay_ack_ours(c, plain, npf_rd64(b + 3 + alen), b[3 + alen + 8] == RELAY_ACK_BOUND))
         return;
     memcpy(c->relay.cookie, b + 3 + alen + 9, RELAY_COOKIE_SIZE);
     if (b[3 + alen + 8] == RELAY_ACK_BOUND) {
