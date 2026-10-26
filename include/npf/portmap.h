@@ -5,7 +5,7 @@
  * On success the router forwards its external_ip:external_port to this host's
  * internal_port — a `mapped` candidate, as good as a public address.
  *
- * UPnP IGD is not used for mappings: npf/upnp.h only detects it (statistics). */
+ * UPnP IGD is not supported (nat-traversal.md 5.1). */
 #ifndef NPF_PORTMAP_H
 #define NPF_PORTMAP_H
 

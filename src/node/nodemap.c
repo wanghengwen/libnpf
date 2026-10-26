@@ -6,11 +6,8 @@
  * own; the result comes back through npf_loop_post. Renewed before the lease
  * ends (1 hour, 10 minutes ahead), tried again every 30 minutes when there
  * is none, removed when the node stops, asked for again on another network.
- *
- * UPnP IGD (NPF_UPNP) is only detected, never used for a mapping: at the
- * start and on another network, on a thread as well. What the gateway did
- * goes to the platform with the NAT profile ("pm", npf_node_write_nat), for
- * the platform's statistics: would a UPnP mapping help? */
+ * What the gateway did goes to the platform with the NAT profile ("pm",
+ * npf_node_write_nat), for its statistics. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -25,7 +22,6 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "npf/portmap.h"
-#include "npf/upnp.h"
 
 #include "node_internal.h"
 
@@ -37,8 +33,6 @@
 
 /* what the gateway did (n->pm_gw, the "pm" object's gw) */
 enum { PM_GW_UNKNOWN = 0, PM_GW_MAP, PM_GW_PRIVATE, PM_GW_NONE, PM_GW_NOGW };
-/* the UPnP detection (n->upnp): not yet, no gateway, then npf_upnp_detect + 2 */
-enum { UPNP_UNKNOWN = 0, UPNP_NOGW, UPNP_NONE, UPNP_PRESENT, UPNP_ADDR };
 
 /* A request runs on a thread of its own and may outlive the node: the node
  * forgets it (cancelled, under pm_mu) when it stops; the thread then frees
@@ -46,13 +40,11 @@ enum { UPNP_UNKNOWN = 0, UPNP_NOGW, UPNP_NONE, UPNP_PRESENT, UPNP_ADDR };
  * a job not cancelled touches the node or its loop */
 typedef struct pm_job {
     npf_node   *n;
-    int         upnp;               /* a UPnP detection, not a PCP / NAT-PMP request */
     uint16_t    port;
     uint32_t    lifetime;
-    int         ret;                /* npf_portmap_request, npf_upnp_detect */
+    int         ret;                /* npf_portmap_request */
     int         cancelled;          /* under pm_mu */
     npf_portmap res;
-    uint8_t     ip[4];              /* UPnP: the WAN address */
 } pm_job;
 
 #ifdef _WIN32
@@ -66,8 +58,6 @@ static pthread_mutex_t pm_mu = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 static void pm_timer(npf_loop *loop, void *arg);
-static void upnp_start(npf_node *n);
-static void upnp_deliver(npf_node *n, pm_job *j);
 
 /* a public address: a mapping on a router behind another NAT (CGNAT,
  * double NAT) gives nothing */
@@ -92,11 +82,6 @@ static void pm_deliver(npf_loop *loop, void *arg)
         return;
     }
     n = j->n;
-    if (j->upnp) {
-        upnp_deliver(n, j);
-        free(j);
-        return;
-    }
     n->pm_job = NULL;
     was_gw = n->pm_gw;
     was_m = n->pm_m;
@@ -141,12 +126,7 @@ static void pm_deliver(npf_loop *loop, void *arg)
 
 static void pm_work(pm_job *j)
 {
-#ifdef NPF_UPNP
-    if (j->upnp)
-        j->ret = npf_upnp_detect(j->ip);
-    else
-#endif
-        j->ret = npf_portmap_request(j->port, j->lifetime, &j->res);
+    j->ret = npf_portmap_request(j->port, j->lifetime, &j->res);
     PM_LOCK();                              /* the node (and its loop) still there while not cancelled */
     if (j->cancelled || npf_loop_post_drop(j->n->loop, pm_deliver, free, j) < 0) {
         PM_UNLOCK();
@@ -157,14 +137,14 @@ static void pm_work(pm_job *j)
 }
 
 /* the node no longer waits for its request (stop, restart) */
-static void pm_forget(void **job)
+static void pm_forget(npf_node *n)
 {
-    if (!*job)
+    if (!n->pm_job)
         return;
     PM_LOCK();
-    ((pm_job *)*job)->cancelled = 1;
+    ((pm_job *)n->pm_job)->cancelled = 1;
     PM_UNLOCK();
-    *job = NULL;
+    n->pm_job = NULL;
 }
 
 #ifdef _WIN32
@@ -203,61 +183,19 @@ static int spawn(pm_job *j)
 }
 #endif
 
-static void job_start(npf_node *n, void **slot, int upnp)
-{
-    pm_job *j;
-    if (*slot || !(j = calloc(1, sizeof *j)))
-        return;
-    j->n = n;
-    j->upnp = upnp;
-    j->port = n->udp_port;
-    j->lifetime = PM_LEASE_S;
-    *slot = j;
-    if (spawn(j) < 0) {
-        *slot = NULL;
-        free(j);
-    }
-}
-
 static void pm_request(npf_node *n)
 {
-    if (n->udp_fd >= 0)
-        job_start(n, &n->pm_job, 0);
-}
-
-static int upnp_off(const npf_node *n)
-{
-#ifdef NPF_UPNP
-    return n->cfg.offline || n->cfg.no_portmap || n->cfg.no_upnp;
-#else
-    (void)n;
-    return 1;
-#endif
-}
-
-static void upnp_start(npf_node *n)
-{
-    if (!upnp_off(n))
-        job_start(n, &n->upnp_job, 1);
-}
-
-static void upnp_deliver(npf_node *n, pm_job *j)
-{
-    int was = n->upnp;
-    uint8_t was_ip[4];
-    char a[INET_ADDRSTRLEN];
-    memcpy(was_ip, n->upnp_ip, 4);
-    n->upnp_job = NULL;
-    n->upnp = j->ret < 0 ? UPNP_NOGW : j->ret + UPNP_NONE;
-    memcpy(n->upnp_ip, j->ip, 4);
-    if (n->upnp == UPNP_ADDR)
-        npf_log("upnp: an IGD at the gateway, WAN address %s%s (detected only: no mapping)",
-                inet_ntop(AF_INET, n->upnp_ip, a, sizeof a), public_ip4(n->upnp_ip) ? "" : ", not public");
-    else
-        npf_log("upnp: %s", n->upnp == UPNP_PRESENT ? "an IGD at the gateway, its WAN address not learned"
-                            : n->upnp == UPNP_NONE  ? "no IGD at the gateway" : "no default IPv4 gateway");
-    if (n->upnp != was || memcmp(was_ip, n->upnp_ip, 4) != 0)
-        npf_node_report_nat(n);
+    pm_job *j;
+    if (n->pm_job || n->udp_fd < 0 || !(j = calloc(1, sizeof *j)))
+        return;
+    j->n = n;
+    j->port = n->udp_port;
+    j->lifetime = PM_LEASE_S;
+    n->pm_job = j;
+    if (spawn(j) < 0) {
+        n->pm_job = NULL;
+        free(j);
+    }
 }
 
 static void pm_timer(npf_loop *loop, void *arg)
@@ -266,8 +204,6 @@ static void pm_timer(npf_loop *loop, void *arg)
     (void)loop;
     n->t_pm = NULL;
     pm_request(n);
-    if (n->upnp == UPNP_NOGW)               /* perhaps one now */
-        upnp_start(n);
 }
 
 void node_portmap_start(npf_node *n)
@@ -276,7 +212,6 @@ void node_portmap_start(npf_node *n)
         return;
     n->pm_net = npf_portmap_net();
     pm_request(n);
-    upnp_start(n);
 }
 
 void node_portmap_stop(npf_node *n)
@@ -284,8 +219,7 @@ void node_portmap_stop(npf_node *n)
     if (n->t_pm)
         npf_timer_cancel(n->loop, n->t_pm);
     n->t_pm = NULL;
-    pm_forget(&n->pm_job);                  /* a running request's answer is dropped */
-    pm_forget(&n->upnp_job);
+    pm_forget(n);                           /* a running request's answer is dropped */
     if (n->pm_ok) {                         /* one short try: a gateway gone silent does not hold up the stop */
         npf_portmap_remove(n->udp_port, n->pm.method);
         n->pm_ok = 0;
@@ -297,7 +231,7 @@ void node_portmap_restart(npf_node *n)
     if (n->t_pm)
         npf_timer_cancel(n->loop, n->t_pm);
     n->t_pm = NULL;
-    pm_forget(&n->pm_job);
+    pm_forget(n);
     n->pm_ok = 0;
     n->pm_gw = PM_GW_UNKNOWN;
     n->pm_m = 0;
@@ -310,22 +244,15 @@ void node_portmap_net_change(npf_node *n)
     uint64_t net;
     if (n->cfg.offline || n->cfg.no_portmap || (net = npf_portmap_net()) == n->pm_net)
         return;                             /* the same gateway, the same address toward it */
-    npf_logd("portmap: another network: the router's mapping asked for again, UPnP detected again");
+    npf_logd("portmap: another network: the router's mapping asked for again");
     n->pm_net = net;
     node_portmap_restart(n);
-    pm_forget(&n->upnp_job);
-    n->upnp = UPNP_UNKNOWN;
-    upnp_start(n);
 }
 
 /* the "pm" object of the nat profile: enums only (no address: secure mode too) */
 void node_portmap_write(const npf_node *n, npf_jw *w)
 {
     static const char *const gws[] = {NULL, "map", "private", "none", "nogw"};
-    static const char *const ups[] = {NULL, "nogw", "none", "present"};
-    const char *up = upnp_off(n) ? "off" : n->upnp < UPNP_ADDR ? ups[n->upnp]
-                     : !public_ip4(n->upnp_ip) && !getenv("NPF_TEST_UPNP_GW") ? "private"
-                     : n->nat_valid && n->nat_udp && memcmp(&n->pub_ip, n->upnp_ip, 4) != 0 ? "other" : "public";
     npf_jw_key(w, "pm");
     npf_jw_obj(w);
     if (n->cfg.offline || n->cfg.no_portmap) {
@@ -336,8 +263,6 @@ void node_portmap_write(const npf_node *n, npf_jw *w)
         if (gws[n->pm_gw])
             npf_jw_kstr(w, "gw", gws[n->pm_gw]);
     }
-    if (up)
-        npf_jw_kstr(w, "upnp", up);
     npf_jw_end(w);
 }
 

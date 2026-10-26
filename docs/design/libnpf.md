@@ -45,7 +45,6 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 | `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`、`examples/client.c`（要 `NPF_BUILD_LIB`，Windows 上不构建） |
 | `NPF_PEERS` | ON | 本节点主动连接别的节点；只被连接的设备可以关掉，程序更小 |
 | `NPF_PORTMAP` | ON | 路由器端口映射（PCP、NAT-PMP），给家庭路由器后面的节点用；公网服务器上的程序（如托管服务）可以关掉，关掉后配置项 `portmap` 不起作用 |
-| `NPF_UPNP` | ON | UPnP IGD 检测（随 `NPF_PORTMAP`，nat-traversal.md 5.1）：只看网关是不是 IGD、WAN 地址是什么，上报给平台做统计，从不建立映射 |
 | `NPF_TOOLS_API` | OFF | 调试工具用的同步探测、绑定查询和打洞（`npf_natprobe_run` 等）；节点用的是事件驱动的版本，不需要它 |
 | `NPF_WITH_TLS` | ON | `wss://`、`https://` |
 | `NPF_USE_OPENSSL` | OFF | 用 OpenSSL 3 代替 mbedTLS 做 TLS 和应用层密码学（服务器上用；mbedTLS 的调用经一把进程级锁，OpenSSL 没有这把锁） |
@@ -232,8 +231,7 @@ npf_destroy(cli);
 | `model` | `model` | 产品型号，平台用于统计 |
 | `direct_host`、`direct_port`、`direct_psk` | `direct`、`direct_psk` | 直连的监听地址与密钥（字节） |
 | `udp_port` | `udp_port` | 主 UDP 端口，0 为任意 |
-| `no_portmap` | `portmap = 0` | 不向路由器申请 PCP / NAT-PMP 端口映射（也不做 UPnP 检测） |
-| `no_upnp` | `upnp = 0` | 不做 UPnP IGD 检测（它只检测、不映射，nat-traversal.md 5.1） |
+| `no_portmap` | `portmap = 0` | 不向路由器申请 PCP / NAT-PMP 端口映射 |
 | `relays_only` | `connect_mode = secure` | 只走中转（默认 `p2p`，直连优先） |
 | `max_calls` | `max_calls` | 同时被连接的会话上限，默认 32 |
 | `punch_lead_ms`、`punch_sockets` | 同名 | 打洞参数，默认自动 |

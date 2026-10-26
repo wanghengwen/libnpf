@@ -29,7 +29,6 @@ typedef struct npf_nat_profile {
     uint8_t  open;              /* public address on a local interface, no NAT */
     uint8_t  ip_varies;         /* E3 saw another public IP: non-paired pooling, hard side, no S3 */
     uint8_t  has_ipv6;          /* global IPv6 address (not probed yet) */
-    uint8_t  upnp, pcp;         /* port mapping protocols (not probed yet) */
     uint32_t measured_at;       /* Unix seconds */
 } npf_nat_profile;
 

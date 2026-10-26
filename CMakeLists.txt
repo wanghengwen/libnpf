@@ -181,16 +181,9 @@ target_compile_definitions(npf_common PRIVATE NPF_VERSION_STR="${npf_VERSION}")
 # behind a home router. Off: not in the library, portmap = 0 has no effect
 # (a server-side program such as npf-hosted, on a public address, needs none)
 option(NPF_PORTMAP "The router's port mapping (PCP, NAT-PMP)" ON)
-# UPnP IGD detection (upnp.c, with NPF_PORTMAP): never a mapping, only
-# whether the gateway is an IGD and its WAN address, for the statistics
-option(NPF_UPNP "UPnP IGD detection (no mapping: statistics)" ON)
 if(NPF_PORTMAP)
   target_sources(npf_common PRIVATE src/ice/portmap.c src/node/nodemap.c)
   target_compile_definitions(npf_common PUBLIC NPF_PORTMAP)
-  if(NPF_UPNP)
-    target_sources(npf_common PRIVATE src/ice/upnp.c)
-    target_compile_definitions(npf_common PUBLIC NPF_UPNP)
-  endif()
 endif()
 # the synchronous NAT probe, bind query and punch (npf_natprobe_run,
 # npf_bind_query, npf_punch_run): only the debugging tools use them

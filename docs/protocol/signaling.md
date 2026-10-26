@@ -529,7 +529,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 **NAT 画像 `nat`**（对应 `npf_nat_profile`，nat-traversal.md 4.3）：
 
 ```json
-{"udp": true, "pm": {"m": "pcp", "gw": "map", "upnp": "public"}, "map": "EIM", "alloc": "BLOCK", "delta": 0,
+{"udp": true, "pm": {"m": "pcp", "gw": "map"}, "map": "EIM", "alloc": "BLOCK", "delta": 0,
  "block": [20480, 22527], "filter": "APDF", "open": false, "ip_varies": false, "pub_ip": "1.2.3.4", "at": 1791100000}
 ```
 
@@ -545,7 +545,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `pub_ip` | 探测到的公网 IPv4 |
 | `at` | 探测时间（Unix 秒） |
 | `home` | 常驻中转绑定的学习（2026-10-26，home-binding.md 5、14.1）：`map`（学习依据的映射方式）、`iv_quiet` / `iv_busy`（主 socket 安静时 / EIM 一直有别的流量时的保活间隔，秒）、`t_ok` / `t_fail`（安静时映射活过的最长等待 / 没活过的最短等待）、`refresh`（`out` / `both` / `unknown`：入站报文是否刷新映射）、`preserve`（过期后重建是否同一端口）、`per_flow`、`unstable`、`moved_24h`、`drops_24h`、`net`（网络键，16 位十六进制）；未知的项省略，有绑定时才有，`secure` 时没有。平台记入呼叫记录与 `home_daily`，**不转给对方** |
-| `pm` | 路由器端口映射的情况（2026-10-26，nat-traversal.md 5、5.1），只有枚举、没有地址，`secure` 时也有：`m` 应答的方法 `pcp` / `natpmp`（没有应答时省略）；`gw` PCP / NAT-PMP 的结果：`map`（映射可用，外部地址是公网，有 `mapped` 候选）、`private`（网关应答了，外部地址不是公网：双层 NAT、运营商 NAT，不用）、`none`（没有应答）、`nogw`（不知道默认 IPv4 网关：iOS、Android）、`off`（`portmap = 0`、离线、托管服务）；`upnp` UPnP IGD 的检测结果（只检测、从不映射）：`public`（WAN 地址是公网且就是 `pub_ip`）、`other`（是公网但不是 `pub_ip`）、`private`（不是公网）、`present`（有 IGD，没取得 WAN 地址）、`none`、`nogw`、`off`（另外 `upnp = 0` 时）。还没有结果的项省略。平台只记入呼叫记录（统计用），**不转给对方** |
+| `pm` | 路由器端口映射的情况（2026-10-26，nat-traversal.md 5），只有枚举、没有地址，`secure` 时也有：`m` 应答的方法 `pcp` / `natpmp`（没有应答时省略）；`gw` PCP / NAT-PMP 的结果：`map`（映射可用，外部地址是公网，有 `mapped` 候选）、`private`（网关应答了，外部地址不是公网：双层 NAT、运营商 NAT，不用）、`none`（没有应答）、`nogw`（不知道默认 IPv4 网关：iOS、Android）、`off`（`portmap = 0`、离线、托管服务）。还没有结果时省略 `gw`。平台只记入呼叫记录（统计用），**不转给对方** |
 
 **候选 `cand`**（nat-traversal.md 第 5 节）：数组，最多 16 项，每项 `{"t": 类型, "a": 地址}`，类型为 `host6`、`mapped`、`host4`、`srflx`、`pred`。IPv4 候选来自主 UDP socket，IPv6 候选来自独立 IPv6 socket；选中的路径承载 AnLiu。当前节点也会在探测得到预测端口时上报 `pred`，平台可据画像进一步生成预测候选。
 
@@ -837,7 +837,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 接受时间 `accepted`、结果 `result` | `incoming` 的应答：`accepted`，或 `call_rejected` 的错误码 |
 | 结束时间 `end`、原因 `end_reason`、结束方 `ended_by` | 第一个 `call_end`（`caller` / `callee`），按 `ago_ms` 往前推，早于发起时间时取发起时间；平台终止的为 `server`（被叫未应答、没有路径） |
 | 双方的身份、所在服务器、源地址 | 各自的信令连接：节点编号或客户端 ID，主叫的计费账户，服务器编号，服务器看到的源 IP:端口。主叫连在另一台服务器上时，由那台服务器随呼叫转交 |
-| 双方的 NAT 类型 | `call` 与 `incoming` 应答中的 `nat` 和候选：UDP 是否可用，映射方式 `map`，端口分配 `alloc`，过滤行为 `filter`，端口块的大小 `block`，是否公网，公网 IP，是否有全局 IPv6 地址，是否在路由器上映射了端口（PCP / NAT-PMP：`mapped`，及映射地址 `mapped_addr`），路由器端口映射的情况 `pm`（PCP / NAT-PMP 与 UPnP，见上面 `nat` 的说明），`pub_ip` 是否在某一轮打洞时没能验证（`unverified`，见 `punch_start` 的 `peer.pub_ip`），常驻绑定的学习 `home`（同上） |
+| 双方的 NAT 类型 | `call` 与 `incoming` 应答中的 `nat` 和候选：UDP 是否可用，映射方式 `map`，端口分配 `alloc`，过滤行为 `filter`，端口块的大小 `block`，是否公网，公网 IP，是否有全局 IPv6 地址，是否在路由器上映射了端口（PCP / NAT-PMP：`mapped`，及映射地址 `mapped_addr`），路由器端口映射的情况 `pm`（PCP / NAT-PMP，见上面 `nat` 的说明），`pub_ip` 是否在某一轮打洞时没能验证（`unverified`，见 `punch_start` 的 `peer.pub_ip`），常驻绑定的学习 `home`（同上） |
 | 直连 `p2p`、`p2p_at`、`rounds` | `punch_result`：一方打通时报告的对端地址就是对方在直连路径上的地址；首次打通的时间；打洞轮数 |
 | 各轮的策略 `plans`、打通那一轮的 `p2p_plan` | 每一轮 `punch_start` 的策略（`S1` … `S5`，不打的一轮为 `skip:原因`） |
 | 中转分配 `relays` | 每次分配的方式（`udp` / `ws`）、所在服务器、时间 |
@@ -1006,7 +1006,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 2026-10-26 | 0.41 | 新增 `call_established`（被叫 → 平台：会话已建立）；之前每个呼叫的 `relay_switch` 至多分配 2 次（安全评审 M-2）。主叫发出自己的 `hello` 即 `established`、可开子链路（首次口令配对与 WS 中转上除外），会话建立期限以对方的 `hello` 为准。被叫接受之前的中转字节不计费、每侧至多 64 KiB（安全评审 M-3） |
 | 2026-10-26 | 0.40 | `handshake_done`：口令配对的被叫在第 3 条握手消息验证通过后告诉平台，平台此后才安排打洞、处理 `punch_request` |
 | 2026-10-26 | 0.39 | 打洞的目标地址（安全设计 11.1）：`pub_ip` 与候选在入口丢弃不可能是对方的地址，转给对方的候选按呼叫过滤（私网只在同一局域网、公网 IPv4 只在是平台见到的 IP、平台自己的地址只在是这一侧自己的出口时）；`peer.pub_ip` 只在已验证时给出，未验证时只有 S1、呼叫记录 `nat.unverified`；`punch_info` 由平台解析后重新生成，只转 `port` 或发送方自己的 `srflx` |
-| 2026-10-26 | 0.38 | `nat.pm`：路由器端口映射的情况（PCP / NAT-PMP 的结果，UPnP IGD 只检测），只有枚举、没有地址，`secure` 时也有；平台只记入呼叫记录，不转给对方 |
+| 2026-10-26 | 0.38 | `nat.pm`：路由器端口映射的情况（PCP / NAT-PMP 的结果），只有枚举、没有地址，`secure` 时也有；平台只记入呼叫记录，不转给对方 |
 | 2026-10-26 | 0.37 | 呼叫建立提速：`call` 的成功应答带主叫的中转分配 `{"relay"}`（与 `call_accepted` 中的是同一份），主叫立即绑定，与被叫的应答并行，`call_accepted` 带来同一份分配时不重新绑定；被叫在另一台服务器上时应答等属主答复。平台不等第一条呼叫记录写入就应答并发出 `incoming`，记录写入前的改动与接受都等它；`call_id` 已有记录或记录写不进去时在应答之后以 `call_rejected`（`conflict` / `internal_error`）结束呼叫，被叫收到 `call_ended` |
 | 2026-10-26 | 0.36 | 一轮失败让下一轮的计划变了时平台立即开始下一轮（经 `punch_request` 队列），主叫的退避计时被新一轮取消；`punch_result.round` 是那一次打洞自己的轮次 |
 | 2026-10-26 | 0.35 | S1 收到 `punch_start` 即开始（不带 `start_at`），`nat.lead` 的一方在场时照旧同步 |

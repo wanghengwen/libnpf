@@ -229,7 +229,7 @@ static const char *const known_keys[] = {
     "udp_on_demand", "udp_public",
     "doh_servers", "hw_info", "keep_awake", "log", "log_level", "max_calls", "model", "model_cred", "password", "node",
     "peer_idle", "pidfile", "portmap", "web_dir", "punch_lead_ms", "punch_sockets", "report_host", "resource", "root", "serial", "serial_file", "server", "server_pub",
-    "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", "upnp", "test_one_host",
+    "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", "test_one_host",
     "home_bind", "home_iv_max", "home_learn", "home_store", NULL};
 
 /* keys that say where to connect, what to trust or run, and which files

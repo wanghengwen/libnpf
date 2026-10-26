@@ -231,7 +231,7 @@ typedef struct npf_setup {
     const uint8_t *direct_psk;         /* 32 bytes, with direct_port */
     /* the network: 0 / NULL is the default */
     int            udp_port;           /* the main UDP port, 0 any */
-    int            no_portmap;         /* 1: no PCP / NAT-PMP mapping on the router (nor UPnP detection) */
+    int            no_portmap;         /* 1: no PCP / NAT-PMP mapping on the router */
     int            relays_only;        /* 1: connect_mode secure */
     int            max_calls;          /* sessions accepted at once, 0: 32 */
     int            punch_lead_ms;      /* -1 automatic (the default) */
@@ -239,7 +239,6 @@ typedef struct npf_setup {
     int            no_host_report;     /* 1: report_host = 0 */
     int            no_hosted_trust;    /* 1: hosted_trust = 0 */
     int            peer_idle_s;        /* the default idle time of NPF_CONNECT_ON_DEMAND peers; 0: 300 */
-    int            no_upnp;            /* 1: upnp = 0, no UPnP IGD detection (it never maps: statistics only) */
 } npf_setup;
 
 enum { NPF_OPT_NO_SAVED_SETTINGS = 1,  /* local.json's settings are not applied (nor saved) */

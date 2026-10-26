@@ -382,7 +382,7 @@ static void node_net_check(npf_node *n, const char *why)
     npf_node_check_paths(n, why);
     node_home_net_change(n);                /* the binding follows a new address at once */
     n->repunch_on_nat = 1;                  /* with the new NAT's candidates (nat.c) */
-    node_portmap_net_change(n);             /* another router: its mapping, UPnP */
+    node_portmap_net_change(n);             /* another router: its mapping */
     if (n->hooks.on_net_change)
         n->hooks.on_net_change(n, why, n->hook_arg);
 }
