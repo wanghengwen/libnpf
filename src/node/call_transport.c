@@ -852,9 +852,6 @@ int call_start_transport(npf_call *c)
     if (!c->caller && (c->p2p || c->relay.active))
         npf_tunnel_start(c->tun);
     anl_schedule(c);
-    call_relay_early_feed(c);               /* what the peer sent through the relay before the keys */
-    if (c->ended)
-        return 0;
     if (c->punch_wait_keys) {
         c->punch_wait_keys = 0;
         call_start_punch_now(c);
