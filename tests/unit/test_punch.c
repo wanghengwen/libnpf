@@ -25,6 +25,13 @@ typedef struct side {
 } side;
 
 static int last_probes_recv;
+static int quiet_ms = -1;           /* when cfg.quiet was called (the round's ms), -1: not */
+static void quiet_cb(npf_punch *p, const npf_punch_result *res, void *arg)
+{
+    (void)p;
+    (void)arg;
+    quiet_ms = res->elapsed_ms;
+}
 static void done_cb(npf_punch *p, const npf_punch_result *res, int fd, void *arg)
 {
     side *s = arg;
@@ -306,22 +313,37 @@ int test_punch(void)
         ca.npeers = 1;
         ca.prio[0] = ca.prio[1] = cb.prio[0] = 0;
     }
-    /* S1: nothing at all from the peer within 3 s: the round ends then, not
-     * at its timeout (nat-traversal.md 9) */
+    /* S1: nothing at all from the peer within 3 s: the owner hears it then
+     * (it tells the platform), the round goes on to its timeout; a peer that
+     * starts 4 s late (S1 starts on receipt: its plan came late) still gets
+     * the path (nat-traversal.md 9) */
     {
-        side e = {0};
-        ca.peers[0] = nowhere;
-        ca.plan.timeout_ms = 8000;
-        ca.plan.session_id = 46;
+        side e = {0}, f = {0};
+        ca.peers[0] = ba;
+        cb.peers[0] = aa;
+        ca.npeers = cb.npeers = 1;
+        ca.plan.timeout_ms = cb.plan.timeout_ms = 8000;
+        ca.plan.session_id = cb.plan.session_id = 46;
+        ca.quiet = quiet_cb;
         npf_loop_add(loop, a.fd, NPF_EV_READ, rx_cb, &e);
+        npf_loop_add(loop, b.fd, NPF_EV_READ, rx_cb, &f);
         e.p = npf_punch_new(loop, &ca, a.fd, done_cb, &e);
-        until = npf_mono_ms() + 5000;
-        while (!e.done && npf_mono_ms() < until)
+        until = npf_mono_ms() + 4000;
+        while (npf_mono_ms() < until)
             npf_loop_once(loop, 10);
-        CHECK(e.done && !e.ok && e.ms >= 2900 && e.ms < 3500, "S1 with nothing from the peer: ended after %d ms (done %d)",
-              e.ms, e.done);
+        CHECK(!e.done && quiet_ms >= 2900 && quiet_ms < 3500, "S1 with nothing from the peer: told after %d ms, done %d",
+              quiet_ms, e.done);
+        f.p = npf_punch_new(loop, &cb, b.fd, done_cb, &f);     /* the peer, 4 s late */
+        until = npf_mono_ms() + 3000;
+        while ((!e.done || !f.done) && npf_mono_ms() < until)
+            npf_loop_once(loop, 10);
+        CHECK(e.done && e.ok && f.done && f.ok, "a peer 4 s late: direct all the same (%d %d)", e.ok, f.ok);
         npf_loop_del(loop, a.fd);
+        npf_loop_del(loop, b.fd);
         npf_punch_free(e.p);
+        npf_punch_free(f.p);
+        ca.quiet = NULL;
+        ca.peers[0] = nowhere;
     }
     /* S2's easy side: told the hard side's measured port q0, it sprays q0 + 1,
      * q0 + 2, ... first (the ports its new sockets take), not at random */

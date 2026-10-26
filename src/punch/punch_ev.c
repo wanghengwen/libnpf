@@ -70,7 +70,8 @@ struct npf_punch {
     /* S2's easy side: the ports after the hard side's measured one, in order */
     uint16_t        mdest[S2_DESTS];
     int             nmdest, mdest_at;
-    int             got_any;        /* a packet of the peer's came (an early end, 9, waits for nothing) */
+    int             got_any;        /* a packet of the peer's came (an early report, 9, waits for nothing) */
+    int             quiet_said;     /* cfg.quiet was called */
     int64_t         cand_at;        /* a candidate joined then */
     int             win_prio;       /* the winner's priority (10.1) */
     int64_t         nom_at;         /* the controlling side's NOMINATE is due then */
@@ -531,7 +532,7 @@ static int64_t quiet_end(const npf_punch *p)
 {
     const npf_punch_plan *pl = &p->cfg.plan;
     int64_t t;
-    if (p->got_any || p->cfg.test_deaf)
+    if (p->got_any || p->quiet_said || !p->cfg.quiet || p->cfg.test_deaf)
         return INT64_MAX;
     if (pl->strategy == NPF_PUNCH_S1) {
         t = p->start + S1_QUIET_MS;
@@ -575,13 +576,18 @@ static void tick_cb(npf_loop *loop, void *arg)
         return;
     }
     if (now >= quiet_end(p)) {
-        /* nothing at all came from the peer: it will not now (S1: within 3 s
-         * of the start, 2 s of a new candidate; S2B: 2 s after the last
-         * pass). The round's failure goes to the platform at once, a round
-         * planned otherwise comes sooner (nat-traversal.md 9) */
-        npf_log("punch: nothing from the peer in %d ms: the round ends", (int)(now - p->start));
-        finish(p, 0);
-        return;
+        /* nothing at all came from the peer by now (S1: within 3 s of the
+         * start, 2 s of a new candidate; S2B: 2.2 s after the last pass):
+         * the owner hears it (the platform plans the next round sooner), the
+         * round goes on to its timeout: the peer may have started late (S1
+         * starts on receipt; a plan over a loaded link came seconds later),
+         * its probes are answered and it may nominate (nat-traversal.md 9) */
+        npf_log("punch: nothing from the peer in %d ms: told early, the round goes on to its end", (int)(now - p->start));
+        p->quiet_said = 1;
+        p->res.elapsed_ms = (int)(now - p->start);
+        p->cfg.quiet(p, &p->res, p->arg);
+        if (p->finished)
+            return;                 /* the owner ended it */
     }
     if (pl->strategy == NPF_PUNCH_S1 || (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY)) {
         int64_t ivl = now - p->start < S1_FAST_MS ? S1_FAST_IVL : S1_SLOW_IVL;

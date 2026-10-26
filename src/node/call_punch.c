@@ -466,6 +466,34 @@ void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
     }
 }
 
+/* nothing from the peer yet where it would have come (punch_ev.c, the
+ * round goes on to its timeout for a late peer): the platform hears of the
+ * failure now, a round planned otherwise comes sooner (signaling.md
+ * punch_result early). Not while the UDP relay is unreachable and this punch
+ * decides the WS relay (call_ws_wait_end at its real end): a late peer's
+ * direct path keeps the session off the WS relay, which cannot go direct */
+static void punch_quiet(npf_punch *p, const npf_punch_result *res, void *arg)
+{
+    npf_call *c = arg;
+    char data[256];
+    npf_jw w;
+    (void)p;
+    if (c->t_ws_wait || c->ended || c->p2p)
+        return;
+    npf_jw_init(&w, data, sizeof data);
+    npf_jw_obj(&w);
+    npf_jw_kstr(&w, "call_id", c->call_id_s);
+    npf_jw_kint(&w, "round", c->punch_of);
+    npf_jw_kbool(&w, "ok", 0);
+    npf_jw_kbool(&w, "early", 1);
+    npf_jw_kint(&w, "elapsed_ms", res->elapsed_ms);
+    npf_jw_kint(&w, "probes_sent", res->probes_sent);
+    npf_jw_kint(&w, "probes_recv", res->probes_recv);
+    npf_jw_end(&w);
+    if (npf_jw_finish(&w) > 0)
+        npf_node_send(c->n, "punch_result", 0, data);
+}
+
 /* this round let go (the caller's hard-side punches one at a time): the
  * platform tells the peer to end its part (punch_info stop); not a failed
  * round (signaling.md punch_result deferred) */
@@ -558,6 +586,7 @@ void call_start_punch_now(npf_call *c)
     }
     c->pcfg->fd6 = c->n->udp6_fd;
     c->pcfg->test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;
+    c->pcfg->quiet = punch_quiet;
     if (c->pcfg->plan.measure) {        /* S2's hard side: its first new socket's mapping, from E1 */
         const uint8_t *pk = node_day_key(c->n, c->n->probe_keys);
         if (c->n->nprobe_ep < 1 || !pk) {

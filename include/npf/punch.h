@@ -116,6 +116,13 @@ typedef struct npf_punch_cfg {
     uint8_t  ticket[28];
     int64_t  clock_offset_ms;
     void   (*info)(npf_punch *p, uint16_t port, void *arg);
+    /* nothing at all came from the peer by the time it would have (S1: 3 s
+     * after the start, 2 s after a new candidate; S2B: 2.2 s after the last
+     * pass; nat-traversal.md 9): called once, the round going on to its
+     * timeout for a peer that started late (S1 has no common start); the
+     * owner may tell the platform early (its re-planned round comes sooner).
+     * NULL: none */
+    void   (*quiet)(npf_punch *p, const npf_punch_result *res, void *arg);
 } npf_punch_cfg;
 
 /* done is called once: ok with the winning fd (primary or an S3 socket, which
