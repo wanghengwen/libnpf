@@ -46,11 +46,25 @@ void node_portmap_stop(npf_node *n);
 /* the main socket has another port: the old lease is left to expire, a new one is asked for */
 void node_portmap_restart(npf_node *n);
 int  node_portmap_cand(const npf_node *n, struct sockaddr_storage *out);
+/* a network change: on another network (gateway, address) the mapping and UPnP again */
+void node_portmap_net_change(npf_node *n);
+/* the nat profile's "pm": what the gateway did (PCP / NAT-PMP, UPnP), no address */
+void node_portmap_write(const npf_node *n, npf_jw *w);
 #else
 static inline void node_portmap_start(npf_node *n) { (void)n; }
 static inline void node_portmap_stop(npf_node *n) { (void)n; }
 static inline void node_portmap_restart(npf_node *n) { (void)n; }
 static inline int  node_portmap_cand(const npf_node *n, struct sockaddr_storage *out) { (void)n, (void)out; return 0; }
+static inline void node_portmap_net_change(npf_node *n) { (void)n; }
+static inline void node_portmap_write(const npf_node *n, npf_jw *w)
+{
+    (void)n;
+    npf_jw_key(w, "pm");
+    npf_jw_obj(w);
+    npf_jw_kstr(w, "gw", "off");
+    npf_jw_kstr(w, "upnp", "off");
+    npf_jw_end(w);
+}
 #endif
 /* nat.c: candidates again (a port mapping came or went) */
 void node_nat_regather(npf_node *n);

@@ -314,6 +314,7 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
     npf_jw_obj(w);
     /* no probe servers configured: assume UDP works (local tests) */
     npf_jw_kbool(w, "udp", getenv("NPF_NO_UDP") ? 0 : n->nat_valid ? n->nat_udp : 1);   /* tests: force the WS relay */
+    node_portmap_write(n, w);       /* the router's port mapping: enums only, secure too */
     if (n->cfg.secure) {            /* connect_mode secure: relays only, nothing of the addresses */
         npf_jw_kbool(w, "secure", 1);
         npf_jw_end(w);

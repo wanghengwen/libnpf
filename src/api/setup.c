@@ -26,7 +26,7 @@ void npf_setup_init_size(npf_setup *s, size_t size)
 static const char *const setup_keys[] = {
     "root", "serverlist", "serverlist_saved", "server", "server_pub", "doh_servers", "cred", "password",
     "model_cred", "serial", "serial_file", "hw_info", "model", "direct", "direct_psk", "direct_psk_file",
-    "udp_port", "portmap", "connect_mode", "max_calls", "punch_lead_ms", "punch_sockets", "report_host",
+    "udp_port", "portmap", "upnp", "connect_mode", "max_calls", "punch_lead_ms", "punch_sockets", "report_host",
     "hosted_trust", "peer_idle", NULL};
 
 const char *npf_setup_key_taken(const npf_conf *ov)
@@ -154,6 +154,8 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
         set_int(c, "udp_port", s.udp_port);
     if (s.no_portmap)
         npf_conf_set(c, "portmap", "0");
+    if (s.no_upnp)
+        npf_conf_set(c, "upnp", "0");
     if (s.relays_only)
         npf_conf_set(c, "connect_mode", "secure");
     if (s.max_calls)

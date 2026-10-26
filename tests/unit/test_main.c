@@ -28,6 +28,7 @@ int test_sys(void);
 int test_text(void);
 int test_creply(void);
 int test_portmap_gw(void);
+int test_upnp(void);
 int test_callee(void);
 
 #define CHECK(cond, ...) do { \
@@ -232,6 +233,9 @@ int main(void)
     failures += test_creply();
 #ifdef NPF_PORTMAP
     failures += test_portmap_gw();
+#endif
+#ifdef NPF_UPNP
+    failures += test_upnp();
 #endif
     failures += test_callee();
     failures += test_punch();

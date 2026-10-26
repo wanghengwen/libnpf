@@ -5,7 +5,7 @@
  * On success the router forwards its external_ip:external_port to this host's
  * internal_port — a `mapped` candidate, as good as a public address.
  *
- * UPnP IGD is intentionally not supported. */
+ * UPnP IGD is not used for mappings: npf/upnp.h only detects it (statistics). */
 #ifndef NPF_PORTMAP_H
 #define NPF_PORTMAP_H
 
@@ -39,13 +39,18 @@ int  npf_natpmp_parse_map(const uint8_t *in, size_t len, npf_portmap *res);
 int  npf_portmap_gateway_v4(struct in_addr *gw);
 
 /* Full attempt: discover gateway, try PCP then NAT-PMP for a UDP mapping of
- * `internal_port`. Returns 0 on success (res filled), -1 otherwise. */
+ * `internal_port`. Returns 0 on success (res filled), -2 without a default
+ * IPv4 gateway, -1 otherwise (no answer). */
 int  npf_portmap_request(uint16_t internal_port, uint32_t lifetime, npf_portmap *res);
 
 /* The mapping of internal_port removed with the method that made it: one
  * try of 250 ms (a stopping node does not wait out a gateway gone silent;
  * an unremoved mapping ends with its lease). 0 / -1. */
 int  npf_portmap_remove(uint16_t internal_port, int method);
+
+/* the network the gateway is on: the default IPv4 gateway and this host's
+ * address toward it (no packet sent); 0 without a gateway */
+uint64_t npf_portmap_net(void);
 
 const char *npf_portmap_method_str(int method);
 

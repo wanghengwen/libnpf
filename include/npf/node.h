@@ -174,7 +174,8 @@ typedef struct npf_node_cfg {
     int         punch_sockets;      /* S3 hard-side sockets of all concurrent punches, 0 = automatic
                                        (npf_node_punch_budget) */
     const npf_enroll_req *enroll;   /* number 0: enrol first, then log in as the node */
-    int         no_portmap;         /* portmap = 0: no PCP / NAT-PMP mapping on the router */
+    int         no_portmap;         /* portmap = 0: no PCP / NAT-PMP mapping on the router (nor UPnP) */
+    int         no_upnp;            /* upnp = 0: no UPnP IGD detection (nodemap.c; never a mapping) */
     int         secure;             /* connect_mode secure: relays only, no address to peers, a VPN
                                        kept (npf_node_set_secure at run time) */
     /* npf-hosted (security.md 8.4): hosted_service = 1 logs in as the hosted
@@ -314,7 +315,12 @@ struct npf_node {
     /* the router's port mapping (nodemap.c) */
     struct npf_portmap pm;
     int           pm_ok, pm_tried;
+    int           pm_gw, pm_m;      /* what the gateway did (PM_GW_*), the method that answered */
     void         *pm_job;
+    void         *upnp_job;         /* UPnP IGD detection (statistics only) */
+    int           upnp;             /* UPNP_* (nodemap.c) */
+    uint8_t       upnp_ip[4];       /* its WAN address */
+    uint64_t      pm_net;           /* npf_portmap_net of the last start: a network change asks again */
     npf_timer    *t_pm;
     uint16_t      udp6_port;
     npf_nat_profile nat;
