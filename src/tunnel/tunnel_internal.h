@@ -105,6 +105,7 @@ struct npf_tunnel {
     uint8_t    *rb;             /* a control unit the stream's reads cut, gathered; none between units */
     size_t      rl, rcap;
     int         hello_sent, hello_recv;
+    int         early;          /* caller: sublinks open after our hello, before the peer's (npf_tunnel_open_early) */
     uint32_t    peer_window;
     int64_t     rx_total;       /* its sublinks' receive windows together (NPF_RX_BUDGET) */
     int         peer_max;

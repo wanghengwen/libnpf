@@ -69,9 +69,9 @@ static int direct_up(npf_call *c)
     npf_wipe(k1, 32);
     npf_wipe(k2, 32);
     c->p2p = 1;
+    call_set_state(c, NPF_CALL_CONNECTING, NULL);  /* first: the initiator is established with its hello */
     if (call_start_transport(c) < 0)
         return -1;
-    call_set_state(c, NPF_CALL_CONNECTING, NULL);
     return 0;
 }
 

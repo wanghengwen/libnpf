@@ -1011,6 +1011,51 @@ int test_tunnel(void)
         close(sp4[1]);
     }
 
+    /* the caller opens its sublinks after its own hello, before the
+     * callee's (data-channel.md 8, a peer the handshake authenticated): the
+     * callee takes them before its own hello is out (it goes then); a
+     * first pairing's caller (no npf_tunnel_open_early) waits */
+    {
+        end E, G;
+        int se[2], id;
+        memset(&E, 0, sizeof E);
+        memset(&G, 0, sizeof G);
+        E.peer = &G;                        /* not pumped: passed here */
+        G.peer = &E;
+        E.t = npf_tunnel_new(loop, 1, &io, &E, NULL);
+        G.t = npf_tunnel_new(loop, 0, &io_b, &G, &pol);
+        socketpair(AF_UNIX, SOCK_STREAM, 0, se);
+        npf_tunnel_start(E.t);
+        CHECK(npf_tunnel_open(E.t, se[0], 0, "127.0.0.1", ntohs(a.sin_port)) < 0,
+              "no sublink before the callee's hello without open_early");
+        npf_tunnel_open_early(E.t);
+        id = npf_tunnel_open(E.t, se[0], 0, "127.0.0.1", ntohs(a.sin_port));
+        CHECK(id > 0 && !E.ready, "a sublink opened after our hello, before the callee's (%d)", id);
+        {
+            size_t off;
+            for (off = 0; off + 4 <= E.dlen;) {     /* its request first: the callee's hello not out yet */
+                size_t m = npf_rd32(E.dq + off);
+                CHECK(npf_tunnel_input_data(G.t, E.dq + off + 4, m) == 0, "the request before the callee's hello");
+                off += 4 + m;
+            }
+            E.dlen = 0;
+        }
+        CHECK(G.len > 0 && npf_tunnel_count(G.t) == 1, "the callee took it, its hello went (%zu, %d)", G.len,
+              npf_tunnel_count(G.t));
+        npf_tunnel_input_ctrl(G.t, E.q, E.len);
+        E.len = 0;
+        npf_tunnel_input_ctrl(E.t, G.q, G.len);
+        G.len = 0;
+        CHECK(E.ready && G.ready, "both ready once the hellos crossed");
+        npf_tunnel_free(E.t);
+        npf_tunnel_free(G.t);
+        free(E.q);
+        free(E.dq);
+        free(G.q);
+        free(G.dq);
+        close(se[1]);
+    }
+
     npf_tunnel_free(A.t);
     npf_tunnel_free(B.t);
     npf_loop_del(loop, tg.lfd);
