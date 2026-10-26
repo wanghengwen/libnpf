@@ -432,6 +432,8 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
     }
     npf_jw_kbool(w, "open", n->nat.open);
     npf_jw_kbool(w, "ip_varies", n->nat.ip_varies);
+    if (n->punch_lead_ms > 0)       /* a host firewall: this side sends first, S1 keeps the agreed start */
+        npf_jw_kbool(w, "lead", 1);
     if (n->nat_valid && n->nat_udp)
         npf_jw_kstr(w, "pub_ip", inet_ntop(AF_INET, &n->pub_ip, ip, sizeof ip));
     npf_jw_kint(w, "at", n->nat.measured_at);
