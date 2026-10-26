@@ -124,6 +124,12 @@ void npf_punch_free(npf_punch *p);
 int  npf_punch_finished(const npf_punch *p);
 /* S2B: the peer's fresh mapping (its punch_info) */
 void npf_punch_peer_port(npf_punch *p, uint16_t port);
+/* a candidate of the peer that came after the round started (its punch_info:
+ * its mapping changed; ICE's trickled remote candidate): probed from now on
+ * with the others. srflx: it is the peer's server-reflexive address, the S3
+ * hard side's sockets aim at it instead. 1 when added; 0 when the round is
+ * over, it is there already, or the list is full (NPF_PUNCH_MAX_PEERS) */
+int  npf_punch_add_peer(npf_punch *p, const struct sockaddr_storage *a, int srflx);
 
 /* primary_fd: an already-open, already-bound UDP socket (family == plan.family)
  * for S1/S0 and the S3 easy side; ignored for the S3 hard side (it opens its

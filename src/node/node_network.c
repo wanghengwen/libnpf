@@ -170,6 +170,8 @@ void node_udp_close_idle(npf_node *n)
         return;                             /* sessions wait for its profile: they need it */
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
+    npf_natprobe_cancel(n->mapcheck);
+    n->mapcheck = NULL;
     n->udp_waiters = 0;
     npf_loop_del(n->loop, n->udp_fd);
     npf_sock_close(n->udp_fd);
@@ -259,6 +261,8 @@ static void udp_reopen_cb(npf_loop *loop, void *arg)
     n->t_udp_reopen = NULL;
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
+    npf_natprobe_cancel(n->mapcheck);
+    n->mapcheck = NULL;
     if (old4 >= 0)
         npf_node_calls_lost_fd(n, old4, "udp_socket_failed");
     if (old6 >= 0)

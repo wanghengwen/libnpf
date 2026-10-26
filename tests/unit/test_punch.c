@@ -1,10 +1,13 @@
 /* Event-driven punching on one machine: a triggered check lets the caller
- * validate a path it could not probe itself (punch_ev.c). */
+ * validate a path it could not probe itself; a candidate trickled into a
+ * running round (npf_punch_add_peer) is probed with the others (punch_ev.c). */
 #include "npf/sys.h"
 #include <stdio.h>
 #include <string.h>
 
+#include "npf/bind.h"
 #include "npf/loop.h"
+#include "npf/natprobe.h"
 #include "npf/platform.h"
 #include "npf/punch.h"
 
@@ -48,6 +51,90 @@ static void rx_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
     }
 }
 
+/* the call-time mapping check (nat.c node_nat_check): E1 alone, no
+ * allocation or filtering test, on the main socket the node reads */
+typedef struct check_st {
+    npf_natprobe *p;
+    int done, ok;
+    struct sockaddr_in mapped;
+    int64_t at;
+} check_st;
+
+static void check_cb(int ok, const npf_natprobe_result *res, void *arg)
+{
+    check_st *c = arg;
+    c->done = 1;
+    c->ok = ok;
+    c->mapped = res->mapped[0];
+    c->at = npf_mono_ms();
+}
+
+static void check_rx(npf_loop *loop, int fd, unsigned ev, void *arg)
+{
+    check_st *c = arg;
+    (void)loop;
+    (void)ev;
+    for (;;) {
+        uint8_t buf[NPF_PKT_MAX];
+        struct sockaddr_storage from;
+        socklen_t fl = sizeof from;
+        ssize_t r = recvfrom(fd, buf, sizeof buf, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
+        if (r <= 0)
+            break;
+        if (c->p)
+            npf_natprobe_input(c->p, fd, buf, (size_t)r, &from);
+    }
+}
+
+static int check_mapping(npf_loop *loop, int main_fd, const struct sockaddr_storage *e1a, int e1, int answer,
+                         check_st *c)
+{
+    npf_natprobe_cfg cfg;
+    uint8_t key[32];
+    npf_siv_keys keys;
+    int64_t t0 = npf_mono_ms(), until = t0 + 4000;
+    int asked = 0;
+    memset(key, 5, sizeof key);
+    npf_siv_derive(&keys, key, NPF_SIV_LABEL_PROBE);
+    npf_natprobe_cfg_init(&cfg);
+    memcpy(&cfg.ep[0], e1a, sizeof cfg.ep[0]);
+    cfg.n_ep = 1;
+    memcpy(cfg.probe_key, key, 32);
+    cfg.alloc_sockets = 0;
+    cfg.filter_test = 0;
+    cfg.main_fd = main_fd;
+    memset(c, 0, sizeof *c);
+    npf_loop_add(loop, main_fd, NPF_EV_READ, check_rx, c);
+    c->p = npf_natprobe_start(loop, &cfg, check_cb, c);
+    while (c->p && !c->done && npf_mono_ms() < until) {
+        uint8_t buf[NPF_PKT_MAX], plain[NPF_PKT_MAX], body[15], wire[NPF_PKT_MAX];
+        struct sockaddr_storage from;
+        socklen_t fl = sizeof from;
+        npf_pkt pkt;
+        ssize_t r;
+        npf_loop_once(loop, 10);
+        r = recvfrom(e1, buf, sizeof buf, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
+        if (r <= 0 || npf_pkt_open(&keys, NPF_DIR_REQ, buf, (size_t)r, plain, &pkt) < 0)
+            continue;
+        asked++;
+        if (!answer)
+            continue;
+        body[0] = 4;                    /* the mapping as E1 sees it: 198.51.100.7:40001 */
+        body[1] = (uint8_t)(40001 & 255);
+        body[2] = (uint8_t)(40001 >> 8);
+        body[3] = 198; body[4] = 51; body[5] = 100; body[6] = 7;
+        memset(body + 7, 0, 8);
+        if (npf_pkt_seal(&keys, NPF_DIR_RESP, NPF_PKT_BIND_RESP, pkt.txid, pkt.ts_ms, body, sizeof body, 80, wire) > 0)
+            sendto(e1, wire, 80, 0, (struct sockaddr *)&from, fl);
+    }
+    npf_loop_del(loop, main_fd);
+    if (!c->done)
+        npf_natprobe_cancel(c->p);
+    c->p = NULL;
+    c->at -= t0;
+    return asked;
+}
+
 static int udp_bound(struct sockaddr_storage *addr)
 {
     struct sockaddr_in a;
@@ -73,6 +160,20 @@ int test_punch(void)
     int dead = udp_bound(&nowhere);     /* a port nobody reads: the caller's only candidate */
     a.fd = udp_bound(&aa);
     b.fd = udp_bound(&ba);
+    {
+        struct sockaddr_storage e1a;
+        int e1 = udp_bound(&e1a), asked;
+        check_st c;
+        asked = check_mapping(loop, a.fd, &e1a, e1, 1, &c);
+        CHECK(c.done && c.ok && asked == 1 && ntohs(c.mapped.sin_port) == 40001 && c.at < 1000,
+              "mapping check: E1's answer ends it (done %d ok %d, %d requests, port %u, %lld ms)", c.done, c.ok, asked,
+              ntohs(c.mapped.sin_port), (long long)c.at);
+        asked = check_mapping(loop, a.fd, &e1a, e1, 0, &c);
+        CHECK(c.done && !c.ok && asked == 4 && c.at >= 2000 && c.at < 3000,
+              "mapping check: no answer, given up (done %d ok %d, %d requests, %lld ms)", c.done, c.ok, asked,
+              (long long)c.at);
+        npf_sock_close(e1);
+    }
     memset(&ca, 0, sizeof ca);
     ca.plan.role = NPF_PUNCH_CONTROLLING;
     ca.plan.strategy = NPF_PUNCH_S1;
@@ -134,6 +235,36 @@ int test_punch(void)
         npf_punch_free(d.p);
         npf_sock_close(tap);
         npf_sock_close(sp);
+    }
+    /* both sides start with the other's old srflx only (an expired mapping:
+     * nobody reads there); the new one comes while the round runs, as the
+     * punch_info "cand" brings it, and the round goes direct with it */
+    {
+        side e = {0}, f = {0};
+        ca.peers[0] = nowhere;
+        cb.peers[0] = nowhere;
+        ca.plan.timeout_ms = cb.plan.timeout_ms = 3000;
+        ca.plan.session_id = cb.plan.session_id = 43;  /* not the probes of the rounds above, still queued */
+        npf_loop_add(loop, a.fd, NPF_EV_READ, rx_cb, &e);
+        npf_loop_add(loop, b.fd, NPF_EV_READ, rx_cb, &f);
+        e.p = npf_punch_new(loop, &ca, a.fd, done_cb, &e);
+        f.p = npf_punch_new(loop, &cb, b.fd, done_cb, &f);
+        until = npf_mono_ms() + 300;
+        while (npf_mono_ms() < until)
+            npf_loop_once(loop, 10);
+        CHECK(!e.done && !f.done, "nothing direct with the old addresses");
+        CHECK(npf_punch_add_peer(e.p, &ba, 1) == 1 && npf_punch_add_peer(f.p, &aa, 1) == 1, "the new srflx added");
+        CHECK(npf_punch_add_peer(e.p, &ba, 1) == 0 && npf_punch_add_peer(e.p, &nowhere, 0) == 0, "a candidate there already: no");
+        until = npf_mono_ms() + 3000;
+        while ((!e.done || !f.done) && npf_mono_ms() < until)
+            npf_loop_once(loop, 10);
+        CHECK(e.done && e.ok && f.done && f.ok, "the trickled candidates make the path (caller %d/%d, callee %d/%d)",
+              e.done, e.ok, f.done, f.ok);
+        CHECK(npf_punch_add_peer(e.p, &nowhere, 1) == 0, "a finished round takes none");
+        npf_loop_del(loop, a.fd);
+        npf_loop_del(loop, b.fd);
+        npf_punch_free(e.p);
+        npf_punch_free(f.p);
     }
     npf_sock_close(a.fd);
     npf_sock_close(b.fd);

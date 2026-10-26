@@ -151,6 +151,7 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
     c->state = NPF_CALL_CALLING;
     npf_log("call %s: calling %llu (%s)", c->call_id_s, (unsigned long long)number,
             c->auth == AUTH_PAKE ? "pairing" : c->auth == AUTH_GRANT ? "the account's grant" : "paired");
+    node_nat_check(n);              /* meanwhile: is the srflx sent still the mapping? */
     return c;
 fail:
     call_free(c);
@@ -378,6 +379,8 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d)
     c->state = NPF_CALL_CONNECTING;
     npf_log("call %s: incoming %s call accepted", c->call_id_s, c->auth == AUTH_PAKE ? "pairing" : "paired");
     call_relay_setup(c, j, d);
+    if (!c->ended && !c->secure)
+        node_nat_check(n);          /* meanwhile: is the srflx sent still the mapping? */
 }
 
 void call_handle_handshake(npf_call *c, const npf_json *j, int d)

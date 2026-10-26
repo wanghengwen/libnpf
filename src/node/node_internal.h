@@ -35,6 +35,9 @@ void node_watch_start(npf_node *n);
 
 /* nat.c */
 void node_nat_refresh(npf_node *n);
+/* a call starts (caller) or is accepted (callee): the main socket's mapping
+ * asked of E1 meanwhile, against the srflx the call went out with */
+void node_nat_check(npf_node *n);
 
 /* sources.c: the server list's external channels */
 void node_sources_check(npf_node *n);   /* at each failed attempt: time for a round? */
@@ -57,6 +60,9 @@ void node_nat_regather(npf_node *n);
 /* at login: probe (on the loop); hooks.on_login at once with a profile from
  * before, else once the first one is measured */
 void node_nat_login(npf_node *n);
+
+/* call_punch.c: the srflx changed: the sessions not direct yet send it to their peers */
+void node_calls_srflx_changed(npf_node *n);
 
 /* call.c */
 void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d);

@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.32。更新日期：2026-10-24。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.33。更新日期：2026-10-26。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -500,7 +500,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `punch_start` | 平台 → 双方 | 事件 | 一轮打洞的计划与同步开始时刻 |
 | `punch_request` | 主叫 → 平台 → 被叫 | 请求 | 退避时间到或网络变化后，请求新一轮打洞；被叫的应答提供最新画像与候选 |
 | `punch_result` | 双方 → 平台 | 事件 | 本轮打洞的结果与统计，以及这一轮看到的对方 NAT 的行为 |
-| `punch_info` | 任一方 → 平台 → 另一方 | 事件 | S2B：本方新 socket 的映射端口（nat-traversal.md 7.6） |
+| `punch_info` | 任一方 → 平台 → 另一方 | 事件 | S2B：本方新 socket 的映射端口（nat-traversal.md 7.6）；`cand`：呼叫时发现的本方新 `srflx`（nat-traversal.md 4.5） |
 | `call_end` | 任一方 → 平台 | 请求 | 会话结束，平台释放中转，在呼叫记录中写下结束时间 |
 | `call_ended` | 平台 → 另一方 | 事件 | 对方结束了会话，或平台终止了会话 |
 
@@ -539,7 +539,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 **候选 `cand`**（nat-traversal.md 第 5 节）：数组，最多 16 项，每项 `{"t": 类型, "a": 地址}`，类型为 `host6`、`mapped`、`host4`、`srflx`、`pred`。IPv4 候选来自主 UDP socket，IPv6 候选来自独立 IPv6 socket；选中的路径承载 AnLiu。当前节点也会在探测得到预测端口时上报 `pred`，平台可据画像进一步生成预测候选。
 
-画像和 `srflx` 来自 NAT 探测，`mapped` 来自可用的 PCP / NAT-PMP 映射，`host4` / `host6` 从网卡读取。刚启动或重新打开 UDP socket 时，候选可能尚未齐备。当前**不做逐步补充候选**（trickle）：候选有变化时，在下一轮 `punch_request` 中携带新的候选。
+画像和 `srflx` 来自 NAT 探测，`mapped` 来自可用的 PCP / NAT-PMP 映射，`host4` / `host6` 从网卡读取。刚启动或重新打开 UDP socket 时，候选可能尚未齐备：之后的 `punch_request`（及被叫对它的应答）携带新的候选。会话中只**补发一种候选**（借鉴 Trickle ICE，RFC 8838）：呼叫时核对映射发现 `srflx` 变了，经 `punch_info` 的 `cand` 告诉对方（见下文 `punch_info`），不另起一轮。
 
 **中转分配 `relay`**（data-channel.md 9.1）：
 
@@ -553,7 +553,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 ### `nat_report`
 
-可被呼叫的节点在在线状态下、NAT 探测完成后上报 `data = {"nat": {...}}`；登录、探测端点变化、网络变化、UDP socket 重开及失败重试等会触发测量，当前没有固定每 30 分钟执行一次完整 NAT 探测的计时器。纯客户端通过 `call` / `punch_request` 携带画像。平台保存最新画像，用于选择中转方式；打洞计划使用被叫在 `incoming` 应答中提供的最新画像。连接方式改变时（`connect_mode`，见下）也会更新上报。
+可被呼叫的节点在在线状态下、NAT 探测完成后上报 `data = {"nat": {...}}`；登录、探测端点变化、网络变化、UDP socket 重开及失败重试等会触发测量，当前没有固定每 30 分钟执行一次完整 NAT 探测的计时器；呼叫时核对映射发现 `srflx` 变了也上报（nat-traversal.md 4.5）。纯客户端通过 `call` / `punch_request` 携带画像。平台保存最新画像，用于选择中转方式；打洞计划使用被叫在 `incoming` 应答中提供的最新画像。连接方式改变时（`connect_mode`，见下）也会更新上报。
 
 **连接方式 `connect_mode`**（2026-10-15）：节点的设置，`p2p`（默认，P2P 直连优先）或 `secure`（安全优先）。`secure` 的节点在 `nat`（`call`、`incoming` 应答、`nat_report`、`punch_request` 的应答里都一样）中只写 `{"udp": bool, "secure": true}`，没有映射类型、公网地址等，`cand` 为空数组，所以对方得不到它的任何地址。平台据此判定：主叫或被叫任一方是 `secure`，这个会话就是安全会话——
 
@@ -706,6 +706,14 @@ S2B 的双方在 `start_at` 各自用一个新 socket 向探测服务器 E1 测�
 ```
 
 平台把它原样转给另一方（对方连在另一台服务器上时经服务器之间的连接）。收到对方的端口后开始发送（nat-traversal.md 7.6）。
+
+`punch_info` 也用来补发本方的新 `srflx`（2026-10-26，nat-traversal.md 4.5）：节点在呼叫开始（主叫）或接受呼叫（被叫）时并行向 E1 核对主 socket 的映射，映射变了（空闲时旧映射过期，NAT 给了另一个端口）就对这个会话发
+
+```json
+{"v": 1, "type": "punch_info", "data": {"call_id": "...", "round": 1, "cand": {"t": "srflx", "a": "198.51.100.1:36485"}}}
+```
+
+`round` 是发送方已知的最新一轮（还没有轮次时为 0），`cand` 是一个候选，`t` 只用 `srflx`（IPv4）。平台照常原样转发（同样受每个呼叫的转发速率限制，不超过 256 字节），不记入它保存的候选；之后的轮次靠 `punch_request` 和被叫对它的应答带上新候选。收到的一方：有一轮正在进行时把这个地址加入这一轮的探测目标（S3 难侧的 socket 改向它发送）；这一轮还没开始（等开始时刻、等密钥）或之后的轮次，开始时加入候选（已有则不重复，最多 16 个）；没有在进行、也没有将要来的一轮（上一轮失败、退避计时中）时，主叫立即发 `punch_request`（不推进退避、计入 10 轮）。主叫在 `call_accepted` 之前发现的新地址，收到 `call_accepted` 后再发（之前平台不转发）。已直连、已结束、WS 中转上和 `secure` 的会话不发也不收。
 
 一方还没有候选（刚启动、NAT 还没测完，被叫应答 `incoming` 时 `cand` 为空）、这一轮没有可探测的目标时（S1 要双方都有候选；S3 只要易侧有候选，易侧向难侧的公网 IP 喷包），平台在双方的 `punch_start` 里加 `"skip": "no_candidates"`（S1 计划照旧附上，供不认识这个字段的旧节点照常打一轮）：双方都不打洞，主叫 2 秒后发 `punch_request`（被叫的应答带上它最新的候选）。这样的一轮不计入 10 次，一个会话累计免计最多 5 次，之后按失败的一轮计、照常退避。以前这一轮会空跑 8 秒，再等 10 秒退避，刚启动的节点要约 19 秒才打通。
 
@@ -921,6 +929,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 日期 | 版本 | 内容 |
 |---|---|---|
 | 2026-10-25 | 0.33 | `bind_begin`：设备已属于本账户时回 `already: true` 与设备信息（重试不再报 `conflict`）。托管服务：只有当前这次登记的连接断开才标为离线；`hosted_stats` 兼作心跳，登记已不在时回 `not_found`（`registration`）、托管服务重新登记；所在服务器宕机后托管服务按失联处理，隔离后迁移；迁移时原服务也收到 `hosted_changed` |
+| 2026-10-26 | 0.33 | 呼叫时核对映射：`punch_info` 的 `cand` 补发本方变了的 `srflx`，收到的一方加入正在进行或之后的轮次，必要时主叫立即要求新一轮 |
 | 2026-10-24 | 0.32 | 安全加固：`login_method_bind` / `login_method_unbind` 要再次证明是本人（`current_password`，或 `confirm_transaction_id` + `confirm_code`，或 `current_verification_id`；否则 `forbidden` `reauth`），成功后通知旧邮箱；平台按账户与按来源（IPv6 按 /64）限制密码错误、匿名登录、呼叫频率与连接数（`rate_limited`，`credentials` / `busy`）；被拒或超时的呼叫 30 秒后删除；`punch_request` 至少间隔 2 秒、每个呼叫最多 24 次；候选最多 16 个、类型与地址经过检查 |
 | 2026-10-23 | 0.31 | 账户请求被拒时给出原因：`account_login` 的 `credentials`，`password_change` 的 `password` / `no_password`，`account_delete` 的 `password` / `verification`，`password_reset_finish` 地址不属于任何账户时也是 `verification`（与验证码不对相同） |
 | 2026-10-23 | 0.30 | 设备自己的名称：新增 `node_name`（节点起名字或查询），设备信息增加 `name`（起的名字，没有时为登录上报的主机名），`alias` 只是账户的备注，不再用注册时的名字补位 |

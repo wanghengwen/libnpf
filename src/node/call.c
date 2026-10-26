@@ -543,6 +543,10 @@ void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
     if (strcmp(type, "call_accepted") == 0 && c->caller && c->state == NPF_CALL_CALLING) {
         call_accept_seen(c);
         call_caller_accepted(c, j, d);
+        if (c->cand_later && !c->ended) {   /* our new srflx, now that the platform passes punch_info on */
+            c->cand_later = 0;
+            call_cand_send(c);
+        }
     } else if (strcmp(type, "call_rejected") == 0 && c->caller) {
         char err[32] = "";
         npf_json_get_str(j, d, "error", err, sizeof err);
@@ -593,6 +597,8 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
     int matched = 0;
     if (n->probe && npf_natprobe_input(n->probe, fd, buf, len, from))
         return 1;                   /* a probe server's answer to the running NAT probe */
+    if (n->mapcheck && npf_natprobe_input(n->mapcheck, fd, buf, len, from))
+        return 1;                   /* E1's answer to the call-time mapping check */
     /* AnLiu first, the bulk of the traffic: the datagram names its connection
      * (conv, masked but not encrypted, DESIGN 3.4); anl_input then
      * authenticates it. A node keeps many sessions at once (many-to-many), and

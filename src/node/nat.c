@@ -176,7 +176,14 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
 {
     npf_node *n = arg;
     int udp_back = ok && n->nat_valid && !n->nat_udp;   /* the last probe had no answer */
+    /* a call started meanwhile went out with the srflx before this probe */
+    int moved = ok && n->mapcheck_want && n->nat_valid && n->nat_udp
+                && (n->srflx.sin_addr.s_addr != res->mapped[0].sin_addr.s_addr
+                    || n->srflx.sin_port != res->mapped[0].sin_port);
+    struct sockaddr_in was_srflx = n->srflx;
     n->probe = NULL;
+    n->mapcheck_want = 0;
+    n->mapcheck_ms = npf_mono_ms();
     if (ok) {
         int i, last = -1;
         npf_nat_profile was = n->nat;
@@ -234,11 +241,99 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
     }
     n->nat_quick = 0;
     n->nat_valid = 1;
+    if (moved) {
+        char a[64], b[64];
+        struct sockaddr_storage x, y;
+        memset(&x, 0, sizeof x);
+        memset(&y, 0, sizeof y);
+        memcpy(&x, &was_srflx, sizeof was_srflx);
+        memcpy(&y, &n->srflx, sizeof n->srflx);
+        npf_log("nat: srflx %s -> %s (the probe since the call started)", npf_addr_str(&x, a, sizeof a),
+                npf_addr_str(&y, b, sizeof b));
+    }
     nat_settled(n);
+    if (moved)
+        node_calls_srflx_changed(n);
     /* the sessions made meanwhile went to the WS relay (udp false: no UDP
      * relay, no punching) and would stay there: they start again */
     if (udp_back)
         npf_node_ws_calls_udp_back(n);
+}
+
+/* The call-time check (nat-traversal.md 4.5): a call goes out at once with
+ * the srflx measured before, while this asks E1 what the main socket's
+ * mapping is now. A NAT that does not keep the port lets an idle mapping
+ * expire and gives the next one another port: the old srflx leads the
+ * peer's probes nowhere. Changed: the new one goes to the peers of the
+ * sessions not direct yet (punch_info, ICE's trickled candidate). No answer
+ * changes nothing (the profile stays: UDP is not given up on one request) */
+static void check_done(int ok, const npf_natprobe_result *res, void *arg)
+{
+    npf_node *n = arg;
+    char a[64], b[64];
+    struct sockaddr_storage x, y;
+    struct in_addr was_ip = n->srflx.sin_addr;
+    n->mapcheck = NULL;
+    n->mapcheck_ms = npf_mono_ms();
+    if (!ok) {
+        npf_logd("nat: mapping check: no answer from the probe server (the srflx kept)");
+        return;
+    }
+    memset(&x, 0, sizeof x);
+    memset(&y, 0, sizeof y);
+    memcpy(&x, &n->srflx, sizeof n->srflx);
+    memcpy(&y, &res->mapped[0], sizeof res->mapped[0]);
+    if (!n->nat_valid || !n->nat_udp)
+        return;                     /* a probe since then found no UDP: its result stands */
+    if (n->srflx.sin_addr.s_addr == res->mapped[0].sin_addr.s_addr && n->srflx.sin_port == res->mapped[0].sin_port) {
+        npf_logd("nat: mapping check: srflx %s unchanged", npf_addr_str(&x, a, sizeof a));
+        return;
+    }
+    npf_log("nat: srflx %s -> %s (the mapping changed while idle)", npf_addr_str(&x, a, sizeof a),
+            npf_addr_str(&y, b, sizeof b));
+    n->srflx = res->mapped[0];
+    n->pub_ip = res->mapped[0].sin_addr;
+    n->nat_kept_port = ntohs(res->mapped[0].sin_port) == n->udp_port
+                       && (n->nat.mapping == NPF_MAP_EIM || n->nat.open);
+    node_nat_regather(n);
+    npf_node_report_nat(n);
+    node_calls_srflx_changed(n);
+    /* another public IP: perhaps another NAT, measured again as after a
+     * network change (its port allocation kept) */
+    if (was_ip.s_addr != res->mapped[0].sin_addr.s_addr && !n->probe) {
+        n->nat_quick = n->nat.allocation != NPF_ALLOC_UNKNOWN;
+        n->mapcheck_want = 1;
+        node_nat_refresh(n);
+    }
+}
+
+#define MAPCHECK_FRESH_MS 25000     /* a mapping answered this recently has not expired yet */
+
+void node_nat_check(npf_node *n)
+{
+    npf_natprobe_cfg cfg;
+    const uint8_t *pk;
+    if (!n->nat_valid || !n->nat_udp || n->udp_fd < 0 || n->cfg.secure || getenv("NPF_NO_P2P") || n->nprobe_ep < 1)
+        return;
+    if (n->probe) {                 /* its answer is the check */
+        n->mapcheck_want = 1;
+        return;
+    }
+    if (n->mapcheck || (n->mapcheck_ms && npf_mono_ms() - n->mapcheck_ms < MAPCHECK_FRESH_MS))
+        return;                     /* one at a time for every call (the probe servers' rate) */
+    if (!(pk = node_day_key(n, n->probe_keys)))
+        return;
+    npf_natprobe_cfg_init(&cfg);
+    cfg.ep[0] = n->probe_ep[0];
+    cfg.n_ep = 1;
+    memcpy(cfg.probe_key, pk, 32);
+    memcpy(cfg.ticket, n->ticket, sizeof cfg.ticket);
+    cfg.clock_offset_ms = n->clock_offset_ms;
+    cfg.alloc_sockets = 0;
+    cfg.filter_test = 0;
+    cfg.main_fd = n->udp_fd;
+    if ((n->mapcheck = npf_natprobe_start(n->loop, &cfg, check_done, n)) != NULL)
+        npf_logd("nat: a call: checking the main socket's mapping");
 }
 
 static void nat_retry_cb(npf_loop *loop, void *arg)
@@ -261,6 +356,11 @@ void node_nat_refresh(npf_node *n)
     int i;
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
+    if (n->mapcheck) {              /* the probe's answer stands for it */
+        npf_natprobe_cancel(n->mapcheck);
+        n->mapcheck = NULL;
+        n->mapcheck_want = 1;
+    }
     /* the probes the server named at login (E1, E2 on one probe server, E3 on another) */
     if (n->nprobe_ep && pk && n->udp_fd >= 0) {
         npf_natprobe_cfg_init(&cfg);

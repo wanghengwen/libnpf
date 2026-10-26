@@ -287,11 +287,98 @@ static void punch_info_send(npf_punch *p, uint16_t port, void *arg)
         npf_node_send(c->n, "punch_info", 0, data);
 }
 
-/* S2B: the peer's fresh mapping */
+static int cand_skipped(const npf_call *c, const struct sockaddr_storage *to, const char *shown);
+
+/* the round a new candidate can join: one running, one planned (its start
+ * time, the keys, its sockets), one asked for; else, the backoff waiting
+ * after a failed one, the caller asks for a round now (ICE: a failed check
+ * list runs again with the new pairs). It is not a failed round's retry:
+ * the backoff goes on from where it was; PUNCH_ROUNDS_MAX holds */
+static void cand_round(npf_call *c)
+{
+    if (!c->caller || c->ended || c->p2p || c->ws_mode || call_no_p2p(c))
+        return;
+    if ((c->punch && !npf_punch_finished(c->punch)) || c->t_punch || c->punch_wait_keys || c->repunch_waiting
+        || c->sock_wait || !c->t_repunch)
+        return;                     /* it joins that round, or no round is to come (both NATs hard, the rounds used) */
+    if (c->punch_requests >= PUNCH_ROUNDS_MAX - 1)
+        return;
+    timer_stop(c->n->loop, &c->t_repunch);
+    npf_log("call %s: a new candidate: punching again now", c->call_id_s);
+    call_repunch_timer(c->n->loop, c);
+}
+
+/* this side's new srflx (the call-time check, nat.c) to the peer: a
+ * candidate trickled into the call (nat-traversal.md 4.5) */
+void call_cand_send(npf_call *c)
+{
+    char data[256], a[64];
+    struct sockaddr_storage ss;
+    npf_jw w;
+    memset(&ss, 0, sizeof ss);
+    memcpy(&ss, &c->n->srflx, sizeof c->n->srflx);
+    npf_jw_init(&w, data, sizeof data);
+    npf_jw_obj(&w);
+    npf_jw_kstr(&w, "call_id", c->call_id_s);
+    npf_jw_kint(&w, "round", c->punch_round);
+    npf_jw_key(&w, "cand");
+    npf_jw_obj(&w);
+    npf_jw_kstr(&w, "t", "srflx");
+    npf_jw_kstr(&w, "a", npf_addr_str(&ss, a, sizeof a));
+    npf_jw_end(&w);
+    npf_jw_end(&w);
+    if (npf_jw_finish(&w) <= 0)
+        return;
+    npf_log("call %s: the new srflx %s to the peer", c->call_id_s, a);
+    npf_node_send(c->n, "punch_info", 0, data);
+    cand_round(c);
+}
+
+void node_calls_srflx_changed(npf_node *n)
+{
+    npf_call *c;
+    for (c = n->calls; c; c = c->next) {
+        if (c->ended || c->p2p || c->ws_mode || c->direct || call_no_p2p(c))
+            continue;
+        if (c->caller && c->state == NPF_CALL_CALLING)
+            c->cand_later = 1;      /* the platform passes punch_info on once the call is accepted */
+        else
+            call_cand_send(c);
+    }
+}
+
+/* the peer's new srflx: into the round running, else kept for the next */
+static void peer_cand(npf_call *c, const npf_json *j, int o)
+{
+    char a[80];
+    struct sockaddr_storage ss;
+    if (c->ended || c->p2p || c->ws_mode || call_no_p2p(c))
+        return;
+    memset(&ss, 0, sizeof ss);
+    if (!npf_json_eq(j, npf_json_get(j, o, "t"), "srflx") || npf_json_get_str(j, o, "a", a, sizeof a) <= 0
+        || npf_addr_parse(a, &ss) != 0 || ss.ss_family != AF_INET || cand_skipped(c, &ss, a))
+        return;
+    if (c->tcand.ss_family && call_same_addr(&ss, &c->tcand))
+        return;
+    c->tcand = ss;
+    npf_log("call %s: the peer's new srflx %s", c->call_id_s, a);
+    if (c->punch && !npf_punch_finished(c->punch))
+        npf_punch_add_peer(c->punch, &ss, 1);
+    cand_round(c);
+}
+
+/* S2B: the peer's fresh mapping; its new srflx (cand) */
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
 {
     int64_t round, port;
-    if (npf_json_get_int(j, d, "round", 1, 1000, &round) < 0 || npf_json_get_int(j, d, "port", 1024, 65535, &port) < 0)
+    int cand = npf_json_get(j, d, "cand");
+    if (npf_json_get_int(j, d, "round", 0, 1000, &round) < 0)
+        return;
+    if (cand >= 0) {
+        peer_cand(c, j, cand);
+        return;
+    }
+    if (round < 1 || npf_json_get_int(j, d, "port", 1024, 65535, &port) < 0)
         return;
     if (round < c->punch_round)
         return;
@@ -356,6 +443,20 @@ void call_start_punch_now(npf_call *c)
         if (c->pcfg->plan.n_sockets < want)
             npf_log("call %s: punch round %d: %d of %d hard-side sockets (other punches hold the rest)",
                     c->call_id_s, c->punch_round, c->pcfg->plan.n_sockets, want);
+    }
+    if (c->tcand.ss_family) {       /* the peer's new srflx: among this round's candidates */
+        npf_punch_plan *pl = &c->pcfg->plan;
+        int i;
+        for (i = 0; i < c->pcfg->npeers && !call_same_addr(&c->tcand, &c->pcfg->peers[i]); i++)
+            ;
+        /* not in the plan: made before it came (later ones have the peer's
+         * fresh candidates); the hard side's sockets aim at it then */
+        if (i == c->pcfg->npeers && pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD) {
+            pl->peer_srflx = c->tcand;
+            pl->peer_srflx_len = sizeof(struct sockaddr_in);
+        }
+        if (i == c->pcfg->npeers && c->pcfg->npeers < NPF_PUNCH_MAX_PEERS)
+            c->pcfg->peers[c->pcfg->npeers++] = c->tcand;
     }
     c->pcfg->fd6 = c->n->udp6_fd;
     c->pcfg->test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;

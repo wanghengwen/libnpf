@@ -321,6 +321,9 @@ struct npf_node {
     int           nat_valid;
     int           nat_udp;          /* probe servers answered */
     struct npf_natprobe *probe;     /* a NAT probe running on the loop */
+    struct npf_natprobe *mapcheck;  /* a call starts: the main socket's mapping asked of E1 alone (nat.c) */
+    int           mapcheck_want;    /* a call started while a probe ran: that probe's srflx is compared too */
+    int64_t       mapcheck_ms;      /* monotonic: the last check or probe ended (a check within 25 s: none) */
     int           login_waits_nat;  /* hooks.on_login after the first profile */
     int           nat_kept_port;    /* the last probe: the mapping kept the port, and it is endpoint-
                                        independent or the address is on a local interface (no NAT) */

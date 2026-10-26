@@ -121,6 +121,8 @@ struct npf_call {
     npf_punch_cfg *pcfg;            /* the rounds' plan and candidates: made at the first punch_start */
     uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
     int         info_round;
+    struct sockaddr_storage tcand;  /* the peer's new srflx (its punch_info "cand"): in this round and the next */
+    int         cand_later;         /* caller: our srflx changed before call_accepted: punch_info then */
     int         punch_wait_keys;
 
     int         ended;
@@ -307,6 +309,7 @@ void call_schedule_repunch(npf_call *c);
 int call_hard_punches(const npf_call *c);
 void call_punch_sockets_back(npf_node *n);
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
+void call_cand_send(npf_call *c);
 void call_start_punch_now(npf_call *c);
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 

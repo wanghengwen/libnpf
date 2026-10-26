@@ -412,6 +412,45 @@ void npf_punch_peer_port(npf_punch *p, uint16_t port)
     schedule(p);
 }
 
+static int same_ss(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+    if (a->ss_family != b->ss_family)
+        return 0;
+    if (a->ss_family == AF_INET6)
+        return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0
+               && ss_port(a) == ss_port(b);
+    return ((const struct sockaddr_in *)a)->sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr
+           && ss_port(a) == ss_port(b);
+}
+
+int npf_punch_add_peer(npf_punch *p, const struct sockaddr_storage *a, int srflx)
+{
+    int i, added = 0;
+    char t[64];
+    if (!p || p->finished || (a->ss_family != AF_INET && a->ss_family != AF_INET6))
+        return 0;
+    if (srflx && a->ss_family == AF_INET && p->cfg.plan.strategy == NPF_PUNCH_S3 && p->cfg.plan.side == NPF_PUNCH_HARD
+        && !same_ss(a, &p->cfg.plan.peer_srflx)) {
+        p->cfg.plan.peer_srflx = *a;    /* the hard side's sockets: at the easy side's new mapping */
+        p->cfg.plan.peer_srflx_len = sizeof(struct sockaddr_in);
+        for (i = 1; i < p->nsock; i++)
+            p->socks[i].next_send = npf_mono_ms();
+        added = 1;
+    }
+    for (i = 0; i < p->cfg.npeers && !same_ss(a, &p->cfg.peers[i]); i++)
+        ;
+    if (i == p->cfg.npeers && p->cfg.npeers < NPF_PUNCH_MAX_PEERS) {
+        p->cfg.peers[p->cfg.npeers++] = *a;
+        p->socks[0].next_send = npf_mono_ms();  /* probed at once, then with the others */
+        added = 1;
+    }
+    if (added) {
+        npf_log("punch: the peer's new candidate %s joins the round", ss_txt(a, t, sizeof t));
+        schedule(p);
+    }
+    return added;
+}
+
 static void tick_cb(npf_loop *loop, void *arg)
 {
     struct sockaddr_storage pa;
