@@ -222,8 +222,7 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
          * ready yet): measured again soon, not at the next period */
         if (n->nat_retries < 4) {
             static const int again_s[] = {5, 20, 60, 180};
-            if (n->t_nat_retry)
-                npf_timer_cancel(n->loop, n->t_nat_retry);
+            npf_timer_cancel(n->loop, n->t_nat_retry);
             n->t_nat_retry = npf_timer_add(n->loop, again_s[n->nat_retries++] * 1000, nat_retry_cb, n);
         }
     }

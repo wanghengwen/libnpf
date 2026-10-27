@@ -66,10 +66,8 @@ void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
     p->pend[p->npend].conn = cid;
     p->npend++;
     if (!p->call && !p->waiting) {
-        if (p->t_retry) {                   /* someone is waiting: no backoff */
-            npf_timer_cancel(p->ps->n->loop, p->t_retry);
-            p->t_retry = NULL;
-        }
+        /* someone is waiting: no backoff */
+        npf_timer_stop(p->ps->n->loop, &p->t_retry);
         npf_log("%s: a connection to %s:%d: starting the session", p->name, f->bind, f->port);
         peers_start_call(p);
         if (p->removed)
@@ -171,10 +169,8 @@ void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, c
     p->nuq++;
     p->uq_bytes += len;
     if (!p->call && !p->waiting) {
-        if (p->t_retry) {                   /* someone is waiting: no backoff */
-            npf_timer_cancel(p->ps->n->loop, p->t_retry);
-            p->t_retry = NULL;
-        }
+        /* someone is waiting: no backoff */
+        npf_timer_stop(p->ps->n->loop, &p->t_retry);
         npf_log("%s: a UDP datagram to %s:%d: starting the session", p->name, f->bind, f->port);
         peers_start_call(p);
         if (p->removed)

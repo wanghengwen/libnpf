@@ -174,8 +174,7 @@ void npf_media_free(npf_media *m)
 {
     if (!m)
         return;
-    if (m->t_ws)
-        npf_timer_cancel(m->loop, m->t_ws);
+    npf_timer_cancel(m->loop, m->t_ws);
     while (m->nst)
         drop_stream(m, m->nst - 1);
     /* AnLiu streams go with the connection */

@@ -257,10 +257,7 @@ static void finish(npf_punch *p, int ok)
     p->finished = 1;
     p->res.ok = ok;
     p->res.elapsed_ms = (int)(npf_mono_ms() - p->start);
-    if (p->tick) {
-        npf_timer_cancel(p->loop, p->tick);
-        p->tick = NULL;
-    }
+    npf_timer_stop(p->loop, &p->tick);
     if (ok) {
         struct sockaddr_storage la;
         socklen_t ll = sizeof la;
@@ -974,8 +971,7 @@ void npf_punch_free(npf_punch *p)
     int i;
     if (!p)
         return;
-    if (p->tick)
-        npf_timer_cancel(p->loop, p->tick);
+    npf_timer_cancel(p->loop, p->tick);
     for (i = 0; i < p->nsock; i++) {
         if (p->socks[i].owned && p->socks[i].fd >= 0) {
             npf_loop_del(p->loop, p->socks[i].fd);

@@ -5,14 +5,6 @@
 
 #include "npf/node.h"
 
-/* a timer stopped, if it runs, and forgotten */
-static inline void timer_stop(npf_loop *l, npf_timer **t)
-{
-    if (*t)
-        npf_timer_cancel(l, *t);
-    *t = NULL;
-}
-
 /* node_servers.c */
 /* a signed list from the login, a push or an external channel (via): 1 when adopted */
 int  node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via);

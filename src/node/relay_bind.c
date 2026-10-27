@@ -111,7 +111,7 @@ static void run_timer(npf_loop *l, void *arg)
 
 void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
 {
-    timer_stop(l, &r->t_bind);
+    npf_timer_stop(l, &r->t_bind);
     r->on_send = on_send;
     r->on_gave_up = on_gave_up;
     r->arg = arg;

@@ -365,8 +365,7 @@ static void node_net_check(npf_node *n, const char *why)
         if (n->sig && n->online) {
             n->netcheck_ms = npf_mono_ms();
             npf_sig_ping(n->sig);
-            if (n->t_netcheck)
-                npf_timer_cancel(n->loop, n->t_netcheck);
+            npf_timer_cancel(n->loop, n->t_netcheck);
             n->t_netcheck = npf_timer_add(n->loop, NETCHECK_MS, netcheck_cb, n);
             if (n->udp_fd >= 0) {           /* the mapping (perhaps a new NAT) */
                 n->nat_quick = n->nat_udp && n->nat.allocation != NPF_ALLOC_UNKNOWN;

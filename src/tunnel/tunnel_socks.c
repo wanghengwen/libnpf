@@ -160,10 +160,8 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
     if (err) {
         npf_sock_close(fd);
         s->last_err = err;
-        if (s->t_he) {                  /* its turn is now */
-            npf_timer_cancel(loop, s->t_he);
-            s->t_he = NULL;
-        }
+        /* its turn is now */
+        npf_timer_stop(loop, &s->t_he);
         connect_next(s);
         return;
     }
@@ -172,14 +170,8 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
         npf_sock_close(s->hs->cfd[i]);
     }
     s->ncfd = 0;
-    if (s->t_he) {
-        npf_timer_cancel(loop, s->t_he);
-        s->t_he = NULL;
-    }
-    if (s->t_connect) {
-        npf_timer_cancel(loop, s->t_connect);
-        s->t_connect = NULL;
-    }
+    npf_timer_stop(loop, &s->t_he);
+    npf_timer_stop(loop, &s->t_connect);
     free(s->cand);
     s->cand = NULL;
     s->ncand = s->icand = 0;
@@ -357,10 +349,7 @@ void tunnel_greet_wait(sublink *s)
 
 void tunnel_greet_done(sublink *s)
 {
-    if (s->t_greet) {
-        npf_timer_cancel(s->t->loop, s->t_greet);
-        s->t_greet = NULL;
-    }
+    npf_timer_stop(s->t->loop, &s->t_greet);
 }
 
 /* parse what the client sent so far; returns -1 if the sublink was freed */

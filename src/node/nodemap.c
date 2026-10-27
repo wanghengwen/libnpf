@@ -140,7 +140,7 @@ static void pm_work(pm_job *j)
  * a running request's answer is dropped */
 static void pm_forget(npf_node *n)
 {
-    timer_stop(n->loop, &n->t_pm);
+    npf_timer_stop(n->loop, &n->t_pm);
     if (!n->pm_job)
         return;
     PM_LOCK();

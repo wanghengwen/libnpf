@@ -204,12 +204,8 @@ void node_reconnect_now(npf_node *n)
     if (n->sig)
         npf_sig_close(n->sig);
     n->sig = NULL;
-    if (n->t_reconnect)
-        npf_timer_cancel(n->loop, n->t_reconnect);
-    n->t_reconnect = NULL;
-    if (n->t_login)
-        npf_timer_cancel(n->loop, n->t_login);
-    n->t_login = NULL;
+    npf_timer_stop(n->loop, &n->t_reconnect);
+    npf_timer_stop(n->loop, &n->t_login);
     n->backoff_ms = 0;
     node_sig_connect(n);
 }
@@ -287,9 +283,7 @@ void node_sig_drop(npf_node *n)
 {
     n->sig = NULL;
     n->online = 0;
-    if (n->t_ping)
-        npf_timer_cancel(n->loop, n->t_ping);
-    n->t_ping = NULL;
+    npf_timer_stop(n->loop, &n->t_ping);
     expect_stop(n);
 }
 
@@ -388,9 +382,7 @@ static void sig_expect(npf_node *n, int ms, int probed)
 
 static void expect_stop(npf_node *n)
 {
-    if (n->t_expect)
-        npf_timer_cancel(n->loop, n->t_expect);
-    n->t_expect = NULL;
+    npf_timer_stop(n->loop, &n->t_expect);
 }
 
 void node_sig_probe(npf_node *n)
@@ -780,16 +772,12 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     n->sig_refused = 0;
     n->src_backoff = 0;
     n->src_next = 0;
-    if (n->t_login) {
-        npf_timer_cancel(n->loop, n->t_login);
-        n->t_login = NULL;
-    }
+    npf_timer_stop(n->loop, &n->t_login);
     n->backoff_ms = 0;
     if (n->cur_server >= 0)
         n->servers[n->cur_server].fails = 0;
     npf_log("login: online at server %d (clock offset %lld ms)", n->server_id, (long long)n->clock_offset_ms);
-    if (n->t_ping)
-        npf_timer_cancel(n->loop, n->t_ping);
+    npf_timer_cancel(n->loop, n->t_ping);
     n->t_ping = npf_timer_add(n->loop, (n->ping_s > 0 ? n->ping_s : 25) * 1000, ping_cb, n);
     ends_flush(n);                      /* call ends from while signaling was down */
     idle_watch(n);
@@ -1055,8 +1043,7 @@ void node_sig_connect(npf_node *n)
             n->race_server = r;
         }
     }
-    if (n->t_login)
-        npf_timer_cancel(n->loop, n->t_login);
+    npf_timer_cancel(n->loop, n->t_login);
     n->t_login = npf_timer_add(n->loop, SIG_LOGIN_MS, login_deadline, n);
 }
 
@@ -1120,9 +1107,7 @@ static void idle_cb(npf_loop *loop, void *arg)
     n->sleeps++;
     if (n->cfg.udp_on_demand && !n->calls)
         node_udp_close_idle(n);
-    if (n->t_ping)
-        npf_timer_cancel(loop, n->t_ping);
-    n->t_ping = NULL;
+    npf_timer_stop(loop, &n->t_ping);
     expect_stop(n);
     node_sig_fail_pending(n);
     if (n->cfg.sig_wake_ms > 0)
@@ -1143,9 +1128,7 @@ int npf_node_wake(npf_node *n, const char *why)
     if (!n->dormant)
         return 0;
     n->dormant = 0;
-    if (n->t_wake)
-        npf_timer_cancel(n->loop, n->t_wake);
-    n->t_wake = NULL;
+    npf_timer_stop(n->loop, &n->t_wake);
     npf_log("signaling: connecting (%s)", why);
     n->backoff_ms = 0;
     node_sig_connect(n);

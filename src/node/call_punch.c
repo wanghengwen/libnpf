@@ -281,7 +281,7 @@ void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
         /* the caller let this round go (its hard-side punches one at a
          * time): no spray into nothing for the round's time */
         if (round == c->punch_round && c->t_punch) {
-            timer_stop(c->n->loop, &c->t_punch);
+            npf_timer_stop(c->n->loop, &c->t_punch);
             npf_log("call %s: punch round %lld let go by the peer: not started", c->call_id_s, (long long)round);
         } else if (round == c->punch_round && c->punch_of == c->punch_round && c->punch && !npf_punch_finished(c->punch))
             npf_punch_stop(c->punch);
@@ -353,7 +353,7 @@ void call_start_punch_now(npf_call *c)
     memcpy(c->pcfg->plan.nominate_key, c->nominate_key, 32);
     if (c->punch) {                 /* the last round's, lingering or still running */
         int had = c->punch_socks > 0;
-        timer_stop(c->n->loop, &c->t_linger);
+        npf_timer_stop(c->n->loop, &c->t_linger);
         npf_punch_free(c->punch);
         c->punch = NULL;
         if (had)                    /* a running hard-side one: the calls waiting for its sockets */
@@ -567,7 +567,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         return;
     }
     c->punch_round = (int)v;
-    timer_stop(c->n->loop, &c->t_punch);    /* the last round's start: this one replaces it */
+    npf_timer_stop(c->n->loop, &c->t_punch);    /* the last round's start: this one replaces it */
     c->punch_wait_keys = 0;
     if (!c->pcfg && !(c->pcfg = malloc(sizeof *c->pcfg)))
         return;

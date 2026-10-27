@@ -285,8 +285,7 @@ void npf_udpf_free(npf_udpf *u)
     int i;
     if (!u)
         return;
-    if (u->t_tick)
-        npf_timer_cancel(u->loop, u->t_tick);
+    npf_timer_cancel(u->loop, u->t_tick);
     for (i = 0; i < 256; i++)
         while (u->by_id[i]) {
             uflow *f = u->by_id[i];

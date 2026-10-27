@@ -42,7 +42,7 @@ void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
 void call_ask_ws_relay(npf_call *c)
 {
     char data[128];
-    timer_stop(c->n->loop, &c->t_ws_wait);
+    npf_timer_stop(c->n->loop, &c->t_ws_wait);
     if (c->ws_mode)                 /* on it already: asking again reset its sublinks */
         return;
     npf_log("call %s: asking for the WS relay", c->call_id_s);
@@ -142,7 +142,7 @@ void call_relay_rebind(npf_call *c)
 /* the binding refreshed every RELAY_KEEPALIVE_MS while the relay is in use */
 static void relay_keepalive(npf_call *c)
 {
-    timer_stop(c->n->loop, &c->relay.t_bind);
+    npf_timer_stop(c->n->loop, &c->relay.t_bind);
     c->relay.t_bind = npf_timer_add(c->n->loop, RELAY_KEEPALIVE_MS, relay_keepalive_timer, c);
 }
 
@@ -159,7 +159,7 @@ static int relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32],
     if (!spare)
         relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
     c->relay_asked_ms = 0;
-    timer_stop(c->n->loop, &c->t_standby);
+    npf_timer_stop(c->n->loop, &c->t_standby);
     return spare;
 }
 
@@ -194,7 +194,7 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
             call_relay_rebind(c);
         return;
     }
-    timer_stop(c->n->loop, &c->relay.t_bind);
+    npf_timer_stop(c->n->loop, &c->relay.t_bind);
     if (relay_take(c, id, key, addr, naddr)) {
         /* the node's spare: nothing to bind when bound; the platform sends another */
         c->relay.active = 1;
@@ -222,10 +222,8 @@ static void relay_bound(npf_call *c, const char *how)
 {
     c->relay.bound = 1;
     c->relay_waits_ports = 0;
-    if (c->t_ws_wait && !c->ws_mode) {     /* no WS relay needed after all */
-        npf_timer_cancel(c->n->loop, c->t_ws_wait);
-        c->t_ws_wait = NULL;
-    }
+    if (c->t_ws_wait && !c->ws_mode)     /* no WS relay needed after all */
+        npf_timer_stop(c->n->loop, &c->t_ws_wait);
     relay_keepalive(c);
     npf_log("call %s: UDP relay bound%s", c->call_id_s, how);
     call_path_up(c);
@@ -357,8 +355,7 @@ void call_ws_wait_end(npf_call *c, int ok)
 {
     if (!c->t_ws_wait)
         return;
-    npf_timer_cancel(c->n->loop, c->t_ws_wait);
-    c->t_ws_wait = NULL;
+    npf_timer_stop(c->n->loop, &c->t_ws_wait);
     if (!ok && !c->relay.bound && c->relay.t_bind) {
         /* the UDP relay is being bound again (the punch gave the NAT's ports
          * back): its answer first; when it gives up, relay_bind_timer asks

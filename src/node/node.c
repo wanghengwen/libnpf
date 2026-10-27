@@ -151,28 +151,17 @@ void npf_node_stop(npf_node *n)
         npf_sig_close(n->sig);
     node_sig_drop(n);                       /* offline, its ping and watch stopped (the watch ran on) */
     node_sig_fail_pending(n);               /* requests still waiting learn there is no reply (their memory goes) */
-    if (n->t_reconnect)
-        npf_timer_cancel(n->loop, n->t_reconnect);
+    npf_timer_stop(n->loop, &n->t_reconnect);
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
-    if (n->t_login)
-        npf_timer_cancel(n->loop, n->t_login);
-    n->t_reconnect = n->t_login = NULL;
-    if (n->t_idle)
-        npf_timer_cancel(n->loop, n->t_idle);
-    if (n->t_wake)
-        npf_timer_cancel(n->loop, n->t_wake);
-    n->t_idle = n->t_wake = NULL;
+    npf_timer_stop(n->loop, &n->t_login);
+    npf_timer_stop(n->loop, &n->t_idle);
+    npf_timer_stop(n->loop, &n->t_wake);
     n->dormant = 0;
-    if (n->t_watch)
-        npf_timer_cancel(n->loop, n->t_watch);
-    if (n->t_netcheck)
-        npf_timer_cancel(n->loop, n->t_netcheck);
-    if (n->t_udp_reopen)
-        npf_timer_cancel(n->loop, n->t_udp_reopen);
-    if (n->t_nat_retry)
-        npf_timer_cancel(n->loop, n->t_nat_retry);
-    n->t_watch = n->t_netcheck = n->t_udp_reopen = n->t_nat_retry = NULL;
+    npf_timer_stop(n->loop, &n->t_watch);
+    npf_timer_stop(n->loop, &n->t_netcheck);
+    npf_timer_stop(n->loop, &n->t_udp_reopen);
+    npf_timer_stop(n->loop, &n->t_nat_retry);
     if (n->udp_fd >= 0) {
         npf_loop_del(n->loop, n->udp_fd);
         npf_sock_close(n->udp_fd);

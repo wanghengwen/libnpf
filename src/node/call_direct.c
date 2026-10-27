@@ -143,10 +143,7 @@ int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct 
     }
     c->hs->noise = hs;
     npf_wipe(&hs, sizeof hs);
-    if (c->t_direct) {
-        npf_timer_cancel(c->n->loop, c->t_direct);
-        c->t_direct = NULL;
-    }
+    npf_timer_stop(c->n->loop, &c->t_direct);
     if (direct_up(c) < 0) {
         npf_call_end(c, "error");
         return 1;

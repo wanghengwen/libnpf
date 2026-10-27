@@ -374,12 +374,8 @@ static void fwd_retry(pfwd *f, const char *why)
 void peers_fwd_stop(pfwd *f)
 {
     npf_loop *loop = f->p->ps->n->loop;
-    if (f->t_retry)
-        npf_timer_cancel(loop, f->t_retry);
-    f->t_retry = NULL;
-    if (f->t_accept)
-        npf_timer_cancel(loop, f->t_accept);
-    f->t_accept = NULL;
+    npf_timer_stop(loop, &f->t_retry);
+    npf_timer_stop(loop, &f->t_accept);
     if (f->udp) {
         peers_udp_queue_drop(f->p, f->idx);
         if (f->fd >= 0 && f->p->call)
@@ -440,10 +436,8 @@ npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
                     return p->call;
                 }
                 if (!p->call && !p->waiting && !p->finished) {
-                    if (p->t_retry) {           /* someone is waiting: no backoff */
-                        npf_timer_cancel(ps->n->loop, p->t_retry);
-                        p->t_retry = NULL;
-                    }
+                    /* someone is waiting: no backoff */
+                    npf_timer_stop(ps->n->loop, &p->t_retry);
                     npf_log("%s: a connection through -%c %s: starting the session", p->name,
                             p->fwds[i]->kind->k->opt, p->fwds[i]->spec);
                     peers_start_call(p);
@@ -577,9 +571,7 @@ void peers_forwards_session_gone(npf_peer *p)
     for (i = 0; i < p->nfwd; i++) {
         pfwd *f = p->fwds[i];
         if (f->reverse) {
-            if (f->t_retry)
-                npf_timer_cancel(p->ps->n->loop, f->t_retry);
-            f->t_retry = NULL;
+            npf_timer_stop(p->ps->n->loop, &f->t_retry);
             f->up = f->asked = 0;
             f->lport = 0;
             if (f->used)

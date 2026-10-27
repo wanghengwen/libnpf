@@ -164,7 +164,7 @@ void call_p2p_suspect_start(npf_call *c, const char *why)
     npf_random(&c->path_nonce, sizeof c->path_nonce);
     if (!c->t_pcheck)
         path_check_timer(c->n->loop, c);
-    timer_stop(c->n->loop, &c->t_standby);
+    npf_timer_stop(c->n->loop, &c->t_standby);
     if (c->relay.active) {
         npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);
         if (!c->relay.bound && !c->relay.t_bind) {
@@ -212,7 +212,7 @@ void call_standby_done(npf_loop *loop, void *arg)
     }
     c->relay.active = 0;
     c->relay.bound = 0;
-    timer_stop(c->n->loop, &c->relay.t_bind);
+    npf_timer_stop(c->n->loop, &c->relay.t_bind);
     if (c->caller) {
         snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
         npf_node_send(c->n, "relay_release", 0, data);
