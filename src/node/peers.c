@@ -849,7 +849,6 @@ void       *npf_peer_ctx(const npf_peer *p) { return p->ctx; }
 void        npf_peer_ctx_put(npf_peer *p, void *ctx) { p->ctx = ctx; }
 int         npf_peer_connect_mode(const npf_peer *p) { return p->connect; }
 int         npf_peer_idle_asked(const npf_peer *p) { return p->idle_req; }
-int         npf_peer_finished(const npf_peer *p) { return p->finished; }
 const char *npf_peer_last_why(const npf_peer *p) { return p->last_why; }
 
 npf_peer *npf_peers_by_id(const npf_peers *ps, uint32_t id)
@@ -992,7 +991,6 @@ void npf_peers_set_idle(npf_peers *ps, int idle_ms)
 
 int npf_peers_idle(const npf_peers *ps) { return ps ? ps->default_idle_ms : 0; }
 void npf_peers_no_cache(npf_peers *ps) { ps->no_cache = 1; }
-int npf_peer_on_demand(const npf_peer *p) { return p->idle_ms > 0; }
 
 int npf_peer_needs_password(const npf_peer *p)
 {

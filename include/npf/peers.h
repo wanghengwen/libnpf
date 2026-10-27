@@ -130,7 +130,6 @@ int       npf_peer_idle_asked(const npf_peer *p);    /* the idle time it was mad
 /* NPF_PEER_* (npf.h), its needs (NPF_NEED_*) and the time to its next try (ms) */
 int       npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms);
 const char *npf_peer_last_why(const npf_peer *p);     /* why the last session ended, or why it waits; "" */
-int       npf_peer_finished(const npf_peer *p);
 /* a direct peer's target as given (host without brackets, into host[cap], port); 0, -1 a platform peer */
 int       npf_peer_direct_target(const npf_peer *p, char *host, size_t cap, uint16_t *port);
 /* a nick of this run (not in local.json; NULL: back to local.json's) */
@@ -211,7 +210,6 @@ npf_call   *npf_peers_fwd_call(npf_peers *ps, int id);
 int         npf_peers_idle(const npf_peers *ps);
 /* the peers' resources are not kept in local.json (only here) */
 void        npf_peers_no_cache(npf_peers *ps);
-int         npf_peer_on_demand(const npf_peer *p);
 /* start the session now (on demand: it ends idle_ms later unless used; a
  * kept peer waiting to reconnect: at once; a finished one: one more try, as
  * it was made): 1 there is one already, 0 started */
@@ -244,24 +242,13 @@ void        npf_peers_public_json(npf_peers *ps, int close, struct npf_out *o);
  * device in the session (grant_update) */
 void        npf_peer_grant_update(npf_peer *p);
 /* the application's id of mapping i (a platform mapping), 0: none */
-void        npf_peer_forward_set_ext(npf_peer *p, int i, uint64_t ext);
 uint64_t    npf_peer_forward_ext(const npf_peer *p, int i);
-/* mapping i's parts: its port (-L / -D: here; -R: the one asked of the
- * device) and, for -L / -R, its target (*host without brackets, "" for -D);
- * 0, or -1 for a free slot */
-int         npf_peer_forward_ends(const npf_peer *p, int i, int *port, const char **host, int *hostport);
-/* is forward i a UDP one (-L PORT:HOST:HOSTPORT/udp; data-channel.md 15)? */
-int         npf_peer_forward_udp(const npf_peer *p, int i);
-/* mapping i's number (shown by forward and status; unique among the peers),
- * and the mapping with a number (-1: none) */
+/* mapping i's number (shown by forward and status; unique among the peers) */
 int         npf_peer_forward_id(const npf_peer *p, int i);
-int         npf_peer_forward_by_id(const npf_peer *p, int id);
 /* mappings in use */
 int         npf_peer_forward_used(const npf_peer *p);
 /* mark mapping i saved or not */
 void        npf_peer_forward_perm_set(npf_peer *p, int i, int perm);
-/* mark every mapping saved or not (a peer saved or loaded from the configuration) */
-void        npf_peer_forward_mark(npf_peer *p, int perm);
 /* forward i's parts and state (npf.h's NPF_FWD_*): 0, -1 a free slot */
 typedef struct npf_fwd_state {
     char     opt;                   /* 'L', 'D', 'R', or a module's */

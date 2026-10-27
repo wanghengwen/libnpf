@@ -118,7 +118,6 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
 {
     (void)p, (void)connect, (void)idle_ms, (void)running;
 }
-int npf_peer_on_demand(const npf_peer *p) { (void)p; return 0; }
 int npf_peer_wake_now(npf_peer *p) { (void)p; return -1; }
 int npf_peer_password_try(npf_peer *p, const char *password) { (void)p, (void)password; return -1; }
 
@@ -153,14 +152,10 @@ int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, in
 int npf_peer_forward_drain(npf_peer *p, int i, int on) { (void)p, (void)i, (void)on; return -1; }
 int npf_peer_forward_drained(npf_peer *p, int i) { (void)p, (void)i; return 1; }
 void npf_peer_grant_update(npf_peer *p) { (void)p; }
-void npf_peer_forward_set_ext(npf_peer *p, int i, uint64_t ext) { (void)p, (void)i, (void)ext; }
 uint64_t npf_peer_forward_ext(const npf_peer *p, int i) { (void)p, (void)i; return 0; }
 
-int npf_peer_forward_udp(const npf_peer *p, int i) { (void)p, (void)i; return 0; }
 int npf_peer_forward_id(const npf_peer *p, int i) { (void)p, (void)i; return 0; }
-int npf_peer_forward_by_id(const npf_peer *p, int id) { (void)p, (void)id; return -1; }
 int npf_peer_forward_used(const npf_peer *p) { (void)p; return 0; }
-void npf_peer_forward_mark(npf_peer *p, int perm) { (void)p, (void)perm; }
 void npf_peer_forward_perm_set(npf_peer *p, int i, int perm) { (void)p, (void)i, (void)perm; }
 int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st) { (void)p, (void)i, (void)st; return -1; }
 void npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx) { (void)p, (void)i, (void)ctx; }
@@ -172,7 +167,6 @@ void *npf_peer_ctx(const npf_peer *p) { (void)p; return NULL; }
 void npf_peer_ctx_put(npf_peer *p, void *ctx) { (void)p, (void)ctx; }
 int npf_peer_connect_mode(const npf_peer *p) { (void)p; return 0; }
 int npf_peer_idle_asked(const npf_peer *p) { (void)p; return 0; }
-int npf_peer_finished(const npf_peer *p) { (void)p; return 1; }
 const char *npf_peer_last_why(const npf_peer *p) { (void)p; return ""; }
 int npf_peer_direct_target(const npf_peer *p, char *host, size_t cap, uint16_t *port)
 {

@@ -761,15 +761,6 @@ int npf_peer_forward_id(const npf_peer *p, int i)
     return i >= 0 && i < p->nfwd && p->fwds[i]->used ? p->fwds[i]->id : 0;
 }
 
-int npf_peer_forward_by_id(const npf_peer *p, int id)
-{
-    int i;
-    for (i = 0; i < p->nfwd; i++)
-        if (p->fwds[i]->used && p->fwds[i]->id == id)
-            return i;
-    return -1;
-}
-
 int npf_peer_forward_del_at(npf_peer *p, int i)
 {
     pfwd *f;
@@ -857,32 +848,9 @@ int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, in
     return 0;
 }
 
-void npf_peer_forward_set_ext(npf_peer *p, int i, uint64_t ext)
-{
-    if (i >= 0 && i < p->nfwd)
-        p->fwds[i]->ext = ext;
-}
-
 uint64_t npf_peer_forward_ext(const npf_peer *p, int i)
 {
     return i >= 0 && i < p->nfwd && p->fwds[i]->used ? p->fwds[i]->ext : 0;
-}
-
-int npf_peer_forward_udp(const npf_peer *p, int i)
-{
-    return i >= 0 && i < p->nfwd && p->fwds[i]->used && p->fwds[i]->udp;
-}
-
-int npf_peer_forward_ends(const npf_peer *p, int i, int *port, const char **host, int *hostport)
-{
-    const pfwd *f;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
-        return -1;
-    f = p->fwds[i];
-    *port = f->port;
-    *host = f->socks ? "" : f->host;
-    *hostport = f->socks ? 0 : f->hostport;
-    return 0;
 }
 
 int npf_peer_forward_used(const npf_peer *p)
@@ -896,13 +864,6 @@ int npf_peer_forward_used(const npf_peer *p)
 void npf_peer_forward_perm_set(npf_peer *p, int i, int perm)
 {
     if (i >= 0 && i < p->nfwd && p->fwds[i]->used)
-        p->fwds[i]->perm = perm;
-}
-
-void npf_peer_forward_mark(npf_peer *p, int perm)
-{
-    int i;
-    for (i = 0; i < p->nfwd; i++)
         p->fwds[i]->perm = perm;
 }
 
