@@ -508,7 +508,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `punch_request` | 平台 → 被叫 | 请求 | 平台开始下一轮之前要被叫的最新画像与候选（第一轮用 `incoming` 应答里的） |
 | `punch_update` | 任一方 → 平台 | 事件 | 本方的画像变了及原因（网络变化后重新测过 NAT、直连失效），附最新画像与候选；下一轮何时开始由平台决定 |
 | `punch_result` | 双方 → 平台 | 事件 | 本轮打洞的结果与统计，以及这一轮看到的对方 NAT 的行为；主叫让出的一轮（`busy`）与端口紧张的迹象 |
-| `punch_info` | 任一方 → 平台 → 另一方；平台 → 一方 | 事件 | S2B、S2 难侧：本方新 socket 的映射端口（nat-traversal.md 7.6、7.3）；`cand`：对方的新 `srflx`（平台发出：对方备用分配的地址变了，nat-traversal.md 4.5）；`stop`：主叫让出了这一轮，被叫结束它（平台发出） |
+| `punch_info` | 任一方 → 平台 → 另一方；平台 → 一方 | 事件 | S2B、S2 难侧：本方新 socket 的映射端口（nat-traversal.md 7.6、7.3）；`cand`：对方的新 `srflx`（平台发出：对方的中转分配绑定的地址来了或变了，nat-traversal.md 4.5）；`stop`：主叫让出了这一轮，被叫结束它（平台发出） |
 | `call_end` | 任一方 → 平台 | 请求 | 会话结束，平台释放中转，在呼叫记录中写下结束时间 |
 | `call_ended` | 平台 → 另一方 | 事件 | 对方结束了会话，或平台终止了会话 |
 
@@ -551,7 +551,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 **平台对地址的检查**（2026-10-26，安全设计 11.1）：`pub_ip` 与候选中不可能是对方地址的（未指定、`0/8`、环回、链路本地、组播、`240/4` 与广播，IPv6 不在 2000::/3 的）在入口丢弃（环回只在测试平台的测试开关 `test_one_host` 打开时保留，见安全设计 11.1）。转给对方的候选（`incoming`、`call_accepted`、`punch_start` 的 `peer.cand`）按呼叫过滤：IP 是这一侧"见到"的 IP（环回除外）的候选不论类别都转（它自己的地址：平台在私有网络上时也能直连）；其余的私网与 100.64/10 地址只在双方"见到"的 IP 有相同的时转，公网 IPv4 候选与平台自己的探测、中转的 IP 不转。"见到"的 IP 是平台见过这一侧的出口：信令连接的源 IP，和它绑定本次呼叫在这台服务器上的中转分配时的源 IP。`pub_ip` 是其中之一才算已验证，平台才安排向它喷包的策略，见 `punch_start`。
 
-画像和 `srflx` 来自 NAT 探测，`mapped` 来自可用的 PCP / NAT-PMP 映射，`host4` / `host6` 从网卡读取。刚启动或重新打开 UDP socket 时，候选可能尚未齐备：之后的 `punch_request`（及被叫对它的应答）携带新的候选。**有备用分配的一侧**（2026-10-27，nat-traversal.md 4.5）：平台不用它自报的 `srflx` / `pub_ip`，而用中转看到的它的备用分配的地址 R（EIM：`srflx` 就是 R；ADM / APDM：只用 R 的 IP，`ip_varies` 时不用），转给对方的（`incoming`、`call_accepted`、`punch_start`）都是这样。会话中只**补发一种候选**（借鉴 Trickle ICE，RFC 8838）：R 变了时平台经 `punch_info` 的 `cand` 告诉对方（见下文 `punch_info`），不另起一轮。节点不在呼叫时核对映射，也不发 `cand`。
+画像和 `srflx` 来自 NAT 探测，`mapped` 来自可用的 PCP / NAT-PMP 映射，`host4` / `host6` 从网卡读取。刚启动或重新打开 UDP socket 时，候选可能尚未齐备：之后的 `punch_request`（及被叫对它的应答）携带新的候选。**有绑定的 UDP 中转分配的一侧**（2026-10-27，nat-traversal.md 4.5）：平台不用它自报的 `srflx` / `pub_ip`，而用中转看到的它的分配（本次呼叫的，没有绑好时用它的新鲜备用分配）绑定的地址 R（EIM：`srflx` 就是 R；ADM / APDM：只用 R 的 IP，`ip_varies` 时不用），转给对方的（`incoming`、`call_accepted`、`punch_start`）都是这样。会话中只**补发一种候选**（借鉴 Trickle ICE，RFC 8838）：R 在呼叫中来了（分配在计划之后才绑好，且和它自报的不同）或变了时平台经 `punch_info` 的 `cand` 告诉对方（见下文 `punch_info`），不另起一轮。节点不在呼叫时核对映射，也不发 `cand`。
 
 **中转分配 `relay`**（data-channel.md 9.1）：
 
@@ -753,7 +753,7 @@ S2B 的双方在 `start_at` 各自用一个新 socket 向探测服务器 E1 测�
 
 平台解析后重新生成再转给另一方（对方连在另一台服务器上时经服务器之间的连接；2026-10-26 起不再原样转发，见下）。收到对方的端口后开始发送（nat-traversal.md 7.6）。
 
-平台也用 `punch_info` 告诉一方对方的新 `srflx`（2026-10-27，nat-traversal.md 4.5）：对方有备用分配、它的地址在呼叫中变了（中转收到 cookie 验证过、`kseq` 更新的、来自新地址的 `RELAY_BIND`），对方是 EIM（或公网）：
+平台也用 `punch_info` 告诉一方对方的新 `srflx`（2026-10-27，nat-traversal.md 4.5）：对方的 UDP 中转分配在呼叫中绑好了（地址与对方自报的 `srflx` 不同）或换了地址（中转收到 cookie 验证过、`kseq` 更新的、来自新地址的 `RELAY_BIND`），对方是 EIM（或公网）：
 
 ```json
 {"v": 1, "type": "punch_info", "data": {"call_id": "...", "round": 1, "cand": {"t": "srflx", "a": "198.51.100.1:36485"}}}
@@ -811,7 +811,7 @@ S2B 的双方在 `start_at` 各自用一个新 socket 向探测服务器 E1 测�
 - 第一轮在接受时（口令配对在 `handshake_done` 时）开始；之后每一轮开始前向被叫要最新的画像与候选（`punch_request`，同一时间只有一个，相隔至少 2 秒），主叫的由它的 `punch_update` 带来；
 - 一轮失败（任一方在这一轮结束时报告失败；超时后 10 秒仍没有结果也算）：下一轮的计划因此不同时（猜测的端口范围落空、按过滤给的 S1 失败、这一轮看到了对方的端口段，nat-traversal.md 7.1、7.3、7.8）或这一轮是 S2B（每轮重新测端口，是新的尝试）时立即开始；否则按 10 秒、30 秒、1 分钟、2 分钟，之后每 3 分钟退避。比较的是两侧的整个计划（策略、易侧 / 难侧、范围、socket 数、喷包数、对方候选等），不比较 `punch_id`、`punch_key`、`round`、`start_at`；
 - 一轮打通后不再安排，直到一方报告直连失效（`punch_update` `path_lost`）：立即开始下一轮；退避从头算；
-- 退避等待中一方的备用分配的地址变了（平台自己看到，见 `punch_info`）：立即开始下一轮（相当于 ICE 中失败的检查表因新的候选对回到运行状态）；
+- 退避等待中一方的中转分配的地址来了或变了（平台自己看到，见 `punch_info`）：立即开始下一轮（相当于 ICE 中失败的检查表因新的候选对回到运行状态）；
 - 一方报告网络变化（`punch_update` `network`）：退避从头算，没有在进行的一轮时立即开始；双方都是难侧、没有可用策略（`skip: no_strategy`）而停下的会话也重新规划；
 - 一个会话最多 10 轮失败的轮次（让出的、没有候选的不算，另计最多 14 次），之后一直留在中转上；切到 **WebSocket 中转**的会话不再安排（WS 中转上不能再改走直连）；NAT 探测确认 UDP 恢复后，非 `secure` 的主叫以 `udp_back` 结束旧 WS 会话，由上层按需要重建。
 
@@ -1022,7 +1022,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
-| 2026-10-27 | 0.48 | 有备用分配的一侧的 `srflx` / `pub_ip` 由平台按中转看到的地址 R 给出（nat-traversal.md 4.5，home-binding.md U7 推翻）：节点不再在呼叫时核对映射、不再发 `punch_info` 的 `cand`，`punch_update` 去掉 `profile`；平台丢弃节点发的 `cand`，R 在呼叫中变了时自己向对方发 `punch_info{cand}`、开始下一轮；被叫接受之前留着的 `punch_info` 去掉；服务器之间的 `call` 带主叫的 R，变了发 `caller_r` |
+| 2026-10-27 | 0.48 | 有绑定的 UDP 中转分配（本次呼叫的或备用分配）的一侧的 `srflx` / `pub_ip` 由平台按中转看到的地址 R 给出（nat-traversal.md 4.5，home-binding.md U7 推翻）：节点不再在呼叫时核对映射、不再发 `punch_info` 的 `cand`，`punch_update` 去掉 `profile`；平台丢弃节点发的 `cand`，R 在呼叫中来了或变了时自己向对方发 `punch_info{cand}`、开始下一轮；被叫接受之前留着的 `punch_info` 去掉；服务器之间的 `call` 带主叫的 R，变了发 `caller_r` |
 | 2026-10-27 | 0.47 | 打洞简化：轮次全部由平台安排（节点只执行与报告：去掉主叫的退避与 `punch_request`，`punch_request` 只剩平台向被叫要画像；新增 `punch_update`：一方的画像变了、网络变化、直连失效）；主叫让出的一轮改为 `punch_result` 的 `busy`、`ends_in_ms` 与端口紧张的迹象 `pressure`、`hard_ago_ms`，间隔由平台决定；没有候选的一轮不再发 `skip: no_candidates`；去掉 `unsolicited`（过滤不再从轮次里学）；去掉 S5 |
 | 2026-10-26 | 0.46 | 备用分配：主叫在另一台服务器上时它的备用分配经服务器链路使用（P4），节点一侧不变 |
 | 2026-10-26 | 0.45 | 常驻中转绑定改为备用分配（home-binding.md v0.5）：`home_open` 应答带一个 `relay` 对象（`spare: true`），`resume` 用 `relay_id`；`home_close{relay_id}`；`relay_spare` 事件（`taken` / `rotated`）取代 `home_rekey`；`relay` 对象的 `spare`：呼叫取用一侧新鲜的备用分配作为它的分配；呼叫记录 `relays[].spare` |
