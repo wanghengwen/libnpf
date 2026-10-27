@@ -29,8 +29,9 @@ void node_sig_probe(npf_node *n);
 void node_reconnect_now(npf_node *n);
 
 /* node_network.c */
-int node_udp_open4(npf_node *n);
-void node_udp_open6(npf_node *n);
+/* the main sockets: IPv4 (-1 when it cannot be opened) and, online, IPv6 */
+int  node_udp_open(npf_node *n);
+void node_udp_close(npf_node *n);
 void node_udp_close_idle(npf_node *n);
 void node_watch_start(npf_node *n);
 

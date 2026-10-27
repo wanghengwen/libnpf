@@ -121,12 +121,10 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
     }
     if (cfg->udp_on_demand)
         return 0;                       /* the sockets when a session needs them */
-    if (node_udp_open4(n) < 0) {
+    if (node_udp_open(n) < 0) {
         npf_loge("node: cannot open UDP socket: %s", npf_sock_strerror());
         return -1;
     }
-    if (!cfg->offline)
-        node_udp_open6(n);
     return 0;
 }
 
@@ -162,16 +160,7 @@ void npf_node_stop(npf_node *n)
     npf_timer_stop(n->loop, &n->t_netcheck);
     npf_timer_stop(n->loop, &n->t_udp_reopen);
     npf_timer_stop(n->loop, &n->t_nat_retry);
-    if (n->udp_fd >= 0) {
-        npf_loop_del(n->loop, n->udp_fd);
-        npf_sock_close(n->udp_fd);
-        n->udp_fd = -1;
-    }
-    if (n->udp6_fd >= 0) {
-        npf_loop_del(n->loop, n->udp6_fd);
-        npf_sock_close(n->udp6_fd);
-        n->udp6_fd = -1;
-    }
+    node_udp_close(n);
     free(n->servers);
     free(n->list);
     n->servers = n->list = NULL;
