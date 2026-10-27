@@ -149,14 +149,18 @@ static void relay_keepalive(npf_call *c)
 
 static void relay_bound(npf_call *c, const char *how);
 
-/* an allocation taken: the relay of the session from now on (addr NULL: a WS relay's) */
-static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const char *mode,
-                       const struct sockaddr_storage *addr, int naddr)
+/* an allocation taken: the relay of the session from now on (addr NULL: a
+ * WS relay's); 1 when it is the node's spare (home-binding.md v0.5, 7),
+ * bound already from the main socket or being bound */
+static int relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32],
+                      const struct sockaddr_storage *addr, int naddr)
 {
-    relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
-    snprintf(c->relay.mode, sizeof c->relay.mode, "%s", mode);
+    int spare = addr && node_home_adopt(c->n, id, &c->relay);
+    if (!spare)
+        relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
     c->relay_asked_ms = 0;
     timer_stop(c->n->loop, &c->t_standby);
+    return spare;
 }
 
 /* the platform's relay allocation; one that is no use leaves the relay in use
@@ -174,14 +178,14 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
         if (c->ws_mode && (c->wsr || c->ws_fail_wait) && memcmp(id, c->relay.relay_id, 8) == 0)
             return;                 /* the one in use, sent again (both sides asked; the reply to the
                                      * call, then call_accepted): its sublinks stay */
-        relay_take(c, id, key, mode, NULL, 0);
+        relay_take(c, id, key, NULL, 0);
         if (call_ws_setup(c, j, r) < 0)
             call_ws_failed(c, "cannot connect");
         return;
     }
     if (strcmp(mode, "udp") != 0 || !naddr)
         return;
-    if (c->relay.active && !c->ws_mode && strcmp(c->relay.mode, "udp") == 0 && memcmp(id, c->relay.relay_id, 8) == 0
+    if (c->relay.active && !c->ws_mode && memcmp(id, c->relay.relay_id, 8) == 0
         && npf_ct_eq(key, c->relay.alloc_key, 32) == 0) {
         /* the one in use, sent again (the reply to the call, then
          * call_accepted; both sides asked for it): bound or being bound, it
@@ -190,11 +194,9 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
             call_relay_rebind(c);
         return;
     }
-    relay_take(c, id, key, mode, addr, naddr);
     timer_stop(c->n->loop, &c->relay.t_bind);
-    if (node_home_adopt(c->n, id, &c->relay)) {
-        /* the node's spare (home-binding.md v0.5, 7): bound already from
-         * the main socket, nothing to bind; the platform sends another */
+    if (relay_take(c, id, key, addr, naddr)) {
+        /* the node's spare: nothing to bind when bound; the platform sends another */
         c->relay.active = 1;
         if (c->relay.bound) {
             relay_bound(c, " (the node's spare)");

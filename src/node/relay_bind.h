@@ -56,7 +56,6 @@ typedef struct relay_c {
     npf_timer *t_bind;
     void   (*on_send)(void *), (*on_gave_up)(void *);   /* relay_bind_run's */
     void    *arg;
-    char     mode[8];
 } relay_c;
 
 /* a RELAY_BIND_ACK body: family | port | addr | srv_time_ms | state | cookie | kseq | flags | t_s(2) | learn(1) */

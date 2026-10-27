@@ -378,7 +378,6 @@ int node_home_adopt(npf_node *n, const uint8_t id[8], relay_c *dst)
     *dst = h->r;                            /* its binding: the cookie, kseq, the address in use */
     dst->t_bind = NULL;                     /* (the call's stopped: call_relay_setup) */
     dst->bound = h->state == H_BOUND;
-    snprintf(dst->mode, sizeof dst->mode, "udp");
     h->taken++;
     npf_logd("home: the spare taken by a call: the next one from the platform");
     spare_drop(h, H_TAKEN);
