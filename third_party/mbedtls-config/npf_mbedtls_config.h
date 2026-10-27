@@ -52,6 +52,11 @@
 #define MBEDTLS_RSA_C
 #define MBEDTLS_PKCS1_V15
 #define MBEDTLS_PKCS1_V21
+/* RSA-PSS in TLS 1.3 (rsa_pss_rsae_*): without it the client offers RSA
+ * only as rsa_pkcs1_*, which TLS 1.3 does not allow for the handshake's
+ * signature, and a TLS 1.3 server with an RSA certificate (OpenSSL 3,
+ * nginx) refuses it: "no suitable signature algorithm" (2026-10-28) */
+#define MBEDTLS_X509_RSASSA_PSS_SUPPORT
 #define MBEDTLS_SHA384_C
 #define MBEDTLS_SHA512_C
 #define MBEDTLS_SSL_TLS1_3_KEY_EXCHANGE_MODE_EPHEMERAL_ENABLED
