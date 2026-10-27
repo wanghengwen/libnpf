@@ -303,7 +303,7 @@ struct npf_node {
     int64_t       clock_offset_ms;  /* server time - local wall clock */
     int64_t       login_sent_ms;    /* monotonic, for the offset's transit correction */
     uint8_t       ticket[28];
-    npf_daykey    probe_keys[2], relay_keys[2];
+    npf_daykey    probe_keys[2];
     struct sockaddr_in probe_ep[3]; /* the address probes the server named: E1, E2 [, E3] (nat-traversal.md 4.1) */
     int           nprobe_ep;
     int           ping_s;

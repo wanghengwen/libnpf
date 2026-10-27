@@ -686,7 +686,6 @@ static void apply_keys(npf_node *n, const npf_json *j, int d)
     if (npf_json_get_b64(j, d, "ticket", t, sizeof t) == 28)
         memcpy(n->ticket, t, 28);
     parse_daykeys(j, npf_json_get(j, d, "probe_keys"), n->probe_keys);
-    parse_daykeys(j, npf_json_get(j, d, "relay_keys"), n->relay_keys);
 }
 
 /* a renewed account (client) certificate from welcome: keep it and tell the program */
