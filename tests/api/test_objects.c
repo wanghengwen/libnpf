@@ -656,6 +656,14 @@ int main(void)
         o.role = NPF_ROLE_NODE;
         check(npf_create(&o, &c, err, sizeof err) == NPF_EINVAL && strstr(err, "roots"), "a node without roots: NPF_EINVAL");
         o.role = NPF_ROLE_DIRECT;
+        {
+            static char model[1100];
+            memset(model, 'm', sizeof model - 1);
+            su.model = model;           /* longer than a value holds */
+            check(npf_create(&o, &c, err, sizeof err) != NPF_OK && strstr(err, "model"),
+                  "a field too long for its key: refused, naming it");
+            su.model = NULL;
+        }
         check(npf_create(&o, &c, err, sizeof err) == NPF_OK && npf_config_get(c, "direct", val, sizeof val) == NPF_OK
               && atoi(val) == dport + 1, "npf_setup: no configuration file, the fields as keys");
         check(npf_pairing_password_get(c, val, sizeof val) == NPF_ESTATE, "no number: pairing NPF_ESTATE");
