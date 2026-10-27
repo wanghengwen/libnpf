@@ -245,12 +245,11 @@ static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int requir
         if (r)
             npf_logw("upgrade: this version is too old for the platform (%s needed%s%s)", n->upgrade.min,
                      n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
-        else if (n->upgrade.latest[0]) {
+        else if (n->upgrade.latest[0])
             npf_log("upgrade: version %s is available%s%s", n->upgrade.latest, n->upgrade.url[0] ? ", see " : "",
                     n->upgrade.url);
-            if (notify && n->hooks.on_event)
-                n->hooks.on_event(n, "upgrade", j, d, n->hook_arg);
-        }
+        if (notify && (r || n->upgrade.latest[0]) && n->hooks.on_event)
+            n->hooks.on_event(n, "upgrade", j, d, n->hook_arg);
     } else if (was) {
         npf_log("upgrade: no newer version offered any more");
     }
@@ -881,7 +880,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
             npf_json_get_str(j, 0, "error", err, sizeof err);
             npf_logw("login: rejected (%s)", err);
             if (strcmp(err, "upgrade_required") == 0) {
-                node_upgrade_apply(n, j, npf_json_get(j, 0, "data"), 1, 0);
+                node_upgrade_apply(n, j, npf_json_get(j, 0, "data"), 1, 1);
                 n->upgrade.required = 1;
                 snprintf(n->sig_error, sizeof n->sig_error, "this version is too old for the platform: upgrade to %s%s",
                          n->upgrade.min[0] ? n->upgrade.min : "the newest version",
