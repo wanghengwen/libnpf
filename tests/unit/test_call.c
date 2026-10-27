@@ -5,14 +5,22 @@
  *   the accept: the platform then hears of its rounds (punch_update
  *   path_lost); it did not, every punch_update of the callee was dropped;
  * - a relay_switch the platform dropped without a word is asked again after
- *   RELAY_ASK_AGAIN_MS, not before (it was asked once only). */
+ *   RELAY_ASK_AGAIN_MS, not before (it was asked once only);
+ * - the peer's punch_info port of a round goes to the punch of that round:
+ *   with the next round planned while the last one still runs, it is kept
+ *   for the next one (it went to the old punch, the new one never had it). */
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "npf/json.h"
 #include "npf/log.h"
 #include "npf/node.h"
 #include "npf/platform.h"
+#include "npf/punch.h"
 #include "call_internal.h"
 
 static int fails;
@@ -105,6 +113,60 @@ static void relay_asked_again(npf_node *n)
     npf_call_end(c, "test");
 }
 
+static void punch_done_cb(npf_punch *p, const npf_punch_result *res, int fd, void *arg)
+{
+    (void)p, (void)res, (void)fd, (void)arg;
+}
+
+/* a running S1 punch from fd (on loopback) to a port nobody reads */
+static npf_punch *punch_running(npf_loop *loop, int fd, int *dead)
+{
+    npf_punch_cfg cfg;
+    struct sockaddr_in a;
+    socklen_t al = sizeof a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    *dead = socket(AF_INET, SOCK_DGRAM, 0);
+    if (*dead < 0 || bind(*dead, (struct sockaddr *)&a, sizeof a) < 0 || getsockname(*dead, (struct sockaddr *)&a, &al) < 0)
+        return NULL;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.plan.role = NPF_PUNCH_CONTROLLING;
+    cfg.plan.strategy = NPF_PUNCH_S1;
+    cfg.plan.family = AF_INET;
+    cfg.plan.session_id = 7;
+    cfg.plan.timeout_ms = 10000;
+    cfg.fd6 = -1;
+    memcpy(&cfg.peers[0], &a, sizeof a);
+    cfg.npeers = 1;
+    return npf_punch_new(loop, &cfg, fd, punch_done_cb, NULL);
+}
+
+static void punch_info_round(npf_node *n)
+{
+    npf_call *c = call_new(n, 1);
+    npf_jtok tok[32];
+    npf_json j;
+    char buf[256];
+    int dead = -1;
+    CHECK(c != NULL, "call");
+    if (!c)
+        return;
+    snprintf(c->call_id_s, sizeof c->call_id_s, "info-test");
+    c->punch = punch_running(n->loop, n->udp_fd, &dead);
+    CHECK(c->punch && !npf_punch_finished(c->punch), "a running punch");
+    c->punch_of = 1;                    /* round 1 still running here */
+    c->punch_round = 2;                 /* round 2 planned (its start time to come) */
+    CHECK(msg(&j, tok, 32, buf, sizeof buf, "{\"call_id\":\"info-test\",\"round\":2,\"port\":40001}") == 0,
+          "punch_info JSON");
+    call_handle_punch_info(c, &j, 0);
+    CHECK(c->info_port == 40001 && c->info_round == 2, "round 2's port not kept for its punch (%u, round %d)",
+          (unsigned)c->info_port, c->info_round);
+    npf_call_end(c, "test");
+    if (dead >= 0)
+        close(dead);
+}
+
 int test_call(void)
 {
     static npf_node node;
@@ -130,6 +192,7 @@ int test_call(void)
 
     callee_accept_after_relay(&node);
     relay_asked_again(&node);
+    punch_info_round(&node);
 
     npf_log_ctx_swap(old);
     npf_node_stop(&node);

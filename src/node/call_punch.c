@@ -275,7 +275,9 @@ void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
         return;
     if (round < c->punch_round)
         return;
-    if (round == c->punch_round && c->punch)
+    /* the punch of that round only: after an early failure the next round
+     * is planned (punch_round) while the last one may still run here */
+    if (c->punch && c->punch_of == round)
         npf_punch_peer_port(c->punch, (uint16_t)port);
     else {                          /* the punch starts later (its time, the keys, its plan) */
         c->info_port = (uint16_t)port;
