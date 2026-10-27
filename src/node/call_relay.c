@@ -48,7 +48,22 @@ void call_ask_ws_relay(npf_call *c)
     npf_log("call %s: asking for the WS relay", c->call_id_s);
     snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"ws\"}", c->call_id_s);
     npf_node_send(c->n, "relay_switch", 0, data);
-    c->relay_asked = 1;
+    call_relay_asked(c);
+}
+
+/* may a relay_switch go out: none is waiting for its allocation, or the last
+ * one is RELAY_ASK_AGAIN_MS old. The platform drops some without a word (the
+ * call not accepted yet, no token left, refused before the session is up, no
+ * relay to give): a session asked once only never had a relay again */
+int call_relay_ask_ok(const npf_call *c)
+{
+    return !c->relay_asked_ms || npf_mono_ms() - c->relay_asked_ms >= RELAY_ASK_AGAIN_MS;
+}
+
+void call_relay_asked(npf_call *c)
+{
+    int64_t now = npf_mono_ms();
+    c->relay_asked_ms = now ? now : 1;
 }
 
 static void ws_wait_done(npf_loop *loop, void *arg)
@@ -140,7 +155,7 @@ static void relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], 
 {
     relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
     snprintf(c->relay.mode, sizeof c->relay.mode, "%s", mode);
-    c->relay_asked = 0;
+    c->relay_asked_ms = 0;
     timer_stop(c->n->loop, &c->t_standby);
 }
 

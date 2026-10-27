@@ -96,7 +96,7 @@ struct npf_call {
     int         relay_waits_ports;  /* the UDP relay unreachable while punches held the NAT's ports: again when they end */
     int         relay_ports_waited; /* that wait was had (once) */
     npf_timer  *t_standby;
-    int         relay_asked;        /* relay_switch sent, waiting for a new allocation */
+    int64_t     relay_asked_ms;     /* relay_switch sent at (monotonic ms), waiting for a new allocation; 0 none */
     int         ws_fail_wait;       /* caller: the WS relay failed before the accept: asked about after it */
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
     int         nrearly;
@@ -189,6 +189,7 @@ typedef struct call_hs {
 #define RELAY_KEEPALIVE_MS 25000     /* RELAY_BIND refresh while the relay is in use */
 #define RELAY_STANDBY_MS   30000     /* relay kept after the direct path is up, then released */
 #define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
+#define RELAY_ASK_AGAIN_MS 10000     /* a relay_switch with no allocation after this long: may be asked again */
 #define PUNCH_LINGER_MS    10000
 #define RELAY_DATA_OVERHEAD (RELAY_HINT_SIZE + NPF_SIV_TAG_SIZE + 6)
 #define PUNCH_ROUNDS_MAX 10         /* the platform's counted rounds of a call (a sanity limit here) */
@@ -214,6 +215,8 @@ void call_b64_of(const uint8_t *b, size_t n, char *out);
 npf_call *call_find(npf_node *n, const npf_json *j, int d);
 int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len);
 int call_relay_addr_blocked(const npf_call *c);
+int  call_relay_ask_ok(const npf_call *c);
+void call_relay_asked(npf_call *c);
 void call_relay_leave(npf_call *c);
 /* the peer's addresses this node sends to (security.md H-1): a candidate;
  * the public IP the sprays aim at */
