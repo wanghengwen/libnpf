@@ -527,7 +527,7 @@ int npf_punch_add_peer(npf_punch *p, const struct sockaddr_storage *a, int srflx
         p->cfg.plan.peer_srflx = *a;    /* the hard side's sockets: at the easy side's new mapping */
         p->cfg.plan.peer_srflx_len = sizeof(struct sockaddr_in);
         for (i = 1; i < p->nsock; i++)
-            p->socks[i].next_send = npf_mono_ms();
+            p->socks[i].next_send = npf_mono_ms() + (i - 1) % 50;  /* spread, as the first burst */
         added = 1;
     }
     for (i = 0; i < p->cfg.npeers && !same_ss(a, &p->cfg.peers[i]); i++)
