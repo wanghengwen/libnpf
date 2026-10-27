@@ -31,8 +31,8 @@ static void sig_down(npf_sig *s, const char *why)
 }
 
 /* A WebSocket message is a binary message: the Noise handshake message or
- * transport ciphertext as it is (signaling.md). Received, a text message
- * with the same in Base64url is taken too (servers before 2026-10-22). */
+ * transport ciphertext as it is (signaling.md); a text message ends the
+ * connection. */
 static int send_msg(npf_ws *ws, const uint8_t *m, size_t n)
 {
     if (n > NPF_JSON_MAX_SIZE + 64)
@@ -49,33 +49,15 @@ static void ws_open(npf_ws *ws, void *arg)
         sig_down(s, "noise write failed");
 }
 
-static void ws_msg(npf_ws *ws, const uint8_t *msg, size_t mlen, int binary, void *arg)
+static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void *arg)
 {
     npf_sig *s = arg;
-    uint8_t *raw = NULL;                /* a text message's bytes, per message: no state shared
-                                           between instances */
-    const uint8_t *data = msg;
-    size_t len = mlen;
     (void)ws;
-    if (!binary) {                      /* Base64url text: a server before 2026-10-22 */
-        size_t rcap = mlen / 4 * 3 + 3; /* each its size, not the largest's (96 KB a message
-                                           left holes in the heap of many instances) */
-        int dl;
-        if (rcap > NPF_JSON_MAX_SIZE + 64)
-            rcap = NPF_JSON_MAX_SIZE + 64;
-        if (!(raw = malloc(rcap))) {
-            sig_down(s, "no memory");
-            return;
-        }
-        dl = npf_b64url_decode((const char *)msg, mlen, raw, rcap);
-        if (dl < 0) {
-            free(raw);
-            sig_down(s, "bad base64url");
-            return;
-        }
-        data = raw;
-        len = (size_t)dl;
-    } else if (len > NPF_JSON_MAX_SIZE + 64) {
+    if (!binary) {
+        sig_down(s, "text frame");
+        return;
+    }
+    if (len > NPF_JSON_MAX_SIZE + 64) {
         sig_down(s, "message too large");
         return;
     }
@@ -83,11 +65,9 @@ static void ws_msg(npf_ws *ws, const uint8_t *msg, size_t mlen, int binary, void
         uint8_t m[128], p[64];
         int n;
         if (npf_noise_read(&s->hs, data, len, p, sizeof p) < 0) {
-            free(raw);
             sig_down(s, "server authentication failed");
             return;
         }
-        free(raw);
         n = npf_noise_write(&s->hs, NULL, 0, m, sizeof m);
         if (n < 0 || npf_noise_split(&s->hs, &s->tx, &s->rx, NULL, NULL, s->hash) < 0
             || send_msg(s->ws, m, (size_t)n) < 0) {
@@ -116,7 +96,6 @@ static void ws_msg(npf_ws *ws, const uint8_t *msg, size_t mlen, int binary, void
         else if (npf_json_parse(&j, (const char *)plain, (size_t)n, tok, (int)ntok) < 0
                  || tok[0].type != NPF_JT_OBJECT)
             bad = "bad json";
-        free(raw);
         if (bad)
             sig_down(s, bad);
         else
