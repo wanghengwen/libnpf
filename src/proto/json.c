@@ -2,6 +2,7 @@
 
 #include "npf/crypto.h"
 #include "npf/json.h"
+#include "npf/out.h"
 
 typedef struct parser {
     npf_json *j;
@@ -551,21 +552,16 @@ void npf_jw_end(npf_jw *w)
 
 static void put_str(npf_jw *w, const char *v, size_t n)
 {
-    static const char hex[] = "0123456789abcdef";
-    size_t i;
+    size_t i, run = 0, el;
+    char e[6];
     put(w, "\"", 1);
-    for (i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)v[i];
-        if (c == '"' || c == '\\') {
-            char e[2] = {'\\', (char)c};
-            put(w, e, 2);
-        } else if (c < 0x20) {
-            char e[6] = {'\\', 'u', '0', '0', hex[c >> 4], hex[c & 15]};
-            put(w, e, 6);
-        } else {
-            put(w, (const char *)&v[i], 1);
+    for (i = 0; i < n; i++)
+        if ((el = npf_json_esc((unsigned char)v[i], e))) {
+            put(w, v + run, i - run);
+            put(w, e, el);
+            run = i + 1;
         }
-    }
+    put(w, v + run, n - run);
     put(w, "\"", 1);
 }
 

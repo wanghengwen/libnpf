@@ -101,7 +101,7 @@ static void test_writer(void)
     npf_jw_end(&w);
     npf_jw_end(&w);
     CHECK(npf_jw_finish(&w) > 0, "writer finish");
-    CHECK(strcmp(buf, "{\"q\":\"a\\\"b\\\\c\\u000a\",\"n\":-42,\"arr\":[1,{\"t\":true},null]}") == 0, "writer output %s", buf);
+    CHECK(strcmp(buf, "{\"q\":\"a\\\"b\\\\c\\n\",\"n\":-42,\"arr\":[1,{\"t\":true},null]}") == 0, "writer output %s", buf);
     CHECK(parse(buf, &j) == 0 && npf_json_get_str(&j, 0, "q", s, sizeof s) == 6 && strcmp(s, "a\"b\\c\n") == 0,
           "writer round trip");
     npf_jw_init(&w, buf, 8);
