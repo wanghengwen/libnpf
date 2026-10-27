@@ -506,7 +506,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `call_established` | 被叫 → 平台 | 事件 | 被叫收到了主叫的 `hello`：会话已建立，端到端握手成立；此后 `relay_switch` 才不再限次（见"中转方式的选择"） |
 | `punch_start` | 平台 → 双方 | 事件 | 一轮打洞的计划与同步开始时刻 |
 | `punch_request` | 平台 → 被叫 | 请求 | 平台开始下一轮之前要被叫的最新画像与候选（第一轮用 `incoming` 应答里的） |
-| `punch_update` | 任一方 → 平台 | 事件 | 本方的画像变了及原因（网络变化后重新测过 NAT、直连失效），附最新画像与候选；下一轮何时开始由平台决定 |
+| `punch_update` | 任一方 → 平台 | 事件 | 本方的画像变了及原因（网络变化后重新测过 NAT、第一次测出 NAT、直连失效），附最新画像与候选；下一轮何时开始由平台决定 |
 | `punch_result` | 双方 → 平台 | 事件 | 本轮打洞的结果与统计，以及这一轮看到的对方 NAT 的行为；主叫让出的一轮（`busy`）与端口紧张的迹象 |
 | `punch_info` | 任一方 → 平台 → 另一方；平台 → 一方 | 事件 | S2B、S2 难侧：本方新 socket 的映射端口（nat-traversal.md 7.6、7.3）；`cand`：对方的新 `srflx`（平台发出：对方的中转分配绑定的地址来了或变了，nat-traversal.md 4.5）；`stop`：主叫让出了这一轮，被叫结束它（平台发出） |
 | `call_end` | 任一方 → 平台 | 请求 | 会话结束，平台释放中转，在呼叫记录中写下结束时间 |
@@ -822,6 +822,7 @@ S2B 的双方在 `start_at` 各自用一个新 socket 向探测服务器 E1 测�
 | `why` | 什么时候 | 平台 |
 |---|---|---|
 | `network` | 网络变化（网卡地址变了、进程挂起后恢复）后重新测出 NAT | 记下画像；退避从头算，没有在进行的一轮时立即开始一轮 |
+| `profile` | 节点第一次测出 NAT（呼叫发出时它还没有候选；2026-10-27 起只在这时，NAT 再测时不发：一侧的 `srflx` 取自中转看到的地址） | 记下画像，下一轮用 |
 | `path_lost` | 直连失效、放弃直连（nat-traversal.md 10.3） | 记下画像，立即开始一轮（没有中转的匿名主叫只能靠它，在 AnLiu 的空闲超时之前） |
 
 已直连、已结束、WS 中转上和 `secure` 的会话不发。
@@ -1022,7 +1023,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
-| 2026-10-27 | 0.48 | 有绑定的 UDP 中转分配（本次呼叫的或备用分配）的一侧的 `srflx` / `pub_ip` 由平台按中转看到的地址 R 给出（nat-traversal.md 4.5，home-binding.md U7 推翻）：节点不再在呼叫时核对映射、不再发 `punch_info` 的 `cand`，`punch_update` 去掉 `profile`；平台丢弃节点发的 `cand`，R 在呼叫中来了或变了时自己向对方发 `punch_info{cand}`、开始下一轮；被叫接受之前留着的 `punch_info` 去掉；服务器之间的 `call` 带主叫的 R，变了发 `caller_r` |
+| 2026-10-27 | 0.48 | 有绑定的 UDP 中转分配（本次呼叫的或备用分配）的一侧的 `srflx` / `pub_ip` 由平台按中转看到的地址 R 给出（nat-traversal.md 4.5，home-binding.md U7 推翻）：节点不再在呼叫时核对映射、不再发 `punch_info` 的 `cand`，`punch_update` 的 `profile` 只在第一次测出 NAT 时发；平台丢弃节点发的 `cand`，R 在呼叫中来了或变了时自己向对方发 `punch_info{cand}`、开始下一轮；被叫接受之前留着的 `punch_info` 去掉；服务器之间的 `call` 带主叫的 R，变了发 `caller_r` |
 | 2026-10-27 | 0.47 | 打洞简化：轮次全部由平台安排（节点只执行与报告：去掉主叫的退避与 `punch_request`，`punch_request` 只剩平台向被叫要画像；新增 `punch_update`：一方的画像变了、网络变化、直连失效）；主叫让出的一轮改为 `punch_result` 的 `busy`、`ends_in_ms` 与端口紧张的迹象 `pressure`、`hard_ago_ms`，间隔由平台决定；没有候选的一轮不再发 `skip: no_candidates`；去掉 `unsolicited`（过滤不再从轮次里学）；去掉 S5 |
 | 2026-10-26 | 0.46 | 备用分配：主叫在另一台服务器上时它的备用分配经服务器链路使用（P4），节点一侧不变 |
 | 2026-10-26 | 0.45 | 常驻中转绑定改为备用分配（home-binding.md v0.5）：`home_open` 应答带一个 `relay` 对象（`spare: true`），`resume` 用 `relay_id`；`home_close{relay_id}`；`relay_spare` 事件（`taken` / `rotated`）取代 `home_rekey`；`relay` 对象的 `spare`：呼叫取用一侧新鲜的备用分配作为它的分配；呼叫记录 `relays[].spare` |

@@ -105,8 +105,9 @@ void node_nat_regather(npf_node *n)
 }
 
 /* the profile is known (or the probe servers did not answer): candidates,
- * the log line, the report to the platform, and a login that waited for it */
-static void nat_settled(npf_node *n)
+ * the log line, the report to the platform, and a login that waited for it.
+ * first: the node's first profile (a call made before it had no candidates) */
+static void nat_settled(npf_node *n, int first)
 {
     gather(n);
     {
@@ -119,10 +120,11 @@ static void nat_settled(npf_node *n)
                 n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands);
     }
     /* a network change: the calls' platforms hear the new profile and punch
-     * again. Not otherwise: a side's srflx during a call is where the
-     * platform's relay sees its spare (signaling.md punch_update) */
-    if (n->online && n->repunch_on_nat)
-        node_calls_punch_report(n, "network");
+     * again; the first profile: the calls made without candidates get them.
+     * Not otherwise: a side's srflx during a call is where the platform's
+     * relay sees its allocation (signaling.md punch_update) */
+    if (n->online && (n->repunch_on_nat || first))
+        node_calls_punch_report(n, n->repunch_on_nat ? "network" : "profile");
     n->repunch_on_nat = 0;
     npf_node_report_nat(n);
     if (n->login_waits_nat) {
@@ -178,6 +180,7 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
 {
     npf_node *n = arg;
     int udp_back = ok && n->nat_valid && !n->nat_udp;   /* the last probe had no answer */
+    int first = !n->nat_valid;
     n->probe = NULL;
     if (ok) {
         int i, last = -1;
@@ -237,7 +240,7 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
     }
     n->nat_quick = 0;
     n->nat_valid = 1;
-    nat_settled(n);
+    nat_settled(n, first);
     /* the sessions made meanwhile went to the WS relay (udp false: no UDP
      * relay, no punching) and would stay there: they start again */
     if (udp_back)
@@ -278,7 +281,7 @@ void node_nat_refresh(npf_node *n)
         if ((n->probe = npf_natprobe_start(n->loop, &cfg, probe_done, n)) != NULL)
             return;
     }
-    nat_settled(n);                 /* no probe servers: what is known (local tests) */
+    nat_settled(n, 0);              /* no probe servers: what is known (local tests) */
 }
 
 /* at login: the hook waits for a first profile; with one from before it runs

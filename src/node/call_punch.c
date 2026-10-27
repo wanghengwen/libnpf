@@ -38,7 +38,8 @@ static void write_pressure(const npf_call *c, npf_jw *w)
 
 /* the platform hears what changed for the call's rounds (punch_update):
  * why "network" (the NAT measured again after a network change),
- * "path_lost" (the direct path given up); with this side's profile and
+ * "profile" (the node's first profile: a call made before had no
+ * candidates), "path_lost" (the direct path given up); with this side's profile and
  * candidates. The platform decides whether and when a round comes; a moved
  * mapping it sees itself (its relay, the spare's address) */
 void call_punch_report(npf_call *c, const char *why)
