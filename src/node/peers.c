@@ -1018,7 +1018,8 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
         }
         finish(p, p->last_why[0] ? p->last_why : "local");
     }
-    peer_changed(p);
+    if (!p->removed)                        /* finish / peers_start_call: removed in the done callback */
+        peer_changed(p);
 }
 
 const uint8_t *npf_peer_psk(const npf_peer *p) { return p->direct ? p->psk : NULL; }
@@ -1096,6 +1097,8 @@ int npf_peer_wake_now(npf_peer *p)
             p->t_retry = NULL;
         }
         peers_start_call(p);
+        if (p->removed)
+            return 0;                       /* the done callback removed it (it gave up at once) */
         if (p->idle_ms && (p->call || p->waiting))
             peers_demand_timer(p);
         peer_changed(p);
@@ -1104,7 +1107,8 @@ int npf_peer_wake_now(npf_peer *p)
     if (p->idle_ms) {
         npf_log("%s: woken: starting the session", p->name);
         peers_start_call(p);
-        peers_demand_timer(p);              /* it ends idle_ms later unless used */
+        if (!p->removed)
+            peers_demand_timer(p);          /* it ends idle_ms later unless used */
         return 0;
     }
     if (p->t_retry) {                       /* a direct one too (it was left to wait out its backoff) */
