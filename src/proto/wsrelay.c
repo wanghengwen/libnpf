@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/crypto.h"
+#include "npf/json.h"
 #include "npf/noise.h"
 #include "npf/wsrelay.h"
 #include "npf/ws.h"
@@ -99,25 +101,31 @@ static void on_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         return;
     switch (data[0]) {
     case NPF_WSR_CTL: {
-        char plain[1024];
+        char plain[1024], type[24] = "";
+        npf_jtok tok[32];
+        npf_json j;
         int n;
         if (len - 1 > sizeof plain + 16 || (n = npf_noise_decrypt(&r->rx, NULL, 0, data + 1, len - 1, (uint8_t *)plain)) < 0) {
             wsr_down(r, "control decrypt failed");
             return;
         }
-        plain[n < (int)sizeof plain ? n : (int)sizeof plain - 1] = 0;
-        if (strstr(plain, "\"relay_bound\"")) {
+        /* the message's type, not a word found anywhere in it (an error's
+         * text naming another type); the text wiped before anything runs */
+        if (npf_json_parse(&j, plain, (size_t)n, tok, 32) == 0 && j.tok[0].type == NPF_JT_OBJECT)
+            npf_json_get_str(&j, 0, "type", type, sizeof type);
+        npf_wipe(plain, sizeof plain);
+        if (strcmp(type, "relay_bound") == 0) {
             r->bound = 1;
-        } else if (strstr(plain, "\"relay_paired\"")) {
+        } else if (strcmp(type, "relay_paired") == 0) {
             r->paired = 1;
             if (r->cbs.paired)
                 r->cbs.paired(r, r->arg);
-        } else if (strstr(plain, "\"relay_peer_gone\"")) {
+        } else if (strcmp(type, "relay_peer_gone") == 0) {
             npf_wsr_cbs cbs = r->cbs;
             r->paired = 0;
             if (cbs.gone)
                 cbs.gone(r, "peer gone", r->arg);
-        } else if (strstr(plain, "\"relay_error\"")) {
+        } else if (strcmp(type, "relay_error") == 0) {
             wsr_down(r, "relay refused the binding");
         }
         return;
