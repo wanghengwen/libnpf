@@ -1,8 +1,8 @@
 /* Logging (npf/log.h): the process log's sink writes a line under a lock to
- * the log file (rotated) or stderr and keeps the last lines in memory for the
- * control socket. A libnpf instance's lines
- * (this thread's log context) stay with the instance: its recent lines and
- * its callback, which runs outside every lock. */
+ * the application's writer (its log file) or stderr and keeps the last lines
+ * in memory for the control socket. A libnpf instance's lines (this thread's
+ * log context) stay with the instance: its recent lines and its callback,
+ * which runs outside every lock. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -16,38 +16,18 @@
 #include "npf/sys.h"
 
 #ifdef _WIN32
-#include <fcntl.h>
-#include <io.h>
 #include <windows.h>
 static SRWLOCK g_lock = SRWLOCK_INIT;
-static void lock_fn(int lock)
-{
-    if (lock)
-        AcquireSRWLockExclusive(&g_lock);
-    else
-        ReleaseSRWLockExclusive(&g_lock);
-}
+void npf_log_lock(void) { AcquireSRWLockExclusive(&g_lock); }
+void npf_log_unlock(void) { ReleaseSRWLockExclusive(&g_lock); }
 #else
-#include <fcntl.h>
 #include <pthread.h>
-#include <unistd.h>
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static void lock_fn(int lock)
-{
-    if (lock)
-        pthread_mutex_lock(&g_lock);
-    else
-        pthread_mutex_unlock(&g_lock);
-}
+void npf_log_lock(void) { pthread_mutex_lock(&g_lock); }
+void npf_log_unlock(void) { pthread_mutex_unlock(&g_lock); }
 #endif
 
-static FILE *g_logf;                /* NULL: stderr */
-static int   g_echo;                /* daemon start-up: the terminal sees the log too */
-static int   g_own_stderr = 1;      /* stderr goes to the log file too (not in an application) */
-static char  g_log_path[1024];
-static long  g_log_max = 10L << 20;
-static long  g_log_size;            /* bytes in the file (counted: no ftell per line) */
-static long  g_log_rot;             /* rotated past this size (g_log_max; more after a failed rotation) */
+static void (*g_writer)(const char *line, size_t len);     /* NULL: stderr */
 static int   g_level = NPF_LOG_INFO;     /* the process's; atomic */
 static NPF_THREAD_LOCAL npf_log_ctx *t_ctx;
 
@@ -60,81 +40,6 @@ static size_t g_ring_pos, g_ring_len;
 
 static const char *const names[] = {"trace", "debug", "info", "warn", "error"};
 static const char *const tags[] = {"TRACE", "DEBUG", "INFO ", "WARN ", "ERROR"};
-
-static int log_attach(int to_stderr)
-{
-#ifndef _WIN32
-    /* a new log is private (0600); an existing one keeps its mode */
-    int fd = open(g_log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
-    FILE *f = fd >= 0 ? fdopen(fd, "a") : NULL;
-    if (!f) {
-        if (fd >= 0)
-            close(fd);
-        return -1;
-    }
-#else
-    /* as on POSIX: a new log is private, the handle not inherited (N) */
-    int existed = GetFileAttributesA(g_log_path) != INVALID_FILE_ATTRIBUTES;
-    FILE *f = fopen(g_log_path, "aN");
-    if (!f)
-        return -1;
-    if (!existed)
-        npf_file_private(g_log_path);
-#endif
-#ifndef _WIN32
-    fcntl(fileno(f), F_SETFD, FD_CLOEXEC);
-    if (to_stderr)
-        dup2(fileno(f), 2);         /* stray stderr output lands in the log too */
-#else
-    if (to_stderr) {
-        /* as POSIX dup2s: stray stderr output (a start-up error, the CRT's
-         * own messages) lands in the log too. A handle of its own that
-         * shares delete, so that it does not hold the file against the
-         * rotation's rename */
-        HANDLE h = CreateFileA(g_log_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-        int fd = h != INVALID_HANDLE_VALUE ? _open_osfhandle((intptr_t)h, _O_WRONLY | _O_APPEND) : -1;
-        if (fd >= 0) {
-            fflush(stderr);
-            if (_dup2(fd, 2) == 0) {
-                HANDLE e = (HANDLE)_get_osfhandle(2);
-                SetHandleInformation(e, HANDLE_FLAG_INHERIT, 0);    /* _dup2 makes it inheritable */
-                SetStdHandle(STD_ERROR_HANDLE, e);
-            }
-            _close(fd);
-        } else if (h != INVALID_HANDLE_VALUE) {
-            CloseHandle(h);
-        }
-    }
-#endif
-    if (g_logf)
-        fclose(g_logf);
-    g_logf = f;
-    fseek(f, 0, SEEK_END);
-    g_log_size = ftell(f);
-    if (g_log_size < 0)
-        g_log_size = 0;
-    g_log_rot = g_log_max;
-    return 0;
-}
-
-static void log_rotate(void)
-{
-    char old[1100];
-    snprintf(old, sizeof old, "%s.1", g_log_path);
-    fclose(g_logf);
-    g_logf = NULL;
-    remove(old);
-    if (rename(g_log_path, old) != 0) {
-        /* held open elsewhere (Windows) or the directory not writable: the
-         * file is not rotated at each line from now on, it goes on growing
-         * to twice the size and then this tries again */
-        if (log_attach(!g_echo && g_own_stderr) == 0)
-            g_log_rot = g_log_size + g_log_max;
-        return;
-    }
-    log_attach(!g_echo && g_own_stderr);
-}
 
 static void ring_put(char *ring, size_t *pos, size_t *len, const char *s, size_t n)
 {
@@ -177,25 +82,31 @@ static int make_line(int lv, const char *file, int ln, const char *msg, char *li
     return n;
 }
 
-/* the process log, called under the lock: no application code here */
+/* the process log, called under the lock (the writer too) */
 static void sink(int lv, const char *file, int ln, const char *msg)
 {
     char line[2300];
     int n = make_line(lv, file, ln, msg, line, sizeof line);
     ring_put(g_ring, &g_ring_pos, &g_ring_len, line, (size_t)n);
-    /* a file gets the date as well; the terminal only the time */
-    if (g_logf) {
-        fwrite(line, 1, (size_t)n, g_logf);
-        fflush(g_logf);
-        g_log_size += n;
-    }
-    if (!g_logf || g_echo) {
-        size_t skip = n > 11 ? 11 : 0;     /* make_line returns one byte on a formatting error */
-        fwrite(line + skip, 1, (size_t)n - skip, stderr);
-        fflush(stderr);
-    }
-    if (g_logf && g_log_size > g_log_rot)
-        log_rotate();
+    if (g_writer)
+        g_writer(line, (size_t)n);
+    else
+        npf_log_stderr(line, (size_t)n);
+}
+
+/* the terminal gets the time only */
+void npf_log_stderr(const char *line, size_t len)
+{
+    size_t skip = len > 11 ? 11 : 0;        /* make_line returns one byte on a formatting error */
+    fwrite(line + skip, 1, len - skip, stderr);
+    fflush(stderr);
+}
+
+void npf_log_set_writer(void (*fn)(const char *line, size_t len))
+{
+    npf_log_lock();
+    g_writer = fn;
+    npf_log_unlock();
 }
 
 npf_log_ctx *npf_log_ctx_swap(npf_log_ctx *c)
@@ -236,9 +147,9 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
             return;
         }
     }
-    lock_fn(1);
+    npf_log_lock();
     sink(lv, file, line, msg);
-    lock_fn(0);
+    npf_log_unlock();
 }
 
 void npf_log_set_level(int level)
@@ -289,9 +200,9 @@ size_t npf_log_recent(char *out, size_t cap)
         }
         return ring_copy(t_ctx->ring, t_ctx->ring_pos, t_ctx->ring_len, out, cap);
     }
-    lock_fn(1);
+    npf_log_lock();
     r = ring_copy(g_ring, g_ring_pos, g_ring_len, out, cap);
-    lock_fn(0);
+    npf_log_unlock();
     return r;
 }
 
@@ -315,69 +226,3 @@ static size_t ring_copy(const char *ring, size_t pos, size_t len, char *out, siz
     return n - skip;
 }
 
-/* ---- files (npf/log.h) ---- */
-
-int npf_log_open(const char *path, long max_bytes)
-{
-    char abs[sizeof g_log_path];
-    int r;
-    if (npf_abspath(path, abs, sizeof abs) < 0)
-        return -1;
-    lock_fn(1);                /* a line being written may rotate the old path */
-    memcpy(g_log_path, abs, sizeof abs);
-    if (max_bytes > 0)
-        g_log_max = max_bytes;
-    g_own_stderr = 1;
-    r = log_attach(1);
-    lock_fn(0);
-    return r;
-}
-
-int npf_log_open_app(const char *path, long max_bytes)
-{
-    char abs[sizeof g_log_path];
-    int r;
-    if (npf_abspath(path, abs, sizeof abs) < 0)
-        return -1;
-    lock_fn(1);                /* a line being written may rotate the old path */
-    memcpy(g_log_path, abs, sizeof abs);
-    if (max_bytes > 0)
-        g_log_max = max_bytes;
-    g_own_stderr = 0;
-    r = log_attach(0);
-    lock_fn(0);
-    return r;
-}
-
-/* Unix daemon start-up: path is absolute; stderr is still the terminal and
- * sees every line until npf_log_detach_terminal() */
-int npf_log_open_daemon(const char *path)
-{
-    int r;
-    lock_fn(1);
-    snprintf(g_log_path, sizeof g_log_path, "%s", path);
-    r = log_attach(0);
-    g_echo = r == 0;
-    lock_fn(0);
-    return r;
-}
-
-void npf_log_detach_terminal(void)
-{
-    lock_fn(1);
-    g_echo = 0;
-#ifndef _WIN32
-    if (g_logf)
-        dup2(fileno(g_logf), 2);    /* from now on the terminal may be gone */
-#endif
-    lock_fn(0);
-}
-
-void npf_log_reopen(void)
-{
-    if (!g_log_path[0])
-        return;
-    lock_fn(1);
-    log_attach(!g_echo && g_own_stderr);
-    lock_fn(0);
-}
