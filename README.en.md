@@ -64,7 +64,8 @@ su.nroots = 1;
 su.serverlist = list;           /* its signed server list (bytes) */
 su.serverlist_len = list_len;
 npf_callbacks_init(&cb);
-cb.notify = on_notify;          /* typed events: online, sessions, peers, forwards ... */
+cb.event = on_event;            /* events: a name and JSON (online, forwards, a peer done ...) */
+cb.session = on_session;        /* sessions up and down */
 cb.data = on_data;              /* application data from a peer */
 npf_options_init(&o);
 o.setup = &su;                  /* no configuration file needed */

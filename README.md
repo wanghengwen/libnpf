@@ -64,7 +64,8 @@ su.nroots = 1;
 su.serverlist = list;           /* 签名的服务器列表（字节） */
 su.serverlist_len = list_len;
 npf_callbacks_init(&cb);
-cb.notify = on_notify;          /* 类型化的事件：上线、会话、对端、转发 ... */
+cb.event = on_event;            /* 事件：名称与 JSON（上线、转发、对端结束 ...） */
+cb.session = on_session;        /* 会话建立、结束 */
 cb.data = on_data;              /* 对端发来的应用数据 */
 npf_options_init(&o);
 o.setup = &su;                  /* 不需要配置文件 */

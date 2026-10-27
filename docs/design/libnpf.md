@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-文档版本：2.2。更新日期：2026-10-21。本版按当前公开头文件、实现和构建配置核对，并补充错误处理、事件生命周期和集成示例。文档版本与库版本、`NPF_API_VERSION` 分别编号。
+文档版本：2.3。更新日期：2026-10-27。本版去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
@@ -64,7 +64,7 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 - 可扩展的选项和查询结构体以 `size` 开头，例如 `npf_options`、`npf_callbacks`、`npf_setup`、`npf_peer_opt`、`npf_forward_opt`、`npf_resource` 和各个对象的 `*_info`。库按双方已知的大小读写；输入缺少的尾部字段使用默认值，查询输出多出的尾部清零。`npf_endpoint`、`npf_frame_info` 等小结构没有 `size`，不能套用这一规则；
 - 用各自的 `*_init` 宏（媒体选项是 `npf_media_opt_default`）初始化。宏把调用方的 `sizeof` 传给库（`npf_options_init_size` 等），库只写这么多字节：旧程序配新库时不会越界，新程序配旧库时多出的字段为 0；`npf_media_stats` 由调用方填 `size`；
 - 结构体数组（`npf_resource_list`、`npf_pairing_list`）由宏传入元素大小，库按调用方的步长定位每个元素，只写双方都知道的部分，多出的尾部清零；
-- 事件 `npf_event` 由库分配，字段只在末尾增加：应用按 `ev->size` 判断某个字段是否存在，不认识的事件类型忽略即可。
+- 事件是名称加 JSON：新版本可能增加事件和 JSON 键，应用忽略不认识的即可。
 
 大小字段只解决结构体扩展，不保证新函数在旧库中存在。部署时仍应检查所需符号和行为；旧版头文件的兼容性应通过独立消费者验证。
 
@@ -72,7 +72,7 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 
 ### 3.1 设备：被别人连接
 
-完整程序见 [device.c](../../examples/device.c)。下面是应用初始化函数中的片段，需要包含 `<npf.h>` 和 `<stdio.h>`。`roots`、`list`、`list_len` 和 `cred` 由应用提供；`roots` 必须是真实平台根公钥，不能使用全零占位值。`on_notify`、`on_data` 由应用实现。
+完整程序见 [device.c](../../examples/device.c)。下面是应用初始化函数中的片段，需要包含 `<npf.h>` 和 `<stdio.h>`。`roots`、`list`、`list_len` 和 `cred` 由应用提供；`roots` 必须是真实平台根公钥，不能使用全零占位值。`on_event`、`on_session`、`on_data` 由应用实现。
 
 ```c
 npf_setup su;
@@ -91,7 +91,8 @@ su.model_cred = cred;               /* 型号凭证，从加密存储读出，�
 su.serial = "SN0001";
 
 npf_callbacks_init(&cb);
-cb.notify = on_notify;              /* 类型化的事件（第 10 节） */
+cb.event = on_event;                /* 事件：名称与 JSON（第 10 节） */
+cb.session = on_session;            /* 会话建立、结束 */
 cb.data = on_data;                  /* 对方发来的应用数据 */
 
 npf_options_init(&o);
@@ -151,7 +152,8 @@ su.nroots = 1;
 su.serverlist = list;
 su.serverlist_len = list_len;
 npf_callbacks_init(&cb);
-cb.notify = on_notify;
+cb.event = on_event;
+cb.session = on_session;
 npf_options_init(&o);
 o.setup = &su;
 o.data_dir = "./client-data";
@@ -167,7 +169,7 @@ npf_peer_opt_init(&po);
 po.target = NPF_TARGET_NUMBER;
 po.number = device_number;
 po.password = pairing_password;    /* 首次配对的口令；已有配对时可为 NULL */
-po.ctx = &my_device;                /* 应用自己的上下文，事件里原样带回 */
+po.ctx = &my_device;                /* 应用自己的上下文，npf_peer_get 读出 */
 rc = npf_peer_create(cli, &po, &peer, err, sizeof err);
 if (rc != NPF_OK && rc != NPF_ESAVE) {
     fprintf(stderr, "npf_peer_create: %s\n", err);
@@ -178,7 +180,7 @@ if (rc != NPF_OK && rc != NPF_ESAVE) {
 npf_forward_opt fo;
 npf_forward_opt_init(&fo);
 fo.kind = NPF_FWD_LOCAL;
-fo.listen.port = 0;                 /* 0：系统分配，NPF_EV_FORWARD 之后用 npf_forward_get 查 */
+fo.listen.port = 0;                 /* 0：系统分配，事件 forward 之后用 npf_forward_get 查 */
 fo.target.host = "127.0.0.1";
 fo.target.port = 5000;
 rc = npf_forward_create(cli, peer, &fo, &fwd, err, sizeof err);
@@ -195,7 +197,7 @@ if (npf_start(cli) != NPF_OK) {
 npf_destroy(cli);
 ```
 
-- `NPF_EV_SESSION_UP` 带会话编号和对端编号；`NPF_EV_FORWARD`（`NPF_FWD_UP`）之后浏览器打开 `http://127.0.0.1:端口` 就是设备上的页面；
+- `session` 回调（`up = 1`）带会话编号，`npf_session_get` 查它属于哪个对端；事件 `forward`（`"up": true`）之后浏览器打开 `http://127.0.0.1:端口` 就是设备上的页面；
 - `npf_session_send(cli, session, buf, len)` 发送应用数据，对方的 `data` 回调收到；`npf_media_open` / `npf_media_send` 发送音视频（第 11 节）；
 - 第一次连接用口令配对，之后库在 `data_dir/local.json` 里记住对方的公钥。设备被重置、换了密钥时，对端进入 `NPF_PEER_ENDED`，`needs` 带 `NPF_NEED_PAIRING_LOST`，要用 `npf_peer_setopt` 的 `NPF_PEER_OPT_PASSWORD` 给它现在的口令。
 
@@ -274,8 +276,8 @@ npf_destroy(cli);
 
 以 `NPF_ROLE_NODE` 第一次运行时库自动注册：
 
-- 成功：事件 `NPF_EV_ENROLLED`（`number`）。编号和库生成的默认口令保存在 `data_dir/node.json`，`npf_pairing_password_get` 读出口令，应用把它显示在设备界面或交给用户首次配对；
-- 被拒：事件 `NPF_EV_ENROLL_FAILED`（`why` 为错误与原因，`retry_in_ms`），库到时自己重试；状态 JSON 的 `enroll` 记着最近一次结果。
+- 成功：事件 `enrolled`（`{"number"}`）。编号和库生成的默认口令保存在 `data_dir/node.json`，`npf_pairing_password_get` 读出口令，应用把它显示在设备界面或交给用户首次配对；
+- 被拒：事件 `enroll_failed`（`{"error", "reason", "retry_in"}`：错误、下表的原因、几秒后重试），库到时自己重试；状态 JSON 的 `enroll` 记着最近一次结果。
 
 | 原因 | 含义 |
 |---|---|
@@ -299,7 +301,7 @@ npf_destroy(cli);
 
 ## 6. 发布资源
 
-资源决定 TCP/UDP 转发可以访问哪些目标，以及对方能否申请反向监听。没有发布对应资源，就不能通过这些转发访问目标；应用数据和媒体接口仍由应用自己的回调处理，不受资源列表直接控制。主叫方在会话建立时和资源更新时收到 `NPF_EV_RESOURCES`，使用事件中的对端 ID 调用 `npf_resource_list(n, peer, ...)` 查询。
+资源决定 TCP/UDP 转发可以访问哪些目标，以及对方能否申请反向监听。没有发布对应资源，就不能通过这些转发访问目标；应用数据和媒体接口仍由应用自己的回调处理，不受资源列表直接控制。主叫方在会话建立时和资源更新时收到事件 `resources`（`{"session", "resources"}`，列表本身）；也可以用会话所属对端的 ID 调用 `npf_resource_list(n, peer, ...)` 查询。
 
 | 类型 | 目标 | 用途 |
 |---|---|---|
@@ -327,7 +329,7 @@ npf_destroy(cli);
 | `connect` | `NPF_CONNECT_KEEP`（一直保持连接，断开后退避重连）、`NPF_CONNECT_ONCE`（一次会话，结束后进入 `NPF_PEER_ENDED`）、`NPF_CONNECT_ON_DEMAND`（有连接用到它的转发时才建立会话，空闲 `idle_ms` 后断开；只用于保存的对端，不能有反向转发） |
 | `flags` | `NPF_PERSIST`：记进 local.json，下次启动恢复（`ONCE` 不能保存） |
 | `name`、`nick` | 名字（`npf_peer_find` 可以按名字找）、备注 |
-| `ctx` | 应用自己的上下文，事件里原样带回 |
+| `ctx` | 应用自己的上下文，`npf_peer_get` 原样读出 |
 
 - 参数通过校验后，同一个目标再次创建返回 `NPF_EEXIST` 和已有的编号，不更新已有对象的口令、配置或上下文。编号按数值比较；直连主机名转为小写，IPv6 地址规范化后再与端口一起比较。名字被其他记录占用也返回 `NPF_EEXIST`，此时输出 ID 为 0；
 - `NPF_ROLE_DIRECT` 下建编号的对端、`NPF_PEERS=OFF` 的构建里建任何对端，都是 `NPF_EUNAVAIL`；
@@ -345,7 +347,7 @@ npf_destroy(cli);
 | `NPF_PEER_OPT_PERSIST` | 传 `int`，只接受 0 或 1。1 保存对端、直连密钥和非平台转发；0 取消下次启动恢复，保留固定公钥、名字和备注。`ONCE` 不能设为 1，按需对端不能设为 0；禁用对象保存时不能设为 1 |
 | `NPF_PEER_OPT_NAME` | 名字最多 32 字节，仅含字母、数字、`.`、`_`、`-`，不能全为数字或等于 `all`，不能与其他对端或本地记录重名；空串清除名字 |
 | `NPF_PEER_OPT_NICK` | 备注最多 128 字节，不含控制字符；空串清除备注。未禁用对象保存时，名字和备注即使属于临时对端也会写入 local.json |
-| `NPF_PEER_OPT_CTX` | 设置或清除应用上下文；允许 NULL。库不释放该指针，生命周期见第 10 节 |
+| `NPF_PEER_OPT_CTX` | 设置或清除应用上下文；允许 NULL。库不释放该指针（第 10 节） |
 | `NPF_PEER_OPT_PASSWORD` | 非空字符串，最多 127 字节；用于编号对端的后续配对，缺少口令或上次口令被拒时立即再试，不写入保存的对端配置。直连或平台对端不接受此选项 |
 
 `NPF_PLATFORM` 对端的 `CONNECT`、`IDLE_MS`、`PERSIST` 返回 `NPF_EREADONLY`，`PASSWORD` 返回 `NPF_EINVAL`；可以修改 `NAME`、`NICK`、`CTX`。参数长度或取值不合法时返回 `NPF_EINVAL`。需要保存的变更若写盘失败，返回 `NPF_ESAVE`，运行状态已经改变。
@@ -370,7 +372,7 @@ return npf_peer_setopt(n, peer, NPF_PEER_OPT_PERSIST, &persist, sizeof persist);
 | `NPF_FWD_REMOTE` | TCP、UDP | 对端上的地址：IP 地址、`localhost` 或 `*`（主机名是 `NPF_EINVAL`），默认 `127.0.0.1`；其他地址（所有地址，或对端的某个局域网地址）要对端的 reverse 资源带 `lan:`；端口 0 由对端选择，要它的 reverse 资源是 `*` 或 `lan:*` | 本机一侧的主机和端口 |
 
 - 本机端口被占用、组合不合法这类立即可知的错误在创建时返回（`NPF_EFAIL`、`NPF_EINVAL`），不留下对象；每个对端最多 `NPF_PEER_FORWARDS_MAX`（16）条，超出 `NPF_EBUSY`；
-- `npf_forward_get`：状态（`NPF_FWD_WAITING`、`UP`、`FAILED` 与 `why_code`）、实际使用的端口、当前连接数、被对端拒绝的连接数。`NPF_FWD_FAILED` 只表示整条规则不能用（端口被占、对端拒绝反向监听），规则在会话中自己退避重试，`NPF_FWD_WHY_FORBIDDEN`（对端的策略）等下一次会话；模块类型的转发 `kind` 为 0；单条连接被对端拒绝（目标不在它发布的资源里）只计数并发 `NPF_EV_FORWARD_REFUSED`，同一个 SOCKS 代理上允许的目标照常连通；
+- `npf_forward_get`：状态（`NPF_FWD_WAITING`、`UP`、`FAILED` 与 `why_code`）、实际使用的端口、当前连接数、被对端拒绝的连接数。`NPF_FWD_FAILED` 只表示整条规则不能用（端口被占、对端拒绝反向监听），规则在会话中自己退避重试，`NPF_FWD_WHY_FORBIDDEN`（对端的策略）等下一次会话；模块类型的转发 `kind` 为 0；单条连接被对端拒绝（目标不在它发布的资源里）只计数（`refused`，最近一次的目标在 `refused_why`），同一个 SOCKS 代理上允许的目标照常连通；
 - 带 `NPF_PERSIST` 的转发要求对端也是保存的；local.json 里保存的是请求的端口（0 仍是 0），实际端口只是运行状态；
 - `npf_forward_remove`、`npf_forward_list(n, peer, ...)`（`peer` 为 0 列出全部）、`npf_forward_setopt`（`NPF_FWD_OPT_CTX`，同 `npf_peer_setopt` 的约定；`npf_forward_get` 的 `ctx` 读出它）。
 
@@ -382,7 +384,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 ## 8. 线程与生命周期
 
-`npf_create` →（建立对端、转发、资源）→ `npf_start` 或 `npf_run` →（调用）→ `npf_stop` → 运行结束（`NPF_EV_STOPPED`，`npf_run` 返回）→ `npf_destroy`。
+`npf_create` →（建立对端、转发、资源）→ `npf_start` 或 `npf_run` →（调用）→ `npf_stop` → 运行结束（事件 `stopped`，`npf_run` 返回）→ `npf_destroy`。
 
 - `npf_start` 在后台线程运行实例；`npf_run` 在调用线程运行，直到结束才返回。每个实例只能成功启动一次，停止后不能重新启动。`npf_stop` 只请求停止并立即返回，不表示清理已完成；
 - **线程安全不等于任何状态下都能成功**：实例运行时，其他线程的同步调用会投递到实例线程并等待结果；实例线程内调用直接执行。启动前可配置对象、读取状态，但连接和网络检查等操作可能返回 `NPF_ESTATE`。运行结束后，返回错误码的实例操作通常返回 `NPF_ESTATE`，返回 JSON 指针的查询返回 NULL；
@@ -452,36 +454,33 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 ## 10. 事件
 
-`npf_callbacks.notify` 收到类型化的事件 `npf_event`：
+`npf_callbacks` 里有两个事件回调：`event(user, name, json)` 收到事件的名称和 JSON 详情，`session(user, session, up, info)` 收到会话的建立和结束。
 
-| 类型 | 说明 |
-|---|---|
-| `NPF_EV_ONLINE` / `NPF_EV_OFFLINE` | 登录了平台（`number` 为账户会话，没有为 0）/ 信令断开（`why`），库自己重新登录 |
-| `NPF_EV_ENROLLED` / `NPF_EV_ENROLL_FAILED` | 注册成功（`number`）/ 被拒（`why`、`retry_in_ms`） |
-| `NPF_EV_ACCOUNT` | 账户会话开始或结束（`number`，0 为结束） |
-| `NPF_EV_PEER` | 对端的状态或 needs 变了（`state`，`RETRY` 时带 `retry_in_ms`；详细状态用 `npf_peer_get`） |
-| `NPF_EV_PEER_GONE` | 对端被删除（`number`，`reason` 为 `NPF_END_LOCAL`）：关于它的最后一个事件，应用可以释放 `ctx` |
-| `NPF_EV_FORWARD` / `NPF_EV_FORWARD_GONE` | 转发的状态或端口变了（`state`，失败时 `reason` 为 `NPF_FWD_WHY_*`）/ 转发被删除 |
-| `NPF_EV_FORWARD_REFUSED` | 这条转发的连接被对端拒绝（每条每秒至多一次，`why` 为最近一次的目标） |
-| `NPF_EV_SESSION_UP` / `NPF_EV_SESSION_DOWN` | 会话建立 / 结束（`session`、`peer`（别人连进来的为 0）、`number`、`outgoing`、`path`；结束时 `reason` 为 `NPF_END_*`） |
-| `NPF_EV_RESOURCES` | 对端发布的资源变了（`peer`、`session`） |
-| `NPF_EV_NETWORK` | 进程被挂起过、本机地址变了：库已经在检查并修复连接 |
-| `NPF_EV_PLATFORM` / `NPF_EV_MODULE` | 平台推送的事件 / 模块的事件：`name` 与 `json` |
-| `NPF_EV_STOPPED` | 运行结束：最后一个事件 |
+| 事件 | JSON | 说明 |
+|---|---|---|
+| `online` | `{"server", "account_id"}` | 登录了平台（`account_id` 为账户会话，没有为 null） |
+| `offline` | `{"why"}` | 信令断开，库自己重新登录 |
+| `enrolled` | `{"number"}` | 注册成功（第 5 节） |
+| `enroll_failed` | `{"error", "reason", "retry_in"}` | 平台拒绝注册，`retry_in` 秒后库自己重试 |
+| `account` | `{"account_id"}` | 账户会话开始或结束（null） |
+| `peer_done` | `{"peer", "why"}` | 对端放弃了：`NPF_CONNECT_ONCE` 的会话结束，或需要应用处理（`npf_peer_get` 的 `state` 为 `NPF_PEER_ENDED`，`needs` 说明缺什么） |
+| `forward` | `{"peer", "spec", "up", "why"}` | 转发的状态或端口变了（`up`：可用；失败时 `why`）；当前状态用 `npf_forward_get` 查 |
+| `resources` | `{"session", "resources"}` | 对端发布的资源（会话建立时和更新时） |
+| `network` | `{"why"}` | 进程被挂起过、本机地址变了：库已经在检查并修复连接 |
+| `platform` | `{"type", "data"}` | 平台推送的事件，`data` 原样（[信令协议](../protocol/signaling.md)） |
+| `stopped` | `{}` | 运行结束：最后一个事件 |
+
+模块的事件（第 12 节）也经 `event` 送达。会话建立时 `session` 的 `up` 为 1，`info` 为 `{"session", "peer", "path", "direction", "call_id"}`（`peer` 为对方编号，或 `key:` 加密钥指纹）；结束时 `up` 为 0，`info` 为 `{"why"}`，它的媒体流随之结束。
 
 **规则**
 
-- 类型化 `notify` 事件从实例开始运行后才产生；启动前创建或恢复的对象用 `npf_*_get` 查询，不能依赖补发创建事件。此规则不包含日志和同步命令结果回调；
-- 类型化事件在实例线程中排队，按队列顺序送达，不在产生事件的同一业务回调内嵌套调用 `notify`；跨线程调用的返回顺序见下一条。`SESSION_UP` 先于这个会话的 `data` 和媒体回调；
-- 从别的线程创建对象时，关于它的事件可能在创建函数返回之前到达：回调里只用 `ev->peer` / `ev->forward` 和创建时给的 `ctx`，`ctx` 指向的数据要在调用之前准备好；
-- 对象仍存在时，交付前会更新 `ctx`；`NPF_EV_PEER` 更新当前 `state` 和 `retry_in_ms`，`NPF_EV_FORWARD` 更新当前 `state` 和失败 `reason`。因此它们是状态变化通知，不是每一次历史状态的快照；`why` 等文本也不应替代结构化查询。对象可能在排队期间已被删除，此时查询应处理 `NPF_ENOENT`；`*_GONE` 保留删除时的信息；
-- 删除对端时依次发出 `SESSION_DOWN`（`NPF_END_LOCAL`）、它每条转发的 `FORWARD_GONE`、`PEER_GONE`；运行结束时不发 `*_GONE`，`NPF_EV_STOPPED` 之后应用自行释放所有 `ctx`；
-- 回调里可以删除事件所说的对象，删除引起的事件排在本次回调之后。库不负责释放 `ctx`；更换指针时还要考虑正在执行的回调和已经移除对象的排队事件，不要把设置新指针当成旧指针可以立即释放的保证。最简单的管理方式是保持对象上下文到 `*_GONE`，或整体停止、销毁完成后再释放；
-- 从未运行的实例不会产生 `STOPPED`。若创建对象后直接销毁实例，应用在 `npf_destroy` 返回后释放剩余上下文。`STOPPED` 是最后一个类型化事件，不代表后续销毁过程不会产生日志。
+- 回调在实例线程中串行执行，由库在产生事件的工作里直接调用，不排队。`peer_done` 和 `forward` 在库处理这个对端的过程中送达：回调里不能删除它（`npf_peer_remove_id`），要删除放到之后（定时器或另一个线程）；
+- `forward`、`peer_done` 的 `peer` 是对端的目标名（编号或 `HOST:PORT`），`npf_peer_find` 得到 ID，`npf_peer_get` 读出 `ctx`。事件里不带 `ctx`；
+- 对端的其他状态变化（连接中、退避等待）、对端或转发被删除、单条连接被对端拒绝都没有事件：需要时用 `npf_peer_get`（`state`、`needs`、`retry_in_ms`）和 `npf_forward_get`（`refused`）查询；
+- 新建转发时它的 `forward` 事件（`"up": false`）在 `npf_start` 之前就会送达；会话回调只在运行中出现。`session` 的建立先于这个会话的 `data` 和媒体回调；
+- 库不负责释放 `ctx`，事件也不用它：删除对象（`npf_peer_remove_id`、`npf_forward_remove`）返回后应用即可释放它的上下文；对端的会话结束仍经 `session` 回调送达。运行结束（`stopped`）或 `npf_destroy` 返回之后，应用释放剩下的上下文。从未运行的实例不会产生 `stopped`。
 
-不设 `notify` 时，库改用旧的两个回调：`event`（名称与 JSON：`online`、`offline`、`enrolled`、`enroll_failed`、`account`、`peer_done`、`forward`、`network`、`resources`、`platform`、`stopped`，以及模块的事件）和 `session`（会话建立时 `up = 1` 与 `{peer, path, direction, call_id}`，结束时 `up = 0` 与 `{why}`）。
-
-设置 `notify` 后仅替代 `event` 和 `session`；`data`、媒体回调和 `log` 仍按各自用途调用。
+`data`、媒体回调和 `log` 按各自用途调用。
 
 ## 11. 应用数据与音视频
 

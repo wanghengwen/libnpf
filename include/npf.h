@@ -109,23 +109,7 @@ enum { NPF_FRAME_KEY = 1 };
 #define NPF_MEDIA_STREAMS_MAX 64          /* sending + receiving, across all sessions of one instance */
 #define NPF_MEDIA_WS_FRAME_MAX (2u << 20)  /* WS relay: also the per-stream queue byte limit */
 
-/* ---- typed events (npf_callbacks.notify) ---- */
-
-enum { NPF_EV_ONLINE = 1, NPF_EV_OFFLINE, NPF_EV_ENROLLED, NPF_EV_ENROLL_FAILED, NPF_EV_ACCOUNT,
-       NPF_EV_PEER,                    /* a peer's state or needs changed: npf_peer_get */
-       NPF_EV_PEER_GONE,               /* a peer was removed: the last event about it */
-       NPF_EV_FORWARD,                 /* a forward's state or port changed: npf_forward_get */
-       NPF_EV_FORWARD_GONE,            /* removed, or with its peer: the last event about it */
-       NPF_EV_FORWARD_REFUSED,         /* connections refused by the peer (at most 1/s per forward) */
-       NPF_EV_SESSION_UP,              /* a session came up (outgoing or incoming) */
-       NPF_EV_SESSION_DOWN,            /* a session ended: what it was, why */
-       NPF_EV_RESOURCES,               /* a peer's published list changed: npf_resource_list(peer) */
-       NPF_EV_NETWORK,                 /* suspended, or the addresses changed: libnpf mends by itself */
-       NPF_EV_PLATFORM,                /* an event the platform sent: name, json */
-       NPF_EV_MODULE,                  /* a module's own event (npf/module.h): name, json */
-       NPF_EV_STOPPED };               /* the run has ended: the last event; no *_GONE for what is left */
-
-/* why a session ended */
+/* why a peer's last session ended (npf_peer_info.end_reason) */
 enum { NPF_END_LOCAL = 1,              /* ended here (removed, stopped) */
        NPF_END_PEER,                   /* the other side ended it */
        NPF_END_LOST,                   /* the path was lost */
@@ -133,26 +117,6 @@ enum { NPF_END_LOCAL = 1,              /* ended here (removed, stopped) */
        NPF_END_UNREACHABLE,            /* no path could be made */
        NPF_END_PLATFORM,               /* the platform ended or refused it (plan, quota) */
        NPF_END_OTHER };
-
-/* Lent for the call only. Fields only ever grow at the end: one is there
- * when ev->size covers it. Events about an object may come before the call
- * that made it returns (on another thread): use ev->peer / ev->forward and
- * the ctx given at its creation. */
-typedef struct npf_event {
-    size_t      size;
-    int         type;                  /* NPF_EV_*; an unknown one: ignore it */
-    uint32_t    peer, forward, session;    /* 0 when not about one */
-    void       *ctx;                   /* PEER*, FORWARD*, SESSION_* of a peer: its ctx (read when delivered) */
-    uint64_t    number;                /* ENROLLED: the number; ACCOUNT: the account, 0 none;
-                                          SESSION_*: the other side's number, 0 none */
-    int         state;                 /* PEER: NPF_PEER_*; FORWARD: NPF_FWD_* */
-    int         outgoing, path;        /* SESSION_UP / SESSION_DOWN: NPF_PATH_* */
-    int         reason;                /* SESSION_DOWN, PEER_GONE: NPF_END_*; FORWARD (failed): NPF_FWD_WHY_* */
-    int         retry_in_ms;           /* ENROLL_FAILED, PEER (NPF_PEER_RETRY) */
-    const char *why;                   /* for people; "" none */
-    const char *name;                  /* PLATFORM: the event's type; MODULE: the module's event; else "" */
-    const char *json;                  /* PLATFORM, MODULE: its data; else NULL */
-} npf_event;
 
 typedef struct npf_frame_info {
     uint32_t frame_no;          /* from 0, per stream */
@@ -183,8 +147,7 @@ typedef struct npf_callbacks {
      * peer's published list); and those of the program's modules
      * (npf/module.h). "peer_done" and "forward" come from inside the
      * library's work on that peer: removing the peer there (npf_peer_remove_id)
-     * is not allowed, do it later (the typed events of notify come from a
-     * queue and have no such limit) */
+     * is not allowed, do it later (a timer, another thread) */
     void (*event)(void *user, const char *name, const char *json);
     /* a session came up (up 1; info: {"peer", "path", "direction", "call_id"})
      * or ended (up 0, info: {"why"}); its media streams end with it */
@@ -196,10 +159,6 @@ typedef struct npf_callbacks {
     int  (*media_open)(void *user, uint32_t session, uint32_t media, int tag);
     void (*media_frame)(void *user, uint32_t media, const void *buf, size_t len, const npf_frame_info *fi);
     void (*media_closed)(void *user, uint32_t media);
-    /* typed events (npf_event): when set, event and session are not called
-     * (modules' events come as NPF_EV_MODULE, the platform's as
-     * NPF_EV_PLATFORM) */
-    void (*notify)(void *user, const npf_event *ev);
 } npf_callbacks;
 
 /* Starting without a configuration file: the parameters as fields (each is
@@ -354,7 +313,7 @@ typedef struct npf_peer_opt {
     int            flags;              /* NPF_PERSIST */
     const char    *name;               /* a name for it, NULL none */
     const char    *nick;               /* what to show people, NULL none */
-    void          *ctx;                /* the application's, given back in its events */
+    void          *ctx;                /* the application's, given back by npf_peer_get */
 } npf_peer_opt;
 
 enum { NPF_PEER_IDLE = 0,              /* on demand, no session now */
@@ -424,7 +383,7 @@ enum { NPF_PEER_OPT_CONNECT = 1,       /* NPF_CONNECT_*: KEEP connects now when 
                                           local.json, its pinned key and names stay (not ON_DEMAND) */
        NPF_PEER_OPT_NAME,              /* a name (NPF_NAME_MAX), unique among the peers */
        NPF_PEER_OPT_NICK,              /* what people see (NPF_NICK_MAX) */
-       NPF_PEER_OPT_CTX,               /* the application's, in its events from now on (also NULL) */
+       NPF_PEER_OPT_CTX,               /* the application's, in npf_peer_get from now on (also NULL) */
        NPF_PEER_OPT_PASSWORD };        /* not paired yet, or the password was refused: tried at
                                           once, not kept (NPF_PASSWORD_MAX) */
 NPF_API int npf_peer_setopt(npf_t *n, uint32_t peer, int opt, const void *val, size_t len);

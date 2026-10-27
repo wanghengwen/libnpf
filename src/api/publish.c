@@ -430,22 +430,12 @@ void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d)
         npf_peer_resources_set(p, o.p);
         npf_log("%s: %d resource%s published", npf_peer_name(p), m, m == 1 ? "" : "s");
     }
-    {
-        uint32_t id = npf_session_of(n, c);
-        if (n->cb.notify) {
-            npf_event ev;
-            memset(&ev, 0, sizeof ev);
-            ev.type = NPF_EV_RESOURCES;
-            ev.session = id;
-            ev.peer = p ? npf_peer_id(p) : 0;
-            npf_ev_queue(n, &ev);
-        } else if (n->cb.event) {
-            npf_out ev = {0};
-            npf_out_printf(&ev, "{\"session\":%u,\"resources\":%s}", (unsigned)id, o.p);
-            if (!ev.failed)
-                n->cb.event(n->cb.user, "resources", ev.p);
-            npf_out_free(&ev);
-        }
+    if (n->cb.event) {
+        npf_out ev = {0};
+        npf_out_printf(&ev, "{\"session\":%u,\"resources\":%s}", (unsigned)npf_session_of(n, c), o.p);
+        if (!ev.failed)
+            n->cb.event(n->cb.user, "resources", ev.p);
+        npf_out_free(&ev);
     }
     npf_out_free(&o);
 }

@@ -49,8 +49,6 @@ typedef struct pfwd {
     int       open;                 /* connections open now (sublinks in the session) */
     uint32_t  nrefused;             /* connections the peer refused (its resources) */
     char      refused_why[64];
-    int64_t   refused_told;         /* when fwd_refused was called last (ms) */
-    npf_timer *t_refused;           /* the ones since, told a second after the last time */
     npf_timer *t_accept;            /* out of descriptors: accepting again then */
     int       told_state, told_port, told_why;   /* what the application was told last (fwd_changed) */
 } pfwd;
@@ -64,7 +62,6 @@ struct npf_peer {
     int        idle_req;            /* on demand: the idle time it was made with, 0 the default */
     char       nick_here[NPF_NICK_MAX + 1];   /* a nick of this run only */
     int        has_nick_here;
-    int        told_state, told_needs;        /* what the application was told last (peer_changed) */
     char       name[300];           /* number or HOST:PORT */
     char       label[33];           /* the name people gave it (local.json), "" none */
     uint64_t   number;              /* platform peer */

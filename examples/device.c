@@ -26,32 +26,28 @@
 
 static npf_t *dev; /* set before npf_start: callbacks come after it */
 
-/* what the library tells: typed events (npf_event) */
-static void on_notify(void *user, const npf_event *ev)
+/* what the library tells: an event's name and its details as JSON (npf.h,
+ * npf_callbacks.event); a real device parses the JSON, this one prints it */
+static void on_event(void *user, const char *name, const char *json)
 {
     (void)user;
-    switch (ev->type) {
-    case NPF_EV_ENROLLED:   /* the device's number (also in DATA_DIR/node.json) */
-        printf("enrolled: number %llu\n", (unsigned long long)ev->number);
-        break;
-    case NPF_EV_ENROLL_FAILED:  /* the platform refused: the library tries again by itself */
-        printf("enrolment refused (%s), again in %d s\n", ev->why, ev->retry_in_ms / 1000);
-        break;
-    case NPF_EV_ONLINE:
+    if (strcmp(name, "enrolled") == 0)          /* {"number"}: also in DATA_DIR/node.json */
+        printf("enrolled: %s\n", json);
+    else if (strcmp(name, "enroll_failed") == 0)    /* the platform refused: the library tries again by itself */
+        printf("enrolment refused: %s\n", json);
+    else if (strcmp(name, "online") == 0)
         printf("online\n");
-        break;
-    case NPF_EV_OFFLINE:
-        printf("offline (%s)\n", ev->why);
-        break;
-    case NPF_EV_SESSION_UP:
-        printf("session %u up, from %llu\n", ev->session, (unsigned long long)ev->number);
-        break;
-    case NPF_EV_SESSION_DOWN:
-        printf("session %u down (%s)\n", ev->session, ev->why);
-        break;
-    default:                /* others, and those of later versions: not needed here */
-        break;
-    }
+    else if (strcmp(name, "offline") == 0)
+        printf("offline: %s\n", json);
+    /* others, and those of later versions: not needed here */
+    fflush(stdout);
+}
+
+/* a session came up ({"peer", "path", "direction", "call_id"}) or ended ({"why"}) */
+static void on_session(void *user, uint32_t session, int up, const char *info)
+{
+    (void)user;
+    printf("session %u %s: %s\n", session, up ? "up" : "down", info);
     fflush(stdout);
 }
 
@@ -110,7 +106,8 @@ int main(int argc, char **argv)
 
     npf_callbacks cb;
     npf_callbacks_init(&cb);
-    cb.notify = on_notify;
+    cb.event = on_event;
+    cb.session = on_session;
     cb.data = on_data;
 
     npf_options o;
