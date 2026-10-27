@@ -263,28 +263,34 @@ int node_eff_prio(const npf_server_entry *e)
     return e->prio + (degraded(e) ? 100 : 0);
 }
 
-/* choose by prio, then weight; recently failing entries sort behind the rest */
-int node_server_pick(npf_node *n)
+/* entry i's weight in a pick of the entries of priority prio but skip (0: not one of them) */
+static int pick_weight(const npf_node *n, int i, int prio, int skip)
 {
-    int best_prio = 1 << 30, i, total = 0, r;
-    if (n->nservers == 0)
-        return -1;
-    for (i = 0; i < n->nservers; i++) {
-        if (!degraded(&n->servers[i]) && n->servers[i].fails >= 3)
-            n->servers[i].fails = 0;        /* the hour is over: a fresh start */
-        if (node_eff_prio(&n->servers[i]) < best_prio)
-            best_prio = node_eff_prio(&n->servers[i]);
+    const npf_server_entry *e = &n->servers[i];
+    if (i == skip || node_eff_prio(e) != prio || !e->nws)
+        return 0;
+    return e->weight > 0 ? e->weight : 1;
+}
+
+int node_server_pick(npf_node *n, int prio, int skip)
+{
+    int i, total = 0, r;
+    if (prio < 0) {                         /* the best: recently failing entries sort behind the rest */
+        prio = 1 << 30;
+        for (i = 0; i < n->nservers; i++) {
+            if (!degraded(&n->servers[i]) && n->servers[i].fails >= 3)
+                n->servers[i].fails = 0;    /* the hour is over: a fresh start */
+            if (node_eff_prio(&n->servers[i]) < prio)
+                prio = node_eff_prio(&n->servers[i]);
+        }
     }
     for (i = 0; i < n->nservers; i++)
-        if (node_eff_prio(&n->servers[i]) == best_prio)
-            total += n->servers[i].weight > 0 ? n->servers[i].weight : 1;
+        total += pick_weight(n, i, prio, skip);
+    if (!total)
+        return -1;
     r = (int)npf_rand_range(0, (size_t)(total - 1));
-    for (i = 0; i < n->nservers; i++) {
-        if (node_eff_prio(&n->servers[i]) != best_prio)
-            continue;
-        r -= n->servers[i].weight > 0 ? n->servers[i].weight : 1;
-        if (r < 0)
+    for (i = 0; i < n->nservers; i++)
+        if ((r -= pick_weight(n, i, prio, skip)) < 0)
             return i;
-    }
-    return 0;
+    return -1;
 }

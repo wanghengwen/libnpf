@@ -988,7 +988,7 @@ void node_sig_connect(npf_node *n)
     if (n->sig)
         return;
     if (n->cur_server < 0 || n->servers[n->cur_server].fails >= 3)
-        n->cur_server = node_server_pick(n);
+        n->cur_server = node_server_pick(n, -1, -1);
     if (n->cur_server < 0) {
         npf_log("signaling: no usable server in the list");
         snprintf(n->sig_error, sizeof n->sig_error, "no usable server in the list");
@@ -1015,27 +1015,12 @@ void node_sig_connect(npf_node *n)
     }
     {   /* and a second access point at the same time: the server's next URL
          * (a domain and an IP), else another server of the same priority */
-        int r = -1, u = 0, k, total = 0;
+        int r = -1, u = 0;
         if (e->nws > 1) {
             r = n->cur_server;
             u = (i + 1) % e->nws;
-        } else {
-            for (k = 0; k < n->nservers; k++)
-                if (k != n->cur_server && node_eff_prio(&n->servers[k]) == node_eff_prio(e) && n->servers[k].nws > 0)
-                    total += n->servers[k].weight > 0 ? n->servers[k].weight : 1;
-            if (total > 0) {
-                int x = (int)npf_rand_range(0, (size_t)(total - 1));
-                for (k = 0; k < n->nservers && r < 0; k++) {
-                    if (k == n->cur_server || node_eff_prio(&n->servers[k]) != node_eff_prio(e) || n->servers[k].nws == 0)
-                        continue;
-                    x -= n->servers[k].weight > 0 ? n->servers[k].weight : 1;
-                    if (x < 0)
-                        r = k;
-                }
-                if (r >= 0)
-                    u = n->servers[r].fails % n->servers[r].nws;
-            }
-        }
+        } else if ((r = node_server_pick(n, node_eff_prio(e), n->cur_server)) >= 0)
+            u = n->servers[r].fails % n->servers[r].nws;
         if (r >= 0) {
             npf_server_entry *f = &n->servers[r];
             npf_log("signaling: and to server %d %s", f->id, f->ws[u]);

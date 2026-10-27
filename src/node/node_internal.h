@@ -11,7 +11,8 @@ int  node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const
 void node_servers_load(npf_node *n);
 void node_server_failed(npf_server_entry *e, int weight);
 int node_eff_prio(const npf_server_entry *e);
-int node_server_pick(npf_node *n);
+/* by weight among the entries of priority prio (-1: the best) but skip; -1 none */
+int node_server_pick(npf_node *n, int prio, int skip);
 
 /* node_signal.c */
 int  node_wake_delay(int ms);           /* sig_wake_ms +-20 % (the unit tests) */
