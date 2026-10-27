@@ -975,7 +975,9 @@ void node_sig_connect(npf_node *n)
     if (!n->sig) {
         node_server_failed(e, 1);
         npf_logw("signaling: cannot connect to %s", e->ws[i]);
-        snprintf(n->sig_error, sizeof n->sig_error, "cannot connect to %s", e->ws[i]);
+        /* the URL cut to what sig_error holds (a 256-byte URL in 160) */
+        snprintf(n->sig_error, sizeof n->sig_error, "cannot connect to %.*s",
+                 (int)(sizeof n->sig_error - sizeof "cannot connect to "), e->ws[i]);
         n->sig_refused = 0;
         schedule_reconnect(n);
         return;
