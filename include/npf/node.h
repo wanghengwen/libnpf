@@ -454,8 +454,11 @@ void npf_node_reverse_recheck(npf_node *n);
  * made on the WS relay end, their peers reconnect over UDP (call.c) */
 void npf_node_ws_calls_udp_back(npf_node *n);
 /* the network the UDP sockets go out on changed (an app: a VPN came or went):
- * both are opened again, as when they fail (their calls end and reconnect) */
-void npf_node_udp_reset(npf_node *n, const char *why);
+ * both are opened again, as when they fail (their calls end and reconnect).
+ * 0: they reopen (now, or with the retry already waiting), and the network
+ * check after it calls hooks.on_net_change; -1: nothing reopens it here
+ * (no socket, or opened on demand: no check follows) */
+int  npf_node_udp_reset(npf_node *n, const char *why);
 /* caller: a local TCP connection becomes a sublink (see npf_tunnel_open) */
 /* a forwarded connection in the session: its id (> 0), or -1 */
 int  npf_call_open(npf_call *c, int fd, int passthrough, const char *host, uint16_t port);

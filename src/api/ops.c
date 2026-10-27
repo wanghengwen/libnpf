@@ -255,14 +255,23 @@ int npf_session_list(npf_t *n, uint32_t *sessions, size_t cap, size_t *count)
     return npf_api_op(n, session_list_run, &x);
 }
 
+/* npf_network_changed and the command netcheck (an app: the network under a
+ * VPN changed, npf_host). The peers try again once the sockets are open
+ * again (on_net_change after the reopen's check): tried before, their
+ * new sessions ended with the old socket (udp_socket_failed); at once
+ * when nothing reopens */
+void npf_net_changed(npf_t *n)
+{
+    if (npf_node_udp_reset(&n->node, "the network changed") < 0 && n->peers)
+        npf_peers_net_changed(n->peers);
+}
+
 static int net_changed_run(npf_t *n, void *arg)
 {
     (void)arg;
     if (!n->started)
         return NPF_ESTATE;
-    npf_node_udp_reset(&n->node, "the network changed");
-    if (n->peers)
-        npf_peers_net_changed(n->peers);
+    npf_net_changed(n);
     return NPF_OK;
 }
 

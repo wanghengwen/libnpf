@@ -456,6 +456,21 @@ int main(void)
           && fi.refused == 1 && fi.state == NPF_FWD_UP, "FORWARD_REFUSED; counted; the rule still up");
     check(socks_connect(fi.listen_port, echo) == 0, "and the published one still goes");
 
+    /* the network changed: npf_network_changed, then the command netcheck
+     * (npf_host's): the sockets open again, the session ends with the old
+     * one and comes back, the forward with it */
+    for (k = 0; k < 2; k++) {
+        const char *nc[] = {"netcheck"};
+        int from = ev_count();
+        check(k ? cmd(b, 1, nc) == 0 : npf_network_changed(b) == NPF_OK, k ? "netcheck" : "npf_network_changed");
+        i = wait_ev(from, NPF_EV_SESSION_DOWN, -1, 5000);
+        j = i >= 0 ? wait_ev(i, NPF_EV_SESSION_UP, -1, 10000) : -1;
+        check(i >= 0 && j > i && evs[j].peer == peer, "the network changed: the session again");
+        npf_forward_info_init(&fi);
+        check(j > i && npf_forward_get(b, fwd, &fi) == NPF_OK && fi.state == NPF_FWD_UP && echoes(fi.listen_port),
+              "the network changed: the forward through the new session");
+    }
+
     /* names, flags, saving */
     check(sets(b, peer, NPF_PEER_OPT_NAME, "bb") == NPF_OK && sets(b, peer, NPF_PEER_OPT_NICK, "a nick") == NPF_OK
           && npf_peer_get(b, peer, &pi) == NPF_OK && strcmp(pi.name, "bb") == 0 && strcmp(pi.nick, "a nick") == 0

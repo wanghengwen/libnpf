@@ -323,16 +323,19 @@ void npf_node_set_secure(npf_node *n, int on)
     npf_node_udp_reset(n, "connect_mode changed");  /* the sessions open again under it */
 }
 
-void npf_node_udp_reset(npf_node *n, const char *why)
+int npf_node_udp_reset(npf_node *n, const char *why)
 {
-    if (n->t_udp_reopen || (n->udp_fd < 0 && n->udp6_fd < 0))
-        return;
+    if (n->t_udp_reopen)
+        return n->cfg.udp_on_demand ? -1 : 0;
+    if (n->udp_fd < 0 && n->udp6_fd < 0)
+        return -1;
     npf_log("udp: opening the sockets again (%s)", why);
     if (n->udp_fd >= 0)
         npf_loop_del(n->loop, n->udp_fd);
     if (n->udp6_fd >= 0)
         npf_loop_del(n->loop, n->udp6_fd);
     n->t_udp_reopen = npf_timer_add(n->loop, 0, udp_reopen_cb, n);
+    return n->cfg.udp_on_demand ? -1 : 0;
 }
 
 static void netcheck_cb(npf_loop *loop, void *arg)

@@ -168,6 +168,9 @@ npf_loop *npf_engine_loop(npf_t *n);
 void npf_engine_free(npf_t *n);
 /* a peer made after npf_start: start it now (the run starts the others) */
 void npf_start_peer(npf_t *n, npf_peer *p);
+/* the network changed (npf_network_changed, the command netcheck): the UDP
+ * sockets again, then the peers (ops.c) */
+void npf_net_changed(npf_t *n);
 
 /* engine_events.c: events, the node's and the peers' callbacks, sessions and media streams by number */
 /* the account session began or ended (event "account" / NPF_EV_ACCOUNT) */
