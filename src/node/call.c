@@ -60,12 +60,23 @@ uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
 
 
 /* the session moves to the WS relay: the UDP relay (binding, waiting) and
- * the direct path (its check, a punch about to start) have nothing left to
- * do, and their timers would ask for the WS relay again (the platform then
- * sends the allocation again: its sublinks reset) */
+ * the direct path (its check, a punch about to start or running) have
+ * nothing left to do, and their timers would ask for the WS relay again (the
+ * platform then sends the allocation again: its sublinks reset). A running
+ * punch goes with its hard-side sockets (the NAT's ports back to the other
+ * calls): it could still end ok and make a WS session "direct" */
 void call_relay_leave(npf_call *c)
 {
     npf_loop *l = c->n->loop;
+    if (c->punch) {
+        int had = c->punch_socks > 0;
+        timer_stop(l, &c->t_linger);
+        npf_punch_free(c->punch);
+        c->punch = NULL;
+        c->punch_socks = 0;
+        if (had)
+            call_punch_sockets_back(c->n);
+    }
     timer_stop(l, &c->relay.t_bind);
     c->relay.bound = 0;
     c->relay_waits_ports = 0;

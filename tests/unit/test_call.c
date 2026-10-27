@@ -8,7 +8,10 @@
  *   RELAY_ASK_AGAIN_MS, not before (it was asked once only);
  * - the peer's punch_info port of a round goes to the punch of that round:
  *   with the next round planned while the last one still runs, it is kept
- *   for the next one (it went to the old punch, the new one never had it). */
+ *   for the next one (it went to the old punch, the new one never had it);
+ * - a session moving to the WS relay ends its running punch and gives its
+ *   hard-side sockets back (the punch ran on and could make the WS session
+ *   "direct"). */
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -167,6 +170,27 @@ static void punch_info_round(npf_node *n)
         close(dead);
 }
 
+static void ws_leaves_punch(npf_node *n)
+{
+    npf_call *c = call_new(n, 1);
+    int dead = -1;
+    CHECK(c != NULL, "call");
+    if (!c)
+        return;
+    snprintf(c->call_id_s, sizeof c->call_id_s, "leave-test");
+    c->punch = punch_running(n->loop, n->udp_fd, &dead);
+    CHECK(c->punch && !npf_punch_finished(c->punch), "a running punch");
+    c->punch_of = c->punch_round = 1;
+    c->punch_socks = 4;                 /* as an S3 hard side's */
+    n->hard_punch_end = 0;
+    call_relay_leave(c);
+    CHECK(!c->punch && !c->punch_socks, "the punch runs on after the move to the WS relay");
+    CHECK(n->hard_punch_end > 0, "its sockets not given back");
+    npf_call_end(c, "test");
+    if (dead >= 0)
+        close(dead);
+}
+
 int test_call(void)
 {
     static npf_node node;
@@ -193,6 +217,7 @@ int test_call(void)
     callee_accept_after_relay(&node);
     relay_asked_again(&node);
     punch_info_round(&node);
+    ws_leaves_punch(&node);
 
     npf_log_ctx_swap(old);
     npf_node_stop(&node);
