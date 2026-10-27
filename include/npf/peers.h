@@ -152,7 +152,7 @@ int       npf_peer_tag(const npf_peer *p);
 /* its name ("" none), and what to show people: the name, else number / HOST:PORT */
 const char *npf_peer_label(const npf_peer *p);
 const char *npf_peer_shown(const npf_peer *p);
-const char *npf_peer_nick(const npf_peer *p);   /* its nick (local.json), "" none */
+const char *npf_peer_nick(const npf_peer *p);   /* its nick (this run's, else local.json's), "" none */
 /* the resources it published (resources.h) as last heard in a session, else
  * as its local.json record keeps them: a JSON array; NULL none */
 const char *npf_peer_resources(const npf_peer *p);

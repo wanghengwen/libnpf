@@ -375,7 +375,10 @@ const char *npf_peers_resolve(const npf_peers *ps, const char *word, char *buf, 
 
 const char *npf_peer_nick(const npf_peer *p)
 {
-    npf_ldev *d = p->ps->lc ? npf_local_dev(p->ps->lc, p->name, 0) : NULL;
+    npf_ldev *d;
+    if (p->has_nick_here)
+        return p->nick_here;                /* this run's (the application keeps its objects) */
+    d = p->ps->lc ? npf_local_dev(p->ps->lc, p->name, 0) : NULL;
     return d ? d->nick : "";
 }
 

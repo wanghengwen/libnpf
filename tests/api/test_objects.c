@@ -588,6 +588,9 @@ int main(void)
         check(npf_peer_create(c, &po, &peer, err, sizeof err) == NPF_OK && seti(c, peer, NPF_PEER_OPT_PERSIST, 1) == NPF_EUNAVAIL
               && sets(c, peer, NPF_PEER_OPT_NAME, "here") == NPF_OK && !file_has(dc, "here"),
               "a temporary one: no saving, names only here");
+        check(sets(c, peer, NPF_PEER_OPT_NICK, "nick here") == NPF_OK && npf_peer_get(c, peer, &pi) == NPF_OK
+              && strcmp(pi.nick, "nick here") == 0 && !file_has(dc, "nick here"),
+              "its nick: kept for this run (npf_peer_get), not saved");
         npf_resource_init(&r);
         r.type = NPF_RES_TCP;
         r.name = "x";
