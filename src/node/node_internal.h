@@ -45,7 +45,6 @@ void node_watch_start(npf_node *n);
 void node_nat_refresh(npf_node *n);
 /* a call starts (caller) or is accepted (callee): the main socket's mapping
  * asked of E1 meanwhile, against the srflx the call went out with */
-void node_nat_check(npf_node *n);
 
 /* sources.c: the server list's external channels */
 void node_sources_check(npf_node *n);   /* at each failed attempt: time for a round? */
@@ -83,7 +82,6 @@ void node_nat_regather(npf_node *n);
 void node_nat_login(npf_node *n);
 
 /* call_punch.c: the srflx changed: the sessions not direct yet send it to their peers */
-void node_calls_srflx_changed(npf_node *n);
 /* a check of the NAT unanswered (call_punch.c): a sign it is short of ports
  * if a hard-side punch held them or just did (nat-traversal.md 8) */
 void call_port_pressure(npf_node *n, const char *what);

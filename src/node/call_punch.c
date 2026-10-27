@@ -37,10 +37,10 @@ static void write_pressure(const npf_call *c, npf_jw *w)
 }
 
 /* the platform hears what changed for the call's rounds (punch_update):
- * why "network" (the NAT measured again after a network change), "profile"
- * (measured again: candidates may have come), "path_lost" (the direct path
- * given up); with this side's profile and candidates. The platform decides
- * whether and when a round comes */
+ * why "network" (the NAT measured again after a network change),
+ * "path_lost" (the direct path given up); with this side's profile and
+ * candidates. The platform decides whether and when a round comes; a moved
+ * mapping it sees itself (its relay, the spare's address) */
 void call_punch_report(npf_call *c, const char *why)
 {
     char data[4096];
@@ -174,7 +174,7 @@ static int punch_sockets_grant(npf_call *c, int want)
     return want < left ? want : left;
 }
 
-/* a sign that the NAT is short of ports: the UDP relay or a mapping check
+/* a sign that the NAT is short of ports: the UDP relay or the NAT probe
  * got no answer while a hard-side punch held them or just after (a carrier
  * NAT's quota: nothing new maps then). The platform hears it with the next
  * results (write_pressure) and keeps the caller's hard-side rounds apart */
@@ -228,70 +228,8 @@ static void punch_info_send(npf_punch *p, uint16_t port, void *arg)
 
 static int cand_skipped(const npf_call *c, const struct sockaddr_storage *to, const char *shown);
 
-/* this side's new srflx (the call-time check, nat.c) to the peer: a
- * candidate trickled into the call (nat-traversal.md 4.5) */
-void call_cand_send(npf_call *c)
-{
-    char data[256], a[64];
-    struct sockaddr_storage ss;
-    npf_jw w;
-    memset(&ss, 0, sizeof ss);
-    memcpy(&ss, &c->n->srflx, sizeof c->n->srflx);
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kint(&w, "round", c->punch_round);
-    npf_jw_key(&w, "cand");
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "t", "srflx");
-    npf_jw_kstr(&w, "a", npf_addr_str(&ss, a, sizeof a));
-    npf_jw_end(&w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) <= 0)
-        return;
-    npf_log("call %s: the new srflx %s to the peer", c->call_id_s, a);
-    npf_node_send(c->n, "punch_info", 0, data);    /* the platform may start a round for it */
-}
-
-/* tests: NPF_TEST_PUNCH_INFO_EXTRA="addr,...": forged srflx candidates
- * sent to the peer once the call is accepted (the platform must drop them) */
-void call_test_punch_info(npf_call *c)
-{
-    char buf[256], data[256], *tok, *save;
-    npf_jw w;
-    if (!getenv("NPF_TEST_PUNCH_INFO_EXTRA"))
-        return;
-    snprintf(buf, sizeof buf, "%s", getenv("NPF_TEST_PUNCH_INFO_EXTRA"));
-    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
-        npf_jw_init(&w, data, sizeof data);
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "call_id", c->call_id_s);
-        npf_jw_kint(&w, "round", c->punch_round);
-        npf_jw_key(&w, "cand");
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "t", "srflx");
-        npf_jw_kstr(&w, "a", tok);
-        npf_jw_end(&w);
-        npf_jw_end(&w);
-        if (npf_jw_finish(&w) > 0)
-            npf_node_send(c->n, "punch_info", 0, data);
-    }
-}
-
-void node_calls_srflx_changed(npf_node *n)
-{
-    npf_call *c;
-    for (c = n->calls; c; c = c->next) {
-        if (c->ended || c->p2p || c->ws_mode || c->direct || call_no_p2p(c))
-            continue;
-        if (c->caller && c->state == NPF_CALL_CALLING)
-            c->cand_later = 1;      /* the platform passes punch_info on once the call is accepted */
-        else
-            call_cand_send(c);
-    }
-}
-
-/* the peer's new srflx: into the round running, else kept for the next */
+/* the peer's new srflx (the platform's: its spare's mapping toward the relay
+ * moved, signaling.md punch_info): into the round running, else kept for the next */
 static void peer_cand(npf_call *c, const npf_json *j, int o)
 {
     char a[80];

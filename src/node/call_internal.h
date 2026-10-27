@@ -108,7 +108,6 @@ struct npf_call {
     int         info_round;
     struct sockaddr_storage tcand;  /* the peer's new srflx (its punch_info "cand"): in this round and the next */
     int         spray_refused_said; /* "not an address to spray" logged in this call */
-    int         cand_later;         /* caller: our srflx changed before call_accepted: punch_info then */
     int         punch_wait_keys;
 
     int         ended;
@@ -221,7 +220,6 @@ void call_relay_leave(npf_call *c);
 int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);
 int call_peer_spray_ok(const npf_call *c, struct in_addr ip);
 int call_peer_ip4_usable(const npf_node *n, struct in_addr ip);
-void call_test_punch_info(npf_call *c);
 void call_set_state(npf_call *c, int st, const char *why);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);
@@ -284,7 +282,6 @@ void call_punch_report(npf_call *c, const char *why);
 int call_hard_punches(const npf_call *c);
 void call_punch_sockets_back(npf_node *n);
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
-void call_cand_send(npf_call *c);
 void call_start_punch_now(npf_call *c);
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 

@@ -155,8 +155,6 @@ void npf_node_stop(npf_node *n)
         npf_timer_cancel(n->loop, n->t_reconnect);
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
-    npf_natprobe_cancel(n->mapcheck);
-    n->mapcheck = NULL;
     if (n->t_login)
         npf_timer_cancel(n->loop, n->t_login);
     n->t_reconnect = n->t_login = NULL;

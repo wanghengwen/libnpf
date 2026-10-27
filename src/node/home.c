@@ -395,7 +395,8 @@ void node_home_spare(npf_node *n, const npf_json *j, int d)
 
 /* ---- what comes from the relay ---- */
 
-/* the address the relay sees (R): a change is told (P2 takes it up as the srflx) */
+/* the address the relay sees (R): logged and counted; the platform takes it
+ * as this side's srflx itself (home-binding.md 6, U7 reversed) */
 static void r_seen(struct npf_home *h, const struct sockaddr_storage *a)
 {
     char x[64], y[64];
