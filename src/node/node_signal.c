@@ -214,6 +214,31 @@ void node_reconnect_now(npf_node *n)
     node_sig_connect(n);
 }
 
+/* The platform's upgrade policy for this program, from a welcome's
+ * "upgrade", an "upgrade" event or the data of upgrade_required (d: the
+ * object; d < 0: none, which clears what was offered) */
+static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int required)
+{
+    int r = required, was = n->upgrade.latest[0] || n->upgrade.required;
+    memset(&n->upgrade, 0, sizeof n->upgrade);
+    if (d >= 0) {
+        npf_json_bool(j, npf_json_get(j, d, "required"), &r);
+        n->upgrade.required = r;
+        npf_json_get_str(j, d, "min", n->upgrade.min, sizeof n->upgrade.min);
+        npf_json_get_str(j, d, "latest", n->upgrade.latest, sizeof n->upgrade.latest);
+        npf_json_get_str(j, d, "url", n->upgrade.url, sizeof n->upgrade.url);
+        npf_json_get_str(j, d, "notes", n->upgrade.notes, sizeof n->upgrade.notes);
+        if (r)
+            npf_logw("upgrade: this version is too old for the platform (%s needed%s%s)", n->upgrade.min,
+                     n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
+        else if (n->upgrade.latest[0])
+            npf_log("upgrade: version %s is available%s%s", n->upgrade.latest, n->upgrade.url[0] ? ", see " : "",
+                    n->upgrade.url);
+    } else if (was) {
+        npf_log("upgrade: no newer version offered any more");
+    }
+}
+
 static void reconnect_cb(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
@@ -236,6 +261,10 @@ static void schedule_reconnect(npf_node *n)
     d = n->backoff_ms ? n->backoff_ms : 1000;
     n->backoff_ms = d * 2 > 60000 ? 60000 : d * 2;
     d = d * 3 / 4 + (int)npf_rand_range(0, (size_t)d / 2);
+    if (n->upgrade.required) {      /* only an upgrade helps: 5..10 minutes between tries */
+        const char *t = getenv("NPF_TEST_UPGRADE_RETRY_MS");    /* tests */
+        d = t && atoi(t) > 0 ? atoi(t) : 300000 + (int)npf_rand_range(0, 300000);
+    }
     n->t_reconnect = npf_timer_add(n->loop, d, reconnect_cb, n);
 }
 
@@ -710,6 +739,7 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     }
     if (npf_json_get_int(j, d, "ping_s", 5, 3600, &v) == 0)
         n->ping_s = (int)v;
+    node_upgrade_apply(n, j, npf_json_get(j, d, "upgrade"), 0);
     node_apply_keys(n, j, d);
     node_apply_probe(n, j, d);          /* measured below (node_nat_login) */
     /* a (re)issued certificate: a node's own certificate in "cert"; the
@@ -833,8 +863,16 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
             char err[32] = "";
             npf_json_get_str(j, 0, "error", err, sizeof err);
             npf_logw("login: rejected (%s)", err);
-            snprintf(n->sig_error, sizeof n->sig_error, "server %d refused the login (%s)",
-                     n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, err);
+            if (strcmp(err, "upgrade_required") == 0) {
+                node_upgrade_apply(n, j, npf_json_get(j, 0, "data"), 1);
+                n->upgrade.required = 1;
+                snprintf(n->sig_error, sizeof n->sig_error, "this version is too old for the platform: upgrade to %s%s",
+                         n->upgrade.min[0] ? n->upgrade.min : "the newest version",
+                         n->upgrade.url[0] ? " (see the download page)" : "");
+            } else {
+                snprintf(n->sig_error, sizeof n->sig_error, "server %d refused the login (%s)",
+                         n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, err);
+            }
             n->sig_refused = 1;
             sig_refused(n, s, 3);
         }
@@ -846,6 +884,11 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         if (bl > 0)
             node_server_list_update(n, blob, (size_t)bl, NULL);
         free(blob);
+        return;
+    }
+    if (strcmp(type, "upgrade") == 0) {     /* the policy changed; the application hears of it too */
+        node_upgrade_apply(n, j, d, 0);
+        node_dispatch(n, type, j, d);
         return;
     }
     if (strcmp(type, "probe") == 0) {

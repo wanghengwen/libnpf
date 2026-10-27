@@ -250,6 +250,13 @@ struct npf_node {
     int64_t       unreachable_since;/* monotonic ms: no server reached since; 0 = online */
     char          sig_error[160];   /* why the last attempt did not log in ("" none since the last login) */
     int           sig_refused;      /* ... the platform turned the login down (not the network) */
+    /* the platform's upgrade policy for this program (signaling.md "升级"): a
+     * newer version offered (latest), or the one in use too old to log in (required) */
+    struct {
+        int  required;                  /* below the lowest version: no login until upgraded */
+        char min[40], latest[40];
+        char url[320], notes[320];
+    } upgrade;
     int64_t       src_next;         /* monotonic ms: no round before */
     int           src_backoff;      /* ms */
     void         *src_req[2 * NPF_SOURCES_MAX * 2];    /* requests in flight (sources.c) */

@@ -287,6 +287,18 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
         jkey(o, &f, "server_refused");      /* the platform turned the login down: not the network */
         npf_out_printf(o, "true");
     }
+    if (n->upgrade.required || n->upgrade.latest[0]) {     /* the platform's upgrade policy for this program */
+        int g = 1;
+        jkey(o, &f, "upgrade");
+        npf_out_printf(o, "{");
+        jkey(o, &g, "required");
+        npf_out_printf(o, "%s", n->upgrade.required ? "true" : "false");
+        jkstr(o, &g, "min", n->upgrade.min[0] ? n->upgrade.min : NULL);
+        jkstr(o, &g, "latest", n->upgrade.latest[0] ? n->upgrade.latest : NULL);
+        jkstr(o, &g, "url", n->upgrade.url[0] ? n->upgrade.url : NULL);
+        jkstr(o, &g, "notes", n->upgrade.notes[0] ? n->upgrade.notes : NULL);
+        npf_out_printf(o, "}");
+    }
     snprintf(a, sizeof a, "%llu", (unsigned long long)n->account_id);
     jkstr(o, &f, "account", n->account_id ? a : NULL);
     jkstr(o, &f, "account_login", n->account_id && c->account_login[0] ? c->account_login : NULL);
