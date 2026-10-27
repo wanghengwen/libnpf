@@ -13,17 +13,6 @@
 
 #include "node_internal.h"
 
-static const char *alloc_str(int a)
-{
-    switch (a) {
-    case NPF_ALLOC_PRESERVE: return "PRESERVE";
-    case NPF_ALLOC_SEQUENTIAL: return "SEQUENTIAL";
-    case NPF_ALLOC_BLOCK: return "BLOCK";
-    case NPF_ALLOC_RANDOM: return "RANDOM";
-    default: return "UNKNOWN";
-    }
-}
-
 static void add_cand(npf_node *n, const char *t, const struct sockaddr_storage *a)
 {
     int i;
@@ -116,7 +105,7 @@ static void nat_settled(npf_node *n, int first)
         memset(&ss, 0, sizeof ss);
         memcpy(&ss, &n->srflx, sizeof n->srflx);
         npf_log("nat: udp=%d map=%s alloc=%s filter=%s srflx=%s cands=%d", n->nat_udp,
-                npf_nat_mapping_str(n->nat.mapping), alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
+                npf_nat_mapping_str(n->nat.mapping), npf_nat_alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
                 n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands);
     }
     /* a network change: the calls' platforms hear the new profile and punch
@@ -327,7 +316,7 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
         return;
     }
     npf_jw_kstr(w, "map", n->nat_valid && n->nat_udp ? npf_nat_mapping_str(n->nat.mapping) : "UNKNOWN");
-    npf_jw_kstr(w, "alloc", n->nat_valid && n->nat_udp ? alloc_str(n->nat.allocation) : "UNKNOWN");
+    npf_jw_kstr(w, "alloc", n->nat_valid && n->nat_udp ? npf_nat_alloc_str(n->nat.allocation) : "UNKNOWN");
     npf_jw_kint(w, "delta", n->nat.seq_delta);
     npf_jw_kstr(w, "filter", n->nat_valid && n->nat_udp ? npf_nat_filter_str(n->nat.filtering) : "UNKNOWN");
     if (n->nat.allocation == NPF_ALLOC_BLOCK) {
