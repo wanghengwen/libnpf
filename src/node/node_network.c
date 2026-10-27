@@ -368,7 +368,7 @@ static void watch_cb(npf_loop *loop, void *arg)
 #ifndef _WIN32
     {   /* tests: NPF_TEST_UDP_FAIL=FILE: when FILE appears, the IPv4 socket
          * fails as a reclaimed one does (every call on it: ENOTSOCK) */
-        const char *f = getenv("NPF_TEST_UDP_FAIL");
+        const char *f = n->test_udp_fail;
         int z;
         if (f && n->udp_fd >= 0 && remove(f) == 0 && (z = open("/dev/null", O_RDONLY)) >= 0) {
             npf_logw("test: the UDP socket fails now");
