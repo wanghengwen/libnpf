@@ -68,7 +68,7 @@ WebSocket：一个完整的应用信令消息对应一个 JSON 对象；接收�
 
 当前节点发送 `v = 1`，请求编号为 `r` 加十进制序号；带回调的信令请求最多同时挂起 16 个。接收分发检查 `type` 和对象类型的 `data`，尚未统一校验 `v`、`id` / `reply_to` 的互斥及全部消息字段。请求回调只把 `status = ok` 视为成功，`pending` 会结束这次回调，后续查询须由应用处理。上述消息格式及各消息的字段规则是对接约定，不能等同于统一校验器已全部实现。
 
-错误码草案：`bad_request`、`unsupported_version`、`unsupported_type`、`unauthenticated`、`forbidden`、`not_found`、`conflict`、`expired`、`rate_limited`、`offline`、`timeout`、`no_path`、`internal_error`。无权访问对象时，不通过错误详情泄露其存在或所有者。TCP 子链路连接结果使用 SOCKS5 `REP`，不使用这些 JSON 错误码；反向监听等控制请求使用数据通道协议定义的错误码。
+错误码草案：`bad_request`、`upgrade_required`、`unsupported_type`、`unauthenticated`、`forbidden`、`not_found`、`conflict`、`expired`、`rate_limited`、`offline`、`timeout`、`no_path`、`internal_error`。无权访问对象时，不通过错误详情泄露其存在或所有者。TCP 子链路连接结果使用 SOCKS5 `REP`，不使用这些 JSON 错误码；反向监听等控制请求使用数据通道协议定义的错误码。
 
 ## JSON 与 C 解析约束
 
@@ -110,6 +110,7 @@ WebSocket：一个完整的应用信令消息对应一个 JSON 对象；接收�
 | `keys` | 平台 → 节点 / 客户端 | 事件 | 推送新一天的 `probe_key`、`relay_day_key` 和新票据 |
 | `probe` | 平台 → 节点 / 客户端 | 事件 | 地址探测的端点变了（另一台服务器上线或下线） |
 | `redirect` | 平台 → 节点 / 客户端 | 事件 | 要求改连列表中的另一台服务器 |
+| `upgrade` | 平台 → 节点 / 客户端 | 事件 | 升级策略变了：有更新的版本可用，或当前版本已低于平台允许的最低版本（见"升级"） |
 | `replaced` | 平台 → 节点 / 客户端 | 事件 | 同一身份在别处登录了，这条连接随即被关闭（security.md 5.4） |
 
 ### `login`
@@ -133,6 +134,18 @@ WebSocket：一个完整的应用信令消息对应一个 JSON 对象；接收�
 | `host` | 可选，所在主机的信息，平台写入连接记录（运维用）：`os`、`arch`、`hostname`、`machine_id`（Linux 系统机器 ID，macOS IOPlatformUUID，Windows MachineGuid）、`macs`（网卡硬件地址，最多 8 个）。服务器限制长度、去掉控制字符。节点配置 `report_host = 0` 时不发送。节点登录时平台还把 `hostname` 记在设备上，设备没有起名字时它就是设备的名称（见"设备自己的名称"） |
 
 `welcome` 另带 `client_id`（本连接密钥的指纹，十进制字符串）和 `account_id`（本连接有账户会话时）。控制台节点出示的 `account_cert`、纯客户端出示的客户端证书已被吊销（别处改了密码、退出登录）或过期时，照常登录（纯客户端按匿名），`welcome` 中没有 `account_id`，客户端据此丢弃本地的账户证书、显示为未登录，而不是被拒绝后反复重连；平台查不了数据库时回 `internal_error`，不当作吊销。
+
+### 升级
+
+平台按程序（`app.name`）与系统（`host.os` 的第一个词，小写：`linux`、`macos`、`windows`、`android`、`ios`）保存升级策略：最低版本 `min`、最新版本 `latest`、发布比例（百分比）、下载页 `url`、给用户的一句话 `notes`，以及（可选）签名的安装清单 `packages`。同一程序有指定系统的策略时用它，否则用不分系统的。版本为点分数字（最多 4 段）加可选的 `-后缀`，带后缀的低于同号无后缀的。
+
+| 情形 | 行为 |
+|---|---|
+| `app.ver` 低于 `min` | `login` 应答 `error: "upgrade_required"`，`data` 为 `{"required": true, "min", "latest", "url", "notes"}`。在认证身份之前检查，不占连接额度；所有角色（含 `hosted`）都适用。信令不兼容时，把 `min` 抬到新版即可。不带 `app` 的登录找不到策略，不受约束 |
+| 低于 `latest`，且本身份在发布比例内 | `welcome` 带 `upgrade: {"latest", "min", "url", "notes", "packages"}`。是否在比例内由身份（节点编号或客户端指纹）与策略的哈希决定，同一身份结果稳定，比例加大时已在内的不变 |
+| 策略变了 | 平台在服务器列表同样的分散时间内向在线连接发 `upgrade` 事件（内容同上）；`min` 抬高后低于它的连接收到 `required: true`，随后被关闭，重连时得到 `upgrade_required` |
+
+客户端收到 `upgrade_required` 后不当作普通拒绝去退避重连，而是保持"需要升级"状态，隔很长时间（10 分钟）再试一次，升级后无需人工重启。`upgrade` 只是提示，不是授权依据。
 
 ### `enroll`（一型一密）
 
