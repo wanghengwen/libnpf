@@ -40,12 +40,30 @@ static int send_msg(npf_ws *ws, const uint8_t *m, size_t n)
     return npf_ws_send(ws, m, n, 1);
 }
 
+int npf_sig_xk_first(npf_ws *ws, npf_noise_hs *hs)
+{
+    uint8_t m[64];
+    int n = npf_noise_write(hs, NULL, 0, m, sizeof m);
+    return n < 0 || npf_ws_send(ws, m, (size_t)n, 1) < 0 ? -1 : 0;
+}
+
+const char *npf_sig_xk_finish(npf_ws *ws, npf_noise_hs *hs, const uint8_t *msg, size_t len, npf_noise_cs *tx,
+                              npf_noise_cs *rx, uint8_t hash[64])
+{
+    uint8_t m[128], p[64];
+    int n;
+    if (npf_noise_read(hs, msg, len, p, sizeof p) < 0)
+        return "server authentication failed";
+    n = npf_noise_write(hs, NULL, 0, m, sizeof m);
+    if (n < 0 || npf_noise_split(hs, tx, rx, NULL, NULL, hash) < 0 || npf_ws_send(ws, m, (size_t)n, 1) < 0)
+        return "noise handshake failed";
+    return NULL;
+}
+
 static void ws_open(npf_ws *ws, void *arg)
 {
     npf_sig *s = arg;
-    uint8_t m[64];
-    int n = npf_noise_write(&s->hs, NULL, 0, m, sizeof m);
-    if (n < 0 || send_msg(ws, m, (size_t)n) < 0)
+    if (npf_sig_xk_first(ws, &s->hs) < 0)
         sig_down(s, "noise write failed");
 }
 
@@ -62,16 +80,9 @@ static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         return;
     }
     if (!s->ready) {
-        uint8_t m[128], p[64];
-        int n;
-        if (npf_noise_read(&s->hs, data, len, p, sizeof p) < 0) {
-            sig_down(s, "server authentication failed");
-            return;
-        }
-        n = npf_noise_write(&s->hs, NULL, 0, m, sizeof m);
-        if (n < 0 || npf_noise_split(&s->hs, &s->tx, &s->rx, NULL, NULL, s->hash) < 0
-            || send_msg(s->ws, m, (size_t)n) < 0) {
-            sig_down(s, "noise handshake failed");
+        const char *why = npf_sig_xk_finish(s->ws, &s->hs, data, len, &s->tx, &s->rx, s->hash);
+        if (why) {
+            sig_down(s, why);
             return;
         }
         s->ready = 1;
