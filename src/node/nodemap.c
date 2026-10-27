@@ -136,9 +136,11 @@ static void pm_work(pm_job *j)
     PM_UNLOCK();
 }
 
-/* the node no longer waits for its request (stop, restart) */
+/* the node no longer waits for its timer or its request (stop, restart):
+ * a running request's answer is dropped */
 static void pm_forget(npf_node *n)
 {
+    timer_stop(n->loop, &n->t_pm);
     if (!n->pm_job)
         return;
     PM_LOCK();
@@ -216,10 +218,7 @@ void node_portmap_start(npf_node *n)
 
 void node_portmap_stop(npf_node *n)
 {
-    if (n->t_pm)
-        npf_timer_cancel(n->loop, n->t_pm);
-    n->t_pm = NULL;
-    pm_forget(n);                           /* a running request's answer is dropped */
+    pm_forget(n);
     if (n->pm_ok) {                         /* one short try: a gateway gone silent does not hold up the stop */
         npf_portmap_remove(n->udp_port, n->pm.method);
         n->pm_ok = 0;
@@ -228,9 +227,6 @@ void node_portmap_stop(npf_node *n)
 
 void node_portmap_restart(npf_node *n)
 {
-    if (n->t_pm)
-        npf_timer_cancel(n->loop, n->t_pm);
-    n->t_pm = NULL;
     pm_forget(n);
     n->pm_ok = 0;
     n->pm_gw = PM_GW_UNKNOWN;
