@@ -311,14 +311,33 @@ static const struct sockaddr_storage *peer_at(npf_punch *p, uint16_t port, struc
 
 /* S2B: a BIND_REQ from the fresh socket to a probe server (E1: its mapping;
  * E2: the caller's spacer, one more mapping) */
-static void s2b_bind(npf_punch *p, int ep, const uint8_t txid[NPF_TXID_SIZE])
+static void s2b_bind_to(npf_punch *p, const struct sockaddr_in *to, const uint8_t txid[NPF_TXID_SIZE])
 {
     uint8_t wire[NPF_PKT_MAX];
     size_t len = npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
     int n = npf_pkt_seal(&p->kprobe, NPF_DIR_REQ, NPF_PKT_BIND_REQ, txid,
                          (uint32_t)(npf_unix_ms() + p->cfg.clock_offset_ms), p->cfg.ticket, NPF_TICKET_SIZE, len, wire);
     if (n > 0)
-        (void)npf_udp_send(p->socks[1].fd, wire, (size_t)n, &p->cfg.probe_ep[ep]);
+        (void)npf_udp_send(p->socks[1].fd, wire, (size_t)n, to);
+}
+
+static void s2b_bind(npf_punch *p, int ep, const uint8_t txid[NPF_TXID_SIZE])
+{
+    s2b_bind_to(p, &p->cfg.probe_ep[ep], txid);
+}
+
+/* S2B: the caller's spacer before pass r: one more mapping of the fresh
+ * socket's, so a destination it has not sent to yet (an APDM NAT gives a
+ * known one the mapping it has): E2, then E2's next ports (nothing listens
+ * there, nothing comes back) */
+static void s2b_spacer(npf_punch *p, int r)
+{
+    struct sockaddr_in to = p->cfg.probe_ep[1];
+    uint8_t txid[NPF_TXID_SIZE];
+    unsigned port = ntohs(to.sin_port);
+    to.sin_port = htons((uint16_t)(port + r <= 65535 ? port + r : port - r));
+    npf_random(txid, sizeof txid);
+    s2b_bind_to(p, &to, txid);
 }
 
 /* S2B, one pass: the next window of the ports the peer's NAT gives after its
@@ -326,19 +345,22 @@ static void s2b_bind(npf_punch *p, int ep, const uint8_t txid[NPF_TXID_SIZE])
  * order. The caller's k-th new mapping meets the callee's m-th when
  * k - m = (the callee's ports taken by others meanwhile) and k + m + 1 =
  * W - (the caller's): a solution for every pair of shifts that adds up to
- * less than W with the right parity; the caller's spacer before every odd
- * pass (one more mapping of its own) gives the other parity (7.6) */
+ * less than W when the two add up to an odd number. The caller's spacer
+ * before every pass (one more mapping of its own, a new destination each
+ * time) turns the parity every pass: a round misses only when the others
+ * took an odd number of ports before every pass (7.6). Once the spacers
+ * went before odd passes only and both to E2, so the second one took no
+ * new mapping: a round missed whenever the others took an odd number
+ * between the first two passes and none after, about 15 % of the rounds
+ * at 2 ports a second */
 static void s2b_pass(npf_punch *p)
 {
     const npf_punch_plan *pl = &p->cfg.plan;
     int w = pl->window > 0 ? pl->window : 32, k;
     int up = pl->role == NPF_PUNCH_CONTROLLING;
     struct sockaddr_storage pa;
-    if (up && (p->pass & 1)) {
-        uint8_t txid[NPF_TXID_SIZE];
-        npf_random(txid, sizeof txid);
-        s2b_bind(p, 1, txid);
-    }
+    if (up)
+        s2b_spacer(p, p->pass);
     for (k = 0; k < w && p->ndests < S2B_MAX; k++) {
         int n = up ? p->pass * w + k + 1 : p->pass * w + w - k;
         long port = (long)p->peer_port + (long)n * pl->peer_delta;
