@@ -208,21 +208,6 @@ int npf_conf_load(npf_conf *c, const char *path)
     return 0;
 }
 
-/* the key of a line ("" for comments and blank lines), and its value */
-static void line_kv(const char *line, char *k, size_t kc, char *v, size_t vc)
-{
-    char buf[4096], *eq, *h;
-    snprintf(buf, sizeof buf, "%s", line);
-    k[0] = v[0] = 0;
-    if ((h = strchr(buf, '#')) != NULL)
-        *h = 0;
-    if (!(eq = strchr(buf, '=')))
-        return;
-    *eq = 0;
-    snprintf(k, kc, "%s", trim(buf));
-    snprintf(v, vc, "%s", trim(eq + 1));
-}
-
 static const char *const known_keys[] = {
     "control", "control_token", "cred", "dir", "direct", "direct_psk_file", "hosted_trust",
     "hosted_service", "hosted_exec", "hosted_ports", "hosted_max_conns", "hosted_ip_conns", "hosted_ip_rate", "sig_idle_s", "sig_wake_s",
@@ -267,63 +252,6 @@ int npf_conf_value_ok(const char *value)
         if (*s < 0x20 || *s == 0x7f || *s == '#')
             return 0;
     return strlen(value) < 1000;            /* a value holds up to 1023 bytes */
-}
-
-int npf_conf_file_edit(const char *path, const char *key, const char *old, const char *value)
-{
-    char *in = NULL, *out, *line, *next, k[64], v[1024];
-    long n;
-    size_t cap, o = 0;
-    int multi = is_multi(key), placed = 0, r;
-    const char *kc;
-    for (kc = key; *kc; kc++)
-        if (!(*kc >= 'a' && *kc <= 'z') && *kc != '_')
-            return -1;
-    if (!*key || (value && !npf_conf_value_ok(value)))
-        return -1;
-    n = npf_file_read(path, &in);
-    if (n < 0) {
-        n = 0;
-        in = calloc(1, 1);
-        if (!in)
-            return -1;
-    }
-    cap = (size_t)n + strlen(key) + (value ? strlen(value) : 0) + 16;
-    out = malloc(cap);
-    if (!out) {
-        free(in);
-        return -1;
-    }
-    for (line = in; *line; line = next) {
-        size_t len;
-        next = strchr(line, '\n');
-        next = next ? next + 1 : line + strlen(line);
-        len = (size_t)(next - line);
-        {
-            char l[4096];
-            snprintf(l, sizeof l, "%.*s", (int)(len < sizeof l ? len : sizeof l - 1), line);
-            line_kv(l, k, sizeof k, v, sizeof v);
-        }
-        if (strcmp(k, key) == 0) {
-            if (multi ? (old && strcmp(v, old) == 0) : 1) {
-                if (!multi && value && !placed) {
-                    o += (size_t)snprintf(out + o, cap - o, "%s = %s\n", key, value);
-                    placed = 1;
-                }
-                continue;                   /* the line goes */
-            }
-        }
-        memcpy(out + o, line, len);
-        o += len;
-        if (len && line[len - 1] != '\n' && o < cap)
-            out[o++] = '\n';
-    }
-    if (value && !placed)
-        o += (size_t)snprintf(out + o, cap - o, "%s = %s\n", key, value);
-    r = npf_file_write(path, out, o, 0600);
-    free(in);
-    free(out);
-    return r;
 }
 
 const char *npf_conf_get_n(const npf_conf *c, const char *key, int n)
