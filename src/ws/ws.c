@@ -40,7 +40,7 @@ struct npf_ws {
     int        drained;             /* out went empty during this on_io */
     int        freed;
     int        use_tls;
-    int        outside_vpn;         /* npf_ws_connect_ext */
+    int        outside_vpn;         /* npf_ws_connect */
     npf_resolve *resolve;           /* ST_RESOLVING: the host name lookup */
     npf_timer *t_connect;
     struct sockaddr_storage cand[NPF_RESOLVE_MAX];
@@ -687,12 +687,7 @@ static void ws_resolved(npf_resolve *r, int err, const struct sockaddr_storage *
         ws_fail(ws, 0, "cannot connect");
 }
 
-npf_ws *npf_ws_connect(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, void *arg)
-{
-    return npf_ws_connect_ext(loop, url, cbs, arg, 0);
-}
-
-npf_ws *npf_ws_connect_ext(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, void *arg, int outside_vpn)
+npf_ws *npf_ws_connect(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, void *arg, int outside_vpn)
 {
     npf_ws *ws;
     struct sockaddr_storage a;

@@ -9,7 +9,7 @@
 static const char cert_domain[] = "npf-cert-v1";
 static const char list_domain[] = "npf-serverlist-v1";
 
-uint32_t npf_key_id(const uint8_t sign_pub[32])
+static uint32_t npf_key_id(const uint8_t sign_pub[32])
 {
     uint8_t h[32];
     crypto_blake2b(h, 32, sign_pub, 32);
@@ -59,7 +59,8 @@ int npf_cert_parse(const uint8_t *b, size_t len, npf_cert *c)
     return (int)n;
 }
 
-int npf_cert_check_sig(const npf_cert *c, const uint8_t issuer_pub[32])
+/* signature check against an issuer key (key id must match); 0 if valid */
+static int npf_cert_check_sig(const npf_cert *c, const uint8_t issuer_pub[32])
 {
     if (npf_key_id(issuer_pub) != c->issuer_key)
         return -1;
@@ -71,8 +72,11 @@ static int valid_at(const npf_cert *c, int64_t now)
     return now == 0 || (now >= c->not_before && now <= c->not_after);
 }
 
-int npf_cert_chain_verify(const uint8_t (*roots)[32], int nroots, const npf_cert *inter,
-                          unsigned perm, const npf_cert *leaf, int64_t now)
+/* Verify an intermediate against the root keys (and, when leaf != NULL, the
+ * leaf against the intermediate). now == 0 skips validity periods.
+ * Returns 0 if valid. */
+static int npf_cert_chain_verify(const uint8_t (*roots)[32], int nroots, const npf_cert *inter,
+                                 unsigned perm, const npf_cert *leaf, int64_t now)
 {
     int i, ok = 0;
     for (i = 0; i < nroots && !ok; i++)

@@ -173,7 +173,7 @@ npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t server_pub[
         free(r);
         return NULL;
     }
-    r->ws = npf_ws_connect(loop, url, &wcb, r);
+    r->ws = npf_ws_connect(loop, url, &wcb, r, 0);
     if (!r->ws) {
         free(r);
         return NULL;

@@ -367,7 +367,7 @@ static const char *const settable[] = {"log_level", "max_calls", "punch_lead_ms"
 /* also live, not listed: a hosted client's limits (npf-hosted sets them, the platform decides) */
 static const char *const settable_hosted[] = {"hosted_max_conns", "hosted_ip_conns", "hosted_ip_rate", NULL};
 
-static int is_settable(const char *k)
+int npf_cmd_is_settable(const char *k)
 {
     int i;
     for (i = 0; settable[i]; i++)
@@ -448,7 +448,7 @@ static const struct {
                 {"hosted_max_conns", 0, 100000}, {"hosted_ip_conns", 0, 100000}, {"hosted_ip_rate", 0, 100000}};
 
 /* keys whose values stay out of the log and the replies */
-static int is_secret(const char *k)
+int npf_cmd_is_secret(const char *k)
 {
     return strcmp(k, "password") == 0 || strcmp(k, "cred") == 0 || strcmp(k, "model_cred") == 0
            || strcmp(k, "direct_psk") == 0;
@@ -490,8 +490,8 @@ static int check_value(npf_t *n, const char *k, const char *v, npf_out *o)
  * configuration file unless save is 0 */
 int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
 {
-    int live = is_settable(k), r;
-    const char *shown = is_secret(k) ? "(hidden)" : v;
+    int live = npf_cmd_is_settable(k), r;
+    const char *shown = npf_cmd_is_secret(k) ? "(hidden)" : v;
     if (strcmp(k, "node") == 0 || strcmp(k, "cred") == 0) {
         npf_out_printf(o, "%s: cannot be set this way%s\n", k, strcmp(k, "node") == 0 ? " (peers: npf_peer_create)" : "");
         return 2;
@@ -598,14 +598,4 @@ void npf_cmd_sessions_json(npf_t *c, npf_out *o)
         npf_session_info_out(c, c->sess[i].call, o);
     }
     npf_out_printf(o, "]\n");
-}
-
-int npf_cmd_is_secret(const char *k)
-{
-    return is_secret(k);
-}
-
-int npf_cmd_is_settable(const char *k)
-{
-    return is_settable(k);
 }

@@ -152,7 +152,7 @@ npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[
         free(s);
         return NULL;
     }
-    s->ws = npf_ws_connect_ext(loop, url, &wcb, s, outside_vpn);
+    s->ws = npf_ws_connect(loop, url, &wcb, s, outside_vpn);
     if (!s->ws) {
         npf_wipe(s, sizeof *s);
         free(s);

@@ -190,7 +190,7 @@ int npf_default_gw4(uint32_t *gw)
     return 0;
 }
 
-int npf_mkdir(const char *path)
+static int npf_mkdir(const char *path)
 {
     if (_mkdir(path) == 0 || errno == EEXIST)
         return 0;
@@ -530,7 +530,7 @@ int npf_default_gw4(uint32_t *gw)
 
 #endif
 
-int npf_mkdir(const char *path)
+static int npf_mkdir(const char *path)
 {
     if (mkdir(path, 0700) == 0 || errno == EEXIST)
         return 0;
@@ -851,6 +851,8 @@ static void udp_watch_note(npf_udp_watch *w, const struct sockaddr *sa)
         w->other = npf_mono_ms();
 }
 
+static int npf_udp_hook_is_on(void);
+
 int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
 {
     const struct sockaddr *sa = to;
@@ -900,7 +902,7 @@ void npf_udp_hook_on(int on)
     __atomic_store_n(&g_udp_hook_on, on != 0, __ATOMIC_RELAXED);
 }
 
-int npf_udp_hook_is_on(void)
+static int npf_udp_hook_is_on(void)
 {
     return __atomic_load_n(&g_udp_hook_on, __ATOMIC_RELAXED);
 }

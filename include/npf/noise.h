@@ -64,9 +64,6 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
  * failure, wrong length, wrong turn). On failure the state must be discarded. */
 int npf_noise_read(npf_noise_hs *hs, const uint8_t *msg, size_t len, uint8_t *payload, size_t cap);
 
-/* Is it our turn to write? */
-int npf_noise_my_turn(const npf_noise_hs *hs);
-
 /* After the last message: transport keys. tx encrypts what we send.
  * Returns -1 if the handshake is not finished. The handshake state is wiped. */
 int npf_noise_split(npf_noise_hs *hs, npf_noise_cs *tx, npf_noise_cs *rx,

@@ -145,14 +145,6 @@ void npf_identity_from_seed(npf_identity *id, const uint8_t seed[32])
     npf_x25519_pub(id->dh_pub, id->dh_sk);
 }
 
-void npf_identity_generate(npf_identity *id)
-{
-    uint8_t seed[32];
-    npf_random(seed, 32);
-    npf_identity_from_seed(id, seed);
-    crypto_wipe(seed, 32);
-}
-
 void npf_identity_wipe(npf_identity *id)
 {
     crypto_wipe(id, sizeof *id);
@@ -163,14 +155,6 @@ uint64_t npf_fp(const uint8_t dh_pub[32])
     uint8_t h[32];
     crypto_blake2b(h, 32, dh_pub, 32);
     return npf_rd64(h);
-}
-
-void npf_sign(uint8_t sig[64], const npf_identity *id, const void *msg, size_t len)
-{
-#ifdef NPF_USE_OPENSSL
-    if (ossl_sign(sig, id->sign_sk, msg, len) == 0) return;
-#endif
-    crypto_ed25519_sign(sig, id->sign_sk, msg, len);
 }
 
 /* Ed25519 has no streaming interface in Monocypher; domain-separated messages

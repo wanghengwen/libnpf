@@ -24,10 +24,9 @@ typedef struct npf_ws_cbs {
     void (*on_drain)(npf_ws *ws, void *arg);
 } npf_ws_cbs;
 
-npf_ws *npf_ws_connect(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, void *arg);
-/* the same; outside_vpn: the socket goes around a VPN like the node's UDP ones
+/* outside_vpn: the socket goes around a VPN like the node's UDP ones
  * (npf_net_bypass: connect_mode p2p only) */
-npf_ws *npf_ws_connect_ext(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, void *arg, int outside_vpn);
+npf_ws *npf_ws_connect(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, void *arg, int outside_vpn);
 
 int  npf_ws_send(npf_ws *ws, const void *data, size_t len, int binary);
 /* one message of head and then data (a type byte before a record: no copy to join them) */

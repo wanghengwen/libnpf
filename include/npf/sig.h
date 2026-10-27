@@ -24,7 +24,7 @@ typedef struct npf_sig_cbs {
 } npf_sig_cbs;
 
 /* outside_vpn: the connection goes around a VPN like the node's UDP sockets
- * (connect_mode p2p; npf_ws_connect_ext) */
+ * (connect_mode p2p; npf_ws_connect) */
 npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[32],
                       const npf_identity *id, const char *prologue, const npf_sig_cbs *cbs, void *arg,
                       int outside_vpn);
