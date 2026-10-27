@@ -588,10 +588,10 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason);
 /* server time in ms (wall clock corrected by welcome.time) */
 int64_t npf_node_time(const npf_node *n);
 
-/* Parse a server-list payload into entries; returns the count or -1. */
-int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial);
-
-void npf_serverlist_meta(const char *json, size_t len, npf_list_meta *m);
+/* Parse a server-list payload into entries and, meta not NULL, its
+ * expiry, fullness and channels; returns the count or -1. */
+int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial,
+                         npf_list_meta *meta);
 
 /* write the "nat" and "cand" fields into an open JSON object */
 struct npf_jw;

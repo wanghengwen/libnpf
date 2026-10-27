@@ -133,6 +133,7 @@ static void fuzz_cert(const uint8_t *d, size_t n)
 {
     static uint8_t roots[1][32], pub[32];
     static npf_server_entry list[NPF_MAX_SERVERS];
+    npf_list_meta meta;
     npf_cert c, inter, leaf;
     npf_grant g;
     const uint8_t *pl;
@@ -142,12 +143,12 @@ static void fuzz_cert(const uint8_t *d, size_t n)
     npf_cert_chain_parse((const uint8_t (*)[32])roots, 1, d, n, &inter, &leaf, 0);
     npf_grant_verify(d, n, pub, &g);
     if (npf_serverlist_verify((const uint8_t (*)[32])roots, 1, d, n, &pl, &plen) == 0)
-        npf_serverlist_parse((const char *)pl, plen, list, NPF_MAX_SERVERS, &serial);
+        npf_serverlist_parse((const char *)pl, plen, list, NPF_MAX_SERVERS, &serial, &meta);
     if (n <= MAX_IN) {                      /* the payload parser on its own: it is JSON */
         char s[MAX_IN + 1];
         memcpy(s, d, n);
         s[n] = 0;
-        npf_serverlist_parse(s, n, list, NPF_MAX_SERVERS, &serial);
+        npf_serverlist_parse(s, n, list, NPF_MAX_SERVERS, &serial, &meta);
     }
 }
 

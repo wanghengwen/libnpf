@@ -20,13 +20,36 @@
 
 #include "node_internal.h"
 
-static void serverlist_meta(const char *json, size_t len, npf_list_meta *m, npf_jtok *tok);
 static int list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via, npf_server_entry *tmp);
 
 /* ---- server list ---- */
 
+/* the list's expiry, whether it is a full one, its external channels */
+static void list_meta(const npf_json *j, npf_list_meta *m)
+{
+    int src, arr, k;
+    int64_t v;
+    memset(m, 0, sizeof *m);
+    if (npf_json_get_int(j, 0, "expires", 0, INT64_MAX, &v) == 0)
+        m->expires = v;
+    if (npf_json_bool(j, npf_json_get(j, 0, "full"), &m->full) < 0)
+        m->full = 1;
+    src = npf_json_get(j, 0, "sources");
+    if (src < 0 || j->tok[src].type != NPF_JT_OBJECT)
+        return;
+    arr = npf_json_get(j, src, "doh");
+    for (k = 0; arr >= 0 && k < j->tok[arr].size && m->ndoh < NPF_SOURCES_MAX; k++)
+        if (npf_json_str(j, npf_json_item(j, arr, k), m->doh[m->ndoh], sizeof m->doh[0]) > 0)
+            m->ndoh++;
+    arr = npf_json_get(j, src, "https");
+    for (k = 0; arr >= 0 && k < j->tok[arr].size && m->nhttps < NPF_SOURCES_MAX; k++)
+        if (npf_json_str(j, npf_json_item(j, arr, k), m->https[m->nhttps], sizeof m->https[0]) > 0
+            && strncmp(m->https[m->nhttps], "https://", 8) == 0)
+            m->nhttps++;
+}
+
 static int serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial,
-                            npf_jtok *tok)
+                            npf_list_meta *meta, npf_jtok *tok)
 {
     npf_json j;
     int arr, i, n = 0;
@@ -63,56 +86,19 @@ static int serverlist_parse(const char *json, size_t len, npf_server_entry *out,
         }
         n++;
     }
+    if (meta)
+        list_meta(&j, meta);
     return n;
 }
 
 /* the token arrays are per call: instances on other threads parse at the same time */
-int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial)
+int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial,
+                         npf_list_meta *meta)
 {
     npf_jtok *tok = malloc(NPF_JSON_MAX_TOKENS * sizeof *tok);
-    int r = tok ? serverlist_parse(json, len, out, max, serial, tok) : -1;
+    int r = tok ? serverlist_parse(json, len, out, max, serial, meta, tok) : -1;
     free(tok);
     return r;
-}
-
-
-void npf_serverlist_meta(const char *json, size_t len, npf_list_meta *m)
-{
-    npf_jtok *tok = malloc(NPF_JSON_MAX_TOKENS * sizeof *tok);
-    if (!tok) {
-        memset(m, 0, sizeof *m);
-        m->full = 1;
-        return;
-    }
-    serverlist_meta(json, len, m, tok);
-    free(tok);
-}
-
-static void serverlist_meta(const char *json, size_t len, npf_list_meta *m, npf_jtok *tok)
-{
-    npf_json j;
-    int src, arr, k;
-    int64_t v;
-    memset(m, 0, sizeof *m);
-    m->full = 1;
-    if (npf_json_parse(&j, json, len, tok, NPF_JSON_MAX_TOKENS) < 0 || tok[0].type != NPF_JT_OBJECT)
-        return;
-    if (npf_json_get_int(&j, 0, "expires", 0, INT64_MAX, &v) == 0)
-        m->expires = v;
-    if (npf_json_bool(&j, npf_json_get(&j, 0, "full"), &m->full) < 0)
-        m->full = 1;
-    src = npf_json_get(&j, 0, "sources");
-    if (src < 0 || tok[src].type != NPF_JT_OBJECT)
-        return;
-    arr = npf_json_get(&j, src, "doh");
-    for (k = 0; arr >= 0 && k < tok[arr].size && m->ndoh < NPF_SOURCES_MAX; k++)
-        if (npf_json_str(&j, npf_json_item(&j, arr, k), m->doh[m->ndoh], sizeof m->doh[0]) > 0)
-            m->ndoh++;
-    arr = npf_json_get(&j, src, "https");
-    for (k = 0; arr >= 0 && k < tok[arr].size && m->nhttps < NPF_SOURCES_MAX; k++)
-        if (npf_json_str(&j, npf_json_item(&j, arr, k), m->https[m->nhttps], sizeof m->https[0]) > 0
-            && strncmp(m->https[m->nhttps], "https://", 8) == 0)
-            m->nhttps++;
 }
 
 static int load_list_file(npf_node *n, const char *path, int64_t *serial, npf_server_entry *tmp, int *count,
@@ -127,10 +113,9 @@ static int load_list_file(npf_node *n, const char *path, int64_t *serial, npf_se
         return -1;
     if (npf_serverlist_verify((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, (uint8_t *)blob, (size_t)len,
                               &pl, &plen) == 0) {
-        int c = npf_serverlist_parse((const char *)pl, plen, tmp, NPF_MAX_SERVERS, serial);
+        int c = npf_serverlist_parse((const char *)pl, plen, tmp, NPF_MAX_SERVERS, serial, meta);
         if (c > 0) {
             *count = c;
-            npf_serverlist_meta((const char *)pl, plen, meta);
             r = 0;
         }
     }
@@ -219,10 +204,9 @@ static int list_update(npf_node *n, const uint8_t *blob, size_t len, const char 
         npf_logw("server list%s%s: signature check failed, ignored", via ? " from " : "", via ? via : "");
         return 0;
     }
-    c = npf_serverlist_parse((const char *)pl, plen, tmp, NPF_MAX_SERVERS, &serial);
+    c = npf_serverlist_parse((const char *)pl, plen, tmp, NPF_MAX_SERVERS, &serial, &meta);
     if (c <= 0)
         return 0;
-    npf_serverlist_meta((const char *)pl, plen, &meta);
     /* newer than the list in use; a full list also replaces a seed list of
      * its own publish (the same serial: it was refused, and every login
      * then brought it again for nothing while the node kept the seed's few
