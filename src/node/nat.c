@@ -118,9 +118,9 @@ static void nat_settled(npf_node *n)
                 npf_nat_mapping_str(n->nat.mapping), alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
                 n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands);
     }
-    if (n->repunch_on_nat && n->online) {   /* a network check: the relayed calls try for a direct path again */
+    if (n->online) {    /* the calls' platforms hear the new profile (a network check: they punch again) */
+        node_calls_punch_report(n, n->repunch_on_nat ? "network" : "profile");
         n->repunch_on_nat = 0;
-        npf_node_repunch_now(n);
     }
     npf_node_report_nat(n);
     if (n->login_waits_nat) {

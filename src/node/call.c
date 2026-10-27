@@ -150,7 +150,7 @@ npf_call *call_new(npf_node *n, int caller)
  * no one's now. Not t_wsflush: it sends the close over the WS relay */
 static void call_timers_stop(npf_call *c)
 {
-    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck, &c->t_repunch,
+    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck,
                        &c->t_standby, &c->t_direct, &c->relay.t_bind};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++) {

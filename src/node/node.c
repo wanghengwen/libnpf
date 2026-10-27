@@ -174,9 +174,6 @@ void npf_node_stop(npf_node *n)
         npf_timer_cancel(n->loop, n->t_udp_reopen);
     if (n->t_nat_retry)
         npf_timer_cancel(n->loop, n->t_nat_retry);
-    if (n->t_punch_gap)
-        npf_timer_cancel(n->loop, n->t_punch_gap);
-    n->t_punch_gap = NULL;
     n->t_watch = n->t_netcheck = n->t_udp_reopen = n->t_nat_retry = NULL;
     if (n->udp_fd >= 0) {
         npf_loop_del(n->loop, n->udp_fd);

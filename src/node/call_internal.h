@@ -92,16 +92,10 @@ struct npf_call {
     int         punch_round;
     int         accepted;           /* the platform's accept arrived: t_timeout counts from it */
     int         secure;             /* connect_mode secure on either side: relays only, no punching */
-    int         punch_retries;      /* caller: backoff step of punch_request (schedule_repunch) */
-    int         empty_rounds;       /* caller: rounds let go for want of candidates (empty_round) */
-    int         punch_requests;     /* caller: punch_request sent in this session (PUNCH_ROUNDS_MAX) */
-    int         repunch_waiting;    /* t_repunch waits for the round a punch_request asked for */
     int         relay_retried;      /* the UDP relay tried again once after a failed punch, before the WS relay */
     int         relay_waits_ports;  /* the UDP relay unreachable while punches held the NAT's ports: again when they end */
     int         relay_ports_waited; /* that wait was had (once) */
-    int         sock_wait;          /* caller, hard side: a round skipped for want of S3 sockets; asked
-                                       for again when another punch gives them back */
-    npf_timer  *t_repunch, *t_standby;
+    npf_timer  *t_standby;
     int         relay_asked;        /* relay_switch sent, waiting for a new allocation */
     int         ws_fail_wait;       /* caller: the WS relay failed before the accept: asked about after it */
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
@@ -113,8 +107,6 @@ struct npf_call {
     uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
     int         info_round;
     struct sockaddr_storage tcand;  /* the peer's new srflx (its punch_info "cand"): in this round and the next */
-    int         unsol_untrusted;    /* this round's unsolicited probes not reported: the main socket had
-                                       sprayed or gone direct to the peer's IP before (call_contact_recent) */
     int         spray_refused_said; /* "not an address to spray" logged in this call */
     int         cand_later;         /* caller: our srflx changed before call_accepted: punch_info then */
     int         punch_wait_keys;
@@ -200,7 +192,7 @@ typedef struct call_hs {
 #define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
 #define PUNCH_LINGER_MS    10000
 #define RELAY_DATA_OVERHEAD (RELAY_HINT_SIZE + NPF_SIV_TAG_SIZE + 6)
-#define PUNCH_ROUNDS_MAX 10
+#define PUNCH_ROUNDS_MAX 10         /* the platform's counted rounds of a call (a sanity limit here) */
 #define LABEL_PATH         "NPF-PCHECK-1"       /* the direct path check (call_path.c), its keys from the session's */
 #define PATH_PKT_LEN       (NPF_SIV_TAG_SIZE + 10)
 /* n->conv_tab: AnLiu datagrams find their call by conv without a scan */
@@ -230,10 +222,6 @@ int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);
 int call_peer_spray_ok(const npf_call *c, struct in_addr ip);
 int call_peer_ip4_usable(const npf_node *n, struct in_addr ip);
 void call_test_punch_info(npf_call *c);
-/* the main socket sprayed ip or had a direct path with it (now); it did
- * within CONTACT_MS (10 minutes) */
-void call_contact_note(npf_node *n, struct in_addr ip);
-int  call_contact_recent(const npf_node *n, struct in_addr ip);
 void call_set_state(npf_call *c, int st, const char *why);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);
@@ -291,9 +279,8 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r);
 /* call_direct.c: direct connections (no platform) */
 int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 
-/* call_punch.c: punching rounds, their sockets and gaps, repunching (nat-traversal.md 7) */
-void call_repunch_timer(npf_loop *loop, void *arg);
-void call_schedule_repunch(npf_call *c);
+/* call_punch.c: the punching rounds the platform sends, their sockets (nat-traversal.md 7) */
+void call_punch_report(npf_call *c, const char *why);
 int call_hard_punches(const npf_call *c);
 void call_punch_sockets_back(npf_node *n);
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d);

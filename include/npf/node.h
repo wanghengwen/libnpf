@@ -305,13 +305,6 @@ struct npf_node {
     struct npf_key_share **kshares; /* per caller key: half of tun_shared (call.c key_share) */
     int           nkshares;
     int64_t       hard_punch_end;   /* when a hard-side punch last gave its sockets back (monotonic ms), 0: none */
-    npf_timer    *t_punch_gap;      /* the next hard-side punch once the gap after it is over */
-    /* the peer IPs the main socket sprayed or had a direct path with lately:
-     * the NAT's filter may still let in other ports of them than a round
-     * probed (natsim keeps them while the mapping lives, conntrack for its
-     * timeout), so a probe from such a port shows nothing of the filter
-     * (punch_result unsolicited, nat-traversal.md 7.8) */
-    struct { struct in_addr ip; int64_t at; } contact[8];
     int64_t       port_pressure;    /* the last sign that the NAT ran short of ports around a hard-side
                                        punch (a relay or NAT check unanswered; monotonic ms), 0: none */
 
@@ -454,7 +447,7 @@ void npf_node_calls_lost_fd(npf_node *n, int fd, const char *reason);
 void npf_node_check_paths(npf_node *n, const char *why);
 /* the network changed: each call this side made that is on the UDP relay
  * punches again now (call.c; within its rounds) */
-void npf_node_repunch_now(npf_node *n);
+void node_calls_punch_report(npf_node *n, const char *why);
 /* the published resources changed: reverse-mapping listeners they no longer
  * allow are closed (call.c) */
 void npf_node_reverse_recheck(npf_node *n);

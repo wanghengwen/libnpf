@@ -12,9 +12,6 @@
  *                             learns the peer's (npf_punch_peer_port) and sends
  *                             to the ports the peer's NAT gives next, the
  *                             caller ascending, the callee descending.
- *   S5   slow birthday       — two small port blocks: both sides send from one
- *                             fresh socket to random ports of the peer's block,
- *                             a few a second, for minutes.
  *
  * S1/S0 work over IPv4 or IPv6 (plan.family). S3 is IPv4 only (it depends on
  * NAT port behaviour; IPv6 has no NAT, so S1/S0 covers it).
@@ -22,7 +19,8 @@
  * PROBE/PROBE_ACK use punch_key (label NPF-PUNCH-v1), NOMINATE/NOMINATE_ACK use
  * nominate_key (NPF-NOMIN-v1); the key direction is the role.
  *
- * Synchronous (poll). The event-loop API of the design doc comes later. */
+ * Event-driven on npf_loop (npf_punch_new); the node runs the rounds the
+ * platform sends, the tools run one on a loop of their own. */
 #ifndef NPF_PUNCH_H
 #define NPF_PUNCH_H
 
@@ -35,7 +33,7 @@
 #define NPF_PKT_NOMINATE_ACK  6
 
 enum { NPF_PUNCH_CONTROLLING = 0, NPF_PUNCH_CONTROLLED = 1 };
-enum { NPF_PUNCH_S1 = 1, NPF_PUNCH_S3 = 3, NPF_PUNCH_S2B = 20, NPF_PUNCH_S5 = 5 };
+enum { NPF_PUNCH_S1 = 1, NPF_PUNCH_S3 = 3, NPF_PUNCH_S2B = 20 };
 enum { NPF_PUNCH_EASY = 0, NPF_PUNCH_HARD = 1 };
 
 #define NPF_PUNCH_MAX_SOCKETS 512
@@ -54,7 +52,7 @@ typedef struct npf_punch_plan {
     uint16_t range_lo, range_hi;    /* spray port range; 0,0 = [1024,65535]; lo > hi: it wraps past 65535 */
     int      n_sockets;             /* S3 hard socket count */
     int      m_total;               /* S3 easy spray count */
-    int      pps;                   /* S3 easy spray rate; S5 both sides */
+    int      pps;                   /* S3 easy spray rate */
     int      timeout_ms;
     /* S2B (nat-traversal.md 7.6) */
     int      own_delta, peer_delta; /* the NATs' allocation steps (S2's easy side: the hard side's) */
@@ -80,11 +78,9 @@ typedef struct npf_punch_result {
     int      rtt_ms;                /* NOMINATE round trip (controlling), else -1 */
     /* what the round showed of the peer's NAT, for the rounds after it
      * (nat-traversal.md 7.8): the source ports of its probes (its mappings
-     * toward this side), and probes from ports this side never sent to (this
-     * side's filter lets in other ports of an IP it sent to) */
+     * toward this side) */
     uint16_t seen[16];
     int      nseen;
-    int      unsolicited;
 } npf_punch_result;
 
 /* ---- event-driven punching (used by the node) ----
@@ -148,10 +144,7 @@ void npf_punch_stop(npf_punch *p);
  * over, it is there already, or the list is full (NPF_PUNCH_MAX_PEERS) */
 int  npf_punch_add_peer(npf_punch *p, const struct sockaddr_storage *a, int srflx);
 
-/* primary_fd: an already-open, already-bound UDP socket (family == plan.family)
- * for S1/S0 and the S3 easy side; ignored for the S3 hard side (it opens its
- * own). Returns 0 if a path was nominated, -1 on timeout. Built with
- * NPF_TOOLS_API only (the npf-punch tool; a node uses npf_punch_new). */
-int npf_punch_run(const npf_punch_plan *plan, int primary_fd, npf_punch_result *res);
+/* when the round ends at the latest (its timeout, monotonic ms) */
+int64_t npf_punch_ends_at(const npf_punch *p);
 
 #endif

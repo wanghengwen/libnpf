@@ -185,13 +185,12 @@ if(NPF_PORTMAP)
   target_sources(npf_common PRIVATE src/ice/portmap.c src/node/nodemap.c)
   target_compile_definitions(npf_common PUBLIC NPF_PORTMAP)
 endif()
-# the synchronous NAT probe, bind query and punch (npf_natprobe_run,
-# npf_bind_query, npf_punch_run): only the debugging tools use them
-# (npf-natprobe, npf-punch), a node runs the event-driven ones. Off: not in
-# the library (a program that builds the tools sets it, as npf does)
-option(NPF_TOOLS_API "The synchronous probe, bind query and punch for the debugging tools" OFF)
+# the synchronous NAT probe and bind query (npf_natprobe_run,
+# npf_bind_query): only the debugging tools use them (npf-natprobe,
+# npf-punch), a node runs the event-driven ones. Off: not in the library (a
+# program that builds the tools sets it, as npf does)
+option(NPF_TOOLS_API "The synchronous probe and bind query for the debugging tools" OFF)
 if(NPF_TOOLS_API)
-  target_sources(npf_common PRIVATE src/punch/punch.c)
   target_compile_definitions(npf_common PUBLIC NPF_TOOLS_API)
 endif()
 # the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)

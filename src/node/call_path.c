@@ -135,19 +135,9 @@ void call_check_p2p(npf_call *c)
             call_ask_ws_relay(c);
             return;
         }
-        if (!c->relay.active && c->caller && !call_no_p2p(c)) {
-            /* no relay to fall back on (an anonymous caller, D6): the only way
-             * out is a new round now, before AnLiu's idle timeout ends the session */
-            timer_stop(c->n->loop, &c->t_repunch);
-            c->repunch_waiting = 0;
-            c->punch_retries = 0;
-            if (c->punch_requests < PUNCH_ROUNDS_MAX - 1)
-                call_repunch_timer(c->n->loop, c);
-            else
-                npf_logw("call %s: %d punching rounds, no more", c->call_id_s, PUNCH_ROUNDS_MAX);
-        } else {
-            call_schedule_repunch(c);
-        }
+        /* the platform plans the next round (at once: with no relay to fall
+         * back on, an anonymous caller's session ends at AnLiu's idle timeout) */
+        call_punch_report(c, "path_lost");
         return;
     }
     /* silence counts from the later of the last datagram heard and the moment
