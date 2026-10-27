@@ -180,8 +180,21 @@ static int res_list_run(npf_t *n, void *arg)
             return NPF_OK;
         tok = malloc(NPF_RES_JSON_TOK * sizeof *tok);
         r = malloc(NPF_RES_MAX * sizeof *r);
-        if (tok && r && npf_json_parse(&j, json, strlen(json), tok, NPF_RES_JSON_TOK) == 0)
+        e[0] = 0;
+        if (!tok || !r) {
+            free(tok);
+            free(r);
+            npf_loge("resources of %s: no memory", npf_peer_name(p));
+            return NPF_ENOMEM;
+        }
+        if (npf_json_parse(&j, json, strlen(json), tok, NPF_RES_JSON_TOK) == 0)
             m = npf_res_parse(&j, 0, r, NPF_RES_MAX, e, sizeof e);
+        if (m < 0) {                        /* (checked when it came: not to happen) */
+            free(tok);
+            free(r);
+            npf_loge("resources of %s: %s", npf_peer_name(p), e[0] ? e : "not valid JSON");
+            return NPF_EFAIL;
+        }
         for (k = 0; k < m; k++) {
             if (*x->count < x->cap) {
                 r[k].persist = 0;

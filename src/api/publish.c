@@ -80,22 +80,40 @@ int npf_pub_load(npf_t *n, char *err, size_t errcap)
         npf_jtok *tok = malloc(NPF_RES_JSON_TOK * sizeof *tok);
         npf_res *r = malloc(NPF_RES_MAX * sizeof *r);
         npf_json j;
-        int m = -1;
-        if (tok && r && npf_json_parse(&j, n->lc.resources, strlen(n->lc.resources), tok, NPF_RES_JSON_TOK) == 0)
-            m = npf_res_parse(&j, 0, r, NPF_RES_MAX, e, sizeof e);
-        for (i = 0; i < m; i++) {
+        int m = -1, rc = 0;
+        e[0] = 0;
+        /* none left out without a word: a resource missing here is a
+         * service its callers no longer reach */
+        if (!tok || !r) {
+            snprintf(err, errcap, "resources of local.json: no memory");
+            rc = -1;
+        } else if (npf_json_parse(&j, n->lc.resources, strlen(n->lc.resources), tok, NPF_RES_JSON_TOK) < 0
+                   || (m = npf_res_parse(&j, 0, r, NPF_RES_MAX, e, sizeof e)) < 0) {
+            snprintf(err, errcap, "resources of local.json: %s", e[0] ? e : "not valid JSON");
+            rc = -1;
+        }
+        for (i = 0; i < m && rc == 0; i++) {
             for (k = 0; k < n->nres && strcmp(n->res[k].name, r[i].name) != 0; k++)
                 ;
-            if (k < n->nres || n->nres >= NPF_RES_MAX || res_room(n, n->nres + 1) < 0) {
+            if (k < n->nres || n->nres >= NPF_RES_MAX) {
                 npf_logw("resources: %s of local.json left out (%s)", r[i].name,
                          k < n->nres ? "npf.conf has one of that name" : "too many");
                 continue;
+            }
+            if (res_room(n, n->nres + 1) < 0) {
+                snprintf(err, errcap, "resources of local.json: no memory");
+                rc = -1;
+                break;
             }
             r[i].persist = 1;
             n->res[n->nres++] = r[i];
         }
         free(tok);
         free(r);
+        if (rc < 0) {
+            npf_loge("%s", err);
+            return -1;
+        }
     }
     return npf_pub_apply(n) < 0 ? (snprintf(err, errcap, "resources: too many targets"), -1) : 0;
 }
@@ -341,10 +359,13 @@ int npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o)
             npf_res *r = malloc(NPF_RES_MAX * sizeof *r);
             npf_json j;
             int m = -1;
+            e[0] = 0;
             if (tok && r && npf_json_parse(&j, json, strlen(json), tok, NPF_RES_JSON_TOK) == 0)
                 m = npf_res_parse(&j, 0, r, NPF_RES_MAX, e, sizeof e);
             if (m >= 0)
                 list_text(o, r, m, 0);
+            else
+                npf_out_printf(o, "%s: its resources: %s\n", argv[2], !tok || !r ? "no memory" : e[0] ? e : "not valid JSON");
             free(tok);
             free(r);
             return m < 0;
