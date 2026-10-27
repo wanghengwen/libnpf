@@ -155,8 +155,7 @@ int npf_local_ext_set(npf_ldev *d, const char *key, const char *json)
     return 0;
 }
 
-/* one forward "-L SPEC" more, unless it is there */
-int npf_local_fwd_same(const npf_lfwd *a, const npf_lfwd *b)
+static int fwd_same(const npf_lfwd *a, const npf_lfwd *b)
 {
     if (a->opt != b->opt)
         return 0;
@@ -166,12 +165,13 @@ int npf_local_fwd_same(const npf_lfwd *a, const npf_lfwd *b)
         && strcmp(a->host, b->host) == 0;
 }
 
+/* one forward "-L SPEC" more, unless it is there */
 int npf_local_fwd_add(npf_ldev *d, const npf_lfwd *f)
 {
     npf_lfwd *a;
     int i;
     for (i = 0; i < d->nfwd; i++)
-        if (npf_local_fwd_same(&d->fwd[i], f))
+        if (fwd_same(&d->fwd[i], f))
             return 0;
     if (d->nfwd >= NPF_LOCAL_MAX_FWD || !(a = realloc(d->fwd, (size_t)(d->nfwd + 1) * sizeof *a)))
         return -1;
@@ -191,7 +191,7 @@ int npf_local_fwd_del(npf_ldev *d, const npf_lfwd *f)
 {
     int i;
     for (i = 0; i < d->nfwd; i++)
-        if (npf_local_fwd_same(&d->fwd[i], f)) {
+        if (fwd_same(&d->fwd[i], f)) {
             memmove(&d->fwd[i], &d->fwd[i + 1], (size_t)(d->nfwd - i - 1) * sizeof d->fwd[0]);
             d->nfwd--;
             return 0;

@@ -102,7 +102,6 @@ npf_ldev *npf_local_by_name(npf_local *l, const char *name);
 int  npf_local_drop(npf_local *l, const char *target);
 int  npf_local_fwd_add(npf_ldev *d, const npf_lfwd *f);    /* 0 (there already too), -1 full */
 int  npf_local_fwd_del(npf_ldev *d, const npf_lfwd *f);    /* 0, -1 none */
-int  npf_local_fwd_same(const npf_lfwd *a, const npf_lfwd *b);
 void npf_local_fwd_clear(npf_ldev *d);
 /* a module's key in the device's record (a key of its own, not one of the
  * above): its value as JSON text, NULL none; set (json NULL: removed) 0, or
