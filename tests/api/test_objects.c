@@ -456,6 +456,21 @@ int main(void)
           && fi.refused == 1 && fi.state == NPF_FWD_UP, "FORWARD_REFUSED; counted; the rule still up");
     check(socks_connect(fi.listen_port, echo) == 0, "and the published one still goes");
 
+    /* the network changed: npf_network_changed, then the command netcheck
+     * (npf_host's): the sockets open again, the session ends with the old
+     * one and comes back, the forward with it */
+    for (k = 0; k < 2; k++) {
+        const char *nc[] = {"netcheck"};
+        int from = ev_count();
+        check(k ? cmd(b, 1, nc) == 0 : npf_network_changed(b) == NPF_OK, k ? "netcheck" : "npf_network_changed");
+        i = wait_ev(from, NPF_EV_SESSION_DOWN, -1, 5000);
+        j = i >= 0 ? wait_ev(i, NPF_EV_SESSION_UP, -1, 10000) : -1;
+        check(i >= 0 && j > i && evs[j].peer == peer, "the network changed: the session again");
+        npf_forward_info_init(&fi);
+        check(j > i && npf_forward_get(b, fwd, &fi) == NPF_OK && fi.state == NPF_FWD_UP && echoes(fi.listen_port),
+              "the network changed: the forward through the new session");
+    }
+
     /* names, flags, saving */
     check(sets(b, peer, NPF_PEER_OPT_NAME, "bb") == NPF_OK && sets(b, peer, NPF_PEER_OPT_NICK, "a nick") == NPF_OK
           && npf_peer_get(b, peer, &pi) == NPF_OK && strcmp(pi.name, "bb") == 0 && strcmp(pi.nick, "a nick") == 0
@@ -588,6 +603,9 @@ int main(void)
         check(npf_peer_create(c, &po, &peer, err, sizeof err) == NPF_OK && seti(c, peer, NPF_PEER_OPT_PERSIST, 1) == NPF_EUNAVAIL
               && sets(c, peer, NPF_PEER_OPT_NAME, "here") == NPF_OK && !file_has(dc, "here"),
               "a temporary one: no saving, names only here");
+        check(sets(c, peer, NPF_PEER_OPT_NICK, "nick here") == NPF_OK && npf_peer_get(c, peer, &pi) == NPF_OK
+              && strcmp(pi.nick, "nick here") == 0 && !file_has(dc, "nick here"),
+              "its nick: kept for this run (npf_peer_get), not saved");
         npf_resource_init(&r);
         r.type = NPF_RES_TCP;
         r.name = "x";
@@ -638,6 +656,14 @@ int main(void)
         o.role = NPF_ROLE_NODE;
         check(npf_create(&o, &c, err, sizeof err) == NPF_EINVAL && strstr(err, "roots"), "a node without roots: NPF_EINVAL");
         o.role = NPF_ROLE_DIRECT;
+        {
+            static char model[1100];
+            memset(model, 'm', sizeof model - 1);
+            su.model = model;           /* longer than a value holds */
+            check(npf_create(&o, &c, err, sizeof err) != NPF_OK && strstr(err, "model"),
+                  "a field too long for its key: refused, naming it");
+            su.model = NULL;
+        }
         check(npf_create(&o, &c, err, sizeof err) == NPF_OK && npf_config_get(c, "direct", val, sizeof val) == NPF_OK
               && atoi(val) == dport + 1, "npf_setup: no configuration file, the fields as keys");
         check(npf_pairing_password_get(c, val, sizeof val) == NPF_ESTATE, "no number: pairing NPF_ESTATE");

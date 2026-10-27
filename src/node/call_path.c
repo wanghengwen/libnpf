@@ -176,13 +176,13 @@ void call_p2p_suspect_start(npf_call *c, const char *why)
             npf_log("call %s: the UDP relay never bound: binding it again", c->call_id_s);
             call_relay_rebind(c);
         }
-    } else if (!c->relay_asked) {
+    } else if (call_relay_ask_ok(c)) {
         /* the relay was released after the standby: ask for a new allocation */
         char data[96];
         npf_log("call %s: %s, asking for a relay", c->call_id_s, why);
         snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"udp\"}", c->call_id_s);
         npf_node_send(c->n, "relay_switch", 0, data);
-        c->relay_asked = 1;
+        call_relay_asked(c);
     }
     anl_flush(c->anl);
 }

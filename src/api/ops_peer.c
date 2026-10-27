@@ -62,8 +62,11 @@ static int names_put(npf_t *n, npf_peer *p, const char *name, const char *nick)
         npf_peer_set_label(p, name);
     if (nick)
         npf_peer_set_nick_here(p, nick);
-    if (no_saved_objects(n))
+    if (no_saved_objects(n)) {
+        if (nick)
+            npf_mods_nick_set(n, npf_peer_name(p), nick);
         return NPF_OK;
+    }
     if (!(d = npf_local_dev(&n->lc, npf_peer_name(p), 1)))
         return NPF_EBUSY;
     if (name)

@@ -91,7 +91,9 @@ static int pairing_list_run(npf_t *n, void *arg)
 int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t elem_size, size_t cap, size_t *count)
 {
     pl_arg x = {.out = out, .elem = elem_size, .cap = cap, .count = count};
-    if (!count || (cap && !out) || elem_size < sizeof(npf_pairing))
+    /* any size from the last field known when the list came (a later
+     * version's longer structure, an older caller's shorter one) */
+    if (!count || (cap && !out) || elem_size < offsetof(npf_pairing, since) + sizeof out->since)
         return NPF_EINVAL;
     *count = 0;
     return npf_api_op(n, pairing_list_run, &x);

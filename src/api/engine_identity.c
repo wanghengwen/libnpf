@@ -392,6 +392,8 @@ int npf_become_node(npf_t *n, uint64_t number)
     len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n", (unsigned long long)number, pw);
     if (npf_file_write(n->node_path, out, (size_t)len, 0600) < 0) {
         npf_loge("cannot write %s: the number is lost at the next start", n->node_path);
+        npf_wipe(pw, sizeof pw);            /* the default password, in both */
+        npf_wipe(out, sizeof out);
         return -1;
     }
     {   /* its copy: taken when the medium damages the file (load_node) */

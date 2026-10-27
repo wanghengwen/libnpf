@@ -244,10 +244,10 @@ void call_ws_failed(npf_call *c, const char *why)
         c->ws_fail_wait = 1;
         return;
     }
-    if (c->caller && !c->relay_asked) {
+    if (c->caller && call_relay_ask_ok(c)) {
         snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"unreachable\":true}", c->call_id_s);
         npf_node_send(c->n, "relay_switch", 0, data);
-        c->relay_asked = 1;
+        call_relay_asked(c);
         npf_log("call %s: relay unreachable, asking for one on our own server", c->call_id_s);
     }
 }

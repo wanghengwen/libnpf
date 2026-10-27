@@ -757,8 +757,8 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
         free(buf);
         return 0;
     }
-    if (strcmp(cmd, "netcheck") == 0) {      /* an app: the network under a VPN changed (npf_host) */
-        npf_node_udp_reset(&c->node, "the network changed");
+    if (strcmp(cmd, "netcheck") == 0) {      /* the network changed: npf_network_changed */
+        npf_net_changed(c);
         return 0;
     }
     if (strcmp(cmd, "dump") == 0) {          /* the node's state into the log (SIGUSR1) */

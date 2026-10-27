@@ -60,12 +60,23 @@ uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
 
 
 /* the session moves to the WS relay: the UDP relay (binding, waiting) and
- * the direct path (its check, a punch about to start) have nothing left to
- * do, and their timers would ask for the WS relay again (the platform then
- * sends the allocation again: its sublinks reset) */
+ * the direct path (its check, a punch about to start or running) have
+ * nothing left to do, and their timers would ask for the WS relay again (the
+ * platform then sends the allocation again: its sublinks reset). A running
+ * punch goes with its hard-side sockets (the NAT's ports back to the other
+ * calls): it could still end ok and make a WS session "direct" */
 void call_relay_leave(npf_call *c)
 {
     npf_loop *l = c->n->loop;
+    if (c->punch) {
+        int had = c->punch_socks > 0;
+        timer_stop(l, &c->t_linger);
+        npf_punch_free(c->punch);
+        c->punch = NULL;
+        c->punch_socks = 0;
+        if (had)
+            call_punch_sockets_back(c->n);
+    }
     timer_stop(l, &c->relay.t_bind);
     c->relay.bound = 0;
     c->relay_waits_ports = 0;
@@ -112,12 +123,17 @@ static void timeout_cb(npf_loop *loop, void *arg)
 /* the call accepted on the platform (the caller: call_accepted; the callee:
  * its first punch_start): the time to be established counts from now, so an
  * accept that came late (the callee's answer slow on its way, up to the
- * platform's 20 s, signaling.md) still gets all of it */
+ * platform's 20 s, signaling.md) still gets all of it. Accepted also when
+ * the time limit is gone: a callee established through the relay before
+ * its first punch_start still tells the platform of its rounds
+ * (call_punch_report) */
 void call_accept_seen(npf_call *c)
 {
-    if (c->accepted || !c->t_timeout)
+    if (c->accepted)
         return;
     c->accepted = 1;
+    if (!c->t_timeout)
+        return;
     npf_timer_cancel(c->n->loop, c->t_timeout);
     c->t_timeout = npf_timer_add(c->n->loop, CALL_TIMEOUT_MS + 10000, timeout_cb, c);
 }
