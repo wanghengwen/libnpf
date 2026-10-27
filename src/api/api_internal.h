@@ -43,6 +43,9 @@ static inline unsigned long self_tid(void) { return (unsigned long)pthread_self(
  * completion. The owner prevents new calls from starting once destroy begins. */
 int  api_enter(npf_t *n);
 void api_leave(npf_t *n);
+/* fn between the two, on the caller's thread: fn's answer, or NPF_EINVAL
+ * (no instance) / NPF_ESTATE (being destroyed); npf_api_op adds sync_call */
+int  npf_api_guard(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg);
 
 /* Who executes a call. Running: the loop thread (others post to it). Not
  * running (before the start, after the end): the caller itself, one at a
