@@ -175,6 +175,7 @@ void peers_forwards_session_gone(npf_peer *p);
 pfwd *peers_fwd_by_id(const npf_peers *ps, int id);
 
 /* peers_demand.c */
+int  peers_kick(npf_peer *p);
 void peers_demand_timer(npf_peer *p);
 void peers_demand_wait(pfwd *f, int fd, uint64_t cid);
 void peers_demand_flush(npf_peer *p);

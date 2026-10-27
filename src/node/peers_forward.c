@@ -436,11 +436,9 @@ npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
                     return p->call;
                 }
                 if (!p->call && !p->waiting && !p->finished) {
-                    /* someone is waiting: no backoff */
-                    npf_timer_stop(ps->n->loop, &p->t_retry);
                     npf_log("%s: a connection through -%c %s: starting the session", p->name,
                             p->fwds[i]->kind->k->opt, p->fwds[i]->spec);
-                    peers_start_call(p);
+                    peers_kick(p);
                     if (p->idle_ms)
                         peers_demand_timer(p);
                 }
