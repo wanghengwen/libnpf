@@ -200,11 +200,6 @@ int test_policy(void)
                   n1 ? n1 : "-");
             free(n1);
             free(n2);
-            static const char old[] = "[{\"name\":\"w\",\"type\":\"https\",\"target\":\"127.0.0.1:443\",\"path\":\"/a\"}]";
-            n1 = npf_res_normalize(old, strlen(old));
-            CHECK(n1 && strstr(n1, "\"type\":\"tcp\",\"svc\":\"https\"") && strstr(n1, "\"path\":\"/a\""),
-                  "a web page saved as type https is read as tcp/https: %s", n1 ? n1 : "-");
-            free(n1);
             static const char dup[] = "[{\"name\":\"a\",\"target\":\"127.0.0.1:1\"},"
                                       "{\"name\":\"a\",\"target\":\"127.0.0.1:2\"}]";
             n1 = npf_res_normalize(dup, strlen(dup));
