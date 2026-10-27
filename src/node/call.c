@@ -112,12 +112,17 @@ static void timeout_cb(npf_loop *loop, void *arg)
 /* the call accepted on the platform (the caller: call_accepted; the callee:
  * its first punch_start): the time to be established counts from now, so an
  * accept that came late (the callee's answer slow on its way, up to the
- * platform's 20 s, signaling.md) still gets all of it */
+ * platform's 20 s, signaling.md) still gets all of it. Accepted also when
+ * the time limit is gone: a callee established through the relay before
+ * its first punch_start still tells the platform of its rounds
+ * (call_punch_report) */
 void call_accept_seen(npf_call *c)
 {
-    if (c->accepted || !c->t_timeout)
+    if (c->accepted)
         return;
     c->accepted = 1;
+    if (!c->t_timeout)
+        return;
     npf_timer_cancel(c->n->loop, c->t_timeout);
     c->t_timeout = npf_timer_add(c->n->loop, CALL_TIMEOUT_MS + 10000, timeout_cb, c);
 }
