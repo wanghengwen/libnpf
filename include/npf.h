@@ -552,11 +552,11 @@ NPF_API int npf_network_changed(npf_t *n);
 
 /* ---- commands and platform requests ---- */
 
-/* A command of the command line (status, resource, get, set, log, show,
- * passwd, unpair, owner-reset, netcheck, id, ..., and the modules' own;
- * peers and forwards are not commands: the objects above): the exit code
- * and output text come to cb, at once or when the platform has answered.
- * NPF_OK when it runs. */
+/* A command: libnpf's own ("set KEY VALUE [--no-save]" as npf_config_set,
+ * "netcheck" as npf_network_changed for the node) and those of the
+ * program's modules (npf/module.h: a command line's text is the program's,
+ * on the functions here); the exit code and output text come to cb, at once
+ * or when the platform has answered. NPF_OK when it runs. */
 typedef void (*npf_text_cb)(void *user, int code, const char *text);
 NPF_API int npf_command(npf_t *n, int argc, const char *const *argv, npf_text_cb cb, void *user);
 

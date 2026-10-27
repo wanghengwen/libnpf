@@ -83,9 +83,8 @@ typedef struct npf_module {
     const npf_mod_cmd *cmds;
 
     /* the status: keys of its own in the JSON object (npf_mod_jkey for each,
-     * first as there), lines of its own in the text */
+     * first as there) */
     void (*status_json)(npf_t *n, npf_out *o, int *first);
-    void (*status_text)(npf_t *n, npf_out *o);
 
     /* configuration keys it reads (npf.conf, npf set); NULL ends them */
     const char *const *keys;
@@ -140,7 +139,6 @@ void npf_mods_fwds_saved(npf_t *n, npf_ldev *d);
 /* a module's command: 1 found (*rc its result), 0 none of that name */
 int  npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o, int *rc);
 void npf_mods_status_json(npf_t *n, npf_out *o, int *first);
-void npf_mods_status_text(npf_t *n, npf_out *o);
 /* -1: not a module's key; else check's result */
 int  npf_mods_check(npf_t *n, const char *k, const char *v, npf_out *o);
 void npf_mods_conf_set(npf_t *n, const char *k, const char *v);

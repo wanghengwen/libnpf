@@ -260,11 +260,10 @@ static void test_client(void)
     ping(&node, &keys, &relay, &R2, t0 + 3000, 0x2002, 36, RELAY_LEARNED);
     next_bind(fr, &keys, bid, 300, &b2);
     {
-        size_t l = npf_node_home_status(&node, js, sizeof js, 0);
+        size_t l = npf_node_home_status(&node, js, sizeof js);
         CHECK(l > 0 && strstr(js, "\"state\":\"bound\"") && strstr(js, "\"iv_s\":36") && strstr(js, "\"learn\":\"learned\"")
               && strstr(js, "\"moved\":1") && strstr(js, "\"keepalives\":4") && strstr(js, "\"drops\":0"), "status %s", js);
-        CHECK(npf_node_home_status(&node, js, sizeof js, 1) > 0 && strstr(js, "spare bound via 127.0.0.1:")
-              && strstr(js, "after 36 s of silence (learned)"), "status line %s", js);
+        CHECK(strstr(js, "\"relay\":\"127.0.0.1:"), "the relay it is bound via %s", js);
     }
     /* the watchdog: not before the last datagram + T + the tries + a margin; then it binds again */
     CHECK(dog_check(node.home, npf_mono_ms() + 36000 + HOME_RETRY_MS) == 0 && node.home->state == 3,
@@ -304,7 +303,7 @@ static void test_client(void)
         node_home_spare(&node, &j, 0);
         CHECK(node.home->state == 2 && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
               "the next spare binds");
-        CHECK(npf_node_home_status(&node, js, sizeof js, 0) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
+        CHECK(npf_node_home_status(&node, js, sizeof js) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
               "status %s", js);
     }
     node_home_stop(&node);

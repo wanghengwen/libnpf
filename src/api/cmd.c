@@ -1,7 +1,8 @@
-/* libnpf: the commands of the npf command line, the status and the
- * settings (npf_command, npf_status_json, npf_config_*, npf_peer_*,
- * npf_forward_*). Settings, saved peers, names and nicks go to local.json in
- * data_dir (npf/local.h); npf.conf (conf_dir) is never written. */
+/* libnpf: the status and the settings (npf_status_json, npf_config_*), and
+ * npf_command: libnpf's own commands (set, netcheck), the modules' others
+ * (the text of npf's command line is npf's, client/modules). Settings go to
+ * local.json in data_dir (npf/local.h); npf.conf (conf_dir) is never
+ * written. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -10,7 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "npf/natprobe.h"
 #include "npf/platform.h"
@@ -50,62 +50,6 @@ static const char *state_name(int st)
     case NPF_CALL_CLOSED:      return "closed";
     default:                   return "connecting";
     }
-}
-
-static const char *human_bytes(uint64_t b, char *buf, size_t cap)
-{
-    if (b < 10240)
-        snprintf(buf, cap, "%llu B", (unsigned long long)b);
-    else if (b < 10ULL << 20)
-        snprintf(buf, cap, "%.1f KB", b / 1024.0);
-    else if (b < 10ULL << 30)
-        snprintf(buf, cap, "%.1f MB", b / 1048576.0);
-    else
-        snprintf(buf, cap, "%.1f GB", b / 1073741824.0);
-    return buf;
-}
-
-/* a wall-clock time in ms as local "YYYY-MM-DD HH:MM:SS" */
-static const char *local_time(int64_t ms, char *buf, size_t cap)
-{
-    time_t t = (time_t)(ms / 1000);
-    struct tm tm;
-#ifdef _WIN32
-    localtime_s(&tm, &t);
-#else
-    localtime_r(&t, &tm);
-#endif
-    strftime(buf, cap, "%Y-%m-%d %H:%M:%S", &tm);
-    return buf;
-}
-
-/* a running time for people: "3 d 4 h", "2 h 05 min", "7 min", "40 s" */
-static const char *running_time(int64_t s, char *buf, size_t cap)
-{
-    if (s < 60)
-        snprintf(buf, cap, "%lld s", (long long)s);
-    else if (s < 3600)
-        snprintf(buf, cap, "%lld min", (long long)(s / 60));
-    else if (s < 86400)
-        snprintf(buf, cap, "%lld h %02lld min", (long long)(s / 3600), (long long)(s / 60 % 60));
-    else
-        snprintf(buf, cap, "%lld d %lld h", (long long)(s / 86400), (long long)(s / 3600 % 24));
-    return buf;
-}
-
-static const char *duration(int64_t s, char *buf, size_t cap)
-{
-    if (s < 0)
-        snprintf(buf, cap, "-");
-    else if (s < 120)
-        snprintf(buf, cap, "%llds", (long long)s);
-    else if (s < 7200)
-        snprintf(buf, cap, "%lldm", (long long)(s / 60));
-    else if (s < 172800)
-        snprintf(buf, cap, "%lldh%02lldm", (long long)(s / 3600), (long long)(s / 60 % 60));
-    else
-        snprintf(buf, cap, "%lldd%02lldh", (long long)(s / 86400), (long long)(s / 3600 % 24));
-    return buf;
 }
 
 /* the other side of a session, for people: the callee's number, or a
@@ -315,7 +259,7 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
     }
     {   /* the spare allocation (home-binding.md 14.1) */
         char hb[1024];
-        if (npf_node_home_status(n, hb, sizeof hb, 0)) {
+        if (npf_node_home_status(n, hb, sizeof hb)) {
             jkey(o, &f, "home");
             npf_out_printf(o, "%s", hb);
         }
@@ -403,78 +347,6 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
     }
     npf_out_printf(o, "]}\n");
 }
-
-static void status_text(npf_t *c, npf_out *o)
-{
-    npf_node *n = &c->node;
-    npf_call *call;
-    char a[80], b[400], up[24], t1[24], t2[24], t3[24], who[100];
-    int ns = 0;
-    npf_out_printf(o, "npf %s\n", npf_version());
-    if (c->has_number)
-        npf_out_printf(o, "number:  %llu (%s)\n", (unsigned long long)c->number,
-                       c->cred ? "device credential" : "enrolled");
-    else if (c->model_dev)
-        npf_out_printf(o, "number:  none yet (%s)\n", n->enroll_state == NPF_ENROLL_REFUSED ? "the enrolment was refused" : "enrolling");
-    if (n->enroll_state == NPF_ENROLL_REFUSED)
-        npf_out_printf(o, "enrol:   refused (%s%s%s)\n", n->enroll_error, n->enroll_reason[0] ? ", " : "", n->enroll_reason);
-    npf_out_printf(o, "started: %s, running %s\n", local_time(n->started_unix_ms, t1, sizeof t1),
-                   running_time((npf_mono_ms() - n->started_mono_ms) / 1000, t2, sizeof t2));
-    if (n->cfg.offline)
-        npf_out_printf(o, "server:  none (direct connections only)\n");
-    else if (n->online)
-        npf_out_printf(o, "server:  online at server %d%s\n", n->server_id, n->account_id ? ", account session" : "");
-    else
-        npf_out_printf(o, "server:  offline (connecting)\n");
-    if (!n->cfg.offline) {
-        if (n->logins)
-            npf_out_printf(o, "login:   last %s, the connection dropped %d time%s since the start\n",
-                           local_time(n->last_login_unix_ms, t1, sizeof t1), n->logins - 1, n->logins == 2 ? "" : "s");
-        else
-            npf_out_printf(o, "login:   not logged in yet\n");
-    }
-    npf_out_printf(o, "calls:   %d made, %d received\n", n->calls_out, n->calls_in);
-    npf_out_printf(o, "udp:     local port %u\n", n->udp_port);
-    if (n->nat_valid && n->nat_udp) {
-        struct sockaddr_storage ss;
-        memset(&ss, 0, sizeof ss);
-        memcpy(&ss, &n->srflx, sizeof n->srflx);
-        npf_out_printf(o, "nat:     mapping %s, allocation %s, filtering %s, public %s\n",
-                       npf_nat_mapping_str(n->nat.mapping), npf_nat_alloc_str(n->nat.allocation),
-                       npf_nat_filter_str(n->nat.filtering), npf_addr_str(&ss, a, sizeof a));
-    } else if (!n->cfg.offline) {
-        npf_out_printf(o, "nat:     unknown (no answer from the probe servers)\n");
-    }
-    {   /* the spare allocation */
-        char hb[160];
-        if (npf_node_home_status(n, hb, sizeof hb, 1))
-            npf_out_printf(o, "home:    %s\n", hb);
-    }
-    for (call = npf_node_calls(n); call; call = npf_call_next(call)) {
-        npf_call_info i;
-        npf_peer *pp = peer_of_call(c, call);
-        npf_call_info_get(call, &i);
-        if (i.state == NPF_CALL_CLOSED)
-            continue;
-        if (!ns++)
-            npf_out_printf(o, "\nsessions:\n  %-3s %-22s %-12s %-22s %7s %7s %10s %10s %4s\n", "", "peer", "path",
-                           "address", "up", "rtt", "sent", "received", "conn");
-        snprintf(t3, sizeof t3, "%d ms", i.srtt_ms);
-        /* who called: a public mapping of the platform, or the caller's program */
-        snprintf(who, sizeof who, "%s%s", i.hosted ? "  platform public mapping" : i.app && *i.app ? "  " : "",
-                 i.hosted || !i.app ? "" : i.app);
-        npf_out_printf(o, "  %-3s %-22s %-12s %-22s %7s %7s %10s %10s %4d%s\n", i.caller ? "out" : "in",
-                       pp ? npf_peer_shown(pp) : peer_of(&i, a, sizeof a),
-                       i.state == NPF_CALL_ESTABLISHED ? npf_call_path_label(call) : state_name(i.state),
-                       i.has_p2p_addr ? npf_addr_str(&i.p2p_addr, b, sizeof b) : "-", duration(i.up_s, up, sizeof up),
-                       i.srtt_ms >= 0 ? t3 : "-", human_bytes(i.tx_bytes, t1, sizeof t1),
-                       human_bytes(i.rx_bytes, t2, sizeof t2), i.sublinks, who);
-    }
-    if (!ns)
-        npf_out_printf(o, "\nno sessions (node lists the nodes)\n");
-    npf_mods_status_text(c, o);
-}
-
 
 /* ---- settings ---- */
 
@@ -652,19 +524,8 @@ int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
 
 /* ---- commands (POST /v1/cmd) ---- */
 
-
-static void stop_timer(npf_loop *loop, void *arg)
-{
-    (void)arg;
-    npf_loop_stop(loop);
-}
-
-
-
 /* libnpf's own commands (npf_cmd_run below): no module takes these names */
-static const char *const builtin_cmds[] = {"id", "status", "resource", "get", "set", "log",
-                                           "netcheck", "dump", "stop", "show", "passwd", "unpair", "owner-reset",
-                                           NULL};
+static const char *const builtin_cmds[] = {"set", "netcheck", NULL};
 
 int npf_cmd_builtin(const char *name)
 {
@@ -685,33 +546,6 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
         npf_out_printf(o, "unknown command %s\n", cmd);
         return 2;
     }
-    if (strcmp(cmd, "id") == 0) {
-        npf_out_printf(o, "client_id: %016llx\n", (unsigned long long)npf_fp(c->id.dh_pub));
-        if (c->has_number)
-            npf_out_printf(o, "number:    %llu (%s)\n", (unsigned long long)c->number,
-                           c->cred ? "device credential" : c->model_dev ? "model credential" : "enrolled");
-        return 0;
-    }
-    if (strcmp(cmd, "status") == 0) {
-        if (argc > 1 && strcmp(argv[1], "--json") == 0)
-            npf_cmd_status_json(c, o);
-        else
-            status_text(c, o);
-        return 0;
-    }
-    if (strcmp(cmd, "resource") == 0)
-        return npf_cmd_resource(c, argc, argv, o);
-    if (strcmp(cmd, "get") == 0) {
-        char b[NPF_CONF_VAL_MAX];
-        int i;
-        if (argc > 1) {
-            npf_out_printf(o, "%s\n", is_secret(argv[1]) ? "(hidden)" : npf_cmd_get(c, argv[1], b, sizeof b));
-            return 0;
-        }
-        for (i = 0; settable[i]; i++)
-            npf_out_printf(o, "%-14s = %s\n", settable[i], npf_cmd_get(c, settable[i], b, sizeof b));
-        return 0;
-    }
     if (strcmp(cmd, "set") == 0) {
         int save = !(argc > 3 && strcmp(argv[3], "--no-save") == 0);
         if (argc < 3 || argc > 4 || (argc == 4 && save)) {     /* nothing after VALUE but --no-save */
@@ -725,52 +559,9 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
         }
         return npf_cmd_set(c, argv[1], argv[2], save, o);
     }
-    if (strcmp(cmd, "log") == 0) {
-        char *buf = malloc(16384);
-        int want = argc > 2 && strcmp(argv[1], "-n") == 0 ? atoi(argv[2]) : 50;
-        size_t n;
-        const char *s;
-        if (!buf)
-            return 1;
-        n = npf_log_recent(buf, 16384);
-        s = buf + n;
-        while (s > buf && want >= 0) {
-            s--;
-            if (*s == '\n' && s + 1 < buf + n && want-- == 0) {
-                s++;
-                break;
-            }
-        }
-        npf_out_printf(o, "%s", s);
-        free(buf);
-        return 0;
-    }
-    if (strcmp(cmd, "netcheck") == 0) {      /* an app: the network under a VPN changed (npf_host) */
-        npf_node_udp_reset(&c->node, "the network changed");
-        return 0;
-    }
-    if (strcmp(cmd, "dump") == 0) {          /* the node's state into the log (SIGUSR1) */
-        npf_node_dump(&c->node);
-        return 0;
-    }
-    if (strcmp(cmd, "stop") == 0) {
-        npf_log("stop requested");
-        npf_out_printf(o, "stopping\n");
-        npf_timer_add(c->loop, 100, stop_timer, NULL);
-        return 0;
-    }
-    if (strcmp(cmd, "show") == 0 || strcmp(cmd, "passwd") == 0 || strcmp(cmd, "unpair") == 0
-        || strcmp(cmd, "owner-reset") == 0) {
-        int r;
-        if (!c->has_number) {
-            npf_out_printf(o, "this identity has no number yet (enrolment, or a device credential)\n");
-            return 1;
-        }
-        r = npf_callee_cmd(c->callee, cmd, argc - 1, argv + 1, o);
-        return r == -2 ? 2 : r;
-    }
-    npf_out_printf(o, "%s: not in this build\n", cmd);
-    return 2;
+    /* netcheck: an app's word that the network under a VPN changed (npf_host) */
+    npf_node_udp_reset(&c->node, "the network changed");
+    return 0;
 }
 
 /* ---- HTTP routes ---- */

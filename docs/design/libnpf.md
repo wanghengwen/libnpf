@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-文档版本：2.3。更新日期：2026-10-27。本版去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。文档版本与库版本、`NPF_API_VERSION` 分别编号。
+文档版本：2.4。更新日期：2026-10-27。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
@@ -407,7 +407,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | 本机与会话 | `npf_node_get`、`npf_session_get`、`npf_session_list`、`npf_network_changed`、`npf_save` |
 | 设置 | `npf_config_get`（未知键 `NPF_ENOENT`；`password`、`cred`、`model_cred`、`direct_psk` 显示 `(hidden)`；缓冲区不足 `NPF_ETOOBIG`）；`npf_config_set`（0：即时设置已应用；1：启动时设置，需保存后重启生效；模块配置键属于后者） |
 | 诊断（JSON，调用方 `npf_free`） | `npf_status_json`、`npf_config_json`（可即时修改的设置）、`npf_log_json`、`npf_sessions_json`、`npf_public_json` |
-| 命令 | `npf_command(argv)`：库自己的诊断与设备命令，结果文本和退出码交给回调 |
+| 命令 | `npf_command(argv)`：库自己的 `set`、`netcheck` 和程序的模块的命令，结果文本和退出码交给回调 |
 | 平台请求 | `npf_request(type, data, key_proof, cb)`：账户、设备、分享等请求（信令协议的 `account_*`、`device_*`、`share_*` 等），应答 JSON 整个交给回调；库自己保存账户会话和证书 |
 | 应用数据 | `npf_session_send` |
 | 音视频 | `npf_media_open`、`npf_media_send`、`npf_media_stats_get`、`npf_media_close`，回调 `media_open`、`media_frame`、`media_closed` |
@@ -436,19 +436,14 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 **常量**：日志级别 `NPF_LEVEL_TRACE`、`DEBUG`、`INFO`、`WARN`、`ERROR`；`NPF_PROTO_TCP` / `UDP`；会话路径 `NPF_PATH_DIRECT`、`UDP_RELAY`、`WS_RELAY`；NAT 类型（`npf_node_info.nat`）`NPF_NAT_UNKNOWN`、`EIM`、`ADM`、`APDM`；会话结束 `NPF_END_LOCAL`、`PEER`、`LOST`、`REFUSED`、`UNREACHABLE`、`PLATFORM`、`OTHER`；转发失败 `NPF_FWD_WHY_NONE`、`PORT_IN_USE`、`BIND`、`FORBIDDEN`、`TOO_MANY`、`REQUEST`、`OTHER`。`npf_peer_info` 另有 `end_reason`（上次会话的 `NPF_END_*`）、`session`（现在的会话）、`nforwards`、`ctx`；`npf_forward_info` 另有 `refused_why`（最近一次被拒的目标）与 `ctx`。
 
-**命令**（`npf_command`，参数按词给出）。回调里的退出码：0 完成，1 失败，2 命令或参数不对，3 已完成但 local.json 没写入。库自己的命令优先于模块的命令：
+**命令**（`npf_command`，参数按词给出）。回调里的退出码：0 完成，1 失败，2 命令或参数不对，3 已完成但 local.json 没写入。库自己的命令只有两条，优先于模块的命令：
 
 | 命令 | 作用 |
 |---|---|
-| `status [--json]` | 状态（文字或 JSON） |
-| `id` | 本机的密钥指纹与编号 |
-| `show` / `passwd` / `unpair` / `owner-reset` | 设备的编号与配对口令 / 改口令 / 取消配对 / 重置所有者 |
-| `resource ls\|add\|del` | 发布的资源 |
-| `get [KEY]` / `set KEY VALUE [--no-save]` | 设置（`get` 不带键时列出可即时修改的） |
-| `dump` | 节点的内部状态写进日志 |
-| `log [-n N]` | 最近的日志 |
-| `netcheck` | 网络变了：立即重新检查 |
-| `stop` | 结束运行 |
+| `set KEY VALUE [--no-save]` | 同 `npf_config_set`，结果是一行文字 |
+| `netcheck` | 网络变了：节点立即重新检查（App 用） |
+
+其余命令（npf 的 `status`、`id`、`get`、`log`、`resource`、`show`、`passwd`、`unpair`、`owner-reset`、`dump`、`stop` 等）是程序的模块（第 12 节），在本节的函数上给出人看的文字；没有注册模块时 `npf_command` 对它们回答 `unknown command`，状态、设置、日志、资源、配对用对应的函数（`npf_status_json`、`npf_config_get`、`npf_log_json`、`npf_resource_*`、`npf_pairing_*`）。
 
 **状态 JSON**（`npf_status_json`）的主要字段：`version`、`number`、`role`、`online`、`server`、`account`、`enroll`、`nat`、`udp_port`、`lan_addrs`、`resources`（本机发布的）、`peers`（每个对端的 `peer_id`、`connect`、状态、它发布的资源，`mappings` 为转发：`id`、`kind`、`proto`、`listen_host`、`port`、`listen_port`、`target_host`、`target_port`、`state`、`conns`）、`sessions`、`calls_out` / `calls_in`。对端的状态是文字 `status`，转发的 `state` 为 `waiting`、`up`、`failed`；`role` 只对有编号的节点是 `node`。
 
@@ -616,7 +611,7 @@ target_link_libraries(acme-app PRIVATE npf_common)
 - 运行中的业务钩子在实例线程执行，包括 `begin`、分步结束的 `end`、登录、平台事件、账户与会话状态等。启动前调用命令、查询或设置，也可能在调用线程触发对应钩子，不能假定所有钩子都在后台线程执行；
 - 对端钩子覆盖连接、结束、转发变化（`peer_up`、`peer_done`、`peer_fwd`），平台公网映射的连接（`peer_opened`、`peer_conn`、`peer_refused`），以及删除（`peer_removing`、`peer_removed`）。`peer_removing` 返回 1 表示模块将重新打开对端；`sig_busy` 返回非零可在模块仍有业务时保持信令连接；
 - 本地记录变更可触发 `nick_set` 和 `fwds_saved`，分别通知备注和保存的转发列表变化。这些钩子不代表磁盘写入成功；调用方仍要检查保存结果；
-- 模块命令通过 `npf_command` 调用。模块还可提供状态 JSON、状态文字和配置键；`check` 校验配置，返回 0 接受，否则返回退出码并把原因写入输出。`conf_set` 在支持即时更新的配置（如 `log_level`、`peer_idle`）生效后调用；
+- 模块命令通过 `npf_command` 调用。模块还可提供状态 JSON 的键和配置键（状态的文字由程序自己的命令给出，库里没有）；`check` 校验配置，返回 0 接受，否则返回退出码并把原因写入输出。`conf_set` 在支持即时更新的配置（如 `log_level`、`peer_idle`）生效后调用；
 - 一种新的转发：在 `create` 钩子里用 `npf_peers_add_kind` 登记一个 `npf_fwd_kind`（大写字母，以及解析、检查、建立、撤销的回调），用 `npf_peer_forward_add_kind` 加到对端上，库像本地转发一样保存、重试、随对端删除；`npf_peers_fwd_call` 给出这条转发所在的会话；
 - 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`），库原样保留；
 - 状态 JSON 里模块的字段和库的字段在同一个对象里，模块应使用带自己前缀的键名，避免与库现有或以后的字段重名；
@@ -624,7 +619,7 @@ target_link_libraries(acme-app PRIVATE npf_common)
 
 ## 13. 日志与排查
 
-- 每条日志格式为“日期 时间.毫秒 级别 消息”。有 `log` 回调时交给回调，否则写到 stderr；`npf_log_json` / `log` 命令给出最近的日志（`no_log_ring` 可以关掉）。日志回调在产生日志的线程执行，创建和销毁阶段也可能调用；建议只做日志收集，避免在其中改变实例生命周期。业务回调的 API 调用规则见第 8 节；
+- 每条日志格式为“日期 时间.毫秒 级别 消息”。有 `log` 回调时交给回调，否则写到 stderr；`npf_log_json` 给出最近的日志（`no_log_ring` 可以关掉）。日志回调在产生日志的线程执行，创建和销毁阶段也可能调用；建议只做日志收集，避免在其中改变实例生命周期。业务回调的 API 调用规则见第 8 节；
 - 连不上时先看状态 JSON 的 `online`、`nat` 和对端的状态；会话的 `path` 说明走的是直连还是中转；
 - 在 `p2p` 模式下检测到 VPN 占用默认路由时，库会尝试让 UDP 套接字和信令连接使用物理网卡。是否成功取决于平台支持、可用网卡和绑定权限，不能保证绕过 VPN；网络变化后调用 `npf_network_changed` 让库立即重新检查。
 

@@ -100,8 +100,7 @@ static void local_json(const char *dir, char *out, size_t cap)
 static void unsaved(void)
 {
     char dir[] = "/tmp/npf-contract-XXXXXX", err[300], val[64], path[400], js[8192];
-    const char *add[] = {"resource", "add", "tcp", "127.0.0.1:22", "ssh"};
-    const char *ls[] = {"resource", "ls"};
+    const char *set[] = {"set", "punch_sockets", "8"};
     const char *files[] = {"identity", "seed", "local.json"};
     npf_options o;
     npf_t *n = NULL;
@@ -128,16 +127,31 @@ static void unsaved(void)
               "set: in effect, not written: NPF_ESAVE with the reason");
         check(npf_config_get(n, "peer_idle", val, sizeof val) == NPF_OK && strcmp(val, "30") == 0,
               "set: get shows the value in effect");
-        rc = command(n, 5, add);
-        check(rc == 3 && strstr(got_text, "published") && strstr(got_text, "cannot write"),
-              "resource add: in effect, not written: exit code 3, both said");
-        check(command(n, 2, ls) == 0 && strstr(got_text, "ssh"), "resource add: in effect");
+        rc = command(n, 3, set);
+        check(rc == 3 && strstr(got_text, "punch_sockets = 8") && strstr(got_text, "cannot write"),
+              "the set command: in effect, not written: exit code 3, both said");
+        {
+            npf_resource r;
+            npf_resource_info ri[4];
+            size_t count = 0;
+            npf_resource_init(&r);
+            r.type = NPF_RES_TCP;
+            r.name = "ssh";
+            r.service.host = "127.0.0.1";
+            r.service.port = 22;
+            r.flags = NPF_PERSIST;
+            rc = npf_resource_put(n, &r, err, sizeof err);
+            check(rc == NPF_ESAVE && strstr(err, "cannot write"), "resource put: in effect, not written: NPF_ESAVE");
+            check(npf_resource_list(n, 0, ri, 4, &count) == NPF_OK && count == 1 && strcmp(ri[0].name, "ssh") == 0,
+                  "resource put: in effect");
+        }
         chmod(dir, 0700);
         local_json(dir, js, sizeof js);
-        check(!strstr(js, "ssh") && !strstr(js, "peer_idle"), "nothing of them in local.json yet");
+        check(!strstr(js, "ssh") && !strstr(js, "peer_idle") && !strstr(js, "punch_sockets"),
+              "nothing of them in local.json yet");
         check(npf_config_set(n, "max_calls", "20", 1, err, sizeof err) == NPF_OK, "a later change saved");
         local_json(dir, js, sizeof js);
-        check(strstr(js, "max_calls") && strstr(js, "peer_idle") && strstr(js, "ssh"),
+        check(strstr(js, "max_calls") && strstr(js, "peer_idle") && strstr(js, "punch_sockets") && strstr(js, "ssh"),
               "the later save writes them too");
     }
     chmod(dir, 0700);

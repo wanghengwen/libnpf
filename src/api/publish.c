@@ -1,5 +1,5 @@
 /* Published resources (resources.h): this node's list (npf.conf "resource"
- * lines, fixed; local.json "resources", changed by "npf resource"), the
+ * lines, fixed; local.json "resources", changed at run time), the
  * policy it makes, the "resources" event to each caller; the lists heard
  * from the nodes this one calls. */
 #include "npf/sys.h"
@@ -288,115 +288,6 @@ int npf_pub_remove(npf_t *n, const char *name, char *err, size_t errcap)
     if (rc == NPF_OK || rc == NPF_ESAVE)
         npf_log("resource %s deleted", all ? "all" : name);
     return rc;
-}
-
-/* an operation's result as the command's exit code (the reason in o) */
-static int pub_rc(int rc, const char *err, npf_out *o)
-{
-    if (rc != NPF_OK)
-        npf_out_printf(o, "%s\n", err);
-    return rc == NPF_OK ? 0 : rc == NPF_ESAVE ? NPF_CMD_UNSAVED
-         : rc == NPF_EINVAL || rc == NPF_EBUSY || rc == NPF_EREADONLY ? 2 : 1;
-}
-
-static void list_text(npf_out *o, const npf_res *r, int n, int mine)
-{
-    int i;
-    if (!n) {
-        npf_out_printf(o, mine ? "no resources: whoever connects here reaches nothing (resource add)\n"
-                               : "no resources published\n");
-        return;
-    }
-    for (i = 0; i < n; i++) {
-        char ty[sizeof r[i].type + sizeof r[i].svc + 1];
-        snprintf(ty, sizeof ty, "%s%s%s", r[i].type, r[i].svc[0] ? "/" : "", r[i].svc);
-        npf_out_printf(o, "%-20s %-9s %s%s%s%s%s\n", r[i].name, ty, r[i].target, r[i].path,
-                       r[i].desc[0] ? "  " : "", r[i].desc, r[i].fixed ? "  (fixed: npf.conf or --allow)" : "");
-    }
-}
-
-/* npf resource [ls [NODE]] | add TYPE[/SERVICE] TARGET NAME [--desc TEXT] | del NAME|all */
-int npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o)
-{
-    const char *sub = argc > 1 ? argv[1] : "ls";
-    char e[200];
-    int i;
-    if (strcmp(sub, "ls") == 0 && argc > 2) {          /* what a node we call published */
-        char buf[300];
-        const char *who = npf_peers_resolve(n->peers, argv[2], buf, sizeof buf), *json = NULL;
-        npf_peer *p;
-        npf_ldev *d;
-        for (p = npf_peers_first(n->peers); p && strcmp(npf_peer_name(p), who) != 0; p = npf_peer_next(p))
-            ;
-        if (p)
-            json = npf_peer_resources(p);
-        else if ((d = npf_local_dev(&n->lc, who, 0)))
-            json = d->resources;
-        if (!json) {
-            npf_out_printf(o, "%s: nothing heard yet (its resources come with a session)\n", argv[2]);
-            return 1;
-        }
-        {
-            npf_jtok *tok = malloc(NPF_RES_JSON_TOK * sizeof *tok);
-            npf_res *r = malloc(NPF_RES_MAX * sizeof *r);
-            npf_json j;
-            int m = -1;
-            if (tok && r && npf_json_parse(&j, json, strlen(json), tok, NPF_RES_JSON_TOK) == 0)
-                m = npf_res_parse(&j, 0, r, NPF_RES_MAX, e, sizeof e);
-            if (m >= 0)
-                list_text(o, r, m, 0);
-            free(tok);
-            free(r);
-            return m < 0;
-        }
-    }
-    if (strcmp(sub, "ls") == 0) {
-        list_text(o, n->res, n->nres, 1);
-        return 0;
-    }
-    if (strcmp(sub, "add") == 0) {
-        npf_res r;
-        char line[600];
-        size_t l;
-        int a = 5;
-        if (argc < 5 || strpbrk(argv[2], " \t|") || strpbrk(argv[3], " \t|")) {
-            /* the words go into one line, read again: a space or '|' in TYPE or TARGET would move a part */
-            npf_out_printf(o, "resource add TYPE[/SERVICE] TARGET NAME [--desc TEXT]\n");
-            return 2;
-        }
-        /* the conf line's form: TYPE TARGET NAME | DESCRIPTION */
-        l = (size_t)snprintf(line, sizeof line, "%s %s %s", argv[2], argv[3], argv[4]);
-        for (; a < argc; a++) {
-            if (strcmp(argv[a], "--desc") == 0 && a + 1 < argc && !strchr(argv[a + 1], '|')) {
-                l += (size_t)snprintf(line + l, l < sizeof line ? sizeof line - l : 0, " | %s", argv[++a]);
-            } else {
-                npf_out_printf(o, "resource add TYPE[/SERVICE] TARGET NAME [--desc TEXT]: %s?\n", argv[a]);
-                return 2;
-            }
-        }
-        if (l >= sizeof line || strchr(argv[4], '|') || npf_res_from_line(&r, line, e, sizeof e) < 0) {
-            npf_out_printf(o, "%s\n", l >= sizeof line ? "too long" : strchr(argv[4], '|') ? "no | in a name" : e);
-            return 2;
-        }
-        r.fixed = 0;
-        r.persist = !(n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS);     /* the command line's: saved */
-        i = npf_pub_put(n, &r, e, sizeof e);
-        if (i != NPF_OK && i != NPF_ESAVE)
-            return pub_rc(i, e, o);
-        npf_out_printf(o, "%s: published (%s%s%s %s%s)\n", r.name, r.type, r.svc[0] ? "/" : "", r.svc, r.target,
-                       r.path);
-        return pub_rc(i, e, o);
-    }
-    if (strcmp(sub, "del") == 0 && argc > 2) {
-        int all = strcmp(argv[2], "all") == 0;
-        i = npf_pub_remove(n, all ? NULL : argv[2], e, sizeof e);
-        if (i != NPF_OK && i != NPF_ESAVE)
-            return pub_rc(i == NPF_EREADONLY ? i : NPF_EFAIL, e, o);
-        npf_out_printf(o, "%s: deleted\n", argv[2]);
-        return pub_rc(i, e, o);
-    }
-    npf_out_printf(o, "resource [ls [NODE]] | add TYPE[/SERVICE] TARGET NAME [--desc TEXT] | del NAME|all\n");
-    return 2;
 }
 
 void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d)

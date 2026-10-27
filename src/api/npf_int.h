@@ -197,7 +197,6 @@ void npf_pub_free(npf_t *n);
 void npf_pub_send(npf_t *n, npf_call *c);               /* to a caller whose session came up */
 void npf_pub_json(npf_t *n, npf_out *o);                /* this node's list (status) */
 void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d);
-int  npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o);
 /* add or replace (by name) / remove one (name NULL: all but npf.conf's):
  * NPF_OK, NPF_ESAVE, or an error with the reason in err */
 int  npf_pub_put(npf_t *n, const struct npf_res *r, char *err, size_t errcap);
