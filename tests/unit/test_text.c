@@ -1,9 +1,8 @@
 /* Fixed-format parsers replacing scanf: cursor/buffer bounds, HTTP status,
- * route/MAC fields, and exact duration scaling including decimal exponents. */
+ * route/MAC fields. */
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "npf/text.h"
 
@@ -18,20 +17,6 @@ int test_text(void)
     unsigned long hex;
     int n, m;
     size_t i;
-    struct tm tm;
-    static const struct { const char *s; int64_t seconds; } durations[] = {
-        {"90s", 90}, {"30m", 1800}, {"8h", 28800}, {"3d", 259200}, {"1w", 604800},
-        {"1.5h", 5400}, {"1.15h", 4140}, {".001h", 3}, {".1s", 0}, {"1.s", 1},
-        {"0.999h", 3596}, {"1e2m", 6000}, {"1.25e+2s", 125}, {"125e-2s", 1},
-        {"1e-9w", 0}, {"  +000.5h", 1800}, {"0001e2s", 100},
-        {"1.999999999999999999999999999s", 1}, {"1e-2147483648s", 0}
-    };
-    static const char *bad[] = {
-        "", "s", "0s", "0.0h", "-1h", "1", "1h ", "1 h", "1hh", "1.2.3h", "1eh", "1e h",
-        "1e+h", "1e999999999999h", "infh", "nanh", "1e2147483647s", "999999999999999999999999w",
-        "2026-10-16", "2026-10-16 12", "2026-10-16 12:", "2026-10-16 12:30tail",
-        "2026-13-16 12:30", "2026-10-16 24:00"
-    };
 
     p = " \talpha beta";
     CHECK(npf_text_word(&p, word, sizeof word) == 0 && !strcmp(word, "alpha") && !strcmp(p, " beta"));
@@ -78,18 +63,5 @@ int test_text(void)
         CHECK(npf_http_status(num) < 0);
     }
 
-    for (i = 0; i < sizeof durations / sizeof durations[0]; i++)
-        CHECK(npf_text_expiry(durations[i].s, 1000) == 1000 + durations[i].seconds);
-    for (i = 0; i < sizeof bad / sizeof bad[0]; i++)
-        CHECK(npf_text_expiry(bad[i], 1000) == -1);
-    CHECK(npf_text_expiry("never", 1000) == 0);
-    CHECK(npf_text_expiry("9223372036854775807s", 0) == INT64_MAX);
-    CHECK(npf_text_expiry("9223372036854775807s", 1) == -1);
-    CHECK(npf_text_expiry("1s", INT64_MAX - 1) == INT64_MAX);
-    CHECK(npf_text_expiry("1s", INT64_MAX) == -1);
-    memset(&tm, 0, sizeof tm);
-    tm.tm_year = 126; tm.tm_mon = 9; tm.tm_mday = 16; tm.tm_hour = 12; tm.tm_min = 30; tm.tm_isdst = -1;
-    CHECK(npf_text_expiry("2026-10-16 12:30", 1000) == (int64_t)mktime(&tm));
-    CHECK(npf_text_expiry("2026-10-16T12:30", 1000) == (int64_t)mktime(&tm));
     return fails;
 }

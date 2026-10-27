@@ -21,24 +21,19 @@ typedef struct rp_arg {
     size_t       errcap;
 } rp_arg;
 
+/* npf.h's NPF_RES_TCP .. NPF_RES_REVERSE (1 .. 5) by their names in the resources */
+static const char *const res_types[] = {NULL, "tcp", "udp", "net", "socks", "reverse"};
+
 static const char *res_type_name(int t)
 {
-    switch (t) {
-    case NPF_RES_TCP: return "tcp";
-    case NPF_RES_UDP: return "udp";
-    case NPF_RES_NET: return "net";
-    case NPF_RES_SOCKS: return "socks";
-    case NPF_RES_REVERSE: return "reverse";
-    default: return NULL;
-    }
+    return t > 0 && t < 6 ? res_types[t] : NULL;
 }
 
 static int res_type_code(const char *t)
 {
-    static const char *const names[] = {"", "tcp", "udp", "net", "socks", "reverse"};
     int i;
     for (i = 1; i < 6; i++)
-        if (strcmp(names[i], t) == 0)
+        if (strcmp(res_types[i], t) == 0)
             return i;
     return 0;
 }
@@ -169,31 +164,16 @@ static int res_list_run(npf_t *n, void *arg)
     } else {
         npf_peer *p = peer_of(n, x->peer);
         const char *json;
-        npf_jtok *tok;
         npf_res *r;
-        npf_json j;
         char e[160];
-        int m = -1;
+        int m;
         if (!p)
             return NPF_ENOENT;
         if (!(json = npf_peer_resources(p)))
             return NPF_OK;
-        tok = malloc(NPF_RES_JSON_TOK * sizeof *tok);
-        r = malloc(NPF_RES_MAX * sizeof *r);
-        e[0] = 0;
-        if (!tok || !r) {
-            free(tok);
-            free(r);
-            npf_loge("resources of %s: no memory", npf_peer_name(p));
-            return NPF_ENOMEM;
-        }
-        if (npf_json_parse(&j, json, strlen(json), tok, NPF_RES_JSON_TOK) == 0)
-            m = npf_res_parse(&j, 0, r, NPF_RES_MAX, e, sizeof e);
-        if (m < 0) {                        /* (checked when it came: not to happen) */
-            free(tok);
-            free(r);
-            npf_loge("resources of %s: %s", npf_peer_name(p), e[0] ? e : "not valid JSON");
-            return NPF_EFAIL;
+        if ((m = npf_pub_res_text(json, &r, e, sizeof e)) < 0) {  /* (checked when it came: no memory) */
+            npf_loge("resources of %s: %s", npf_peer_name(p), e);
+            return m;
         }
         for (k = 0; k < m; k++) {
             if (*x->count < x->cap) {
@@ -204,7 +184,6 @@ static int res_list_run(npf_t *n, void *arg)
             }
             (*x->count)++;
         }
-        free(tok);
         free(r);
     }
     return list_rc(*x->count, x->cap);

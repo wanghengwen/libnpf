@@ -16,7 +16,7 @@ void npf_fuzz_http(const uint8_t *data, size_t len)
 {
     npf_http *h = calloc(1, sizeof *h);
     if (!h) return;
-    h->fd = -1;
+    h->tcp.fd = -1;
     h->fn = discard_http;
     h->in = malloc(len + 1);
     if (!h->in) { free(h); return; }
@@ -32,7 +32,7 @@ void npf_fuzz_ws(const uint8_t *data, size_t len)
     npf_ws *ws = calloc(1, sizeof *ws);
     size_t split = len / 2;
     if (!ws) return;
-    ws->fd = -1;
+    ws->tcp.fd = -1;
     ws->busy = 1;
     ws->state = ST_OPEN;
     ws->cbs.on_message = discard_ws;

@@ -202,7 +202,8 @@ void npf_noise_set_psk(npf_noise_hs *hs, const uint8_t psk[32])
     hs->has_psk = 1;
 }
 
-int npf_noise_my_turn(const npf_noise_hs *hs)
+/* is it our turn to write? */
+static int npf_noise_my_turn(const npf_noise_hs *hs)
 {
     return !hs->done && ((hs->step % 2 == 0) == (hs->initiator != 0));
 }

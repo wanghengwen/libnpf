@@ -47,13 +47,11 @@ typedef struct npf_identity {
 
 /* sign seed = KDF(seed, "npf sign v1"), dh_sk = KDF(seed, "npf dh v1") */
 void npf_identity_from_seed(npf_identity *id, const uint8_t seed[32]);
-void npf_identity_generate(npf_identity *id);
 void npf_identity_wipe(npf_identity *id);
 
 /* BLAKE2b-256(dh_pub)[0..7] as a little-endian integer */
 uint64_t npf_fp(const uint8_t dh_pub[32]);
 
-void npf_sign(uint8_t sig[64], const npf_identity *id, const void *msg, size_t len);
 /* Ed25519 over domain | msg; returns 0 if valid */
 int  npf_verify2(const uint8_t sig[64], const uint8_t pub[32],
                  const void *domain, size_t dlen, const void *msg, size_t len);

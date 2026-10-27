@@ -76,7 +76,6 @@ int  npf_socket(int family, int type, int proto, int blocking);
 typedef int (*npf_udp_hook_fn)(int fd, int family, void *arg);
 void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg);
 void npf_udp_hook_on(int on);
-int  npf_udp_hook_is_on(void);
 /* a socket of the node's (its UDP ones, its signaling's TCP) out on the
  * physical network under a VPN when the hook is on (connect_mode p2p): the
  * application's hook, else npf_vpn_bypass; <0 the platform could not */
@@ -153,8 +152,7 @@ int  npf_firewall_lead_ms(void);
 int  npf_default_gw4(uint32_t *gw);
 
 /* files */
-int  npf_mkdir(const char *path);               /* 0700 where it matters; 0 if it exists */
-int  npf_mkdir_p(const char *path);
+int  npf_mkdir_p(const char *path);             /* 0700 where it matters; 0 if it exists */
 /* restrict a file holding secrets to its owner (POSIX mode 0600; Windows:
  * protected DACL for SYSTEM, Administrators and the owner) */
 int  npf_file_private(const char *path);

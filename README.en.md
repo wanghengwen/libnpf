@@ -98,7 +98,7 @@ src/crypto/            Noise, CPace, certificates, SIV
 src/proto/ src/ws/     JSON, DNS, HTTP, signaling, WS relay; WebSocket, TLS
 src/ice/ src/punch/    NAT detection, candidates, PCP / NAT-PMP, hole punching
 src/node/ src/tunnel/  the node, sessions, AnLiu, relays, the tunnel, UDP forwards, media, peers, resources
-third_party/           AnLiu, Monocypher, mbedTLS, rxi/log
+third_party/           AnLiu, Monocypher, mbedTLS
 examples/              device.c, client.c: a device and a client on npf.h alone
 tests/                 unit tests, API tests, fuzzing
 cmake/, scripts/       build options; the script that updates the bundled AnLiu
@@ -107,4 +107,4 @@ docs/                  the signaling protocol, the data channel, NAT traversal, 
 
 ## Licence
 
-MIT, see `LICENSE`. Third-party code: AnLiu (MIT), Monocypher (CC0 / BSD-2-Clause), mbedTLS (Apache-2.0), rxi/log.c (MIT); their licences are in `third_party/` (rxi/log's in its source files' headers).
+MIT, see `LICENSE`. Third-party code: AnLiu (MIT), Monocypher (CC0 / BSD-2-Clause), mbedTLS (Apache-2.0); their licences are in `third_party/`.

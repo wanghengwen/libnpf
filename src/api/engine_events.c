@@ -79,11 +79,10 @@ npf_call *npf_session_call(npf_t *n, uint32_t id)
     return NULL;
 }
 
-/* the peer whose session this is (an outgoing one) */
-static npf_peer *peer_of_call(npf_t *n, npf_call *call)
+npf_peer *npf_peer_of_call(npf_t *n, npf_call *call)
 {
     npf_peer *p;
-    for (p = n->peers ? npf_peers_first(n->peers) : NULL; p; p = npf_peer_next(p))
+    for (p = npf_peers_first(n->peers); p; p = npf_peer_next(p))
         if (npf_peer_call(p) == call)
             return p;
     return NULL;
@@ -107,7 +106,7 @@ static uint32_t sess_add(npf_t *n, npf_call *call)
         n->next_sess = 1;
     {
         npf_sess *ss = &n->sess[n->nsess];
-        npf_peer *p = peer_of_call(n, call);
+        npf_peer *p = npf_peer_of_call(n, call);
         memset(ss, 0, sizeof *ss);
         ss->id = n->next_sess;
         ss->call = call;
@@ -150,7 +149,7 @@ static void sess_end(npf_t *n, npf_call *call, const char *why)
     if (n->cb.session) {
         npf_out o = {0};
         npf_out_printf(&o, "{\"why\":");
-        npf_out_json_str(&o, why ? why : "closed", strlen(why ? why : "closed"));
+        npf_out_jstr(&o, why ? why : "closed");
         npf_out_printf(&o, "}");
         n->cb.session(n->cb.user, id, 0, o.p);
         npf_out_free(&o);
@@ -168,14 +167,14 @@ void npf_session_info_out(npf_t *n, npf_call *call, npf_out *o)
     else
         snprintf(peer, sizeof peer, "key:%016llx", (unsigned long long)npf_fp(i.peer_pub));
     npf_out_printf(o, "{\"session\":%u,\"peer\":", npf_session_of(n, call));
-    npf_out_json_str(o, peer, strlen(peer));
+    npf_out_jstr(o, peer);
     npf_out_printf(o, ",\"path\":");
-    npf_out_json_str(o, i.path, strlen(i.path));
+    npf_out_jstr(o, i.path);
     npf_out_printf(o, ",\"direction\":\"%s\",\"call_id\":", i.caller ? "out" : "in");
-    npf_out_json_str(o, i.id, strlen(i.id));
+    npf_out_jstr(o, i.id);
     if (i.app && *i.app) {
         npf_out_printf(o, ",\"app\":");
-        npf_out_json_str(o, i.app, strlen(i.app));
+        npf_out_jstr(o, i.app);
     }
     if (i.hosted)
         npf_out_printf(o, ",\"hosted\":true");
@@ -209,7 +208,7 @@ static void event_text(npf_t *n, const char *name, const char *key, const char *
     if (!n->cb.event)
         return;
     npf_out_printf(&o, "{\"%s\":", key);
-    npf_out_json_str(&o, text ? text : "", strlen(text ? text : ""));
+    npf_out_jstr(&o, text);
     npf_out_printf(&o, "}");
     npf_emit(n, name, "%s", o.p ? o.p : "{}");
     npf_out_free(&o);
@@ -232,9 +231,9 @@ static void on_enroll_failed(npf_node *node, const char *error, const char *reas
     {
         npf_out o = {0};
         npf_out_printf(&o, "{\"error\":");
-        npf_out_json_str(&o, error, strlen(error));
+        npf_out_jstr(&o, error);
         npf_out_printf(&o, ",\"reason\":");
-        npf_out_json_str(&o, reason ? reason : "", strlen(reason ? reason : ""));
+        npf_out_jstr(&o, reason);
         npf_out_printf(&o, ",\"retry_in\":%d}", retry_s);
         npf_emit(n, "enroll_failed", "%s", o.p ? o.p : "{}");
         npf_out_free(&o);
@@ -494,11 +493,11 @@ static void peer_fwd(npf_peer *p, int i, int up, const char *why, void *arg)
         char sp[320];
         snprintf(sp, sizeof sp, "-%c %s", opt, spec);
         npf_out_printf(&o, "{\"peer\":");
-        npf_out_json_str(&o, npf_peer_name(p), strlen(npf_peer_name(p)));
+        npf_out_jstr(&o, npf_peer_name(p));
         npf_out_printf(&o, ",\"spec\":");
-        npf_out_json_str(&o, sp, strlen(sp));
+        npf_out_jstr(&o, sp);
         npf_out_printf(&o, ",\"up\":%s,\"why\":", up ? "true" : "false");
-        npf_out_json_str(&o, why ? why : "", strlen(why ? why : ""));
+        npf_out_jstr(&o, why);
         npf_out_printf(&o, "}");
         n->cb.event(n->cb.user, "forward", o.p ? o.p : "{}");
         npf_out_free(&o);
@@ -513,9 +512,9 @@ static void peer_done(npf_peer *p, const char *why, void *arg)
         npf_logw("%s: gave up (%s)", npf_peer_name(p), why);
     npf_mods_peer_done(n, p, why);
     npf_out_printf(&o, "{\"peer\":");
-    npf_out_json_str(&o, npf_peer_name(p), strlen(npf_peer_name(p)));
+    npf_out_jstr(&o, npf_peer_name(p));
     npf_out_printf(&o, ",\"why\":");
-    npf_out_json_str(&o, why, strlen(why));
+    npf_out_jstr(&o, why);
     npf_out_printf(&o, "}");
     if (n->cb.event)
         n->cb.event(n->cb.user, "peer_done", o.p);

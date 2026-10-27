@@ -119,8 +119,7 @@ void npf_mod_set_state(npf_t *n, const npf_module *m, void *state)
 
 void npf_mod_jkey(npf_out *o, int *first, const char *k)
 {
-    npf_out_printf(o, "%s\"%s\":", *first ? "" : ",", k);
-    *first = 0;
+    npf_out_jkey(o, first, k);
 }
 
 int npf_mod_key_known(npf_t *n, const char *k)

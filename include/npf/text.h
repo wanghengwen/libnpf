@@ -16,9 +16,4 @@ int npf_text_mac(const char *s, unsigned char out[6]);
 /* HTTP/1.x response status (three digits), or -1. s is NUL-terminated. */
 int npf_http_status(const char *s);
 
-/* Mapping expiry: never, positive decimal duration (s/m/h/d/w, fractions
- * and decimal exponents allowed), or local YYYY-MM-DD HH:MM (also T).
- * Sub-second durations truncate toward zero. -1 on invalid/overflow. */
-int64_t npf_text_expiry(const char *s, int64_t now);
-
 #endif

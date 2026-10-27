@@ -74,6 +74,16 @@ void api_leave(npf_t *n)
     UNLOCK();
 }
 
+int npf_api_guard(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
+{
+    int r;
+    if (!api_enter(n))
+        return n ? NPF_ESTATE : NPF_EINVAL;
+    r = fn(n, arg);
+    api_leave(n);
+    return r;
+}
+
 /* a call posted to the loop; the caller waits for it. It is on the heap: a
  * caller that gives up (the run ended first) leaves it to the loop. */
 typedef struct job {
@@ -488,12 +498,13 @@ static void thread_join(void *th)
 #endif
 }
 
-static int npf_start_impl(npf_t *n)
+static int start_run(npf_t *n, void *arg)
 {
     void *th = NULL;
-    if (n && n->rt)
+    (void)arg;
+    if (n->rt)
         return start_on_runtime(n);
-    if (!n || begin_run(n, 0) != NPF_OK)
+    if (begin_run(n, 0) != NPF_OK)
         return NPF_ESTATE;
     th = thread_new(0, n);
     LOCK();
@@ -507,21 +518,24 @@ static int npf_start_impl(npf_t *n)
     return th ? NPF_OK : NPF_EFAIL;
 }
 
-static int npf_run_impl(npf_t *n)
+static int run_run(npf_t *n, void *arg)
 {
-    if (!n || n->rt || begin_run(n, 1) != NPF_OK)
+    (void)arg;
+    if (n->rt || begin_run(n, 1) != NPF_OK)
         return NPF_ESTATE;
     loop_main(n);
     return NPF_OK;
 }
 
-static void stop_impl(npf_t *n)
+static int stop_run(npf_t *n, void *arg)
 {
+    (void)arg;
     LOCK();
     n->stopping = 1;
     /* Atomic stop + wake: no allocation and no lost stop under memory pressure. */
     npf_loop_stop(n->loop);
     UNLOCK();
+    return NPF_OK;
 }
 
 void npf_destroy(npf_t *n)
@@ -552,31 +566,7 @@ void npf_free(void *p)
 {
     free(p);
 }
-int npf_start(npf_t *n)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = npf_start_impl(n);
-    api_leave(n);
-    return r;
-}
 
-int npf_run(npf_t *n)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = npf_run_impl(n);
-    api_leave(n);
-    return r;
-}
-
-
-void npf_stop(npf_t *n)
-{
-    if (!api_enter(n))
-        return;
-    stop_impl(n);
-    api_leave(n);
-}
+int npf_start(npf_t *n) { return npf_api_guard(n, start_run, NULL); }
+int npf_run(npf_t *n) { return npf_api_guard(n, run_run, NULL); }
+void npf_stop(npf_t *n) { npf_api_guard(n, stop_run, NULL); }

@@ -47,10 +47,10 @@ int main(void)
     int server, rejected, k;
     for (i = 0; i < sizeof bad / sizeof bad[0]; i++) {
         char *copy = strdup(bad[i]);
-        CHECK(dechunk((uint8_t *)copy, strlen(copy)) < 0);
+        CHECK(chunk_body((uint8_t *)copy, strlen(copy), 1) < 0);
         free(copy);
     }
-    CHECK(dechunk((uint8_t *)good, strlen(good)) == 3 && memcmp(good, "abc", 3) == 0);
+    CHECK(chunk_body((uint8_t *)good, strlen(good), 1) == 3 && memcmp(good, "abc", 3) == 0);
     {
         char response[] = "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nab";
         char chunks[] = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\na\r\n0\r\n\r\n";
@@ -67,7 +67,7 @@ int main(void)
         CHECK(!h_body_complete(&framed));
     }
     ws = calloc(1, sizeof *ws);
-    ws->fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws;
+    ws->tcp.fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws;
     CHECK(buf_put(&ws->in, frame, 2) == 0 && parse_frames(ws) < 0); /* stray continuation */
     ws->in.len = 0;
     frame[0] = 0x02; /* an empty initial fragment must still open a fragmented message */
@@ -77,7 +77,7 @@ int main(void)
     /* A ping flood from a peer that reads nothing: pongs stop at 64 KB of
      * queue; all the tiny frames are taken in one pass. */
     ws = calloc(1, sizeof *ws);
-    ws->fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws;
+    ws->tcp.fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws;
     for (k = 0; k < 30000; k++)
         CHECK(buf_put(&ws->in, "\x89\x00", 2) == 0);
     CHECK(parse_frames(ws) == 0 && ws->in.len == 0);
@@ -85,7 +85,7 @@ int main(void)
     real_free(ws);
     /* A close reason reaches the log without control characters. */
     ws = calloc(1, sizeof *ws);
-    ws->fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws; ws->cbs.on_close = capture_close;
+    ws->tcp.fd = -1; ws->busy = 1; ws->state = ST_OPEN; ws->cbs.on_message = discard_ws; ws->cbs.on_close = capture_close;
     {
         static const uint8_t cf[] = {0x88, 7, 0x03, 0xe8, 'a', '\n', 'b', 0x1b, 'c'};
         CHECK(buf_put(&ws->in, cf, sizeof cf) == 0 && parse_frames(ws) == -2 && strcmp(closed_why, "a?b?c") == 0);
@@ -97,7 +97,7 @@ int main(void)
         npf_http *hb = calloc(1, sizeof *hb);
         int n = snprintf(big, sizeof big, "HTTP/1.1 200 OK\r\nContent-Length: 2000\r\n\r\n");
         memset(big + n, 'x', 2000);
-        hb->fd = -1; hb->max = 1024; hb->fn = discard_http;
+        hb->tcp.fd = -1; hb->max = 1024; hb->fn = discard_http;
         hb->in = malloc((size_t)n + 2001);
         memcpy(hb->in, big, (size_t)n + 2000);
         hb->in_len = (size_t)n + 2000;
@@ -116,19 +116,22 @@ int main(void)
     CHECK(rejected >= 0 && server >= 0);
     npf_sock_close(rejected);
     ws = calloc(1, sizeof *ws);
-    ws->fd = -1; ws->loop = loop;
-    strcpy(ws->host, "localhost"); strcpy(ws->path, "/"); ws->port = 80;
-    CHECK(start_connect(ws, a, al, 2) == 0);
+    ws->loop = loop;
+    npf_tcp_init(&ws->tcp, loop, ws->host, on_io, ws_tcp_failed, ws);
+    strcpy(ws->host, "localhost"); strcpy(ws->path, "/"); ws->tcp.port = 80;
+    memcpy(ws->tcp.cand, a, sizeof a); memcpy(ws->tcp.cand_len, al, sizeof al); ws->tcp.ncand = 2;
+    CHECK(tcp_next(&ws->tcp) == 0);
     for (k = 0; k < 200 && ws->state == ST_CONNECTING; k++) npf_loop_once(loop, 10);
-    CHECK(ws->state == ST_UPGRADE && ws->icand == 2);
+    CHECK(ws->state == ST_UPGRADE && ws->tcp.icand == 2);
     npf_ws_free(ws);
     h = calloc(1, sizeof *h);
-    h->fd = -1; h->loop = loop; h->max = 1024; h->fn = discard_http;
-    memcpy(h->cand, a, sizeof a); memcpy(h->cand_len, al, sizeof al); h->ncand = 2;
+    h->loop = loop; h->max = 1024; h->fn = discard_http;
+    npf_tcp_init(&h->tcp, loop, h->host, h_io, h_tcp_failed, h);
+    memcpy(h->tcp.cand, a, sizeof a); memcpy(h->tcp.cand_len, al, sizeof al); h->tcp.ncand = 2;
     strcpy(h->req, "GET / HTTP/1.0\r\n\r\n"); h->req_len = strlen(h->req);
-    CHECK(h_next(h) == 0);
+    CHECK(tcp_next(&h->tcp) == 0);
     for (k = 0; k < 200 && h->state == H_CONNECTING; k++) npf_loop_once(loop, 10);
-    CHECK(h->state == H_READ && h->icand == 2);
+    CHECK(h->state == H_READ && h->tcp.icand == 2);
     h_free(h);
     npf_sock_close(server);
     npf_loop_free(loop);

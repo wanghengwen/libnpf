@@ -12,7 +12,7 @@
 void npf_kdf(uint8_t out[32], const void *key, size_t key_len, const void *msg, size_t msg_len)
 {
 #ifdef NPF_USE_OPENSSL
-    if (key_len && ossl_mac(out, 32, "BLAKE2BMAC", key, key_len, msg, msg_len, NULL, 0) == 0)
+    if (key_len && ossl_mac(out, 32, 0, key, key_len, msg, msg_len, NULL, 0) == 0)
         return;
 #endif
     /* OpenSSL 3.0 has no variable-length unkeyed BLAKE2b. Keep its exact
@@ -25,7 +25,7 @@ void npf_kdf2(uint8_t out[32], const void *key, size_t key_len,
 {
     crypto_blake2b_ctx ctx;
 #ifdef NPF_USE_OPENSSL
-    if (key_len && ossl_mac(out, 32, "BLAKE2BMAC", key, key_len, a, a_len, b, b_len) == 0)
+    if (key_len && ossl_mac(out, 32, 0, key, key_len, a, a_len, b, b_len) == 0)
         return;
 #endif
     crypto_blake2b_keyed_init(&ctx, 32, key, key_len);
@@ -106,7 +106,7 @@ void npf_hmac_blake2b(uint8_t out[64], const uint8_t *key, size_t key_len,
     crypto_blake2b_ctx ctx;
     size_t i;
 #ifdef NPF_USE_OPENSSL
-    if (ossl_mac(out, 64, "HMAC", key, key_len, data, data_len, NULL, 0) == 0) return;
+    if (ossl_mac(out, 64, 1, key, key_len, data, data_len, NULL, 0) == 0) return;
 #endif
     memset(k, 0, sizeof k);
     if (key_len > 128)
@@ -145,14 +145,6 @@ void npf_identity_from_seed(npf_identity *id, const uint8_t seed[32])
     npf_x25519_pub(id->dh_pub, id->dh_sk);
 }
 
-void npf_identity_generate(npf_identity *id)
-{
-    uint8_t seed[32];
-    npf_random(seed, 32);
-    npf_identity_from_seed(id, seed);
-    crypto_wipe(seed, 32);
-}
-
 void npf_identity_wipe(npf_identity *id)
 {
     crypto_wipe(id, sizeof *id);
@@ -163,14 +155,6 @@ uint64_t npf_fp(const uint8_t dh_pub[32])
     uint8_t h[32];
     crypto_blake2b(h, 32, dh_pub, 32);
     return npf_rd64(h);
-}
-
-void npf_sign(uint8_t sig[64], const npf_identity *id, const void *msg, size_t len)
-{
-#ifdef NPF_USE_OPENSSL
-    if (ossl_sign(sig, id->sign_sk, msg, len) == 0) return;
-#endif
-    crypto_ed25519_sign(sig, id->sign_sk, msg, len);
 }
 
 /* Ed25519 has no streaming interface in Monocypher; domain-separated messages

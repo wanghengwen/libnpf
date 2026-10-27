@@ -1,4 +1,4 @@
-/* Logging: levels and sinks on rxi/log.c (third_party/log, MIT).
+/* Logging: levels and sinks.
  *
  *   2026-10-06 13:01:14.013 INFO  call x: direct path 1.2.3.4:5 (213 ms)
  *
@@ -12,13 +12,12 @@
  * the application's callback). The thread that works for an instance (its
  * loop thread, or a caller while it does not run) has it set; lines logged
  * there go to that instance only. Lines of other threads go to the process
- * log (stderr or the log file). */
+ * log (stderr or the application's writer). */
 #ifndef NPF_LOG_H
 #define NPF_LOG_H
 
 #include <stddef.h>
 
-/* the same values as rxi/log.c's LOG_TRACE .. LOG_FATAL */
 enum { NPF_LOG_TRACE, NPF_LOG_DEBUG, NPF_LOG_INFO, NPF_LOG_WARN, NPF_LOG_ERROR };
 
 /* MinGW: the C99 formats (%zu, %lld) of its own printf (log.c uses it) */
@@ -48,20 +47,16 @@ const char *npf_log_level_name(int level);
  * first: copies up to cap bytes (whole lines) and returns the length */
 size_t npf_log_recent(char *out, size_t cap);
 
-/* ---- log files (the application's daemon and service use them) ---- */
+/* ---- where the process log goes (npf's log file: client/app/logfile.c) ---- */
 
-/* log to path (append) instead of stderr; rotated to path.1 at max_bytes
- * (0 = 10 MB). The process's stderr goes to the file too (POSIX and
- * Windows). 0 or -1. */
-int  npf_log_open(const char *path, long max_bytes);
-/* the same in an application: the file only, its stderr left alone (other
- * code writes there: an Android GPU driver) */
-int  npf_log_open_app(const char *path, long max_bytes);
-void npf_log_reopen(void);
-/* Unix daemon start-up (service.c): open the log at an absolute path while
- * stderr, still the terminal, sees every line too; then let go of it */
-int  npf_log_open_daemon(const char *path);
-void npf_log_detach_terminal(void);
+/* each line of the process log ("date time.ms LEVEL message\n") to fn, called
+ * under the log lock, instead of npf_log_stderr; NULL: stderr again */
+void npf_log_set_writer(void (*fn)(const char *line, size_t len));
+/* the line on stderr without its date */
+void npf_log_stderr(const char *line, size_t len);
+/* the log lock, for the writer's own state */
+void npf_log_lock(void);
+void npf_log_unlock(void);
 
 /* ---- an instance's log (libnpf) ---- */
 

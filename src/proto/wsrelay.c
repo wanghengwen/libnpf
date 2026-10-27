@@ -8,6 +8,7 @@
 #include "npf/crypto.h"
 #include "npf/json.h"
 #include "npf/noise.h"
+#include "npf/sig.h"
 #include "npf/wsrelay.h"
 #include "npf/ws.h"
 
@@ -59,9 +60,7 @@ static void ping_cb(npf_loop *loop, void *arg)
 static void on_open(npf_ws *ws, void *arg)
 {
     npf_wsr *r = arg;
-    uint8_t m[64];
-    int n = npf_noise_write(&r->hs, NULL, 0, m, sizeof m);
-    if (n < 0 || npf_ws_send(ws, m, (size_t)n, 1) < 0)
+    if (npf_sig_xk_first(ws, &r->hs) < 0)
         wsr_down(r, "noise write failed");
 }
 
@@ -74,17 +73,11 @@ static void on_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         return;
     }
     if (!r->ready) {
-        uint8_t m[128], p[64], b[64];
+        uint8_t b[64];
         char bind[128];
-        int n;
-        if (npf_noise_read(&r->hs, data, len, p, sizeof p) < 0) {
-            wsr_down(r, "relay server authentication failed");
-            return;
-        }
-        n = npf_noise_write(&r->hs, NULL, 0, m, sizeof m);
-        if (n < 0 || npf_noise_split(&r->hs, &r->tx, &r->rx, NULL, NULL, NULL) < 0
-            || npf_ws_send(r->ws, m, (size_t)n, 1) < 0) {
-            wsr_down(r, "noise handshake failed");
+        const char *why = npf_sig_xk_finish(r->ws, &r->hs, data, len, &r->tx, &r->rx, NULL);
+        if (why) {
+            wsr_down(r, why);
             return;
         }
         r->ready = 1;
@@ -173,7 +166,7 @@ npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t server_pub[
         free(r);
         return NULL;
     }
-    r->ws = npf_ws_connect(loop, url, &wcb, r);
+    r->ws = npf_ws_connect(loop, url, &wcb, r, 0);
     if (!r->ws) {
         free(r);
         return NULL;

@@ -3,11 +3,9 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -106,17 +104,14 @@ static void random_password(char out[10])
     out[o] = 0;
 }
 
-/* there, but it cannot be read now (permissions, no descriptors left) */
-static int unreadable(const char *path)
+/* node.json at path: the number and its default password; 0 or -1 */
+static int write_node(const char *path, uint64_t number, const char *pw)
 {
-    struct stat st;
-    FILE *f;
-    if (stat(path, &st) != 0)
-        return errno != ENOENT;
-    if (!(f = fopen(path, "rb")))
-        return 1;
-    fclose(f);
-    return 0;
+    char out[128];
+    int len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n", (unsigned long long)number, pw);
+    int r = npf_file_write(path, out, (size_t)len, 0600);
+    npf_wipe(out, sizeof out);              /* the default password */
+    return r;
 }
 
 /* a node.json: 0, -1 when it cannot be read, -2 when it is there but not
@@ -156,14 +151,8 @@ static int load_node(npf_t *n)
     if (load_node_file(n, bak) != 0)
         return -2;
     npf_logw("%s is damaged: its copy %s taken (written again)", n->node_path, bak);
-    {
-        char out[128];
-        int len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n",
-                           (unsigned long long)n->number, n->default_pw);
-        if (npf_file_write(n->node_path, out, (size_t)len, 0600) < 0)
-            npf_logw("cannot write %s", n->node_path);
-        npf_wipe(out, sizeof out);
-    }
+    if (write_node(n->node_path, n->number, n->default_pw) < 0)
+        npf_logw("cannot write %s", n->node_path);
     return 0;
 }
 
@@ -377,8 +366,7 @@ void npf_engine_callee_attach(npf_t *n)
 
 int npf_become_node(npf_t *n, uint64_t number)
 {
-    char pw[10], out[128];
-    int len;
+    char pw[10], bak[1100];
     if (!n->callee && !(n->callee = calloc(1, sizeof *n->callee))) {
         npf_loge("no memory for the callee state");
         return -1;                          /* before the number: has_number means a callee (cmd.c) */
@@ -389,20 +377,15 @@ int npf_become_node(npf_t *n, uint64_t number)
         npf_wipe(pw, sizeof pw);
         return -1;
     }
-    len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n", (unsigned long long)number, pw);
-    if (npf_file_write(n->node_path, out, (size_t)len, 0600) < 0) {
+    if (write_node(n->node_path, number, pw) < 0) {
         npf_loge("cannot write %s: the number is lost at the next start", n->node_path);
-        npf_wipe(pw, sizeof pw);            /* the default password, in both */
-        npf_wipe(out, sizeof out);
+        npf_wipe(pw, sizeof pw);            /* the default password */
         return -1;
     }
-    {   /* its copy: taken when the medium damages the file (load_node) */
-        char bak[1100];
-        snprintf(bak, sizeof bak, "%s.bak", n->node_path);
-        if (npf_file_write(bak, out, (size_t)len, 0600) < 0)
-            npf_logw("cannot write %s", bak);
-    }
-    npf_wipe(out, sizeof out);
+    /* its copy: taken when the medium damages the file (load_node) */
+    snprintf(bak, sizeof bak, "%s.bak", n->node_path);
+    if (write_node(bak, number, pw) < 0)
+        npf_logw("cannot write %s", bak);
     n->number = number;
     n->has_number = 1;
     /* callable from now on here too, as in the node's own copy (node_signal.c):
@@ -463,7 +446,7 @@ int npf_engine_identity_load(npf_t *n, char *err, size_t errcap)
             npf_wipe(seed, sizeof seed);
             return -1;
         }
-        if (!n->has_number && unreadable(n->node_path)) {
+        if (!n->has_number && npf_file_unreadable(n->node_path)) {
             /* there but not readable now: not enrolled again over it */
             snprintf(err, errcap, "cannot read %s", n->node_path);
             npf_wipe(seed, sizeof seed);

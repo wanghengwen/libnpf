@@ -7,6 +7,7 @@ static void *test_realloc(void *p, size_t size);
 #include "npf/local.h"
 #define npf_ws_send test_ws_send
 #define npf_ws_free test_ws_free
+#include "../../src/proto/sig.c"              /* the relay's handshake (npf_sig_xk_*) */
 #include "../../src/proto/wsrelay.c"
 #undef npf_ws_send
 #undef npf_ws_free

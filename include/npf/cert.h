@@ -45,17 +45,6 @@ typedef struct npf_cert {
 /* Parse one certificate at the start of buf. Returns bytes consumed or -1. */
 int npf_cert_parse(const uint8_t *buf, size_t len, npf_cert *c);
 
-uint32_t npf_key_id(const uint8_t sign_pub[32]);
-
-/* signature check against an issuer key (key id must match); 0 if valid */
-int npf_cert_check_sig(const npf_cert *c, const uint8_t issuer_pub[32]);
-
-/* Verify an intermediate against the root keys (and, when leaf != NULL, the
- * leaf against the intermediate). now == 0 skips validity periods.
- * Returns 0 if valid. */
-int npf_cert_chain_verify(const uint8_t (*roots)[32], int nroots, const npf_cert *inter,
-                          unsigned perm, const npf_cert *leaf, int64_t now);
-
 /* Parse and verify "inter | leaf" (the chain as the platform sends it). */
 int npf_cert_chain_parse(const uint8_t (*roots)[32], int nroots, const uint8_t *buf, size_t len,
                          npf_cert *inter, npf_cert *leaf, int64_t now);

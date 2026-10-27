@@ -47,6 +47,27 @@ static int res_room(npf_t *n, int need)
     return 0;
 }
 
+int npf_pub_res_text(const char *json, npf_res **out, char *err, size_t errcap)
+{
+    npf_jtok *tok = malloc(NPF_RES_JSON_TOK * sizeof *tok);
+    npf_res *r = malloc(NPF_RES_MAX * sizeof *r);
+    npf_json j;
+    int m = NPF_ENOMEM;
+    err[0] = 0;
+    if (tok && r && (npf_json_parse(&j, json, strlen(json), tok, NPF_RES_JSON_TOK) < 0
+                     || (m = npf_res_parse(&j, 0, r, NPF_RES_MAX, err, errcap)) < 0))
+        m = NPF_EFAIL;
+    free(tok);
+    if (m < 0) {
+        free(r);
+        r = NULL;
+        if (!err[0])
+            snprintf(err, errcap, "%s", m == NPF_ENOMEM ? "no memory" : "not valid JSON");
+    }
+    *out = r;
+    return m;
+}
+
 int npf_pub_load(npf_t *n, char *err, size_t errcap)
 {
     const char *line;
@@ -77,19 +98,12 @@ int npf_pub_load(npf_t *n, char *err, size_t errcap)
         n->nres++;
     }
     if (n->lc.resources && !(n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS)) {   /* those added at run time (checked when read) */
-        npf_jtok *tok = malloc(NPF_RES_JSON_TOK * sizeof *tok);
-        npf_res *r = malloc(NPF_RES_MAX * sizeof *r);
-        npf_json j;
-        int m = -1, rc = 0;
-        e[0] = 0;
+        npf_res *r;
+        int m = npf_pub_res_text(n->lc.resources, &r, e, sizeof e), rc = 0;
         /* none left out without a word: a resource missing here is a
          * service its callers no longer reach */
-        if (!tok || !r) {
-            snprintf(err, errcap, "resources of local.json: no memory");
-            rc = -1;
-        } else if (npf_json_parse(&j, n->lc.resources, strlen(n->lc.resources), tok, NPF_RES_JSON_TOK) < 0
-                   || (m = npf_res_parse(&j, 0, r, NPF_RES_MAX, e, sizeof e)) < 0) {
-            snprintf(err, errcap, "resources of local.json: %s", e[0] ? e : "not valid JSON");
+        if (m < 0) {
+            snprintf(err, errcap, "resources of local.json: %s", e);
             rc = -1;
         }
         for (i = 0; i < m && rc == 0; i++) {
@@ -108,7 +122,6 @@ int npf_pub_load(npf_t *n, char *err, size_t errcap)
             r[i].persist = 1;
             n->res[n->nres++] = r[i];
         }
-        free(tok);
         free(r);
         if (rc < 0) {
             npf_loge("%s", err);

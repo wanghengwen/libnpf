@@ -98,7 +98,7 @@ src/crypto/            Noise、CPace、证书、SIV
 src/proto/ src/ws/     JSON、DNS、HTTP、信令、WS 中转；WebSocket、TLS
 src/ice/ src/punch/    NAT 探测、候选地址、PCP / NAT-PMP、打洞
 src/node/ src/tunnel/  节点、会话、AnLiu、中转、隧道、UDP 转发、媒体、对端、资源
-third_party/           AnLiu、Monocypher、mbedTLS、rxi/log
+third_party/           AnLiu、Monocypher、mbedTLS
 examples/              device.c、client.c：只用 npf.h 的设备与客户端
 tests/                 单元测试、API 测试、模糊测试
 cmake/、scripts/       构建选项；更新内置 AnLiu 的脚本
@@ -107,4 +107,4 @@ docs/                  信令协议、数据通道、NAT 穿透与安全设计�
 
 ## 许可
 
-MIT，见 `LICENSE`。第三方：AnLiu（MIT）、Monocypher（CC0 / BSD-2-Clause）、mbedTLS（Apache-2.0）、rxi/log.c（MIT），各自的许可在 `third_party/` 下（rxi/log 的在源文件头里）。
+MIT，见 `LICENSE`。第三方：AnLiu（MIT）、Monocypher（CC0 / BSD-2-Clause）、mbedTLS（Apache-2.0），各自的许可在 `third_party/` 下。
