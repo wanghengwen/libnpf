@@ -5,29 +5,22 @@
 
 #include "npf/node.h"
 
-/* a timer stopped, if it runs, and forgotten */
-static inline void timer_stop(npf_loop *l, npf_timer **t)
-{
-    if (*t)
-        npf_timer_cancel(l, *t);
-    *t = NULL;
-}
-
 /* node_servers.c */
 /* a signed list from the login, a push or an external channel (via): 1 when adopted */
-int  node_wake_delay(int ms);
 int  node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via);
 void node_servers_load(npf_node *n);
 void node_server_failed(npf_server_entry *e, int weight);
 int node_eff_prio(const npf_server_entry *e);
-int node_server_pick(npf_node *n);
+/* by weight among the entries of priority prio (-1: the best) but skip; -1 none */
+int node_server_pick(npf_node *n, int prio, int skip);
 
 /* node_signal.c */
+int  node_wake_delay(int ms);           /* sig_wake_ms +-20 % (the unit tests) */
 const uint8_t *node_day_key(const npf_node *n, const npf_daykey keys[2]);
-void node_apply_keys(npf_node *n, const npf_json *j, int d);
 void node_sig_fail_pending(npf_node *n);
-void node_sig_race_drop(npf_node *n);
-void node_sig_drop(npf_node *n);
+/* the connection in use and the second access point closed: offline, the
+ * ping and the watch stopped */
+void node_sig_close(npf_node *n);
 void node_sig_abort(npf_node *n, const char *why);
 void node_sig_connect(npf_node *n);
 /* something seems lost (a call of ours timed out): ask the server with a ping;
@@ -37,15 +30,14 @@ void node_sig_probe(npf_node *n);
 void node_reconnect_now(npf_node *n);
 
 /* node_network.c */
-int node_udp_open4(npf_node *n);
-void node_udp_open6(npf_node *n);
+/* the main sockets: IPv4 (-1 when it cannot be opened) and, online, IPv6 */
+int  node_udp_open(npf_node *n);
+void node_udp_close(npf_node *n);
 void node_udp_close_idle(npf_node *n);
 void node_watch_start(npf_node *n);
 
 /* nat.c */
 void node_nat_refresh(npf_node *n);
-/* a call starts (caller) or is accepted (callee): the main socket's mapping
- * asked of E1 meanwhile, against the srflx the call went out with */
 
 /* sources.c: the server list's external channels */
 void node_sources_check(npf_node *n);   /* at each failed attempt: time for a round? */
@@ -82,8 +74,7 @@ void node_nat_regather(npf_node *n);
  * before, else once the first one is measured */
 void node_nat_login(npf_node *n);
 
-/* call_punch.c: the srflx changed: the sessions not direct yet send it to their peers */
-/* a check of the NAT unanswered (call_punch.c): a sign it is short of ports
+/* call_punch.c: a check of the NAT unanswered (call_punch.c): a sign it is short of ports
  * if a hard-side punch held them or just did (nat-traversal.md 8) */
 void call_port_pressure(npf_node *n, const char *what);
 

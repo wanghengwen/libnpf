@@ -59,11 +59,13 @@ static const char *learn_str(int learn)
     return learn == RELAY_LEARNED ? "learned" : learn == RELAY_UNSTABLE ? "unstable" : "learning";
 }
 
-/* may this node have a spare (9.1): a UDP socket of its own, an account or a node's identity */
+/* may this node have a spare (9.1): a UDP socket of its own, an account or a
+ * node's identity; not in tests without UDP (NPF_NO_UDP) or spares (NPF_NO_HOME) */
 static int home_allowed(const npf_node *n)
 {
     return !n->cfg.home_off && !n->cfg.offline && !n->cfg.udp_on_demand && !n->cfg.hosted_service
-           && !n->cfg.hosted_exec && n->udp_fd >= 0 && (n->cfg.callable || n->account_id) && !getenv("NPF_NO_HOME");
+           && !n->cfg.hosted_exec && n->udp_fd >= 0 && (n->cfg.callable || n->account_id) && !n->test_no_udp
+           && !getenv("NPF_NO_HOME");
 }
 
 /* the main socket's sends watched (again, after a reopen) toward the relay
@@ -119,7 +121,7 @@ static int64_t dog_deadline(const struct npf_home *h)
 static void dog_arm(struct npf_home *h, int64_t now)
 {
     int64_t d = dog_deadline(h) - now;
-    timer_stop(h->n->loop, &h->t_dog);
+    npf_timer_stop(h->n->loop, &h->t_dog);
     h->t_dog = npf_timer_add(h->n->loop, d > 0 ? d : 0, dog_timer, h);
 }
 
@@ -182,7 +184,7 @@ static void gave_up(void *arg)
 
 static void bind_start(struct npf_home *h, int from_lost)
 {
-    timer_stop(h->n->loop, &h->t_dog);
+    npf_timer_stop(h->n->loop, &h->t_dog);
     h->state = from_lost ? H_LOST : H_BINDING;
     h->r.bound = 0;
     relay_bind_run(&h->r, h->n->loop, bind_cb, gave_up, h);
@@ -194,7 +196,7 @@ static void bind_start(struct npf_home *h, int from_lost)
 static void home_take(struct npf_home *h, const uint8_t id[8], const uint8_t key[32],
                       const struct sockaddr_storage *addr, int naddr)
 {
-    timer_stop(h->n->loop, &h->t_retry);
+    npf_timer_stop(h->n->loop, &h->t_retry);
     relay_bind_take(&h->r, h->n, id, key, addr, naddr);
     h->r.active = 1;
     h->server = h->n->server_id;
@@ -241,7 +243,7 @@ static void open_reply(npf_node *n, const npf_json *j, int ok, void *arg)
         npf_log("home: home_open refused (%s)%s", err, h->r.active ? ": the spare kept" : "");
         if (!h->r.active) {
             h->state = H_OFF;
-            timer_stop(n->loop, &h->t_retry);
+            npf_timer_stop(n->loop, &h->t_retry);
             h->t_retry = npf_timer_add(n->loop, strcmp(err, "rate_limited") == 0 ? 60000 : 300000, retry_timer, h);
         }
         return;
@@ -253,7 +255,7 @@ static void open_reply(npf_node *n, const npf_json *j, int ok, void *arg)
             npf_log("home: spare resumed (server %d)", n->server_id);
             h->server = n->server_id;
             if (h->state == H_BACKOFF) {
-                timer_stop(n->loop, &h->t_retry);
+                npf_timer_stop(n->loop, &h->t_retry);
                 bind_start(h, 0);
             }
         }
@@ -292,9 +294,9 @@ static struct npf_home *home_new(npf_node *n)
 static void spare_drop(struct npf_home *h, int state)
 {
     npf_loop *l = h->n->loop;
-    timer_stop(l, &h->t_dog);
-    timer_stop(l, &h->r.t_bind);
-    timer_stop(l, &h->t_retry);
+    npf_timer_stop(l, &h->t_dog);
+    npf_timer_stop(l, &h->r.t_bind);
+    npf_timer_stop(l, &h->t_retry);
     h->r.active = h->r.bound = 0;
     h->state = state;
 }
@@ -319,7 +321,7 @@ void node_home_login(npf_node *n)
      * come, or home_open is refused with the spare kept (open_reply), and it
      * would wait in H_BACKOFF for good */
     if (h->state != H_BACKOFF)
-        timer_stop(n->loop, &h->t_retry);
+        npf_timer_stop(n->loop, &h->t_retry);
     home_open_send(h);
 }
 
@@ -339,7 +341,7 @@ void node_home_net_change(npf_node *n)
         bind_send(h, 0, 0);                 /* at once: a new address binds within a round trip */
         dog_arm(h, npf_mono_ms());
     } else if (h->state == H_BACKOFF || h->state == H_LOST) {
-        timer_stop(n->loop, &h->t_retry);
+        npf_timer_stop(n->loop, &h->t_retry);
         bind_start(h, h->state == H_LOST);
     }
 }
@@ -362,7 +364,7 @@ void node_home_stop(npf_node *n)
     if (!h)
         return;
     node_home_close(n);
-    timer_stop(n->loop, &h->t_retry);
+    npf_timer_stop(n->loop, &h->t_retry);
     npf_node_cancel_requests(n, h);
     npf_udp_watch_on(h->watch_fd, NULL);
     npf_wipe(&h->r, sizeof h->r);
@@ -378,7 +380,6 @@ int node_home_adopt(npf_node *n, const uint8_t id[8], relay_c *dst)
     *dst = h->r;                            /* its binding: the cookie, kseq, the address in use */
     dst->t_bind = NULL;                     /* (the call's stopped: call_relay_setup) */
     dst->bound = h->state == H_BOUND;
-    snprintf(dst->mode, sizeof dst->mode, "udp");
     h->taken++;
     npf_logd("home: the spare taken by a call: the next one from the platform");
     spare_drop(h, H_TAKEN);
@@ -447,7 +448,7 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
     learn_seen(h, a.t_s, a.learn);
     if (h->state != H_BOUND) {
         int first = !h->bound_ms;
-        timer_stop(n->loop, &h->r.t_bind);
+        npf_timer_stop(n->loop, &h->r.t_bind);
         h->state = H_BOUND;
         h->r.bound = 1;
         h->bound_ms = now;

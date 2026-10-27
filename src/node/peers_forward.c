@@ -374,12 +374,8 @@ static void fwd_retry(pfwd *f, const char *why)
 void peers_fwd_stop(pfwd *f)
 {
     npf_loop *loop = f->p->ps->n->loop;
-    if (f->t_retry)
-        npf_timer_cancel(loop, f->t_retry);
-    f->t_retry = NULL;
-    if (f->t_accept)
-        npf_timer_cancel(loop, f->t_accept);
-    f->t_accept = NULL;
+    npf_timer_stop(loop, &f->t_retry);
+    npf_timer_stop(loop, &f->t_accept);
     if (f->udp) {
         peers_udp_queue_drop(f->p, f->idx);
         if (f->fd >= 0 && f->p->call)
@@ -440,13 +436,9 @@ npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
                     return p->call;
                 }
                 if (!p->call && !p->waiting && !p->finished) {
-                    if (p->t_retry) {           /* someone is waiting: no backoff */
-                        npf_timer_cancel(ps->n->loop, p->t_retry);
-                        p->t_retry = NULL;
-                    }
                     npf_log("%s: a connection through -%c %s: starting the session", p->name,
                             p->fwds[i]->kind->k->opt, p->fwds[i]->spec);
-                    peers_start_call(p);
+                    peers_kick(p);
                     if (p->idle_ms)
                         peers_demand_timer(p);
                 }
@@ -577,9 +569,7 @@ void peers_forwards_session_gone(npf_peer *p)
     for (i = 0; i < p->nfwd; i++) {
         pfwd *f = p->fwds[i];
         if (f->reverse) {
-            if (f->t_retry)
-                npf_timer_cancel(p->ps->n->loop, f->t_retry);
-            f->t_retry = NULL;
+            npf_timer_stop(p->ps->n->loop, &f->t_retry);
             f->up = f->asked = 0;
             f->lport = 0;
             if (f->used)
@@ -769,15 +759,6 @@ int npf_peer_forward_id(const npf_peer *p, int i)
     return i >= 0 && i < p->nfwd && p->fwds[i]->used ? p->fwds[i]->id : 0;
 }
 
-int npf_peer_forward_by_id(const npf_peer *p, int id)
-{
-    int i;
-    for (i = 0; i < p->nfwd; i++)
-        if (p->fwds[i]->used && p->fwds[i]->id == id)
-            return i;
-    return -1;
-}
-
 int npf_peer_forward_del_at(npf_peer *p, int i)
 {
     pfwd *f;
@@ -865,32 +846,9 @@ int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, in
     return 0;
 }
 
-void npf_peer_forward_set_ext(npf_peer *p, int i, uint64_t ext)
-{
-    if (i >= 0 && i < p->nfwd)
-        p->fwds[i]->ext = ext;
-}
-
 uint64_t npf_peer_forward_ext(const npf_peer *p, int i)
 {
     return i >= 0 && i < p->nfwd && p->fwds[i]->used ? p->fwds[i]->ext : 0;
-}
-
-int npf_peer_forward_udp(const npf_peer *p, int i)
-{
-    return i >= 0 && i < p->nfwd && p->fwds[i]->used && p->fwds[i]->udp;
-}
-
-int npf_peer_forward_ends(const npf_peer *p, int i, int *port, const char **host, int *hostport)
-{
-    const pfwd *f;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
-        return -1;
-    f = p->fwds[i];
-    *port = f->port;
-    *host = f->socks ? "" : f->host;
-    *hostport = f->socks ? 0 : f->hostport;
-    return 0;
 }
 
 int npf_peer_forward_used(const npf_peer *p)
@@ -904,13 +862,6 @@ int npf_peer_forward_used(const npf_peer *p)
 void npf_peer_forward_perm_set(npf_peer *p, int i, int perm)
 {
     if (i >= 0 && i < p->nfwd && p->fwds[i]->used)
-        p->fwds[i]->perm = perm;
-}
-
-void npf_peer_forward_mark(npf_peer *p, int perm)
-{
-    int i;
-    for (i = 0; i < p->nfwd; i++)
         p->fwds[i]->perm = perm;
 }
 

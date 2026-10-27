@@ -107,7 +107,7 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
         return NULL;
     c->number = number;
     npf_random(c->call_id, 16);
-    call_b64_of(c->call_id, 16, c->call_id_s);
+    npf_b64url_encode(c->call_id, 16, c->call_id_s);
     c->auth = auth;
     if (auth == AUTH_GRANT) {
         memcpy(c->hs->grant, grant, grant_len);
@@ -128,7 +128,7 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
     len = npf_noise_write(&c->hs->noise, NULL, 0, msg, sizeof msg);
     if (len < 0)
         goto fail;
-    call_b64_of(msg, (size_t)len, hs);
+    npf_b64url_encode(msg, (size_t)len, hs);
     snprintf(num, sizeof num, "%llu", (unsigned long long)number);
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
@@ -189,7 +189,7 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
             goto fail;
         {
             char b[NPF_B64_LEN(256)];
-            call_b64_of(out, (size_t)ol, b);
+            npf_b64url_encode(out, (size_t)ol, b);
             snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"step\":3,\"msg\":\"%s\"}", c->call_id_s, b);
         }
         npf_node_send(c->n, "handshake", 0, data);
@@ -361,7 +361,7 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d)
         call_free(c);
         return;
     }
-    call_b64_of(c->call_id, 16, c->call_id_s);
+    npf_b64url_encode(c->call_id, 16, c->call_id_s);
     secure_of(c, j, d);
     if (strcmp(auth, "pake") == 0) {
         err = incoming_pake(c, j, d, msg, ml, out, sizeof out, &ol, ymsg);
@@ -376,7 +376,7 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d)
         call_free(c);
         return;
     }
-    call_b64_of(out, (size_t)ol, hs_b);
+    npf_b64url_encode(out, (size_t)ol, hs_b);
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
     npf_jw_kstr(&w, "hs", hs_b);

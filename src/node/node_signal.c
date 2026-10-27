@@ -200,16 +200,9 @@ void node_reconnect_now(npf_node *n)
 {
     if (n->online)
         return;
-    node_sig_race_drop(n);
-    if (n->sig)
-        npf_sig_close(n->sig);
-    n->sig = NULL;
-    if (n->t_reconnect)
-        npf_timer_cancel(n->loop, n->t_reconnect);
-    n->t_reconnect = NULL;
-    if (n->t_login)
-        npf_timer_cancel(n->loop, n->t_login);
-    n->t_login = NULL;
+    node_sig_close(n);
+    npf_timer_stop(n->loop, &n->t_reconnect);
+    npf_timer_stop(n->loop, &n->t_login);
     n->backoff_ms = 0;
     node_sig_connect(n);
 }
@@ -271,10 +264,8 @@ static void schedule_reconnect(npf_node *n)
 #define SIG_LOGIN_MS 20000         /* connect, TLS, upgrade, Noise and login together */
 
 
-/* drop a connection that makes no progress: nothing else would notice (a
- * stalled TCP/TLS/handshake, or a server that went silent behind a NAT),
- * and the node stayed offline for an hour (Mac, 2026-10-06) */
-void node_sig_race_drop(npf_node *n)
+/* the second access point closed */
+static void race_drop(npf_node *n)
 {
     if (n->race)
         npf_sig_close(n->race);
@@ -283,14 +274,21 @@ void node_sig_race_drop(npf_node *n)
 
 /* what is bound to the connection in use, which has gone (the caller closes
  * or has closed it): offline, its ping and its watch stopped */
-void node_sig_drop(npf_node *n)
+static void sig_drop(npf_node *n)
 {
     n->sig = NULL;
     n->online = 0;
-    if (n->t_ping)
-        npf_timer_cancel(n->loop, n->t_ping);
-    n->t_ping = NULL;
+    npf_timer_stop(n->loop, &n->t_ping);
     expect_stop(n);
+}
+
+void node_sig_close(npf_node *n)
+{
+    npf_sig *s = n->sig;
+    race_drop(n);
+    sig_drop(n);
+    if (s)
+        npf_sig_close(s);
 }
 
 /* after a connection went: the requests on it learn there is no answer, the
@@ -308,25 +306,26 @@ static void sig_gone(npf_node *n, const char *why, int was_online)
 /* the platform turned this connection down (a login, an enrolment): it
  * goes; counted against the server by weight (0: not at all), and not a
  * failure of the network (the way around a VPN stays as it is) */
-static void sig_refused(npf_node *n, npf_sig *s, int weight)
+static void sig_refused(npf_node *n, int weight)
 {
     if (weight && n->cur_server >= 0)
         node_server_failed(&n->servers[n->cur_server], weight);
-    node_sig_race_drop(n);
-    node_sig_drop(n);
-    npf_sig_close(s);
+    node_sig_close(n);
     sig_gone(n, "refused", 0);
 }
 
 void node_sig_abort(npf_node *n, const char *why)
 {
     npf_sig *s = n->sig;
-    node_sig_race_drop(n);
+    race_drop(n);
     npf_logw("signaling: %s, reconnecting", why);
     sig_down(s, why, n);            /* n->sig = NULL, reconnect scheduled */
     npf_sig_close(s);
 }
 
+/* drop a connection that makes no progress: nothing else would notice (a
+ * stalled TCP/TLS/handshake, or a server that went silent behind a NAT),
+ * and the node stayed offline for an hour (Mac, 2026-10-06) */
 static void login_deadline(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
@@ -388,9 +387,7 @@ static void sig_expect(npf_node *n, int ms, int probed)
 
 static void expect_stop(npf_node *n)
 {
-    if (n->t_expect)
-        npf_timer_cancel(n->loop, n->t_expect);
-    n->t_expect = NULL;
+    npf_timer_stop(n->loop, &n->t_expect);
 }
 
 void node_sig_probe(npf_node *n)
@@ -557,7 +554,7 @@ static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
         if (n->hooks.on_enroll_failed)
             n->hooks.on_enroll_failed(n, err, reason, n->backoff_ms / 1000, n->hook_arg);
         if (n->sig)                         /* the platform's answer: not the server's fault, nor the network's */
-            sig_refused(n, n->sig, 0);
+            sig_refused(n, 0);
         return;
     }
     n->enroll_state = NPF_ENROLL_DONE;
@@ -683,13 +680,12 @@ static void probe_changed(npf_node *n)
         node_nat_refresh(n);
 }
 
-void node_apply_keys(npf_node *n, const npf_json *j, int d)
+static void apply_keys(npf_node *n, const npf_json *j, int d)
 {
     uint8_t t[64];
     if (npf_json_get_b64(j, d, "ticket", t, sizeof t) == 28)
         memcpy(n->ticket, t, 28);
     parse_daykeys(j, npf_json_get(j, d, "probe_keys"), n->probe_keys);
-    parse_daykeys(j, npf_json_get(j, d, "relay_keys"), n->relay_keys);
 }
 
 /* a renewed account (client) certificate from welcome: keep it and tell the program */
@@ -740,7 +736,7 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     if (npf_json_get_int(j, d, "ping_s", 5, 3600, &v) == 0)
         n->ping_s = (int)v;
     node_upgrade_apply(n, j, npf_json_get(j, d, "upgrade"), 0);
-    node_apply_keys(n, j, d);
+    apply_keys(n, j, d);
     node_apply_probe(n, j, d);          /* measured below (node_nat_login) */
     /* a (re)issued certificate: a node's own certificate in "cert"; the
      * account (client) certificate in "account_cert" for nodes, in "cert" for
@@ -780,16 +776,12 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     n->sig_refused = 0;
     n->src_backoff = 0;
     n->src_next = 0;
-    if (n->t_login) {
-        npf_timer_cancel(n->loop, n->t_login);
-        n->t_login = NULL;
-    }
+    npf_timer_stop(n->loop, &n->t_login);
     n->backoff_ms = 0;
     if (n->cur_server >= 0)
         n->servers[n->cur_server].fails = 0;
     npf_log("login: online at server %d (clock offset %lld ms)", n->server_id, (long long)n->clock_offset_ms);
-    if (n->t_ping)
-        npf_timer_cancel(n->loop, n->t_ping);
+    npf_timer_cancel(n->loop, n->t_ping);
     n->t_ping = npf_timer_add(n->loop, (n->ping_s > 0 ? n->ping_s : 25) * 1000, ping_cb, n);
     ends_flush(n);                      /* call ends from while signaling was down */
     idle_watch(n);
@@ -812,7 +804,7 @@ static void sig_ready(npf_sig *s, void *arg)
     } else if (s != n->sig) {
         return;
     } else {
-        node_sig_race_drop(n);
+        race_drop(n);
     }
     if (n->cfg.enroll && !n->cfg.number)
         send_enroll(n);                     /* the first message instead of login (security.md 5.2) */
@@ -874,7 +866,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
                          n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, err);
             }
             n->sig_refused = 1;
-            sig_refused(n, s, 3);
+            sig_refused(n, 3);
         }
         return;
     }
@@ -905,7 +897,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         return;
     }
     if (strcmp(type, "keys") == 0) {
-        node_apply_keys(n, j, d);
+        apply_keys(n, j, d);
         if (node_apply_probe(n, j, d))
             probe_changed(n);
         return;
@@ -926,9 +918,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
              * application nothing) */
             int was_online = n->online;
             n->cur_server = i;
-            node_sig_race_drop(n);
-            node_sig_drop(n);
-            npf_sig_close(s);
+            node_sig_close(n);
             n->backoff_ms = 1000;
             sig_gone(n, "redirected", was_online);
         }
@@ -966,7 +956,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         npf_log("signaling: the next attempt %s", n->sig_via_vpn ? "on the default route (through the VPN)"
                                                                 : "around the VPN");
     }
-    node_sig_drop(n);
+    sig_drop(n);
     /* "replaced" counts for the close that follows it, not for one long
      * after (a server that did not close) */
     if (n->replaced_ms && npf_mono_ms() - n->replaced_ms < 10000) {
@@ -1000,7 +990,7 @@ void node_sig_connect(npf_node *n)
     if (n->sig)
         return;
     if (n->cur_server < 0 || n->servers[n->cur_server].fails >= 3)
-        n->cur_server = node_server_pick(n);
+        n->cur_server = node_server_pick(n, -1, -1);
     if (n->cur_server < 0) {
         npf_log("signaling: no usable server in the list");
         snprintf(n->sig_error, sizeof n->sig_error, "no usable server in the list");
@@ -1027,27 +1017,12 @@ void node_sig_connect(npf_node *n)
     }
     {   /* and a second access point at the same time: the server's next URL
          * (a domain and an IP), else another server of the same priority */
-        int r = -1, u = 0, k, total = 0;
+        int r = -1, u = 0;
         if (e->nws > 1) {
             r = n->cur_server;
             u = (i + 1) % e->nws;
-        } else {
-            for (k = 0; k < n->nservers; k++)
-                if (k != n->cur_server && node_eff_prio(&n->servers[k]) == node_eff_prio(e) && n->servers[k].nws > 0)
-                    total += n->servers[k].weight > 0 ? n->servers[k].weight : 1;
-            if (total > 0) {
-                int x = (int)npf_rand_range(0, (size_t)(total - 1));
-                for (k = 0; k < n->nservers && r < 0; k++) {
-                    if (k == n->cur_server || node_eff_prio(&n->servers[k]) != node_eff_prio(e) || n->servers[k].nws == 0)
-                        continue;
-                    x -= n->servers[k].weight > 0 ? n->servers[k].weight : 1;
-                    if (x < 0)
-                        r = k;
-                }
-                if (r >= 0)
-                    u = n->servers[r].fails % n->servers[r].nws;
-            }
-        }
+        } else if ((r = node_server_pick(n, node_eff_prio(e), n->cur_server)) >= 0)
+            u = n->servers[r].fails % n->servers[r].nws;
         if (r >= 0) {
             npf_server_entry *f = &n->servers[r];
             npf_log("signaling: and to server %d %s", f->id, f->ws[u]);
@@ -1055,8 +1030,7 @@ void node_sig_connect(npf_node *n)
             n->race_server = r;
         }
     }
-    if (n->t_login)
-        npf_timer_cancel(n->loop, n->t_login);
+    npf_timer_cancel(n->loop, n->t_login);
     n->t_login = npf_timer_add(n->loop, SIG_LOGIN_MS, login_deadline, n);
 }
 
@@ -1111,19 +1085,10 @@ static void idle_cb(npf_loop *loop, void *arg)
         return;
     }
     npf_log("signaling: not needed for %d s: disconnecting until it is", n->cfg.sig_idle_ms / 1000);
-    node_sig_race_drop(n);
-    if (n->sig)
-        npf_sig_close(n->sig);
-    n->sig = NULL;
-    n->online = 0;
+    node_sig_close(n);
     n->dormant = 1;
-    n->sleeps++;
     if (n->cfg.udp_on_demand && !n->calls)
         node_udp_close_idle(n);
-    if (n->t_ping)
-        npf_timer_cancel(loop, n->t_ping);
-    n->t_ping = NULL;
-    expect_stop(n);
     node_sig_fail_pending(n);
     if (n->cfg.sig_wake_ms > 0)
         n->t_wake = npf_timer_add(loop, node_wake_delay(n->cfg.sig_wake_ms), wake_cb, n);
@@ -1143,9 +1108,7 @@ int npf_node_wake(npf_node *n, const char *why)
     if (!n->dormant)
         return 0;
     n->dormant = 0;
-    if (n->t_wake)
-        npf_timer_cancel(n->loop, n->t_wake);
-    n->t_wake = NULL;
+    npf_timer_stop(n->loop, &n->t_wake);
     npf_log("signaling: connecting (%s)", why);
     n->backoff_ms = 0;
     node_sig_connect(n);

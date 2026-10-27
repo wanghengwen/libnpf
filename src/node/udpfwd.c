@@ -85,6 +85,8 @@ struct npf_udpf {
     urev        *rev;               /* NPF_MAX_REVERSE, made at the first -R .../udp */
     int          nrev;
     npf_timer   *t_tick;
+    int          idle_ms, tick_ms;  /* NPF_UDP_IDLE_MS, TICK_MS (tests: NPF_TEST_UDP_IDLE_MS) */
+    int          max_age_ms;        /* tests: NPF_TEST_UDP_MAX_AGE_MS, 0 none */
     uint8_t     *out, *in;          /* frame being built / a datagram read */
     npf_udpf_stats st;
     int64_t      warned_at;
@@ -230,31 +232,39 @@ static void drop_flow(npf_udpf *u, uflow *f, int send, int reason)
     free_flow(u, f);
 }
 
+/* the flows pred(f, v) picks end (the peer told) */
+static void drop_where(npf_udpf *u, int (*pred)(const uflow *f, int64_t v), int64_t v)
+{
+    int i;
+    for (i = 0; i < 256; i++) {
+        uflow *f = u->by_id[i], *next;
+        for (; f; f = next) {
+            next = f->nid;
+            if (pred(f, v))
+                drop_flow(u, f, 1, NPF_UDP_R_CLOSED);
+        }
+    }
+}
+
+static int quiet_since(const uflow *f, int64_t t) { return f->last <= t; }
+static int of_socket(const uflow *f, int64_t fd) { return f->out && f->fd == fd; }
+static int of_mapping(const uflow *f, int64_t lid) { return !f->out && f->lid == lid; }
+
 static void tick(npf_loop *loop, void *arg);
 
 static void tick_arm(npf_udpf *u)
 {
     if (!u->t_tick && u->nflows)
-        u->t_tick = npf_timer_add(u->loop, getenv("NPF_TEST_UDP_IDLE_MS") ? 500 : TICK_MS, tick, u);
+        u->t_tick = npf_timer_add(u->loop, u->tick_ms, tick, u);
 }
 
-/* flows without a datagram for NPF_UDP_IDLE_MS (tests: NPF_TEST_UDP_IDLE_MS) end on this side */
+/* flows without a datagram for idle_ms end on this side */
 static void tick(npf_loop *loop, void *arg)
 {
     npf_udpf *u = arg;
-    int64_t now = npf_mono_ms();
-    const char *t = getenv("NPF_TEST_UDP_IDLE_MS");
-    int i, idle = t ? atoi(t) : NPF_UDP_IDLE_MS;
     (void)loop;
     u->t_tick = NULL;
-    for (i = 0; i < 256; i++) {
-        uflow *f = u->by_id[i], *next;
-        for (; f; f = next) {
-            next = f->nid;
-            if (now - f->last >= idle)
-                drop_flow(u, f, 1, NPF_UDP_R_CLOSED);
-        }
-    }
+    drop_where(u, quiet_since, npf_mono_ms() - u->idle_ms);
     tick_arm(u);
 }
 
@@ -263,8 +273,13 @@ static void tick(npf_loop *loop, void *arg)
 npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *policy, const npf_udpf_io *io, void *arg)
 {
     npf_udpf *u = calloc(1, sizeof *u);
+    const char *t = getenv("NPF_TEST_UDP_IDLE_MS");
     if (!u)
         return NULL;
+    u->idle_ms = t ? atoi(t) : NPF_UDP_IDLE_MS;
+    u->tick_ms = t ? 500 : TICK_MS;
+    t = getenv("NPF_TEST_UDP_MAX_AGE_MS");
+    u->max_age_ms = t ? atoi(t) : 0;
     u->loop = loop;
     u->anl = anl;
     u->caller = caller;
@@ -285,8 +300,7 @@ void npf_udpf_free(npf_udpf *u)
     int i;
     if (!u)
         return;
-    if (u->t_tick)
-        npf_timer_cancel(u->loop, u->t_tick);
+    npf_timer_cancel(u->loop, u->t_tick);
     for (i = 0; i < 256; i++)
         while (u->by_id[i]) {
             uflow *f = u->by_id[i];
@@ -320,7 +334,6 @@ void npf_udpf_get_stats(const npf_udpf *u, npf_udpf_stats *out)
 static void stream_opts(npf_udpf *u, anl_stream_opt *opt)
 {
     anl_stats st;
-    const char *t = getenv("NPF_TEST_UDP_MAX_AGE_MS");
     int age = NPF_UDP_MAX_AGE_MS;
     if (u->anl && anl_get_stats(u->anl, &st) == 0 && st.srtt > 0)
         age = (int)st.srtt * 2 + 100;
@@ -329,7 +342,7 @@ static void stream_opts(npf_udpf *u, anl_stream_opt *opt)
     if (age < NPF_UDP_MAX_AGE_MS)
         age = NPF_UDP_MAX_AGE_MS;
     opt->prio = 1;                          /* ahead of the forwards' data (2), behind control (0) */
-    opt->max_age_ms = t ? atoi(t) : age;
+    opt->max_age_ms = u->max_age_ms ? u->max_age_ms : age;
     opt->fec = 0;
 }
 
@@ -842,17 +855,8 @@ int npf_udpf_send_rev(npf_udpf *u, int lfd, const struct sockaddr_storage *src, 
 
 void npf_udpf_forget_fd(npf_udpf *u, int lfd)
 {
-    int i;
-    if (!u)
-        return;
-    for (i = 0; i < 256; i++) {
-        uflow *f = u->by_id[i], *next;
-        for (; f; f = next) {
-            next = f->nid;
-            if (f->out && f->fd == lfd)
-                drop_flow(u, f, 1, NPF_UDP_R_CLOSED);
-        }
-    }
+    if (u)
+        drop_where(u, of_socket, lfd);
 }
 
 int npf_udpf_rev_add(npf_udpf *u, uint32_t lid, const char *host, uint16_t port)
@@ -877,12 +881,5 @@ void npf_udpf_rev_del(npf_udpf *u, uint32_t lid)
             u->rev[i] = u->rev[--u->nrev];
             break;
         }
-    for (i = 0; i < 256; i++) {                 /* its flows end */
-        uflow *f = u->by_id[i], *next;
-        for (; f; f = next) {
-            next = f->nid;
-            if (!f->out && f->lid == lid)
-                drop_flow(u, f, 1, NPF_UDP_R_CLOSED);
-        }
-    }
+    drop_where(u, of_mapping, lid);         /* its flows end */
 }

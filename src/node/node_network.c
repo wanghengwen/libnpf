@@ -54,64 +54,58 @@ static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
     }
 }
 
-int node_udp_open4(npf_node *n)
+/* a main socket of family fam bound to port (0: any; IPv6: v6 only), on the
+ * loop: the fd and its port in *bound, or -1 */
+static int udp_open(npf_node *n, int fam, uint16_t port, uint16_t *bound)
 {
-    struct sockaddr_in a;
+    struct sockaddr_storage a;
     socklen_t al = sizeof a;
-    int fd = npf_udp_socket(AF_INET, 0);
+    int fd = npf_udp_socket(fam, 0), one = 1, sz = 4 << 20;
     if (fd < 0)
         return -1;
+    if (fam == AF_INET6)
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&one, sizeof one);
     memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((uint16_t)n->cfg.udp_port);
-    if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || getsockname(fd, (struct sockaddr *)&a, &al) < 0) {
+    a.ss_family = fam == AF_INET6 ? AF_INET6 : AF_INET;
+    if (fam == AF_INET6)
+        ((struct sockaddr_in6 *)&a)->sin6_port = htons(port);
+    else
+        ((struct sockaddr_in *)&a)->sin_port = htons(port);
+    /* AnLiu bursts at its pacing rate; a small receive buffer drops whole
+     * flights while the loop is busy. The kernel caps this at rmem_max. */
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char *)&sz, sizeof sz);
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const char *)&sz, sizeof sz);
+    if (bind(fd, (struct sockaddr *)&a, fam == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)) < 0
+        || getsockname(fd, (struct sockaddr *)&a, &al) < 0 || npf_loop_add(n->loop, fd, NPF_EV_READ, udp_cb, n) < 0) {
         npf_sock_close(fd);
         return -1;
     }
-    {
-        /* AnLiu bursts at its pacing rate; a small receive buffer drops whole
-         * flights while the loop is busy. The kernel caps this at rmem_max. */
-        int sz = 4 << 20;
-        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof sz);
-        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof sz);
-    }
-    if (npf_loop_add(n->loop, fd, NPF_EV_READ, udp_cb, n) < 0) {
-        npf_sock_close(fd);                 /* nothing left behind: udp_fd stays -1 */
+    *bound = ntohs(fam == AF_INET6 ? ((struct sockaddr_in6 *)&a)->sin6_port : ((struct sockaddr_in *)&a)->sin_port);
+    return fd;
+}
+
+int node_udp_open(npf_node *n)
+{
+    if ((n->udp_fd = udp_open(n, AF_INET, (uint16_t)n->cfg.udp_port, &n->udp_port)) < 0)
         return -1;
-    }
-    n->udp_fd = fd;
-    n->udp_port = ntohs(a.sin_port);
+    /* the IPv6 main socket (nat-traversal.md 7.1 S0): the IPv4 port when it
+     * is free; none when the host has no IPv6 (not an error) */
+    if (!n->cfg.offline && (n->udp6_fd = udp_open(n, AF_INET6, n->udp_port, &n->udp6_port)) < 0)
+        n->udp6_fd = udp_open(n, AF_INET6, 0, &n->udp6_port);
     return 0;
 }
 
-/* the IPv6 main socket (nat-traversal.md 7.1 S0): v6 only, the IPv4 port when
- * it is free; none when the host has no IPv6 (not an error) */
-void node_udp_open6(npf_node *n)
+void node_udp_close(npf_node *n)
 {
-    struct sockaddr_in6 a;
-    socklen_t al = sizeof a;
-    int fd = npf_udp_socket(AF_INET6, 0), one = 1, k;
-    if (fd < 0)
-        return;
-    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&one, sizeof one);
-    for (k = 0; k < 2; k++) {
-        memset(&a, 0, sizeof a);
-        a.sin6_family = AF_INET6;
-        a.sin6_port = htons(k == 0 ? n->udp_port : 0);
-        if (bind(fd, (struct sockaddr *)&a, sizeof a) == 0)
-            break;
+    if (n->udp_fd >= 0) {
+        npf_loop_del(n->loop, n->udp_fd);
+        npf_sock_close(n->udp_fd);
     }
-    if (k == 2 || getsockname(fd, (struct sockaddr *)&a, &al) < 0 || npf_loop_add(n->loop, fd, NPF_EV_READ, udp_cb, n) < 0) {
-        npf_sock_close(fd);
-        return;
+    if (n->udp6_fd >= 0) {
+        npf_loop_del(n->loop, n->udp6_fd);
+        npf_sock_close(n->udp6_fd);
     }
-    {
-        int sz = 4 << 20;
-        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char *)&sz, sizeof sz);
-        setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const char *)&sz, sizeof sz);
-    }
-    n->udp6_fd = fd;
-    n->udp6_port = ntohs(a.sin6_port);
+    n->udp_fd = n->udp6_fd = -1;
 }
 
 /* ---- UDP on demand (cfg.udp_on_demand: hosted clients) ---- */
@@ -121,12 +115,10 @@ int npf_node_udp_open(npf_node *n)
 {
     if (!n->cfg.udp_on_demand || n->udp_fd >= 0)
         return 0;
-    if (node_udp_open4(n) < 0) {
+    if (node_udp_open(n) < 0) {
         npf_loge("udp: cannot open the socket: %s", npf_sock_strerror());
         return -1;
     }
-    if (!n->cfg.offline)
-        node_udp_open6(n);
     udp_new_port(n);
     return 0;
 }
@@ -173,14 +165,7 @@ void node_udp_close_idle(npf_node *n)
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
     n->udp_waiters = 0;
-    npf_loop_del(n->loop, n->udp_fd);
-    npf_sock_close(n->udp_fd);
-    n->udp_fd = -1;
-    if (n->udp6_fd >= 0) {
-        npf_loop_del(n->loop, n->udp6_fd);
-        npf_sock_close(n->udp6_fd);
-        n->udp6_fd = -1;
-    }
+    node_udp_close(n);
     npf_log("udp: closed until a session needs it");
 }
 
@@ -265,15 +250,7 @@ static void udp_reopen_cb(npf_loop *loop, void *arg)
         npf_node_calls_lost_fd(n, old4, "udp_socket_failed");
     if (old6 >= 0)
         npf_node_calls_lost_fd(n, old6, "udp_socket_failed");
-    if (old4 >= 0) {
-        npf_loop_del(n->loop, old4);
-        npf_sock_close(old4);
-    }
-    if (old6 >= 0) {
-        npf_loop_del(n->loop, old6);
-        npf_sock_close(old6);
-    }
-    n->udp_fd = n->udp6_fd = -1;
+    node_udp_close(n);
     n->udp_waiters = 0;
     if (n->cfg.udp_on_demand) {             /* the next session opens them */
         if (!waiters) {
@@ -286,14 +263,12 @@ static void udp_reopen_cb(npf_loop *loop, void *arg)
             n->on_udp_ready(n, n->hook_arg);
         return;
     }
-    if (node_udp_open4(n) < 0) {
+    if (node_udp_open(n) < 0) {
         npf_loge("udp: cannot open the socket again: %s; trying again in %d s", npf_sock_strerror(),
                  UDP_REOPEN_RETRY_MS / 1000);
         n->t_udp_reopen = npf_timer_add(n->loop, UDP_REOPEN_RETRY_MS, udp_reopen_cb, n);
         return;
     }
-    if (!n->cfg.offline)
-        node_udp_open6(n);
     udp_new_port(n);
     if (n->udp_port != was && !n->cfg.offline)
         node_portmap_restart(n);
@@ -351,7 +326,6 @@ static void netcheck_cb(npf_loop *loop, void *arg)
 
 static void node_net_check(npf_node *n, const char *why)
 {
-    n->netchecks++;
     npf_log("network: %s: checking the connections", why);
     if (n->udp_fd >= 0 && !n->t_udp_reopen && !udp_alive(n->udp_fd, AF_INET)) {
         udp_failed(n, n->udp_fd, npf_sock_strerror());
@@ -365,8 +339,7 @@ static void node_net_check(npf_node *n, const char *why)
         if (n->sig && n->online) {
             n->netcheck_ms = npf_mono_ms();
             npf_sig_ping(n->sig);
-            if (n->t_netcheck)
-                npf_timer_cancel(n->loop, n->t_netcheck);
+            npf_timer_cancel(n->loop, n->t_netcheck);
             n->t_netcheck = npf_timer_add(n->loop, NETCHECK_MS, netcheck_cb, n);
             if (n->udp_fd >= 0) {           /* the mapping (perhaps a new NAT) */
                 n->nat_quick = n->nat_udp && n->nat.allocation != NPF_ALLOC_UNKNOWN;
@@ -395,7 +368,7 @@ static void watch_cb(npf_loop *loop, void *arg)
 #ifndef _WIN32
     {   /* tests: NPF_TEST_UDP_FAIL=FILE: when FILE appears, the IPv4 socket
          * fails as a reclaimed one does (every call on it: ENOTSOCK) */
-        const char *f = getenv("NPF_TEST_UDP_FAIL");
+        const char *f = n->test_udp_fail;
         int z;
         if (f && n->udp_fd >= 0 && remove(f) == 0 && (z = open("/dev/null", O_RDONLY)) >= 0) {
             npf_logw("test: the UDP socket fails now");

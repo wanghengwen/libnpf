@@ -211,9 +211,7 @@ typedef struct npf_key_share {
 
 /* call.c: the state, the end, dispatch, the node's sessions */
 void call_accept_seen(npf_call *c);
-void call_b64_of(const uint8_t *b, size_t n, char *out);
 npf_call *call_find(npf_node *n, const npf_json *j, int d);
-int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len);
 int call_relay_addr_blocked(const npf_call *c);
 int  call_relay_ask_ok(const npf_call *c);
 void call_relay_asked(npf_call *c);

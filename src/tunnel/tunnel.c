@@ -203,14 +203,10 @@ void tunnel_sub_free(sublink *s, int rst)
         st.end = s->end ? s->end : !rst && s->fin_first == 2 ? "peer_closed" : !rst ? "local_closed" : "local_reset";
         t->io.sublink_done(t->arg, s->id, &st);
     }
-    if (s->t_connect)
-        npf_timer_cancel(t->loop, s->t_connect);
-    if (s->t_greet)
-        npf_timer_cancel(t->loop, s->t_greet);
-    if (s->t_he)
-        npf_timer_cancel(t->loop, s->t_he);
-    if (s->t_gone)
-        npf_timer_cancel(t->loop, s->t_gone);
+    npf_timer_cancel(t->loop, s->t_connect);
+    npf_timer_cancel(t->loop, s->t_greet);
+    npf_timer_cancel(t->loop, s->t_he);
+    npf_timer_cancel(t->loop, s->t_gone);
     if (s->vgone)
         t->ngone--;
     for (i = 0; i < s->ncfd; i++) {
@@ -1020,12 +1016,8 @@ static void tunnel_release(npf_tunnel *t)
 static void tunnel_destroy(npf_tunnel *t)
 {
     t->depth++;
-    if (t->t_rate)
-        npf_timer_cancel(t->loop, t->t_rate);
-    t->t_rate = NULL;
-    if (t->t_virt)
-        npf_timer_cancel(t->loop, t->t_virt);
-    t->t_virt = NULL;
+    npf_timer_stop(t->loop, &t->t_rate);
+    npf_timer_stop(t->loop, &t->t_virt);
     t->dead = 1;
     while (t->nsubs) {
         sublink *s = t->subs[t->nsubs - 1];

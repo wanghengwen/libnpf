@@ -539,9 +539,7 @@ static void ev_alloc_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         if (from.sin_family == AF_INET)
             tx_input(&p->cfg, &p->keys, p->txs, p->ntx, fd, buf, (size_t)r, &from);
     }
-    if (p->t)
-        npf_timer_cancel(p->loop, p->t);
-    p->t = NULL;
+    npf_timer_stop(p->loop, &p->t);
     ev_pump(p);
 }
 
@@ -646,9 +644,7 @@ int npf_natprobe_input(npf_natprobe *p, int fd, const uint8_t *buf, size_t len, 
     if (!ours)
         return 0;                   /* not from a probe server: the node's */
     tx_input(&p->cfg, &p->keys, p->txs, p->ntx, fd, buf, len, f);
-    if (p->t)
-        npf_timer_cancel(p->loop, p->t);
-    p->t = NULL;
+    npf_timer_stop(p->loop, &p->t);
     ev_pump(p);                     /* may finish the probe: p is gone then */
     return 1;
 }
@@ -658,8 +654,7 @@ void npf_natprobe_cancel(npf_natprobe *p)
     int i;
     if (!p)
         return;
-    if (p->t)
-        npf_timer_cancel(p->loop, p->t);
+    npf_timer_cancel(p->loop, p->t);
     if (p->phase == 2)
         for (i = 0; i < p->ntx; i++) {
             npf_loop_del(p->loop, p->txs[i].fd);

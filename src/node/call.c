@@ -17,11 +17,6 @@
 
 /* ---- helpers ---- */
 
-void call_b64_of(const uint8_t *b, size_t n, char *out)
-{
-    npf_b64url_encode(b, n, out);
-}
-
 npf_call *call_find(npf_node *n, const npf_json *j, int d)
 {
     uint8_t id[16];
@@ -32,12 +27,6 @@ npf_call *call_find(npf_node *n, const npf_json *j, int d)
         if (memcmp(c->call_id, id, 16) == 0)
             return c;
     return NULL;
-}
-
-int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len)
-{
-    (void)c;
-    return npf_udp_send(fd, buf, len, to);
 }
 
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
@@ -70,21 +59,21 @@ void call_relay_leave(npf_call *c)
     npf_loop *l = c->n->loop;
     if (c->punch) {
         int had = c->punch_socks > 0;
-        timer_stop(l, &c->t_linger);
+        npf_timer_stop(l, &c->t_linger);
         npf_punch_free(c->punch);
         c->punch = NULL;
         c->punch_socks = 0;
         if (had)
             call_punch_sockets_back(c->n);
     }
-    timer_stop(l, &c->relay.t_bind);
+    npf_timer_stop(l, &c->relay.t_bind);
     c->relay.bound = 0;
     c->relay_waits_ports = 0;
-    timer_stop(l, &c->t_ws_wait);
-    timer_stop(l, &c->t_pcheck);
+    npf_timer_stop(l, &c->t_ws_wait);
+    npf_timer_stop(l, &c->t_pcheck);
     c->p2p_suspect = 0;
     c->standby_check = 0;
-    timer_stop(l, &c->t_punch);
+    npf_timer_stop(l, &c->t_punch);
     c->punch_wait_keys = 0;
 }
 
@@ -96,10 +85,8 @@ void call_set_state(npf_call *c, int st, const char *why)
     /* the time limit ends with the peer's hello: a caller is established
      * with its own (call_hello), and a callee that never answers it still
      * ends the call in time */
-    if (st == NPF_CALL_ESTABLISHED && c->t_timeout && c->peer_hello) {
-        npf_timer_cancel(c->n->loop, c->t_timeout);
-        c->t_timeout = NULL;
-    }
+    if (st == NPF_CALL_ESTABLISHED && c->t_timeout && c->peer_hello)
+        npf_timer_stop(c->n->loop, &c->t_timeout);
     if (c->state == st)
         return;
     c->state = st;
@@ -169,11 +156,8 @@ static void call_timers_stop(npf_call *c)
     npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck,
                        &c->t_standby, &c->t_direct, &c->relay.t_bind};
     size_t i;
-    for (i = 0; i < sizeof t / sizeof t[0]; i++) {
-        if (*t[i])
-            npf_timer_cancel(c->n->loop, *t[i]);
-        *t[i] = NULL;
-    }
+    for (i = 0; i < sizeof t / sizeof t[0]; i++)
+        npf_timer_stop(c->n->loop, t[i]);
 }
 
 /* the session's data transport goes: its tunnel, UDP forwarding and media
@@ -226,10 +210,9 @@ void call_free(npf_call *c)
     if (n->relay_hit == c)
         n->relay_hit = NULL;
     call_timers_stop(c);
-    if (c->t_linger) npf_timer_cancel(n->loop, c->t_linger);
-    if (c->t_wsflush) npf_timer_cancel(n->loop, c->t_wsflush);
-    if (c->t_free) npf_timer_cancel(n->loop, c->t_free);     /* freed now (the node stops): not again */
-    c->t_linger = c->t_wsflush = c->t_free = NULL;
+    npf_timer_stop(n->loop, &c->t_linger);
+    npf_timer_stop(n->loop, &c->t_wsflush);
+    npf_timer_stop(n->loop, &c->t_free);    /* freed now (the node stops): not again */
     if (c->wsr) npf_wsr_close(c->wsr);
     c->wsr = NULL;
     free(c->ws_out);
@@ -748,7 +731,7 @@ void npf_node_check_paths(npf_node *n, const char *why)
 void npf_node_ws_calls_udp_back(npf_node *n)
 {
     npf_call *c;
-    if (getenv("NPF_NO_UDP"))
+    if (n->test_no_udp)
         return;
     for (c = n->calls; c; c = c->next) {
         if (c->ended || !c->caller || !c->ws_mode || c->secure)

@@ -26,7 +26,6 @@
 #define RELAY_F_OTHER      2         /* ... the main socket sent elsewhere since the last ping */
 #define RELAY_F_NEWNET     4         /* ... the network changed: the relay learns again */
 #define RELAY_ACK_BOUND    1         /* RELAY_BIND_ACK state: the relay sends to this address (0: a challenge) */
-#define RELAY_A_MOVED      2         /* RELAY_BIND_ACK flags: the address moved to this one */
 #define RELAY_BIND_MS      700       /* binding: a RELAY_BIND every 700 ms, 3 to an address, then the next */
 #define RELAY_SENT         8         /* the last RELAY_BINDs whose BIND_ACK is taken */
 enum { RELAY_LEARNING, RELAY_LEARNED, RELAY_UNSTABLE };   /* a spare's learning (RELAY_PING, BIND_ACK) */
@@ -56,7 +55,6 @@ typedef struct relay_c {
     npf_timer *t_bind;
     void   (*on_send)(void *), (*on_gave_up)(void *);   /* relay_bind_run's */
     void    *arg;
-    char     mode[8];
 } relay_c;
 
 /* a RELAY_BIND_ACK body: family | port | addr | srv_time_ms | state | cookie | kseq | flags | t_s(2) | learn(1) */
@@ -66,7 +64,6 @@ typedef struct relay_ack {
     int      state;
     uint8_t  cookie[8];
     uint64_t kseq;
-    int      flags;
     int      t_s, learn;        /* a spare's: the silence after which the relay pings, its learning */
     int64_t  rtt;               /* since the bind it answers (-1: a challenge to RELAY_DATA) */
 } relay_ack;
@@ -75,7 +72,7 @@ typedef struct relay_ping {
     struct sockaddr_storage addr;
     int64_t  srv_ms;
     uint32_t ping_id;
-    int      t_s, learn, try_n;
+    int      t_s, learn;
 } relay_ping;
 
 int  relay_ping_parse(const uint8_t *body, size_t len, relay_ping *p);

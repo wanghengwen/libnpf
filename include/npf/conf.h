@@ -42,12 +42,6 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val);
 /* set, a relative value of a path-valued key taken next to the file conf_path */
 void npf_conf_set_rel(npf_conf *c, const char *conf_path, const char *key, const char *val);
 
-/* Edit the file in place, keeping comments and the other lines (atomic
- * replace, mode 0600). value NULL removes. For a single-valued key: every
- * line of the key goes and "key = value" is written where the first one was
- * (at the end if there was none). For a repeatable key ("peer"): old != NULL
- * removes the lines with that value, value != NULL appends a line. 0 or -1. */
-int npf_conf_file_edit(const char *path, const char *key, const char *old, const char *value);
 /* a key the programs read (the configuration accepts others silently) */
 /* where to connect, what to trust, the files written: npf.conf only */
 int  npf_conf_file_only(const char *key);

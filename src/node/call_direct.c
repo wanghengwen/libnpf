@@ -51,7 +51,7 @@ static npf_call *direct_call(npf_node *n, int caller, int fd, const struct socka
     c->direct = 1;
     c->auth = AUTH_DIRECT;
     npf_random(c->call_id, 16);
-    call_b64_of(c->call_id, 16, c->call_id_s);
+    npf_b64url_encode(c->call_id, 16, c->call_id_s);
     c->p2p_fd = fd;
     c->p2p_addr = *peer;
     c->p2p_rx_ms = c->p2p_since = npf_mono_ms();
@@ -91,7 +91,7 @@ static void direct_retry(npf_loop *loop, void *arg)
         npf_call_end(c, "timeout");
         return;
     }
-    call_udp_send(c, c->p2p_fd, &c->p2p_addr, c->hs->dmsg1, c->hs->dmsg1_len);
+    npf_udp_send(c->p2p_fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->p2p_addr);
     c->t_direct = npf_timer_add(c->n->loop, c->dtries < 3 ? 300LL << c->dtries : 2000, direct_retry, c);   /* ~14 s in all */
 }
 
@@ -117,7 +117,7 @@ npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, con
     }
     c->hs->dmsg1_len = (size_t)len;
     c->state = NPF_CALL_CALLING;
-    call_udp_send(c, c->p2p_fd, &c->p2p_addr, c->hs->dmsg1, c->hs->dmsg1_len);
+    npf_udp_send(c->p2p_fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->p2p_addr);
     c->t_direct = npf_timer_add(n->loop, 300, direct_retry, c);
     npf_log("direct %s: connecting to %s", c->call_id_s, npf_addr_str(to, a, sizeof a));
     return c;
@@ -143,10 +143,7 @@ int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct 
     }
     c->hs->noise = hs;
     npf_wipe(&hs, sizeof hs);
-    if (c->t_direct) {
-        npf_timer_cancel(c->n->loop, c->t_direct);
-        c->t_direct = NULL;
-    }
+    npf_timer_stop(c->n->loop, &c->t_direct);
     if (direct_up(c) < 0) {
         npf_call_end(c, "error");
         return 1;

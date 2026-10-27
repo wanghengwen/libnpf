@@ -26,7 +26,13 @@ void npf_loop_del(npf_loop *loop, int fd);
 
 /* one-shot timer; returns a handle valid until it fires or is cancelled */
 npf_timer *npf_timer_add(npf_loop *loop, int64_t delay_ms, npf_timer_fn fn, void *arg);
-void       npf_timer_cancel(npf_loop *loop, npf_timer *t);
+void       npf_timer_cancel(npf_loop *loop, npf_timer *t);   /* t may be NULL */
+/* a timer cancelled, if it runs, and forgotten */
+static inline void npf_timer_stop(npf_loop *loop, npf_timer **t)
+{
+    npf_timer_cancel(loop, *t);
+    *t = NULL;
+}
 
 /* Run until npf_loop_stop(). */
 void npf_loop_run(npf_loop *loop);

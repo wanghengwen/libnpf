@@ -120,16 +120,21 @@ static int unit(npf_media *m, int op, uint32_t id, int tag, int flags)
     return m->io.unit(m->arg, b, n);
 }
 
+/* the frame at the head of the WS relay's queue, taken out of it */
+static qframe *qpop(mst *s)
+{
+    qframe *f = s->qh;
+    if (!(s->qh = f->next))
+        s->qt = NULL;
+    s->qbytes -= f->len;
+    s->qcount--;
+    return f;
+}
+
 static void queue_free(mst *s)
 {
-    while (s->qh) {
-        qframe *f = s->qh;
-        s->qh = f->next;
-        free(f);
-    }
-    s->qt = NULL;
-    s->qbytes = 0;
-    s->qcount = 0;
+    while (s->qh)
+        free(qpop(s));
 }
 
 /* forget stream i (its AnLiu stream is the caller's business) */
@@ -174,8 +179,7 @@ void npf_media_free(npf_media *m)
 {
     if (!m)
         return;
-    if (m->t_ws)
-        npf_timer_cancel(m->loop, m->t_ws);
+    npf_timer_cancel(m->loop, m->t_ws);
     while (m->nst)
         drop_stream(m, m->nst - 1);
     /* AnLiu streams go with the connection */
@@ -482,14 +486,9 @@ static void ws_expire(npf_media *m, int64_t now)
                 break;
             if (old && s->drop_until_key)
                 s->need_key = 1;            /* what follows cannot be decoded without it */
-            s->qh = f->next;
-            if (!s->qh)
-                s->qt = NULL;
-            s->qbytes -= f->len;
-            s->qcount--;
             s->dropped++;
             m->drop_t = now;
-            free(f);
+            free(qpop(s));
         }
         if (s->qh && (s->qh->flags & NPF_FRAME_KEY_FLAG))
             s->need_key = 0;
@@ -519,12 +518,7 @@ static void ws_pump(npf_media *m)
         }
         if (!best)
             break;
-        f = best->qh;
-        best->qh = f->next;
-        if (!best->qh)
-            best->qt = NULL;
-        best->qbytes -= f->len;
-        best->qcount--;
+        f = qpop(best);
         ws_write_frame(m, best, f);
         pending += f->len + WS_HDR * (f->len / WS_PIECE + 1);
         free(f);
@@ -659,15 +653,11 @@ int npf_media_send_frame(npf_media *m, uint32_t id, int flags, const void *buf, 
         s->qbytes += len;
         s->qcount++;
         while ((s->qbytes > WS_QUEUE_MAX || s->qcount > 4096) && s->qh != s->qt) {    /* the oldest go */
-            qframe *o = s->qh;
-            s->qh = o->next;
-            s->qbytes -= o->len;
-            s->qcount--;
             s->dropped++;
             if (s->drop_until_key)
                 s->need_key = 1;
             m->drop_t = f->t;
-            free(o);
+            free(qpop(s));
         }
         ws_pump(m);
         return 0;

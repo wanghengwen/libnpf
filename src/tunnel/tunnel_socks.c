@@ -160,10 +160,8 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
     if (err) {
         npf_sock_close(fd);
         s->last_err = err;
-        if (s->t_he) {                  /* its turn is now */
-            npf_timer_cancel(loop, s->t_he);
-            s->t_he = NULL;
-        }
+        /* its turn is now */
+        npf_timer_stop(loop, &s->t_he);
         connect_next(s);
         return;
     }
@@ -172,14 +170,8 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
         npf_sock_close(s->hs->cfd[i]);
     }
     s->ncfd = 0;
-    if (s->t_he) {
-        npf_timer_cancel(loop, s->t_he);
-        s->t_he = NULL;
-    }
-    if (s->t_connect) {
-        npf_timer_cancel(loop, s->t_connect);
-        s->t_connect = NULL;
-    }
+    npf_timer_stop(loop, &s->t_he);
+    npf_timer_stop(loop, &s->t_connect);
     free(s->cand);
     s->cand = NULL;
     s->ncand = s->icand = 0;
@@ -264,6 +256,19 @@ static void resolved_in(sublink *s, int err, const struct sockaddr_storage *addr
     socks_connect_addrs(s, addrs, lens, n);
 }
 
+/* a CONNECT's address (ATYP 1 IPv4, 4 IPv6, 3 a name of alen bytes) as text */
+static void atyp_host(int atyp, const uint8_t *addr, size_t alen, char host[256])
+{
+    if (atyp == 1)
+        inet_ntop(AF_INET, addr, host, 256);
+    else if (atyp == 4)
+        inet_ntop(AF_INET6, addr, host, 256);
+    else {
+        memcpy(host, addr, alen);
+        host[alen] = 0;
+    }
+}
+
 /* literal addresses connect at once; names are resolved off the loop thread.
  * Returns -1 when the sublink was released. */
 static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen, uint16_t port)
@@ -272,12 +277,7 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
     socklen_t clen;
     if (s->t->io.target_ok && !s->reverse) {
         char h[256];
-        if (atyp == 1)
-            inet_ntop(AF_INET, addr, h, sizeof h);
-        else if (atyp == 4)
-            inet_ntop(AF_INET6, addr, h, sizeof h);
-        else
-            memcpy(h, addr, alen), h[alen] = 0;
+        atyp_host(atyp, addr, alen, h);
         if (!s->t->io.target_ok(s->t->arg, h, port)) {
             socks_fail(s, 2);
             return -1;
@@ -298,8 +298,7 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
         clen = sizeof *a;
     } else {
         char host[256];
-        memcpy(host, addr, alen);
-        host[alen] = 0;
+        atyp_host(atyp, addr, alen, host);
         if (npf_tunnel_test_resolve) {     /* tests: the addresses of their choosing, at once */
             struct sockaddr_storage ta[NPF_RESOLVE_MAX];
             socklen_t tl[NPF_RESOLVE_MAX];
@@ -357,10 +356,7 @@ void tunnel_greet_wait(sublink *s)
 
 void tunnel_greet_done(sublink *s)
 {
-    if (s->t_greet) {
-        npf_timer_cancel(s->t->loop, s->t_greet);
-        s->t_greet = NULL;
-    }
+    npf_timer_stop(s->t->loop, &s->t_greet);
 }
 
 /* parse what the client sent so far; returns -1 if the sublink was freed */
@@ -446,9 +442,7 @@ int tunnel_socks_parse(sublink *s)
                 /* reverse sublink: only a target this caller registered (7.1) */
                 char host[256];
                 int i, ok = 0;
-                if (atyp == 1) inet_ntop(AF_INET, addr, host, sizeof host);
-                else if (atyp == 4) inet_ntop(AF_INET6, addr, host, sizeof host);
-                else { memcpy(host, addr, alen); host[alen] = 0; }
+                atyp_host(atyp, addr, alen, host);
                 for (i = 0; i < s->t->nrev; i++)
                     if (s->t->rev[i]->port == port && strcmp(s->t->rev[i]->host, host) == 0)
                         ok = 1;

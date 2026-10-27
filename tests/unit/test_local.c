@@ -1,6 +1,5 @@
 /* local.json (npf/local.h): a round trip of every field (a nick in UTF-8
- * with quotes), the files of earlier versions converted once, names and
- * nicks checked, a damaged file refused. */
+ * with quotes), names and nicks checked, a damaged file refused. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,13 +26,6 @@ static void put(const char *dir, const char *name, const char *text)
         fputs(text, f);
         fclose(f);
     }
-}
-
-static int exists(const char *dir, const char *name)
-{
-    char p[400];
-    snprintf(p, sizeof p, "%s/%s", dir, name);
-    return access(p, F_OK) == 0;
 }
 
 int test_local(void)
@@ -139,19 +131,5 @@ int test_local(void)
         chmod(lp, 0600);
     }
 
-    /* an earlier version's local.conf and known: converted once */
-    unlink(strcat(strcpy(err, dir), "/local.json"));
-    put(dir, "local.conf", "log_level = warn\npeer = 611631552 -L 1:127.0.0.1:2 --psk x\n# c\npeer = 10.0.0.1:9 --psk-file k\n");
-    put(dir, "known", "611631552 BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\n280604799 BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\n");
-    CHECK(npf_local_load(&m, dir, err, sizeof err) == 0, "convert: %s", err);
-    d = npf_local_dev(&m, "611631552", 0);
-    CHECK(d && d->save && d->nfwd == 0 && d->has_key, "converted peer (its forwards are not carried over)");
-    CHECK(npf_local_dev(&m, "280604799", 0) && npf_local_dev(&m, "280604799", 0)->has_key
-          && !npf_local_dev(&m, "280604799", 0)->save, "converted key");
-    CHECK(npf_local_dev(&m, "10.0.0.1:9", 0) && strcmp(npf_local_dev(&m, "10.0.0.1:9", 0)->psk_file, "k") == 0, "direct");
-    CHECK(strcmp(npf_conf_get(&m.settings, "log_level", ""), "warn") == 0, "converted setting");
-    CHECK(exists(dir, "local.json") && !exists(dir, "local.conf") && exists(dir, "local.conf.old") && exists(dir, "known.old"),
-          "files after the conversion");
-    npf_local_free(&m);
     return fails;
 }

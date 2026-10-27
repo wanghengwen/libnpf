@@ -25,6 +25,13 @@
 #define BACKOFF_MAX_MS     120000
 #define STABLE_MS          60000
 #define LOGIN_SPREAD_MS    2000
+#define IDLE_DEFAULT_MS    300000   /* on demand, no idle time asked for nor set for all */
+
+/* an on-demand peer's idle time: the one asked for, else the peers' default */
+static int idle_time(const npf_peers *ps, int req)
+{
+    return req ? req : ps->default_idle_ms ? ps->default_idle_ms : IDLE_DEFAULT_MS;
+}
 
 /* ---- known callee keys: the pinned public keys, in local.json ---- */
 
@@ -61,8 +68,7 @@ static void fwds_free(npf_peer *p)
     free(p->resources);
     p->resources = NULL;
     for (i = 0; i < NPF_PEER_MAX_FWD && p->fwds[i]; i++) {
-        if (p->fwds[i]->t_accept)
-            npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_accept);
+        npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_accept);
         free(p->fwds[i]->acl);
         npf_wipe(p->fwds[i], sizeof *p->fwds[i]);
         free(p->fwds[i]);
@@ -124,8 +130,7 @@ void npf_peers_retry_now(npf_peers *ps)
             unfinish(p);
             peers_start_call(p);
         } else if (p->t_retry && !p->idle_ms && !p->finished) {
-            npf_timer_cancel(ps->n->loop, p->t_retry);
-            p->t_retry = NULL;
+            npf_timer_stop(ps->n->loop, &p->t_retry);
             npf_log("%s: retrying now", p->name);
             peers_start_call(p);
         }
@@ -448,15 +453,11 @@ static void peer_drop(npf_peer *p)
     npf_call *c = p->call;
     p->finished = 1;                        /* no done callback */
     p->call = NULL;                         /* the state callback does not find it */
-    if (p->t_retry)
-        npf_timer_cancel(p->ps->n->loop, p->t_retry);
-    p->t_retry = NULL;
+    npf_timer_stop(p->ps->n->loop, &p->t_retry);
     if (p->waiting || p->renewing)
         npf_node_cancel_requests(p->ps->n, p);
     p->waiting = p->renewing = 0;
-    if (p->t_demand)
-        npf_timer_cancel(p->ps->n->loop, p->t_demand);
-    p->t_demand = NULL;
+    npf_timer_stop(p->ps->n->loop, &p->t_demand);
     peers_demand_drop(p, "closed");
     if (c)
         npf_call_end(c, "closed");
@@ -467,9 +468,7 @@ static void peer_drop(npf_peer *p)
  * the removal goes too */
 static void peer_free_now(npf_peer *p)
 {
-    if (p->t_free)
-        npf_timer_cancel(p->ps->n->loop, p->t_free);
-    p->t_free = NULL;
+    npf_timer_stop(p->ps->n->loop, &p->t_free);
     peer_drop(p);
     fwds_free(p);
     npf_wipe(p, sizeof *p);
@@ -591,8 +590,7 @@ void npf_peers_free(npf_peers *ps)
         for (c = npf_node_calls(ps->n); c; c = npf_call_next(c))
             npf_call_on_sublink_done(c, NULL, NULL);
     }
-    if (ps->t_idle)
-        npf_timer_cancel(ps->n->loop, ps->t_idle);
+    npf_timer_cancel(ps->n->loop, ps->t_idle);
     if (ps->t_save) {                   /* what waited to be written goes now */
         npf_timer_cancel(ps->n->loop, ps->t_save);
         npf_local_save(ps->lc);
@@ -684,11 +682,8 @@ npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, siz
     p->connect = pn->connect;
     p->keep = pn->connect != NPF_CONNECT_ONCE;
     p->idle_req = pn->idle_ms > 0 ? pn->idle_ms : 0;     /* kept for on demand, whatever the way now */
-    if (pn->connect == NPF_CONNECT_ON_DEMAND) {
-        p->idle_ms = p->idle_req ? p->idle_req : ps->default_idle_ms;
-        if (!p->idle_ms)
-            p->idle_ms = 300000;
-    }
+    if (pn->connect == NPF_CONNECT_ON_DEMAND)
+        p->idle_ms = idle_time(ps, p->idle_req);
     d = ps->lc ? npf_local_dev(ps->lc, p->name, 0) : NULL;
     if (d)
         snprintf(p->label, sizeof p->label, "%s", d->name);
@@ -819,12 +814,8 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
             finish(p, why);                 /* a new password tries again */
             return 1;
         }
-        if (p->idle_ms) {
-            /* on demand: no reconnecting; the connections that waited for this
-             * session go, a new connection starts the next one (again) */
-            again(p, why ? why : "closed");
-            return 1;
-        }
+        /* on demand: no reconnecting; the connections that waited for this
+         * session go, a new connection starts the next one (again) */
         again(p, why ? why : "closed");
     }
     return 1;
@@ -858,7 +849,6 @@ void       *npf_peer_ctx(const npf_peer *p) { return p->ctx; }
 void        npf_peer_ctx_put(npf_peer *p, void *ctx) { p->ctx = ctx; }
 int         npf_peer_connect_mode(const npf_peer *p) { return p->connect; }
 int         npf_peer_idle_asked(const npf_peer *p) { return p->idle_req; }
-int         npf_peer_finished(const npf_peer *p) { return p->finished; }
 const char *npf_peer_last_why(const npf_peer *p) { return p->last_why; }
 
 npf_peer *npf_peers_by_id(const npf_peers *ps, uint32_t id)
@@ -894,21 +884,26 @@ void npf_peer_set_label(npf_peer *p, const char *name)
     snprintf(p->label, sizeof p->label, "%s", name ? name : "");
 }
 
+/* what the last attempt left the user to do (NPF_NEED_*): no session, no
+ * password given */
+static int peer_needs(const npf_peer *p)
+{
+    if (p->call || p->password[0])
+        return 0;
+    if (strcmp(p->last_why, "not_paired") == 0)
+        return NPF_NEED_PASSWORD;
+    if (strcmp(p->last_why, "wrong_password") == 0)
+        return NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG;
+    if (strcmp(p->last_why, "pairing_lost") == 0)
+        return NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST;
+    return strcmp(p->last_why, "no_account") == 0 ? NPF_NEED_ACCOUNT : 0;
+}
+
 int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
 {
-    int nd = 0, st;
+    int nd = peer_needs(p), st;
     if (retry_in_ms)
         *retry_in_ms = 0;
-    if (!p->call && !p->password[0]) {
-        if (strcmp(p->last_why, "not_paired") == 0)
-            nd = NPF_NEED_PASSWORD;
-        else if (strcmp(p->last_why, "wrong_password") == 0)
-            nd = NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG;
-        else if (strcmp(p->last_why, "pairing_lost") == 0)
-            nd = NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST;
-        else if (strcmp(p->last_why, "no_account") == 0)
-            nd = NPF_NEED_ACCOUNT;
-    }
     if (p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
         st = NPF_PEER_CONNECTED;
     else if (p->call || p->waiting)
@@ -929,20 +924,10 @@ int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
     return st;
 }
 
-/* tell the application when the state or the needs changed */
 void npf_peer_set_on_demand(npf_peer *p, int idle_ms)
 {
-    p->idle_req = idle_ms > 0 ? idle_ms : 0;
-    p->idle_ms = p->idle_req ? p->idle_req : p->ps->default_idle_ms;
-    p->connect = p->idle_ms ? NPF_CONNECT_ON_DEMAND : NPF_CONNECT_KEEP;
-    if (p->idle_ms && p->t_retry) {         /* no reconnecting: a connection starts the next one */
-        npf_timer_cancel(p->ps->n->loop, p->t_retry);
-        p->t_retry = NULL;
-    }
-    if (p->idle_ms && !p->listening)
-        peers_forwards_start(p);            /* listening now, the session when a connection comes */
-    if (p->idle_ms && p->call)
-        peers_demand_timer(p);
+    if (idle_ms > 0)
+        npf_peer_connect_put(p, NPF_CONNECT_ON_DEMAND, idle_ms, 0);
 }
 
 void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
@@ -950,16 +935,12 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
     int busy = p->call || p->waiting;
     if (connect == NPF_CONNECT_ON_DEMAND) {
         p->idle_req = idle_ms > 0 ? idle_ms : 0;
-        p->idle_ms = p->idle_req ? p->idle_req : p->ps->default_idle_ms;
-        if (!p->idle_ms)
-            p->idle_ms = 300000;
+        p->idle_ms = idle_time(p->ps, p->idle_req);
         p->connect = NPF_CONNECT_ON_DEMAND;
         p->keep = 1;
         p->idle_since = 0;                  /* the idle time runs from now */
-        if (p->t_retry) {                   /* no reconnecting: a connection starts the next one */
-            npf_timer_cancel(p->ps->n->loop, p->t_retry);
-            p->t_retry = NULL;
-        }
+        /* no reconnecting: a connection starts the next one */
+        npf_timer_stop(p->ps->n->loop, &p->t_retry);
         if (!p->listening)
             peers_forwards_start(p);        /* listening now, the session when a connection comes */
         if (p->call)
@@ -975,10 +956,7 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
         if (running && !busy && !p->t_retry)
             peers_start_call(p);            /* no session: one now (a direct one too) */
     } else if (!busy) {                     /* ONCE, no session to end first: ended now */
-        if (p->t_retry) {
-            npf_timer_cancel(p->ps->n->loop, p->t_retry);
-            p->t_retry = NULL;
-        }
+        npf_timer_stop(p->ps->n->loop, &p->t_retry);
         finish(p, p->last_why[0] ? p->last_why : "local");
     }
 }
@@ -990,9 +968,7 @@ void npf_peer_idle_put(npf_peer *p, int idle_ms)
     p->idle_req = idle_ms > 0 ? idle_ms : 0;
     if (p->connect != NPF_CONNECT_ON_DEMAND)
         return;                             /* used once it is on demand */
-    p->idle_ms = p->idle_req ? p->idle_req : p->ps->default_idle_ms;
-    if (!p->idle_ms)
-        p->idle_ms = 300000;
+    p->idle_ms = idle_time(p->ps, p->idle_req);
 }
 
 void npf_peers_set_idle(npf_peers *ps, int idle_ms)
@@ -1008,29 +984,11 @@ void npf_peers_set_idle(npf_peers *ps, int idle_ms)
 
 int npf_peers_idle(const npf_peers *ps) { return ps ? ps->default_idle_ms : 0; }
 void npf_peers_no_cache(npf_peers *ps) { ps->no_cache = 1; }
-int npf_peer_on_demand(const npf_peer *p) { return p->idle_ms > 0; }
 
-int npf_peer_needs_password(const npf_peer *p)
-{
-    return !p->password[0] && !p->call
-           && (strcmp(p->last_why, "not_paired") == 0 || strcmp(p->last_why, "wrong_password") == 0
-               || strcmp(p->last_why, "pairing_lost") == 0);
-}
-
-int npf_peer_pairing_lost(const npf_peer *p)
-{
-    return npf_peer_needs_password(p) && strcmp(p->last_why, "pairing_lost") == 0;
-}
-
-int npf_peer_needs_account(const npf_peer *p)
-{
-    return !p->password[0] && !p->call && strcmp(p->last_why, "no_account") == 0;
-}
-
-int npf_peer_password_wrong(const npf_peer *p)
-{
-    return npf_peer_needs_password(p) && strcmp(p->last_why, "wrong_password") == 0;
-}
+int npf_peer_needs_password(const npf_peer *p) { return (peer_needs(p) & NPF_NEED_PASSWORD) != 0; }
+int npf_peer_pairing_lost(const npf_peer *p) { return (peer_needs(p) & NPF_NEED_PAIRING_LOST) != 0; }
+int npf_peer_needs_account(const npf_peer *p) { return (peer_needs(p) & NPF_NEED_ACCOUNT) != 0; }
+int npf_peer_password_wrong(const npf_peer *p) { return (peer_needs(p) & NPF_NEED_PASSWORD_WRONG) != 0; }
 
 int npf_peer_password_try(npf_peer *p, const char *password)
 {
@@ -1052,10 +1010,7 @@ int npf_peer_wake_now(npf_peer *p)
     if (p->finished) {
         npf_log("%s: trying again", p->name);
         unfinish(p);
-        if (p->t_retry) {
-            npf_timer_cancel(p->ps->n->loop, p->t_retry);
-            p->t_retry = NULL;
-        }
+        npf_timer_stop(p->ps->n->loop, &p->t_retry);
         peers_start_call(p);
         if (p->removed)
             return 0;                       /* the done callback removed it (it gave up at once) */
@@ -1071,8 +1026,7 @@ int npf_peer_wake_now(npf_peer *p)
         return 0;
     }
     if (p->t_retry) {                       /* a direct one too (it was left to wait out its backoff) */
-        npf_timer_cancel(p->ps->n->loop, p->t_retry);
-        p->t_retry = NULL;
+        npf_timer_stop(p->ps->n->loop, &p->t_retry);
         npf_log("%s: retrying now", p->name);
         peers_start_call(p);
     }

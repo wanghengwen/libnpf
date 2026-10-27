@@ -61,6 +61,30 @@ void call_punch_report(npf_call *c, const char *why)
     }
 }
 
+/* a punch_result (signaling.md): its head, the round's counts, the end */
+static void result_begin(const npf_call *c, npf_jw *w, char *buf, size_t cap, int round, int ok)
+{
+    npf_jw_init(w, buf, cap);
+    npf_jw_obj(w);
+    npf_jw_kstr(w, "call_id", c->call_id_s);
+    npf_jw_kint(w, "round", round);
+    npf_jw_kbool(w, "ok", ok);
+}
+
+static void result_counts(npf_jw *w, const npf_punch_result *res)
+{
+    npf_jw_kint(w, "elapsed_ms", res->elapsed_ms);
+    npf_jw_kint(w, "probes_sent", res->probes_sent);
+    npf_jw_kint(w, "probes_recv", res->probes_recv);
+}
+
+static void result_send(npf_call *c, npf_jw *w, const char *buf)
+{
+    npf_jw_end(w);
+    if (npf_jw_finish(w) > 0)
+        npf_node_send(c->n, "punch_result", 0, buf);
+}
+
 static void linger_done(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
@@ -85,11 +109,7 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
     }
     c->punched = 1;
     call_ws_wait_end(c, res->ok);        /* the UDP relay was unreachable: a failed punch leaves the WS relay */
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kint(&w, "round", c->punch_of);
-    npf_jw_kbool(&w, "ok", res->ok);
+    result_begin(c, &w, data, sizeof data, c->punch_of, res->ok);
     if (res->ok) {
         getsockname(fd, (struct sockaddr *)&ls, &ll);
         npf_jw_key(&w, "path");
@@ -98,9 +118,7 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
         npf_jw_kstr(&w, "peer", npf_addr_str(&res->peer, a, sizeof a));
         npf_jw_end(&w);
     }
-    npf_jw_kint(&w, "elapsed_ms", res->elapsed_ms);
-    npf_jw_kint(&w, "probes_sent", res->probes_sent);
-    npf_jw_kint(&w, "probes_recv", res->probes_recv);
+    result_counts(&w, res);
     npf_jw_kint(&w, "rtt_ms", res->rtt_ms);
     if (res->nseen > 0) {           /* the peer's NAT as this round showed it (nat-traversal.md 7.8) */
         int i;
@@ -111,9 +129,7 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
         npf_jw_end(&w);
     }
     write_pressure(c, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_send(c->n, "punch_result", 0, data);
+    result_send(c, &w, data);
     if (!res->ok) {
         npf_logw("call %s: punching failed after %d ms (%d probes sent, %d received)", c->call_id_s,
                 res->elapsed_ms, res->probes_sent, res->probes_recv);
@@ -265,7 +281,7 @@ void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
         /* the caller let this round go (its hard-side punches one at a
          * time): no spray into nothing for the round's time */
         if (round == c->punch_round && c->t_punch) {
-            timer_stop(c->n->loop, &c->t_punch);
+            npf_timer_stop(c->n->loop, &c->t_punch);
             npf_log("call %s: punch round %lld let go by the peer: not started", c->call_id_s, (long long)round);
         } else if (round == c->punch_round && c->punch_of == c->punch_round && c->punch && !npf_punch_finished(c->punch))
             npf_punch_stop(c->punch);
@@ -299,18 +315,10 @@ static void punch_quiet(npf_punch *p, const npf_punch_result *res, void *arg)
     (void)p;
     if (c->t_ws_wait || c->ended || c->p2p)
         return;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kint(&w, "round", c->punch_of);
-    npf_jw_kbool(&w, "ok", 0);
+    result_begin(c, &w, data, sizeof data, c->punch_of, 0);
     npf_jw_kbool(&w, "early", 1);
-    npf_jw_kint(&w, "elapsed_ms", res->elapsed_ms);
-    npf_jw_kint(&w, "probes_sent", res->probes_sent);
-    npf_jw_kint(&w, "probes_recv", res->probes_recv);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_send(c->n, "punch_result", 0, data);
+    result_counts(&w, res);
+    result_send(c, &w, data);
 }
 
 /* this round let go (the caller's hard-side punches one at a time): the
@@ -327,17 +335,11 @@ static void punch_busy(npf_call *c)
         if (o != c && o->punch && o->punch_socks > 0 && !npf_punch_finished(o->punch)
             && npf_punch_ends_at(o->punch) - now > ends)
             ends = npf_punch_ends_at(o->punch) - now;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kint(&w, "round", c->punch_round);
-    npf_jw_kbool(&w, "ok", 0);
+    result_begin(c, &w, data, sizeof data, c->punch_round, 0);
     npf_jw_kbool(&w, "busy", 1);
     npf_jw_kint(&w, "ends_in_ms", ends);
     write_pressure(c, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_send(c->n, "punch_result", 0, data);
+    result_send(c, &w, data);
 }
 
 void call_start_punch_now(npf_call *c)
@@ -351,10 +353,9 @@ void call_start_punch_now(npf_call *c)
     memcpy(c->pcfg->plan.nominate_key, c->nominate_key, 32);
     if (c->punch) {                 /* the last round's, lingering or still running */
         int had = c->punch_socks > 0;
-        timer_stop(c->n->loop, &c->t_linger);
+        npf_timer_stop(c->n->loop, &c->t_linger);
         npf_punch_free(c->punch);
         c->punch = NULL;
-        c->punch_socks = 0;
         if (had)                    /* a running hard-side one: the calls waiting for its sockets */
             call_punch_sockets_back(c->n);
     }
@@ -383,22 +384,6 @@ void call_start_punch_now(npf_call *c)
         if (c->pcfg->plan.n_sockets < want)
             npf_log("call %s: punch round %d: %d of %d hard-side sockets (other punches hold the rest)",
                     c->call_id_s, c->punch_round, c->pcfg->plan.n_sockets, want);
-    }
-    if (c->tcand.ss_family) {       /* the peer's new srflx: among this round's candidates */
-        npf_punch_plan *pl = &c->pcfg->plan;
-        int i;
-        for (i = 0; i < c->pcfg->npeers && !call_same_addr(&c->tcand, &c->pcfg->peers[i]); i++)
-            ;
-        /* not in the plan: made before it came (later ones have the peer's
-         * fresh candidates); the hard side's sockets aim at it then */
-        if (i == c->pcfg->npeers && pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD) {
-            pl->peer_srflx = c->tcand;
-            pl->peer_srflx_len = sizeof(struct sockaddr_in);
-        }
-        if (i == c->pcfg->npeers && c->pcfg->npeers < NPF_PUNCH_MAX_PEERS) {
-            c->pcfg->prio[c->pcfg->npeers] = 1;
-            c->pcfg->peers[c->pcfg->npeers++] = c->tcand;
-        }
     }
     c->pcfg->fd6 = c->n->udp6_fd;
     c->pcfg->test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;
@@ -435,6 +420,10 @@ void call_start_punch_now(npf_call *c)
     c->punch = npf_punch_new(c->n->loop, c->pcfg, c->n->udp_fd, punch_done, c);
     if (c->punch)
         c->punch_socks = c->pcfg->plan.n_sockets;
+    /* the peer's new srflx, when the plan was made before it came (later
+     * ones have the peer's fresh candidates): the hard side's sockets aim at it */
+    if (c->punch && c->tcand.ss_family)
+        npf_punch_add_peer(c->punch, &c->tcand, 1);
     if (c->punch && c->info_port && c->info_round == c->punch_round)
         npf_punch_peer_port(c->punch, c->info_port);
 }
@@ -467,8 +456,8 @@ static void firewall_open(npf_call *c)
     for (k = 0; k < 2; k++)
         for (i = 0; i < c->pcfg->npeers; i++)
             if (c->pcfg->peers[i].ss_family == AF_INET || c->n->udp6_fd >= 0)
-                call_udp_send(c, c->pcfg->peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd,
-                         &c->pcfg->peers[i], one, 1);
+                npf_udp_send(c->pcfg->peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd, one, 1,
+                             &c->pcfg->peers[i]);
     npf_logd("call %s: firewall: flows to %d peer candidates opened before the punch", c->call_id_s, c->pcfg->npeers);
 }
 
@@ -578,19 +567,12 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         return;
     }
     c->punch_round = (int)v;
-    if (c->t_punch) {               /* the last round's start: this one replaces it */
-        npf_timer_cancel(c->n->loop, c->t_punch);
-        c->t_punch = NULL;
-    }
+    npf_timer_stop(c->n->loop, &c->t_punch);    /* the last round's start: this one replaces it */
     c->punch_wait_keys = 0;
-    if (!c->pcfg && !(c->pcfg = calloc(1, sizeof *c->pcfg)))
+    if (!c->pcfg && !(c->pcfg = malloc(sizeof *c->pcfg)))
         return;
     memset(c->pcfg, 0, sizeof *c->pcfg);
     pl = &c->pcfg->plan;
-    if (npf_json_get(j, d, "skip") >= 0 && !npf_json_eq(j, npf_json_get(j, d, "skip"), "no_strategy")) {
-        npf_log("call %s: punch round %d skipped", c->call_id_s, c->punch_round);
-        return;
-    }
     if (npf_json_eq(j, npf_json_get(j, d, "skip"), "no_strategy")) {
         /* both NATs hard, nothing that can work between them (nat-traversal.md
          * 7.1): no round, none comes until the platform hears of a network
@@ -684,8 +666,6 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
                 c->punch_round, strat,
                 pl->side == NPF_PUNCH_HARD ? "hard" : "easy", c->pcfg->npeers,
                 (long long)(start_at - npf_node_time(c->n)));
-    if (c->t_punch)
-        npf_timer_cancel(c->n->loop, c->t_punch);
     /* a host whose firewall blocks a flow that starts with an unsolicited
      * inbound packet (macOS application firewall) sends its first probes
      * before the peer's can arrive; the peer drops what comes before its own
@@ -703,9 +683,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
 void node_calls_punch_report(npf_node *n, const char *why)
 {
     npf_call *c;
-    if (getenv("NPF_NO_P2P"))
-        return;
     for (c = n->calls; c; c = c->next)
-        if (!c->p2p && !c->secure)
+        if (!c->p2p)
             call_punch_report(c, why);
 }

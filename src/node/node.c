@@ -98,6 +98,8 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
         const char *v = getenv("NPF_TEST_DROP_P2P");
         n->test_cut_ms = v ? atoll(v) : -1;
         n->test_block_relay = getenv("NPF_TEST_BLOCK_RELAY");
+        n->test_udp_fail = getenv("NPF_TEST_UDP_FAIL");
+        n->test_no_udp = getenv("NPF_NO_UDP") != NULL;
         n->test_cut_port = v && strchr(v, ':') ? atoi(strchr(v, ':') + 1) : 0;
     }
     n->punch_lead_ms = cfg->punch_lead_ms >= 0 ? cfg->punch_lead_ms : npf_firewall_lead_ms();
@@ -121,12 +123,10 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
     }
     if (cfg->udp_on_demand)
         return 0;                       /* the sockets when a session needs them */
-    if (node_udp_open4(n) < 0) {
+    if (node_udp_open(n) < 0) {
         npf_loge("node: cannot open UDP socket: %s", npf_sock_strerror());
         return -1;
     }
-    if (!cfg->offline)
-        node_udp_open6(n);
     return 0;
 }
 
@@ -146,43 +146,20 @@ void npf_node_stop(npf_node *n)
     node_calls_free(n);
     call_key_shares_free(n);
     node_sources_stop(n);
-    node_sig_race_drop(n);
-    if (n->sig)
-        npf_sig_close(n->sig);
-    node_sig_drop(n);                       /* offline, its ping and watch stopped (the watch ran on) */
+    node_sig_close(n);                      /* offline, its ping and watch stopped (the watch ran on) */
     node_sig_fail_pending(n);               /* requests still waiting learn there is no reply (their memory goes) */
-    if (n->t_reconnect)
-        npf_timer_cancel(n->loop, n->t_reconnect);
+    npf_timer_stop(n->loop, &n->t_reconnect);
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
-    if (n->t_login)
-        npf_timer_cancel(n->loop, n->t_login);
-    n->t_reconnect = n->t_login = NULL;
-    if (n->t_idle)
-        npf_timer_cancel(n->loop, n->t_idle);
-    if (n->t_wake)
-        npf_timer_cancel(n->loop, n->t_wake);
-    n->t_idle = n->t_wake = NULL;
+    npf_timer_stop(n->loop, &n->t_login);
+    npf_timer_stop(n->loop, &n->t_idle);
+    npf_timer_stop(n->loop, &n->t_wake);
     n->dormant = 0;
-    if (n->t_watch)
-        npf_timer_cancel(n->loop, n->t_watch);
-    if (n->t_netcheck)
-        npf_timer_cancel(n->loop, n->t_netcheck);
-    if (n->t_udp_reopen)
-        npf_timer_cancel(n->loop, n->t_udp_reopen);
-    if (n->t_nat_retry)
-        npf_timer_cancel(n->loop, n->t_nat_retry);
-    n->t_watch = n->t_netcheck = n->t_udp_reopen = n->t_nat_retry = NULL;
-    if (n->udp_fd >= 0) {
-        npf_loop_del(n->loop, n->udp_fd);
-        npf_sock_close(n->udp_fd);
-        n->udp_fd = -1;
-    }
-    if (n->udp6_fd >= 0) {
-        npf_loop_del(n->loop, n->udp6_fd);
-        npf_sock_close(n->udp6_fd);
-        n->udp6_fd = -1;
-    }
+    npf_timer_stop(n->loop, &n->t_watch);
+    npf_timer_stop(n->loop, &n->t_netcheck);
+    npf_timer_stop(n->loop, &n->t_udp_reopen);
+    npf_timer_stop(n->loop, &n->t_nat_retry);
+    node_udp_close(n);
     free(n->servers);
     free(n->list);
     n->servers = n->list = NULL;

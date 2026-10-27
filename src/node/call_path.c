@@ -35,13 +35,6 @@ int call_no_p2p(const npf_call *c)
 }
 
 
-/* nat-traversal.md 10.3: unacknowledged data and nothing heard on the direct
- * path for 3 s while the relay is bound -> back to the relay, punch again later */
-/* nat-traversal.md 10.3. A long queue on a loaded uplink can hold packets for
- * seconds, so silence alone does not prove the direct path dead: with
- * unacknowledged data and nothing heard for max(3 s, 2 RTO), send on both
- * paths (asking for a relay if it was released); give the direct path up
- * only if it stays silent for another 10 s. */
 /* ---- direct path check ----
  * Hearing the peer on the direct path does not prove that it hears us: with
  * a path that died one way (a firewall, a cut in a test) the peer's
@@ -61,7 +54,7 @@ static void path_send(npf_call *c, int type, uint64_t nonce)
     p[1] = 0;
     npf_le64(p + 2, nonce);
     npf_siv_seal(&c->path_keys, c->caller ? 0 : 1, buf, 10);
-    call_udp_send(c, c->p2p_fd, &c->p2p_addr, buf, sizeof buf);
+    npf_udp_send(c->p2p_fd, buf, sizeof buf, &c->p2p_addr);
 }
 
 /* 1 when the datagram was a path check or echo of this call */
@@ -93,7 +86,11 @@ static void path_check_timer(npf_loop *loop, void *arg)
 }
 
 
-/* nat-traversal.md 10.3 */
+/* nat-traversal.md 10.3. A long queue on a loaded uplink can hold packets for
+ * seconds, so silence alone does not prove the direct path dead: with
+ * unacknowledged data and nothing heard for max(3 s, 2 RTO), send on both
+ * paths (asking for a relay if it was released); give the direct path up
+ * only if it stays silent for another 10 s. */
 void call_check_p2p(npf_call *c)
 {
     anl_stats st;
@@ -167,7 +164,7 @@ void call_p2p_suspect_start(npf_call *c, const char *why)
     npf_random(&c->path_nonce, sizeof c->path_nonce);
     if (!c->t_pcheck)
         path_check_timer(c->n->loop, c);
-    timer_stop(c->n->loop, &c->t_standby);
+    npf_timer_stop(c->n->loop, &c->t_standby);
     if (c->relay.active) {
         npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);
         if (!c->relay.bound && !c->relay.t_bind) {
@@ -215,7 +212,7 @@ void call_standby_done(npf_loop *loop, void *arg)
     }
     c->relay.active = 0;
     c->relay.bound = 0;
-    timer_stop(c->n->loop, &c->relay.t_bind);
+    npf_timer_stop(c->n->loop, &c->relay.t_bind);
     if (c->caller) {
         snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
         npf_node_send(c->n, "relay_release", 0, data);

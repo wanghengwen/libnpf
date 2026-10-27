@@ -101,34 +101,9 @@ int test_conf(void)
         CHECK(d.n == 0 && !d.key && npf_conf_get(&d, "k", NULL) == NULL, "freed");
     }
 
-    /* editing the file in place: comments and other lines stay */
-    {
-        char ep[300], *txt = NULL;
-        snprintf(ep, sizeof ep, "%s/edit.conf", dir);
-        f = fopen(ep, "w");
-        fputs("# head comment\nlog_level = info   # trailing\nnode = 1 -L 1:a:1\nudp_port = 1\nnode = 2 -L 2:b:2\nlog_level = warn\nlast = x", f);
-        fclose(f);
-        CHECK(npf_conf_file_edit(ep, "log_level", NULL, "debug") == 0, "set");
-        CHECK(npf_conf_file_edit(ep, "node", "1 -L 1:a:1", NULL) == 0, "remove a repeatable line");
-        CHECK(npf_conf_file_edit(ep, "node", NULL, "3 -D 1080") == 0, "append a repeatable line");
-        CHECK(npf_conf_file_edit(ep, "new_key", NULL, "v") == 0, "a new key");
-        CHECK(npf_conf_file_edit(ep, "udp_port", NULL, NULL) == 0, "remove a key");
-        /* refused, the file untouched: a line break would add lines, '#' be cut at the next load */
-        CHECK(npf_conf_file_edit(ep, "log_level", NULL, "info\ncred = x") < 0, "a value with a line break");
-        CHECK(npf_conf_file_edit(ep, "node", NULL, "4 -L 1:a:1\r") < 0, "a value with a carriage return");
-        CHECK(npf_conf_file_edit(ep, "allow", NULL, "10.0.0.0/8 # x") < 0, "a value with '#'");
-        CHECK(npf_conf_file_edit(ep, "a = b\nc", NULL, "v") < 0 && npf_conf_file_edit(ep, "", NULL, "v") < 0,
-              "a bad key");
-        CHECK(npf_conf_value_ok("10.0.0.0/8, 192.168.1.2:80-443") && !npf_conf_value_ok("a\tb"), "npf_conf_value_ok");
-        CHECK(npf_conf_known("punch_sockets") && npf_conf_known("node") && !npf_conf_known("verbose"),
-              "npf_conf_known");
-        CHECK(npf_file_read(ep, &txt) > 0, "read back");
-        CHECK(txt && strcmp(txt, "# head comment\nlog_level = debug\nnode = 2 -L 2:b:2\nlast = x\nnode = 3 -D 1080\nnew_key = v\n") == 0,
-              "edited file:\n%s", txt ? txt : "");
-        free(txt);
-        CHECK(stat(ep, &st) == 0 && (st.st_mode & 0777) == 0600, "edited file is 0600");
-        unlink(ep);
-    }
+    CHECK(npf_conf_value_ok("10.0.0.0/8, 192.168.1.2:80-443") && !npf_conf_value_ok("a\tb")
+          && !npf_conf_value_ok("info\ncred = x") && !npf_conf_value_ok("x # y"), "npf_conf_value_ok");
+    CHECK(npf_conf_known("punch_sockets") && npf_conf_known("node") && !npf_conf_known("verbose"), "npf_conf_known");
 
     /* private, atomic file write */
     snprintf(path, sizeof path, "%s/secret", dir);

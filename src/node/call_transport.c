@@ -42,7 +42,7 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
     npf_call *c = user;
     (void)w;
     if (c->p2p && !call_p2p_cut(c))
-        call_udp_send(c, c->p2p_fd, &c->p2p_addr, (const uint8_t *)buf, (size_t)len);
+        npf_udp_send(c->p2p_fd, (const uint8_t *)buf, (size_t)len, &c->p2p_addr);
     /* the relay carries the data when there is no direct path, and as a second
      * copy while the direct path is suspected (AnLiu drops the duplicates) */
     if ((!c->p2p || c->p2p_suspect) && c->relay.active)
@@ -117,7 +117,7 @@ static void anl_kick(npf_call *c)
 {
     if (!c->flush_pending) {
         c->flush_pending = 1;
-        timer_stop(c->n->loop, &c->t_anl);
+        npf_timer_stop(c->n->loop, &c->t_anl);
         anl_schedule(c);
     }
 }
@@ -569,8 +569,7 @@ static void anl_after_input(npf_call *c)
         int32_t d = (int32_t)(next - n32);
         if (c->anl_due <= now + (d > 0 ? d : 0))
             return;                         /* it comes first and schedules the next one */
-        npf_timer_cancel(c->n->loop, c->t_anl);
-        c->t_anl = NULL;
+        npf_timer_stop(c->n->loop, &c->t_anl);
     }
     anl_schedule(c);
 }
@@ -902,6 +901,6 @@ void call_path_up(npf_call *c)
         return;
     anl_update(c->anl, (uint32_t)npf_mono_ms());
     anl_flush(c->anl);
-    timer_stop(c->n->loop, &c->t_anl);
+    npf_timer_stop(c->n->loop, &c->t_anl);
     anl_schedule(c);
 }

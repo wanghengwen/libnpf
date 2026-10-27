@@ -33,7 +33,6 @@ static int relay_ack_parse(const uint8_t *b, size_t len, relay_ack *a)
     a->state = p[8];
     memcpy(a->cookie, p + 9, 8);
     a->kseq = npf_rd64(p + 17);
-    a->flags = p[25];
     a->t_s = p[26] | p[27] << 8;
     a->learn = p[28];
     return 0;
@@ -49,7 +48,6 @@ int relay_ping_parse(const uint8_t *b, size_t len, relay_ping *q)
     q->ping_id = npf_rd32(p + 8);
     q->t_s = p[12] | p[13] << 8;
     q->learn = p[14];
-    q->try_n = p[15];
     return 0;
 }
 
@@ -113,7 +111,7 @@ static void run_timer(npf_loop *l, void *arg)
 
 void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
 {
-    timer_stop(l, &r->t_bind);
+    npf_timer_stop(l, &r->t_bind);
     r->on_send = on_send;
     r->on_gave_up = on_gave_up;
     r->arg = arg;

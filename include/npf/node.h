@@ -293,7 +293,6 @@ struct npf_node {
     int           dormant;          /* closed for want of use: no reconnect until npf_node_wake */
     int64_t       busy_at;          /* monotonic: the last time something needed the connection */
     npf_timer    *t_idle, *t_wake;
-    int           sleeps;           /* times it went dormant */
     int           req_seq;
     npf_pending   pending[NPF_PENDING_MAX];
     npf_end_report ends[NPF_ENDS_MAX];  /* call_end reports not answered yet */
@@ -304,7 +303,7 @@ struct npf_node {
     int64_t       clock_offset_ms;  /* server time - local wall clock */
     int64_t       login_sent_ms;    /* monotonic, for the offset's transit correction */
     uint8_t       ticket[28];
-    npf_daykey    probe_keys[2], relay_keys[2];
+    npf_daykey    probe_keys[2];
     struct sockaddr_in probe_ep[3]; /* the address probes the server named: E1, E2 [, E3] (nat-traversal.md 4.1) */
     int           nprobe_ep;
     int           ping_s;
@@ -322,6 +321,8 @@ struct npf_node {
     uint16_t      udp_port;
     int64_t       test_cut_ms;      /* NPF_TEST_DROP_P2P (call.c), read once per node */
     const char   *test_block_relay; /* NPF_TEST_BLOCK_RELAY (call.c), read once: not at each relayed datagram */
+    const char   *test_udp_fail;    /* NPF_TEST_UDP_FAIL (node_network.c), read once: not every watch tick */
+    int           test_no_udp;      /* NPF_NO_UDP: no UDP at all (sessions on the WS relay, no spare) */
     struct npf_call *relay_hit;     /* the call the last relayed datagram was for: tried first */
     int           test_cut_port;
     int           udp6_fd;          /* IPv6 main socket (S0, host6 candidates), -1 when the host has no IPv6 */
@@ -353,7 +354,6 @@ struct npf_node {
     int64_t       watch_boot_ms;    /* npf_boot_ms of the last tick */
     uint32_t      watch_addrs;      /* digest of the interfaces' addresses, 0 not yet */
     int64_t       netcheck_ms;      /* monotonic: the signaling ping of a check went out */
-    int           netchecks;        /* checks since the start (status) */
     int           repunch_on_nat;   /* a network check: the relayed calls punch again once the NAT is measured */
     void        (*on_udp_ready)(npf_node *n, void *arg);
     struct sockaddr_in srflx;
@@ -588,10 +588,10 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason);
 /* server time in ms (wall clock corrected by welcome.time) */
 int64_t npf_node_time(const npf_node *n);
 
-/* Parse a server-list payload into entries; returns the count or -1. */
-int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial);
-
-void npf_serverlist_meta(const char *json, size_t len, npf_list_meta *m);
+/* Parse a server-list payload into entries and, meta not NULL, its
+ * expiry, fullness and channels; returns the count or -1. */
+int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial,
+                         npf_list_meta *meta);
 
 /* write the "nat" and "cand" fields into an open JSON object */
 struct npf_jw;

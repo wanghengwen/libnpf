@@ -69,10 +69,22 @@ int npf_res_is_web(const npf_res *r)
     return strcmp(r->type, "tcp") == 0 && (strcmp(r->svc, "http") == 0 || strcmp(r->svc, "https") == 0);
 }
 
+/* the types of rules of their own (npf_res_rules): their targets' forms */
+static const struct {
+    const char *type, *form;
+    int (*add)(npf_policy *p, const char *spec);
+} k_rules[] = {
+    {"udp", "HOST:PORT, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add_udp},
+    {"net", "lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add},
+    {"socks", "lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add},
+    {"reverse", "[lan:]* or [lan:]PORT[-PORT] (1024 to 65535)", npf_policy_add_reverse},
+};
+
 int npf_res_check(const npf_res *r, char *err, size_t errcap)
 {
     char host[64];
     int port;
+    size_t i;
     if (!r->name[0] || !text_ok(r->name)) {
         snprintf(err, errcap, "a name of 1 to %d bytes without control characters", NPF_RES_NAME_MAX);
         return -1;
@@ -83,30 +95,19 @@ int npf_res_check(const npf_res *r, char *err, size_t errcap)
                      r->type);
             return -1;
         }
-    } else if (strcmp(r->type, "udp") == 0) {
-        npf_policy t;
-        memset(&t, 0, sizeof t);
-        if (npf_policy_add_udp(&t, r->target) < 0) {
-            snprintf(err, errcap, "%s: a udp target is HOST:PORT, *, or ADDR[/PREFIX][:PORT[-PORT]]", r->name);
-            return -1;
-        }
-    } else if (strcmp(r->type, "net") == 0 || strcmp(r->type, "socks") == 0) {
-        npf_policy t;
-        memset(&t, 0, sizeof t);
-        if (npf_policy_add(&t, r->target) < 0) {
-            snprintf(err, errcap, "%s: a %s target is lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", r->name, r->type);
-            return -1;
-        }
-    } else if (strcmp(r->type, "reverse") == 0) {
-        npf_policy t;
-        memset(&t, 0, sizeof t);
-        if (npf_policy_add_reverse(&t, r->target) < 0) {
-            snprintf(err, errcap, "%s: a reverse target is [lan:]* or [lan:]PORT[-PORT] (1024 to 65535)", r->name);
-            return -1;
-        }
     } else {
-        snprintf(err, errcap, "%s: the type is tcp, udp, net, socks or reverse (a web page: tcp/http)", r->name);
-        return -1;
+        npf_policy t;
+        for (i = 0; i < sizeof k_rules / sizeof k_rules[0] && strcmp(r->type, k_rules[i].type) != 0; i++)
+            ;
+        if (i == sizeof k_rules / sizeof k_rules[0]) {
+            snprintf(err, errcap, "%s: the type is tcp, udp, net, socks or reverse (a web page: tcp/http)", r->name);
+            return -1;
+        }
+        memset(&t, 0, sizeof t);
+        if (k_rules[i].add(&t, r->target) < 0) {
+            snprintf(err, errcap, "%s: a %s target is %s", r->name, r->type, k_rules[i].form);
+            return -1;
+        }
     }
     if (!text_ok(r->desc)) {
         snprintf(err, errcap, "%s: a description of up to %d bytes without control characters", r->name,
@@ -215,12 +216,6 @@ int npf_res_parse(const npf_json *j, int arr, npf_res *out, int max, char *err, 
         else if (npf_json_get_str(j, e, "type", r->type, sizeof r->type) <= 0) {
             snprintf(err, errcap, "%s: the type is tcp, udp, net, socks or reverse (a web page: tcp/http)", r->name);
             return -1;
-        }
-        if (strcmp(r->type, "http") == 0 || strcmp(r->type, "https") == 0) {
-            /* saved before web pages were tcp/http (2026-10-16): local.json, an
-             * older node's list */
-            strcpy(r->svc, r->type);
-            strcpy(r->type, "tcp");
         }
         if ((npf_json_get(j, e, "desc") >= 0 && npf_json_get_str(j, e, "desc", r->desc, sizeof r->desc) < 0)
             || (npf_json_get(j, e, "path") >= 0 && npf_json_get_str(j, e, "path", r->path, sizeof r->path) < 0)

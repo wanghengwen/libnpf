@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.49。更新日期：2026-10-27。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.50。更新日期：2026-10-28。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -107,7 +107,7 @@ WebSocket：一个完整的应用信令消息对应一个 JSON 对象；接收�
 | `node_enroll` | 控制台节点 → 平台 | 请求 | 以已登录的账户为控制台节点注册编号（安全设计 8.5） |
 | `node_name` | 节点 → 平台 | 请求 | 设备给自己起名字，或查询现在的名字（见"设备自己的名称"） |
 | `server_list` | 平台 → 节点 / 客户端 | 事件 | 推送新的服务器列表 |
-| `keys` | 平台 → 节点 / 客户端 | 事件 | 推送新一天的 `probe_key`、`relay_day_key` 和新票据 |
+| `keys` | 平台 → 节点 / 客户端 | 事件 | 推送新一天的 `probe_key` 和新票据 |
 | `probe` | 平台 → 节点 / 客户端 | 事件 | 地址探测的端点变了（另一台服务器上线或下线） |
 | `redirect` | 平台 → 节点 / 客户端 | 事件 | 要求改连列表中的另一台服务器 |
 | `upgrade` | 平台 → 节点 / 客户端 | 事件 | 升级策略变了：有更新的版本可用，或当前版本已低于平台允许的最低版本（见"升级"） |
@@ -190,7 +190,6 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
   "ticket": "<28 字节>", "ticket_expires": 1791186400,
   "probe_keys": [{"day": 20730, "key": "..."}, {"day": 20731, "key": "..."}],
   "probe": ["203.0.113.5:9910", "203.0.113.5:9911", "198.51.100.7:9910"],
-  "relay_keys": [{"day": 20730, "key": "..."}, {"day": 20731, "key": "..."}],
   "server_list": "<blob，可选>",
   "redirect": 23,
   "ping_s": 25}}
@@ -201,7 +200,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | `time` | 服务器时间（Unix 毫秒），用于校准时钟偏差（设备时钟、打洞的 `start_at`）。当 `login` 往返时间大于 0 且小于 10 秒时，偏差为 `time + RTT / 2 - 本地时间`；否则不加半程 RTT |
 | `cert`、`account_cert` | 证书临近过期时附上续签的证书；`account_cert` 只对有账户会话的控制台节点出现 |
 | `ticket` | 地址探测票据（nat-traversal.md 6.4），有效期 24 小时 |
-| `probe_keys`、`relay_keys` | 当天与次日的 `probe_key`、`relay_day_key`（data-channel.md 9.2），`day` 为 UTC 天数 |
+| `probe_keys` | 当天与次日的 `probe_key`，`day` 为 UTC 天数 |
 | `probe` | 地址探测的端点（nat-traversal.md 4.1）：E1、E2 是同一台探测服务器（一般是这台服务器自己）的两个端口，E3 是另一台在线、公网 IP 不同的服务器的端口；只有两个时映射类型判断不出来，没有这个字段时不探测 |
 | `server_list` | 仅当服务器上的列表 `serial` 大于 `sl_serial` 时附上，Base64url 编码的 blob（安全 7.5） |
 | `redirect` | 平台可选字段，要求改连的 `server_id`；当前节点不读取 `welcome` 中的该字段，需另发 `redirect` 事件 |
@@ -215,7 +214,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 
 ### `keys`
 
-连接会持续多天，而 `probe_key`、`relay_day_key` 每天轮换、票据 24 小时过期。服务器在每天 UTC 零点前 1 小时内（随机打散）推送：`data = {"ticket", "ticket_expires", "probe_keys", "relay_keys", "probe"}`，字段含义与 `welcome` 相同。
+连接会持续多天，而 `probe_key` 每天轮换、票据 24 小时过期。服务器在每天 UTC 零点前 1 小时内（随机打散）推送：`data = {"ticket", "ticket_expires", "probe_keys", "probe"}`，字段含义与 `welcome` 相同。
 
 ### `probe`
 
@@ -788,7 +787,7 @@ S2B 的双方在 `start_at` 各自用一个新 socket 向探测服务器 E1 测�
 
 ### `punch_result` 与重试
 
-**打洞的轮次全部由平台安排**（2026-10-27）：节点只执行平台发来的一轮（`punch_start`），报告结果（`punch_result`，包括提前报告）和它这一侧的变化（`punch_update`、`punch_info` 的 `cand`）；下一轮何时开始、用什么计划、等多久（退避、主叫难侧的间隔、让出的一轮、计划变了立即开始、S2B 的再来、轮数上限）都由平台决定（`server/internal/signaling/punchsched.go`）。原来主叫有自己的退避计时器并发 `punch_request` 要新一轮，平台也会在计划变了时自己开始一轮，两边各有一套调度要互相对齐（取消退避、让出的一轮不计数、重复的去重）；这些都去掉了。
+**打洞的轮次全部由平台安排**（2026-10-27）：节点只执行平台发来的一轮（`punch_start`），报告结果（`punch_result`，包括提前报告）和它这一侧的变化（`punch_update`）；下一轮何时开始、用什么计划、等多久（退避、主叫难侧的间隔、让出的一轮、计划变了立即开始、S2B 的再来、轮数上限）都由平台决定（`server/internal/signaling/punchsched.go`）。原来主叫有自己的退避计时器并发 `punch_request` 要新一轮，平台也会在计划变了时自己开始一轮，两边各有一套调度要互相对齐（取消退避、让出的一轮不计数、重复的去重）；这些都去掉了。
 
 ```json
 {"v": 1, "type": "punch_result", "data": {
@@ -1036,6 +1035,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-28 | 0.50 | `welcome` 与 `keys` 不再带 `relay_keys`（节点从不使用 `relay_day_key`：`RELAY_BIND` 用分配的 `alloc_key` 封装，data-channel.md 0.30）；更正：节点不发 `punch_info` 的 `cand`（只有平台发） |
 | 2026-10-27 | 0.49 | 节点的 `relay_switch` 没有带来分配时 10 秒后可再发（平台会不作应答地丢弃一些）；被叫经中转先建立、之后才收到第一个 `punch_start` 时同样以它为接受，`punch_update` 照常发（原来全被丢掉） |
 | 2026-10-27 | 0.48 | 有绑定的 UDP 中转分配（本次呼叫的或备用分配）的一侧的 `srflx` / `pub_ip` 由平台按中转看到的地址 R 给出（nat-traversal.md 4.5，home-binding.md U7 推翻）：节点不再在呼叫时核对映射、不再发 `punch_info` 的 `cand`，`punch_update` 的 `profile` 只在第一次测出 NAT 时发；平台丢弃节点发的 `cand`，R 在呼叫中来了或变了时自己向对方发 `punch_info{cand}`、开始下一轮；被叫接受之前留着的 `punch_info` 去掉；服务器之间的 `call` 带主叫的 R，变了发 `caller_r` |
 | 2026-10-27 | 0.47 | 打洞简化：轮次全部由平台安排（节点只执行与报告：去掉主叫的退避与 `punch_request`，`punch_request` 只剩平台向被叫要画像；新增 `punch_update`：一方的画像变了、网络变化、直连失效）；主叫让出的一轮改为 `punch_result` 的 `busy`、`ends_in_ms` 与端口紧张的迹象 `pressure`、`hard_ago_ms`，间隔由平台决定；没有候选的一轮不再发 `skip: no_candidates`；去掉 `unsolicited`（过滤不再从轮次里学）；去掉 S5 |
