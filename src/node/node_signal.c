@@ -230,10 +230,12 @@ static void schedule_reconnect(npf_node *n)
     node_sources_check(n);
     if (n->t_reconnect)
         return;
-    /* exponential backoff with jitter, 1 s .. 60 s (security.md 7.3) */
+    /* exponential backoff with jitter, 1 s .. 60 s (security.md 7.3): the
+     * wait is backoff_ms +-25 %, so the number logged and handed to
+     * on_enroll_failed is what it is on average */
     d = n->backoff_ms ? n->backoff_ms : 1000;
     n->backoff_ms = d * 2 > 60000 ? 60000 : d * 2;
-    d = d / 2 + (int)npf_rand_range(0, (size_t)d / 2);
+    d = d * 3 / 4 + (int)npf_rand_range(0, (size_t)d / 2);
     n->t_reconnect = npf_timer_add(n->loop, d, reconnect_cb, n);
 }
 
@@ -852,7 +854,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         return;
     }
     if (strcmp(type, "replaced") == 0) {    /* the server closes this connection next */
-        n->replaced = 1;
+        n->replaced_ms = npf_mono_ms();
         return;
     }
     if (strcmp(type, "relay_spare") == 0) {
@@ -922,13 +924,14 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
                                                                 : "around the VPN");
     }
     node_sig_drop(n);
-    if (n->replaced) {
+    /* "replaced" counts for the close that follows it, not for one long
+     * after (a server that did not close) */
+    if (n->replaced_ms && npf_mono_ms() - n->replaced_ms < 10000) {
         /* not the server's fault: the same identity logged in again elsewhere
          * (another process with these files, a copy of them on another host).
          * Taking it back at once would push that one off in turn, both every
          * second; back off instead, and say why */
         int up = n->last_login_unix_ms && npf_unix_ms() - n->last_login_unix_ms > 120000;
-        n->replaced = 0;
         n->replaced_backoff_ms = up || !n->replaced_backoff_ms ? 10000
                                  : n->replaced_backoff_ms * 2 > 300000 ? 300000 : n->replaced_backoff_ms * 2;
         n->backoff_ms = n->replaced_backoff_ms;
@@ -936,6 +939,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
                  "logging in again in %d s", n->replaced_backoff_ms / 1000);
     } else if (n->cur_server >= 0)
         node_server_failed(&n->servers[n->cur_server], 1);
+    n->replaced_ms = 0;
     if (!was_online) {              /* an attempt that did not log in: the status says why */
         snprintf(n->sig_error, sizeof n->sig_error, "server %d: %s", n->cur_server >= 0 ?
                  n->servers[n->cur_server].id : -1, why ? why : "?");
