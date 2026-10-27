@@ -22,11 +22,5 @@ void npf_engine_account_load(npf_t *n);
 /* engine_events.c: the node and the peers with the engine's callbacks */
 int  npf_engine_node_init(npf_t *n);
 npf_peers *npf_engine_peers_new(npf_t *n);
-/* one of the library's events: typed (notify), or the legacy name and JSON */
-void npf_engine_event(npf_t *n, const npf_event *ev, const char *name, const char *fmt, ...)
-#ifdef __GNUC__
-    __attribute__((format(printf, 4, 5)))
-#endif
-    ;
 
 #endif

@@ -65,8 +65,11 @@ int  npf_callee_save(npf_callee *d);
 void npf_callee_attach(npf_callee *d, npf_node *n);
 /* after each login: paired fingerprints, lock state, pending owner reset */
 void npf_callee_on_login(npf_callee *d);
-struct npf_out;
-void npf_callee_show(npf_callee *d, struct npf_out *o);
+/* the state file read again if it changed (a local change first: not saved over) */
+void npf_callee_refresh(npf_callee *d);
+/* safe mode (damaged) left: a fresh state with this password, nobody paired,
+ * no owner (npf passwd NEW --clear): 0, -1 too short or long, -2 not saved */
+int  npf_callee_fresh(npf_callee *d, const char *password);
 /* the pairing password (8 .. 127 bytes): 0, -1 too short or long, -2 not saved */
 int  npf_callee_password_set(npf_callee *d, const char *password);
 /* the caller with this key unpaired (NULL: all): 0, -1 none, -2 not saved */
@@ -76,7 +79,5 @@ int  npf_callee_owner_reset(npf_callee *d);
 /* the paired list or hosted trust changed: the platform told, and the
  * sessions this state no longer admits ended (from the loop) */
 void npf_callee_changed(npf_callee *d);
-/* show / passwd / unpair / owner-reset: exit code, or -2 for other commands */
-int  npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, struct npf_out *o);
 
 #endif

@@ -10,7 +10,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#include "npf/out.h"
 #include "npf/callee.h"
 #include "npf/cert.h"
 #include "npf/conf.h"
@@ -565,44 +564,6 @@ static void op_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
     npf_log("bind requested for account %s", a);
 }
 
-void npf_callee_show(npf_callee *d, npf_out *o)
-{
-    int i;
-    char num[16];
-    snprintf(num, sizeof num, "%09llu", (unsigned long long)d->number);
-    npf_out_printf(o, "number:           %.3s %.3s %.3s\n", num, num + 3, num + 6);
-    if (d->damaged) {
-        npf_out_printf(o, "state:            DAMAGED (%s and its copy cannot be used): calls and pairing refused;\n"
-                          "                  repair it, or passwd NEW --clear writes a fresh one\n", d->state_path);
-        return;
-    }
-    npf_out_printf(o, "current password: %s%s\n", d->password, strcmp(d->password, d->default_pw) ? " (changed)" : "");
-    npf_out_printf(o, "default password: %s\n", d->default_pw);
-    if (d->locked_until > time(NULL))
-        npf_out_printf(o, "pairing locked:   %lld s left\n", (long long)(d->locked_until - time(NULL)));
-    if (d->owner)
-        npf_out_printf(o, "owner account:    %llu\n", (unsigned long long)d->owner);
-    else
-        npf_out_printf(o, "owner account:    none\n");
-    npf_out_printf(o, "paired callers:   %d\n", d->npaired);
-    for (i = 0; i < d->npaired; i++) {
-        char b[64], t[32];
-        time_t a = (time_t)d->paired[i].added;
-        struct tm tm;
-        int valid;
-        npf_b64url_encode(d->paired[i].pub, 32, b);
-#ifdef _WIN32
-        valid = localtime_s(&tm, &a) == 0;
-#else
-        valid = localtime_r(&a, &tm) != NULL;
-#endif
-        if (!valid || !strftime(t, sizeof t, "%Y-%m-%d %H:%M", &tm))
-            snprintf(t, sizeof t, "unknown");
-        npf_out_printf(o, "  %2d  %016llx  %s  %s\n", i + 1, (unsigned long long)npf_fp(d->paired[i].pub), t, b);
-    }
-}
-
-
 static void on_cert(npf_node *n, void *arg)
 {
     npf_callee *d = arg;
@@ -692,13 +653,27 @@ static void state_fresh(npf_callee *d, const char *np)
     d->owner_reset_pending = 0;
 }
 
+int npf_callee_fresh(npf_callee *d, const char *np)
+{
+    if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
+        return -1;
+    state_fresh(d, np);
+    npf_callee_changed(d);
+    return state_save(d) < 0 ? -2 : 0;
+}
+
+void npf_callee_refresh(npf_callee *d)
+{
+    state_refresh(d);
+}
+
 int npf_callee_password_set(npf_callee *d, const char *np)
 {
     if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
         return -1;
     state_refresh(d);
     if (d->damaged)
-        return -2;                      /* safe mode: passwd NEW --clear (npf_callee_cmd) writes a fresh state */
+        return -2;                      /* safe mode: npf_callee_fresh writes a fresh state */
     snprintf(d->password, sizeof d->password, "%s", np);
     d->fails = 0;
     d->locked_until = 0;
@@ -735,96 +710,4 @@ int npf_callee_owner_reset(npf_callee *d)
     d->owner = 0;
     d->owner_reset_pending = 1;
     return state_save(d) < 0 ? -2 : 0;
-}
-
-int npf_callee_cmd(npf_callee *d, const char *cmd, int argc, char **argv, npf_out *o)
-{
-    state_refresh(d);                   /* a local change first: not saved over */
-    if (strcmp(cmd, "show") == 0) {
-        npf_callee_show(d, o);
-        return 0;
-    }
-    if (d->damaged) {
-        int i, clear = 0;
-        const char *np = NULL;
-        for (i = 0; strcmp(cmd, "passwd") == 0 && i < argc; i++) {
-            if (strcmp(argv[i], "--clear") == 0) clear = 1;
-            else if (strcmp(argv[i], "--reset") != 0) np = argv[i];
-        }
-        if (strcmp(cmd, "passwd") == 0 && clear && np && strlen(np) >= 8 && strlen(np) < sizeof d->password) {
-            state_fresh(d, np);
-            npf_callee_changed(d);
-            if (state_save(d) < 0)
-                return 1;
-            npf_out_printf(o, "the damaged state replaced: password changed, no paired callers\n");
-            return 0;
-        }
-        if (strcmp(cmd, "passwd") == 0 || strcmp(cmd, "unpair") == 0 || strcmp(cmd, "owner-reset") == 0) {
-            npf_out_printf(o, "the state file %s is damaged (calls and pairing are refused): repair it, or write a "
-                              "fresh one with passwd NEW --clear (all paired callers removed)\n", d->state_path);
-            return 1;
-        }
-    }
-    if (strcmp(cmd, "passwd") == 0) {
-        int clear = 0, i;
-        const char *np = NULL;
-        for (i = 0; i < argc; i++) {
-            if (strcmp(argv[i], "--clear") == 0) clear = 1;
-            else if (strcmp(argv[i], "--reset") == 0) np = d->default_pw;
-            else np = argv[i];
-        }
-        if (!np) {
-            npf_out_printf(o, "passwd NEW | --reset [--clear]\n");
-            return 2;
-        }
-        if (strlen(np) < 8 || strlen(np) >= sizeof d->password) {
-            npf_out_printf(o, "the password needs at least 8 characters\n");
-            return 1;
-        }
-        snprintf(d->password, sizeof d->password, "%s", np);
-        d->fails = 0;
-        d->locked_until = 0;
-        d->lock_secs = 0;
-        report_lock(d);
-        if (clear) {
-            d->npaired = 0;
-            npf_callee_changed(d);
-        }
-        if (state_save(d) < 0)
-            return 1;
-        npf_out_printf(o, "password %s%s\n", np == d->default_pw ? "reset to the default" : "changed",
-               clear ? ", all paired callers removed" : "");
-        return 0;
-    }
-    if (strcmp(cmd, "unpair") == 0) {
-        if (argc < 1) {
-            npf_out_printf(o, "unpair N | all\n");
-            return 2;
-        }
-        if (strcmp(argv[0], "all") == 0) {
-            d->npaired = 0;
-        } else {
-            int k = atoi(argv[0]);
-            if (k < 1 || k > d->npaired) {
-                npf_out_printf(o, "no such entry\n");
-                return 1;
-            }
-            memmove(&d->paired[k - 1], &d->paired[k], (size_t)(d->npaired - k) * sizeof d->paired[0]);
-            d->npaired--;
-        }
-        npf_callee_changed(d);
-        if (state_save(d) < 0)
-            return 1;
-        npf_out_printf(o, "removed\n");
-        return 0;
-    }
-    if (strcmp(cmd, "owner-reset") == 0) {
-        d->owner = 0;
-        d->owner_reset_pending = 1;
-        if (state_save(d) < 0)
-            return 1;
-        npf_out_printf(o, "owner forgotten; the platform is told at the next login\n");
-        return 0;
-    }
-    return -2;
 }

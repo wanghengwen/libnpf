@@ -512,7 +512,7 @@ int node_home_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const s
 
 /* ---- what it says ---- */
 
-size_t npf_node_home_status(npf_node *n, char *buf, size_t cap, int text)
+size_t npf_node_home_status(npf_node *n, char *buf, size_t cap)
 {
     struct npf_home *h = n->home;
     npf_jw w;
@@ -523,10 +523,6 @@ size_t npf_node_home_status(npf_node *n, char *buf, size_t cap, int text)
         return 0;
     if (h->r.active)
         npf_addr_str(CUR(h), a, sizeof a);
-    if (text)                               /* npf status: one line */
-        return (size_t)(h->state != H_BOUND ? snprintf(buf, cap, "%s", k_state[h->state])
-                        : snprintf(buf, cap, "spare bound via %s, the relay pings after %d s of silence (%s)", a,
-                                   h->t_s, learn_str(h->learn)));
     npf_jw_init(&w, buf, cap);
     npf_jw_obj(&w);
     npf_jw_kstr(&w, "state", k_state[h->state]);

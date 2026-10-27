@@ -256,6 +256,29 @@ int npf_peer_list(npf_t *n, uint32_t *peers, size_t cap, size_t *count)
     return npf_api_op(n, peer_list_run, &x);
 }
 
+/* why a session ended, as an NPF_END_* code */
+static int end_code(const char *why, int local)
+{
+    static const struct { const char *why; int code; } map[] = {
+        {"transport_lost", NPF_END_LOST}, {"timeout", NPF_END_LOST},
+        {"auth_failed", NPF_END_REFUSED}, {"unauthorized", NPF_END_REFUSED}, {"wrong_password", NPF_END_REFUSED},
+        {"not_paired", NPF_END_REFUSED}, {"pairing_lost", NPF_END_REFUSED}, {"no_account", NPF_END_REFUSED},
+        {"revoked", NPF_END_REFUSED}, {"forbidden", NPF_END_REFUSED}, {"busy", NPF_END_REFUSED},
+        {"no_path", NPF_END_UNREACHABLE}, {"unreachable", NPF_END_UNREACHABLE}, {"offline", NPF_END_UNREACHABLE},
+        {"quota", NPF_END_PLATFORM}, {"secure_plan", NPF_END_PLATFORM}, {"plan_limit", NPF_END_PLATFORM},
+        {"idle", NPF_END_LOCAL},
+    };
+    size_t i;
+    if (local)
+        return NPF_END_LOCAL;
+    if (!why || !*why || strcmp(why, "closed") == 0)
+        return NPF_END_PEER;
+    for (i = 0; i < sizeof map / sizeof map[0]; i++)
+        if (strcmp(map[i].why, why) == 0)
+            return map[i].code;
+    return NPF_END_OTHER;
+}
+
 static int peer_get_run(npf_t *n, void *arg)
 {
     pid_arg *x = arg;
@@ -284,7 +307,7 @@ static int peer_get_run(npf_t *n, void *arg)
     i.saved = (i.flags & NPF_PERSIST) && !n->lc.unsaved;
     i.state = npf_peer_state(p, &i.needs, &i.retry_in_ms);
     if (npf_peer_last_why(p)[0] && i.state != NPF_PEER_CONNECTED && strcmp(npf_peer_last_why(p), "starting") != 0)
-        i.end_reason = npf_end_code(npf_peer_last_why(p), strcmp(npf_peer_last_why(p), "idle") == 0);
+        i.end_reason = end_code(npf_peer_last_why(p), strcmp(npf_peer_last_why(p), "idle") == 0);
     snprintf(i.why, sizeof i.why, "%s", i.state == NPF_PEER_CONNECTED ? "" : npf_peer_last_why(p));
     c = npf_peer_call(p);
     i.session = c && npf_call_state(c) == NPF_CALL_ESTABLISHED ? npf_session_of(n, c) : 0;

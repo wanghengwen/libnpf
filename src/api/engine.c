@@ -243,7 +243,6 @@ fail:                                       /* what was made so far: npf_engine_
 void npf_engine_begin(npf_t *n)
 {
     n->started_unix = npf_unix_ms() / 1000;
-    npf_events_start(n);
     if (n->role == NPF_ROLE_NODE)
         npf_log("npf %s: %s %llu, %d peer(s), UDP port %u", npf_version(), n->cfg.callable ? "node" : "client",
                 n->cfg.callable ? (unsigned long long)n->number : 0ULL, npf_peers_count(n->peers), n->node.udp_port);
@@ -281,11 +280,8 @@ int npf_engine_end_step(npf_t *n)
         n->dl = NULL;
         npf_node_stop(&n->node);
         n->torn_down = 1;
-        if (n->cb.notify) {
-            npf_events_stop(n);             /* NPF_EV_STOPPED, the last */
-        } else if (n->cb.event) {
-            n->cb.event(n->cb.user, "stopped", "{}");
-        }
+        if (n->cb.event)
+            n->cb.event(n->cb.user, "stopped", "{}");   /* the last event */
         n->started_unix = 0;
         return -1;
     }
@@ -330,7 +326,6 @@ void npf_engine_free(npf_t *n)
             npf_node_stop(&n->node);
     }
     npf_mods_destroy(n);
-    npf_events_clear(n);                    /* before its loop: a timer of it */
     npf_loop_free(n->loop);
     if (n->rt)
         npf_runtime_leave(n->rt, n->rt_slot);

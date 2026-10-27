@@ -83,10 +83,10 @@ const npf_module acme_module = {.name = "acme", .create = acme_create, .destroy 
                                 .check = acme_check, .conf_set = acme_conf_set};
 
 /* clashes: each refused */
-static const npf_mod_cmd status_cmds[] = {{"status", acme_hello}, {NULL, NULL}};
+static const npf_mod_cmd set_cmds[] = {{"set", acme_hello}, {NULL, NULL}};
 static const char *const builtin_keys[] = {"udp_port", NULL};
 static const npf_module clash_name = {.name = "acme"};
-static const npf_module clash_builtin_cmd = {.name = "b1", .cmds = status_cmds};
+static const npf_module clash_builtin_cmd = {.name = "b1", .cmds = set_cmds};
 static const npf_module clash_builtin_key = {.name = "b2", .keys = builtin_keys};
 static const npf_module clash_cmd = {.name = "b3", .cmds = acme_cmds};
 static const npf_module clash_key = {.name = "b4", .keys = acme_keys};

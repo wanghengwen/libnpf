@@ -420,13 +420,7 @@ int npf_become_node(npf_t *n, uint64_t number)
     npf_callee_save(n->callee);
     npf_engine_callee_attach(n);
     npf_wipe(pw, sizeof pw);
-    {
-        npf_event ev;
-        memset(&ev, 0, sizeof ev);
-        ev.type = NPF_EV_ENROLLED;
-        ev.number = number;
-        npf_engine_event(n, &ev, "enrolled", "{\"number\":\"%llu\"}", (unsigned long long)number);
-    }
+    npf_emit(n, "enrolled", "{\"number\":\"%llu\"}", (unsigned long long)number);
     return 0;
 }
 

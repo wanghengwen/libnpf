@@ -362,18 +362,6 @@ static int timer_limit(npf_loop *loop)
     npf_timer_cancel(loop, t);
     return 0;
 }
-static int callee_time(npf_loop *loop)
-{
-    npf_callee d = {0};
-    npf_out out = {0};
-    (void)loop;
-    d.npaired = 1;
-    d.paired[0].added = INT64_MAX;
-    npf_callee_show(&d, &out);
-    CHECK(!out.failed && strstr(out.p, "unknown"));
-    npf_out_free(&out);
-    return 0;
-}
 static int callee_lock(npf_loop *loop)
 {
     npf_callee d;
@@ -406,7 +394,7 @@ int main(int argc, char **argv)
         {"ctl_matching", ctl_matching}, {"gone_window", gone_window},
         {"input_fairness", input_fairness}, {"buffer_lengths", buffer_lengths},
         {"crypto_lengths", crypto_lengths}, {"gone_buffer", gone_buffer}, {"idle_rate", idle_rate},
-        {"loop_callbacks", loop_callbacks}, {"timer_limit", timer_limit}, {"callee_time", callee_time},
+        {"loop_callbacks", loop_callbacks}, {"timer_limit", timer_limit},
         {"callee_lock", callee_lock}
     };
     npf_loop *loop = npf_loop_new();

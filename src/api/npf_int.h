@@ -30,12 +30,7 @@ typedef struct npf_sess {
     uint32_t  id;
     npf_call *call;
     uint32_t  peer;                 /* its peer's number (npf_peer_id), 0: someone calling here */
-    void     *ctx;                  /* the peer's ctx when it came up (the peer may go first) */
-    uint64_t  number;               /* the other side's, 0 none */
-    int       outgoing, path;       /* NPF_PATH_* */
 } npf_sess;
-
-struct npf_evi;
 
 typedef struct npf_med {
     uint32_t  id, session;
@@ -109,10 +104,6 @@ struct npf {
     /* what a hosted client's tunnels may spend (its account's quota; a
      * module keeps it filled) */
     npf_budget    budget;
-    /* typed events (events.c) */
-    struct npf_evi *ev_head, *ev_tail;
-    npf_timer    *ev_timer;
-    int           ev_on, ev_flushing;
     int           opt_flags;        /* npf_options.flags: NPF_OPT_* */
     int           from_setup;       /* started from npf_setup (no configuration file) */
     int64_t       started_unix;     /* the run's start (Unix s), 0 not running */
@@ -122,16 +113,6 @@ struct npf {
  * on the caller's), with the API's entry checks: its result, or NPF_ESTATE
  * when it did not run */
 int  npf_api_op(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg);
-
-/* events.c: the typed events (npf_callbacks.notify) */
-int  npf_events_typed(const npf_t *n);              /* notify set: the legacy events are not sent */
-void npf_ev_queue(npf_t *n, const npf_event *ev);   /* strings copied */
-void npf_ev_simple(npf_t *n, int type, const char *why);
-void npf_events_flush(npf_t *n);                     /* before a data or media callback: SESSION_UP first */
-void npf_events_start(npf_t *n);
-void npf_events_stop(npf_t *n);                      /* NPF_EV_STOPPED, the last */
-void npf_events_clear(npf_t *n);
-int  npf_end_code(const char *why, int local);
 
 /* setup.c: npf_setup's fields as configuration keys (c); 0, or -1 with err */
 int  npf_setup_conf(const npf_setup *s, int role, const char *data_dir, npf_conf *c, char *err, size_t errcap);
@@ -173,8 +154,9 @@ void npf_start_peer(npf_t *n, npf_peer *p);
 void npf_net_changed(npf_t *n);
 
 /* engine_events.c: events, the node's and the peers' callbacks, sessions and media streams by number */
-/* the account session began or ended (event "account" / NPF_EV_ACCOUNT) */
+/* the account session began or ended (event "account") */
 void npf_ev_account(npf_t *n);
+/* an event to the application (npf_callbacks.event): the library's, a module's */
 void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 #ifdef __GNUC__
     __attribute__((format(printf, 3, 4)))
@@ -218,7 +200,6 @@ void npf_pub_free(npf_t *n);
 void npf_pub_send(npf_t *n, npf_call *c);               /* to a caller whose session came up */
 void npf_pub_json(npf_t *n, npf_out *o);                /* this node's list (status) */
 void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d);
-int  npf_cmd_resource(npf_t *n, int argc, char **argv, npf_out *o);
 /* add or replace (by name) / remove one (name NULL: all but npf.conf's):
  * NPF_OK, NPF_ESAVE, or an error with the reason in err */
 int  npf_pub_put(npf_t *n, const struct npf_res *r, char *err, size_t errcap);

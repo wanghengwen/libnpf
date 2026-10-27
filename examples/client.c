@@ -20,39 +20,47 @@
 
 static npf_t *cli;
 
-/* the peer's and the forward's ctx: what this program keeps of them */
-typedef struct device {
-    const char *number;
-} device;
-typedef struct web_forward {
-    int target_port;
-} web_forward;
+static uint32_t peer;   /* the device (set before npf_start: callbacks come after it) */
 
-static void on_notify(void *user, const npf_event *ev)
+/* a forward is up or failed ({"peer", "spec", "up", "why"}): the port the
+ * system picked, from npf_forward_get */
+static void forward_changed(void)
+{
+    npf_forward_info fi;
+    uint32_t fwd;
+    size_t count;
+    npf_forward_info_init(&fi);
+    if (npf_forward_list(cli, peer, &fwd, 1, &count) != NPF_OK || !count || npf_forward_get(cli, fwd, &fi) != NPF_OK)
+        return;
+    if (fi.state == NPF_FWD_UP)
+        printf("the device's port %d is at http://127.0.0.1:%d/\n", fi.target_port, fi.listen_port);
+    else if (fi.state == NPF_FWD_FAILED)
+        printf("the forward failed: %s\n", fi.why);
+}
+
+/* the library's events (npf.h, npf_callbacks.event): the name, details in JSON */
+static void on_event(void *user, const char *name, const char *json)
 {
     (void)user;
-    if (ev->type == NPF_EV_PEER && ev->ctx) {
-        const device *d = ev->ctx;
-        if (ev->state == NPF_PEER_CONNECTED)
-            printf("%s: connected\n", d->number);
-        else if (ev->state == NPF_PEER_ENDED) {
-            npf_peer_info pi;
-            npf_peer_info_init(&pi);
-            npf_peer_get(cli, ev->peer, &pi);
-            printf("%s: %s%s\n", d->number, pi.needs & NPF_NEED_PASSWORD ? "needs its pairing password (NPF_PASSWORD)"
-                                             : "gave up: ", pi.needs ? "" : pi.why);
-        } else if (ev->state == NPF_PEER_RETRY)
-            printf("%s: again in %d s (%s)\n", d->number, ev->retry_in_ms / 1000, ev->why);
-    } else if (ev->type == NPF_EV_FORWARD && ev->ctx) {
-        npf_forward_info fi;
-        npf_forward_info_init(&fi);
-        if (npf_forward_get(cli, ev->forward, &fi) == NPF_OK && fi.state == NPF_FWD_UP)
-            printf("the device's port %d is at http://127.0.0.1:%d/\n", fi.target_port, fi.listen_port);
-        else if (fi.state == NPF_FWD_FAILED)
-            printf("the forward failed: %s\n", fi.why);
-    } else if (ev->type == NPF_EV_FORWARD_REFUSED) {
-        printf("the device refused: %s (not a resource it published)\n", ev->why);
+    (void)json;
+    if (strcmp(name, "forward") == 0) {
+        forward_changed();
+    } else if (strcmp(name, "peer_done") == 0) {     /* it gave up: why, from npf_peer_get */
+        npf_peer_info pi;
+        npf_peer_info_init(&pi);
+        if (npf_peer_get(cli, peer, &pi) == NPF_OK)
+            printf("%s\n", pi.needs & NPF_NEED_PASSWORD ? "the device needs its pairing password (NPF_PASSWORD)"
+                                                       : pi.why);
     }
+    fflush(stdout);
+}
+
+/* the session with the device came up or ended (info: JSON) */
+static void on_session(void *user, uint32_t session, int up, const char *info)
+{
+    (void)user;
+    (void)session;
+    printf("%s: %s\n", up ? "connected" : "disconnected", info);
     fflush(stdout);
 }
 
@@ -73,11 +81,8 @@ int main(int argc, char **argv)
 {
     static uint8_t roots[1][32];
     static unsigned char list[64 * 1024];
-    static device dev;
-    static web_forward web;
     long list_len;
     char err[256];
-    uint32_t peer = 0;
     int rc;
     if (argc < 4) {
         fprintf(stderr, "usage: [NPF_PASSWORD=...] %s ETC DATA_DIR NUMBER [LOCAL_PORT [TARGET_PORT]]\n", argv[0]);
@@ -103,7 +108,8 @@ int main(int argc, char **argv)
 
     npf_callbacks cb;
     npf_callbacks_init(&cb);
-    cb.notify = on_notify;
+    cb.event = on_event;
+    cb.session = on_session;
 
     npf_options o;
     npf_options_init(&o);
@@ -119,28 +125,24 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* the device: its ctx ready before the call (its events may come first) */
-    dev.number = argv[3];
+    /* the device */
     npf_peer_opt po;
     npf_peer_opt_init(&po);
     po.target = NPF_TARGET_NUMBER;
     po.number = strtoull(argv[3], NULL, 10);
     po.password = getenv("NPF_PASSWORD");   /* NULL once paired */
-    po.ctx = &dev;
     if ((rc = npf_peer_create(cli, &po, &peer, err, sizeof err)) != NPF_OK) {
         fprintf(stderr, "%s: %s (%d)\n", argv[3], err, rc);
         npf_destroy(cli);
         return 1;
     }
     /* its web page here: a local port (0: the system's choice) */
-    web.target_port = argc > 5 ? atoi(argv[5]) : 80;
     npf_forward_opt fo;
     npf_forward_opt_init(&fo);
     fo.kind = NPF_FWD_LOCAL;
     fo.listen.port = (uint16_t)(argc > 4 ? atoi(argv[4]) : 0);
     fo.target.host = "127.0.0.1";
-    fo.target.port = (uint16_t)web.target_port;
-    fo.ctx = &web;
+    fo.target.port = (uint16_t)(argc > 5 ? atoi(argv[5]) : 80);
     if ((rc = npf_forward_create(cli, peer, &fo, NULL, err, sizeof err)) != NPF_OK) {
         fprintf(stderr, "forward: %s (%d)\n", err, rc);
         npf_destroy(cli);

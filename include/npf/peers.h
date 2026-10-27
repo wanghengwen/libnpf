@@ -48,14 +48,6 @@ typedef struct npf_peers_cbs {
     /* a public connection was let in (conn or refused with opened follow
      * when it ends); optional */
     void (*opened)(npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from, void *arg);
-    /* the peer's state or needs changed (npf_peer_state); optional */
-    void (*changed)(npf_peer *p, void *arg);
-    /* forward i goes (deleted, or with its peer): before its slot is freed; optional */
-    void (*fwd_gone)(npf_peer *p, int i, void *arg);
-    /* the peer goes (npf_peers_remove): after its session and forwards, before it is freed; optional */
-    void (*gone)(npf_peer *p, void *arg);
-    /* connections of forward i were refused by the peer (its resources): at most once a second; optional */
-    void (*fwd_refused)(npf_peer *p, int i, void *arg);
 } npf_peers_cbs;
 
 /* a peer from its parts */

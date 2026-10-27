@@ -599,9 +599,9 @@ void npf_node_write_nat(npf_node *n, struct npf_jw *w);
 void npf_node_write_cands(npf_node *n, struct npf_jw *w);
 /* nat_report: the profile (or, connect_mode secure, only that) to the platform */
 void npf_node_report_nat(npf_node *n);
-/* the spare allocation (home.c): the status's "home" object into buf, or
- * with text a line for people; its length, 0 (buf "") when there is none */
-size_t npf_node_home_status(npf_node *n, char *buf, size_t cap, int text);
+/* the spare allocation (home.c): the status's "home" object into buf; its
+ * length, 0 (buf "") when there is none */
+size_t npf_node_home_status(npf_node *n, char *buf, size_t cap);
 /* connect_mode: 0 p2p (direct paths first, around a VPN), 1 secure (relays
  * only, no address to the peer, the VPN kept): the platform hears it, the
  * sessions open again under it */

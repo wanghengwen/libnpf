@@ -89,7 +89,6 @@ int test_callee(void)
          * is taken, and the file written again from it (R2 M7) */
         static npf_callee first;
         char bak[300], out[2048];
-        npf_out o = {0};
         snprintf(bak, sizeof bak, "%s.bak", path);
         CHECK(file_pw(bak, pw, sizeof pw) == 0 && strcmp(pw, "local-pw-22") == 0, "the copy has the last save (%s)", pw);
         CHECK(npf_callee_init(&first, path, 123, seed, "default-pw") == 0 && !first.damaged
@@ -104,25 +103,18 @@ int test_callee(void)
               "both corrupt at startup: safe mode, the start goes on");
         CHECK(!first.password[0] && first.npaired == 0, "no default password in force");
         CHECK(npf_callee_password_set(&first, "another-pw-1") == -2, "a password alone is not saved over it");
-        {
-            char *argv[] = {"all"};
-            CHECK(npf_callee_cmd(&first, "unpair", 1, argv, &o) == 1 && o.p && strstr(o.p, "damaged"),
-                  "unpair says the state is damaged");
-        }
-        npf_out_free(&o);
+        CHECK(npf_callee_unpair_key(&first, NULL) == -2 && npf_callee_owner_reset(&first) == -2,
+              "unpair and the owner reset refused (damaged)");
         {
             char *t = NULL;
             CHECK(npf_file_read(path, &t) == 9, "the damaged file left for its repair");
             free(t);
         }
-        npf_callee_show(&first, &o);
-        CHECK(o.p && strstr(o.p, "DAMAGED"), "show says so");
-        npf_out_free(&o);
-        {
-            char *argv[] = {"fresh-pw-123", "--clear"};
-            CHECK(npf_callee_cmd(&first, "passwd", 2, argv, &o) == 0 && !first.damaged, "passwd NEW --clear: a fresh state");
-            npf_out_free(&o);
-        }
+        npf_callee_refresh(&first);
+        CHECK(first.damaged, "still damaged when the file did not change");
+        CHECK(npf_callee_fresh(&first, "short") == -1 && first.damaged, "a fresh state needs a password of 8 or more");
+        CHECK(npf_callee_fresh(&first, "fresh-pw-123") == 0 && !first.damaged && first.npaired == 0,
+              "npf_callee_fresh (passwd NEW --clear): a fresh state");
         CHECK(file_pw(path, pw, sizeof pw) == 0 && strcmp(pw, "fresh-pw-123") == 0
               && file_pw(bak, out, sizeof out) == 0 && strcmp(out, "fresh-pw-123") == 0, "written with its copy");
 
@@ -131,9 +123,9 @@ int test_callee(void)
         npf_file_write(bak, "{neither", 8, 0600);
         CHECK(npf_callee_init(&first, path, 123, seed, "default-pw") == 0 && first.damaged, "safe mode again");
         write_pw(path, "repaired-pw1");
-        CHECK(npf_callee_cmd(&first, "show", 0, NULL, &o) == 0 && !first.damaged
-              && strcmp(first.password, "repaired-pw1") == 0, "a repaired file ends safe mode (%s)", first.password);
-        npf_out_free(&o);
+        npf_callee_refresh(&first);
+        CHECK(!first.damaged && strcmp(first.password, "repaired-pw1") == 0, "a repaired file ends safe mode (%s)",
+              first.password);
     }
 
     /* the identity seed: unreadable now, not replaced */
