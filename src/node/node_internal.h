@@ -15,6 +15,7 @@ static inline void timer_stop(npf_loop *l, npf_timer **t)
 
 /* node_servers.c */
 /* a signed list from the login, a push or an external channel (via): 1 when adopted */
+int  node_wake_delay(int ms);
 int  node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via);
 void node_servers_load(npf_node *n);
 void node_server_failed(npf_server_entry *e, int weight);

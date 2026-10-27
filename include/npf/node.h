@@ -187,7 +187,8 @@ typedef struct npf_node_cfg {
     /* signaling on demand (hosted clients): after this long with nothing
      * that needs it (no session, no request, hooks.busy says no) the
      * connection closes; npf_node_wake opens it again, and so does a timer
-     * every sig_wake_ms (0: none). 0: always connected */
+     * about every sig_wake_ms (0: none; each time +-20 %, so that instances
+     * asleep together do not wake together). 0: always connected */
     int         sig_idle_ms;
     int         sig_wake_ms;
     /* UDP on demand (hosted clients with sig_idle_ms): no UDP socket until a

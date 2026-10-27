@@ -32,6 +32,7 @@ int test_callee(void);
 int test_relay(void);
 int test_peeraddr(void);
 int test_home(void);
+int node_wake_delay(int ms);        /* node_signal.c */
 
 #define CHECK(cond, ...) do { \
     if (!(cond)) { failures++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
@@ -241,6 +242,18 @@ int main(void)
     failures += test_peeraddr();
     failures += test_home();
     failures += test_punch();
+    {   /* the periodic wake of signaling on demand: sig_wake_ms +-20 %, drawn
+         * each time (instances asleep together drift apart) */
+        int i, d, lo = 1 << 30, hi = 0, same = 1, first = node_wake_delay(600000);
+        for (i = 0; i < 2000; i++) {
+            d = node_wake_delay(600000);
+            lo = d < lo ? d : lo;
+            hi = d > hi ? d : hi;
+            same &= d == first;
+        }
+        CHECK(lo >= 480000 && hi <= 720000 && lo < 490000 && hi > 710000 && !same, "wake delays %d .. %d", lo, hi);
+        CHECK(node_wake_delay(1) == 1 && node_wake_delay(5) >= 4 && node_wake_delay(5) <= 6, "short wake delays");
+    }
     { struct in6_addr v6[8]; struct in_addr v4[8];
       int c6 = npf_gather_host6(v6, 8), c4 = npf_gather_host4(v4, 8);
       CHECK(c6 >= 0 && c6 <= 8, "gather host6 count %d", c6);
