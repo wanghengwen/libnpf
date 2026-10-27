@@ -1015,6 +1015,15 @@ void node_sig_connect(npf_node *n)
 
 #define SIG_IDLE_TICK_MS 1000
 
+/* the time to the next periodic wake: sig_wake_ms +-20 %, drawn each
+ * time. Instances that went to sleep together (npf-hosted's accounts after
+ * a restart: 200 at once) would else wake together every period for good:
+ * a herd of logins every 10.5 min, 0.9 s for another node's login */
+int node_wake_delay(int ms)
+{
+    return ms - ms / 5 + (int)npf_rand_range(0, (size_t)(ms / 5) * 2);
+}
+
 static void wake_cb(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
@@ -1068,7 +1077,7 @@ static void idle_cb(npf_loop *loop, void *arg)
     expect_stop(n);
     node_sig_fail_pending(n);
     if (n->cfg.sig_wake_ms > 0)
-        n->t_wake = npf_timer_add(loop, n->cfg.sig_wake_ms, wake_cb, n);
+        n->t_wake = npf_timer_add(loop, node_wake_delay(n->cfg.sig_wake_ms), wake_cb, n);
 }
 
 /* logged in: on demand, watch for the time nothing needs the connection */
