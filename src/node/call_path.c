@@ -61,7 +61,7 @@ static void path_send(npf_call *c, int type, uint64_t nonce)
     p[1] = 0;
     npf_le64(p + 2, nonce);
     npf_siv_seal(&c->path_keys, c->caller ? 0 : 1, buf, 10);
-    call_udp_send(c, c->p2p_fd, &c->p2p_addr, buf, sizeof buf);
+    npf_udp_send(c->p2p_fd, buf, sizeof buf, &c->p2p_addr);
 }
 
 /* 1 when the datagram was a path check or echo of this call */

@@ -17,11 +17,6 @@
 
 /* ---- helpers ---- */
 
-void call_b64_of(const uint8_t *b, size_t n, char *out)
-{
-    npf_b64url_encode(b, n, out);
-}
-
 npf_call *call_find(npf_node *n, const npf_json *j, int d)
 {
     uint8_t id[16];
@@ -32,12 +27,6 @@ npf_call *call_find(npf_node *n, const npf_json *j, int d)
         if (memcmp(c->call_id, id, 16) == 0)
             return c;
     return NULL;
-}
-
-int call_udp_send(npf_call *c, int fd, const struct sockaddr_storage *to, const uint8_t *buf, size_t len)
-{
-    (void)c;
-    return npf_udp_send(fd, buf, len, to);
 }
 
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */

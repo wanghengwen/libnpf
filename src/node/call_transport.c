@@ -42,7 +42,7 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
     npf_call *c = user;
     (void)w;
     if (c->p2p && !call_p2p_cut(c))
-        call_udp_send(c, c->p2p_fd, &c->p2p_addr, (const uint8_t *)buf, (size_t)len);
+        npf_udp_send(c->p2p_fd, (const uint8_t *)buf, (size_t)len, &c->p2p_addr);
     /* the relay carries the data when there is no direct path, and as a second
      * copy while the direct path is suspected (AnLiu drops the duplicates) */
     if ((!c->p2p || c->p2p_suspect) && c->relay.active)

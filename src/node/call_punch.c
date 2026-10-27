@@ -467,8 +467,8 @@ static void firewall_open(npf_call *c)
     for (k = 0; k < 2; k++)
         for (i = 0; i < c->pcfg->npeers; i++)
             if (c->pcfg->peers[i].ss_family == AF_INET || c->n->udp6_fd >= 0)
-                call_udp_send(c, c->pcfg->peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd,
-                         &c->pcfg->peers[i], one, 1);
+                npf_udp_send(c->pcfg->peers[i].ss_family == AF_INET6 ? c->n->udp6_fd : c->n->udp_fd, one, 1,
+                             &c->pcfg->peers[i]);
     npf_logd("call %s: firewall: flows to %d peer candidates opened before the punch", c->call_id_s, c->pcfg->npeers);
 }
 

@@ -20,7 +20,7 @@ static void relay_bind_send(void *arg)
     uint8_t wire[256];
     int n = relay_bind_pack(&c->relay, c->n, 0, 0, wire);
     if (n > 0 && !call_relay_addr_blocked(c))
-        call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], wire, (size_t)n);
+        npf_udp_send(c->n->udp_fd, wire, (size_t)n, &c->relay.addr[c->relay.cur]);
 }
 
 /* RELAY_DATA: hint | tag | type | flags | seq | the AnLiu datagram */
@@ -36,7 +36,7 @@ void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
     npf_le32(p + 2, c->relay.seq++);
     memcpy(p + 6, dgram, len);
     npf_siv_seal(&c->relay.keys, 0, w, len + 6);
-    call_udp_send(c, c->n->udp_fd, &c->relay.addr[c->relay.cur], buf, len + RELAY_DATA_OVERHEAD);
+    npf_udp_send(c->n->udp_fd, buf, len + RELAY_DATA_OVERHEAD, &c->relay.addr[c->relay.cur]);
 }
 /* the WS relay for this call (relay_switch{mode:"ws"}); the platform moves both sides */
 void call_ask_ws_relay(npf_call *c)
