@@ -329,7 +329,7 @@ static void list_text(npf_out *o, const npf_res *r, int n, int mine)
         char ty[sizeof r[i].type + sizeof r[i].svc + 1];
         snprintf(ty, sizeof ty, "%s%s%s", r[i].type, r[i].svc[0] ? "/" : "", r[i].svc);
         npf_out_printf(o, "%-20s %-9s %s%s%s%s%s\n", r[i].name, ty, r[i].target, r[i].path,
-                       r[i].desc[0] ? "  " : "", r[i].desc, r[i].fixed ? "  (fixed: npf.conf or --allow)" : "");
+                       r[i].desc[0] ? "  " : "", r[i].desc, r[i].fixed ? "  (fixed: npf.conf)" : "");
     }
 }
 

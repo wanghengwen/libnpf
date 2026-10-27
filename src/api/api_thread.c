@@ -338,7 +338,11 @@ npf_runtime *npf_runtime_new(int threads)
 #ifdef _WIN32
     InitializeCriticalSection(&rt->mu);
 #else
-    pthread_mutex_init(&rt->mu, NULL);
+    if (pthread_mutex_init(&rt->mu, NULL)) {
+        free(rt->t);
+        free(rt);
+        return NULL;
+    }
 #endif
     for (i = 0; i < rt->nthreads; i++) {
         rt_thread *t = &rt->t[i];
