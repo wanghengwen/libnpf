@@ -33,9 +33,7 @@ void npf_siv_seal(const npf_siv_keys *keys, int dir, uint8_t *buf, size_t plen);
  * Returns plen, or -1 when authentication fails. */
 int npf_siv_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t len, uint8_t *plain);
 
-/* primitives, exported for the known-answer tests */
-void npf_chacha20_block(const uint8_t key[32], uint32_t counter, const uint8_t nonce[12], uint8_t out[64]);
-void npf_chacha20_xor(const uint8_t key[32], const uint8_t nonce[12], uint32_t counter, uint8_t *buf, size_t len);
+/* exported for the known-answer tests (ChaCha20: Monocypher's crypto_chacha20_ietf) */
 void npf_siphash128(const uint8_t key[16], const uint8_t *in, size_t len, uint8_t out[16]);
 
 #endif

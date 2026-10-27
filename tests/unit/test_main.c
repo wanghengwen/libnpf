@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "monocypher.h"
 #include "npf/bind.h"
 #include "npf/siv.h"
 #include "npf/candidates.h"
@@ -57,7 +58,7 @@ static void test_kat(void)
     size_t i;
     for (i = 0; i < 32; i++) key[i] = (uint8_t)i;
     hex2bin("000000090000004a00000000", nonce, 12);
-    npf_chacha20_block(key, 1, nonce, out);
+    crypto_chacha20_ietf(out, NULL, 64, key, nonce, 1);   /* what siv.c uses */
     hex2bin("10f1e7e4d13b5915500fdd1fa32071c4c7d1f4c733c068030422aa9ac3d46c4e"
             "d2826446079faa0914c2d705d98b02a2b5129cd1de164eb9cbd083e8a2503c4e", exp, 64);
     CHECK(memcmp(out, exp, 64) == 0, "chacha20 block vector");
