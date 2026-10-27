@@ -170,7 +170,7 @@ int         npf_peer_password_try(npf_peer *p, const char *password);
 /* on demand (a hosted client's public mappings): the listeners are up
  * without a session; the first connection starts one (connections wait for
  * it, at most 30 s), and it ends idle_ms after its last connection closed;
- * no reconnecting in between. 0: off */
+ * no reconnecting in between (npf_peer_connect_put's on demand). 0: nothing changes */
 void        npf_peer_set_on_demand(npf_peer *p, int idle_ms);
 /* NPF_CONNECT_*: KEEP connects now when it has no session (running: the
  * instance started), ON_DEMAND's idle time runs from now (idle_ms 0: the
