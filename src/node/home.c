@@ -315,7 +315,11 @@ void node_home_login(npf_node *n)
         npf_log("home: on server %d now: a new spare there (the one on server %d left)", n->server_id, h->server);
         spare_drop(h, H_OFF);
     }
-    timer_stop(n->loop, &h->t_retry);
+    /* a spare backing off keeps its timer: the reply to the resume may never
+     * come, or home_open is refused with the spare kept (open_reply), and it
+     * would wait in H_BACKOFF for good */
+    if (h->state != H_BACKOFF)
+        timer_stop(n->loop, &h->t_retry);
     home_open_send(h);
 }
 

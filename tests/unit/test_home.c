@@ -6,7 +6,9 @@
  * socket did), a replayed or stale ping not; R's change counted; the
  * watchdog binds again only when nothing came from the relay by the last
  * datagram + T + the relay's tries + a margin; a call takes the spare with
- * its binding (kseq goes on), relay_spare brings the next one. */
+ * its binding (kseq goes on), relay_spare brings the next one; a spare
+ * backing off keeps its timer through a login (home_open resume) and a
+ * refused home_open. */
 #define _GNU_SOURCE
 #include <poll.h>
 #include <stdio.h>
@@ -307,6 +309,23 @@ static void test_client(void)
         CHECK(npf_node_home_status(&node, js, sizeof js, 0) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
               "status %s", js);
     }
+    /* backing off when the node logs in again (home_open with resume): the
+     * timer stays, also when home_open is refused with the spare kept */
+    gave_up(node.home);
+    CHECK(node.home->state == H_BACKOFF && node.home->t_retry, "backing off");
+    node.cfg.offline = 0;               /* a spare allowed (home_allowed) */
+    node.cfg.callable = 1;
+    node_home_login(&node);
+    CHECK(node.home && node.home->state == H_BACKOFF && node.home->t_retry, "no timer after a login while backing off");
+    {
+        npf_jtok tok[16];
+        npf_json j;
+        char m[] = "{\"v\":1,\"type\":\"reply\",\"status\":\"error\",\"error\":\"rate_limited\"}";
+        CHECK(npf_json_parse(&j, m, strlen(m), tok, 16) == 0, "reply JSON");
+        open_reply(&node, &j, 0, node.home);
+        CHECK(node.home->r.active && node.home->t_retry, "no timer after home_open refused while backing off");
+    }
+    node.cfg.offline = 1;
     node_home_stop(&node);
     node.udp_fd = -1;
     npf_node_stop(&node);
