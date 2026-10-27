@@ -144,10 +144,7 @@ void npf_node_stop(npf_node *n)
     node_calls_free(n);
     call_key_shares_free(n);
     node_sources_stop(n);
-    node_sig_race_drop(n);
-    if (n->sig)
-        npf_sig_close(n->sig);
-    node_sig_drop(n);                       /* offline, its ping and watch stopped (the watch ran on) */
+    node_sig_close(n);                      /* offline, its ping and watch stopped (the watch ran on) */
     node_sig_fail_pending(n);               /* requests still waiting learn there is no reply (their memory goes) */
     npf_timer_stop(n->loop, &n->t_reconnect);
     npf_natprobe_cancel(n->probe);

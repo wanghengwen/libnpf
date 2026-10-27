@@ -200,10 +200,7 @@ void node_reconnect_now(npf_node *n)
 {
     if (n->online)
         return;
-    node_sig_race_drop(n);
-    if (n->sig)
-        npf_sig_close(n->sig);
-    n->sig = NULL;
+    node_sig_close(n);
     npf_timer_stop(n->loop, &n->t_reconnect);
     npf_timer_stop(n->loop, &n->t_login);
     n->backoff_ms = 0;
@@ -267,10 +264,8 @@ static void schedule_reconnect(npf_node *n)
 #define SIG_LOGIN_MS 20000         /* connect, TLS, upgrade, Noise and login together */
 
 
-/* drop a connection that makes no progress: nothing else would notice (a
- * stalled TCP/TLS/handshake, or a server that went silent behind a NAT),
- * and the node stayed offline for an hour (Mac, 2026-10-06) */
-void node_sig_race_drop(npf_node *n)
+/* the second access point closed */
+static void race_drop(npf_node *n)
 {
     if (n->race)
         npf_sig_close(n->race);
@@ -279,12 +274,21 @@ void node_sig_race_drop(npf_node *n)
 
 /* what is bound to the connection in use, which has gone (the caller closes
  * or has closed it): offline, its ping and its watch stopped */
-void node_sig_drop(npf_node *n)
+static void sig_drop(npf_node *n)
 {
     n->sig = NULL;
     n->online = 0;
     npf_timer_stop(n->loop, &n->t_ping);
     expect_stop(n);
+}
+
+void node_sig_close(npf_node *n)
+{
+    npf_sig *s = n->sig;
+    race_drop(n);
+    sig_drop(n);
+    if (s)
+        npf_sig_close(s);
 }
 
 /* after a connection went: the requests on it learn there is no answer, the
@@ -302,25 +306,26 @@ static void sig_gone(npf_node *n, const char *why, int was_online)
 /* the platform turned this connection down (a login, an enrolment): it
  * goes; counted against the server by weight (0: not at all), and not a
  * failure of the network (the way around a VPN stays as it is) */
-static void sig_refused(npf_node *n, npf_sig *s, int weight)
+static void sig_refused(npf_node *n, int weight)
 {
     if (weight && n->cur_server >= 0)
         node_server_failed(&n->servers[n->cur_server], weight);
-    node_sig_race_drop(n);
-    node_sig_drop(n);
-    npf_sig_close(s);
+    node_sig_close(n);
     sig_gone(n, "refused", 0);
 }
 
 void node_sig_abort(npf_node *n, const char *why)
 {
     npf_sig *s = n->sig;
-    node_sig_race_drop(n);
+    race_drop(n);
     npf_logw("signaling: %s, reconnecting", why);
     sig_down(s, why, n);            /* n->sig = NULL, reconnect scheduled */
     npf_sig_close(s);
 }
 
+/* drop a connection that makes no progress: nothing else would notice (a
+ * stalled TCP/TLS/handshake, or a server that went silent behind a NAT),
+ * and the node stayed offline for an hour (Mac, 2026-10-06) */
 static void login_deadline(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
@@ -549,7 +554,7 @@ static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
         if (n->hooks.on_enroll_failed)
             n->hooks.on_enroll_failed(n, err, reason, n->backoff_ms / 1000, n->hook_arg);
         if (n->sig)                         /* the platform's answer: not the server's fault, nor the network's */
-            sig_refused(n, n->sig, 0);
+            sig_refused(n, 0);
         return;
     }
     n->enroll_state = NPF_ENROLL_DONE;
@@ -800,7 +805,7 @@ static void sig_ready(npf_sig *s, void *arg)
     } else if (s != n->sig) {
         return;
     } else {
-        node_sig_race_drop(n);
+        race_drop(n);
     }
     if (n->cfg.enroll && !n->cfg.number)
         send_enroll(n);                     /* the first message instead of login (security.md 5.2) */
@@ -862,7 +867,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
                          n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, err);
             }
             n->sig_refused = 1;
-            sig_refused(n, s, 3);
+            sig_refused(n, 3);
         }
         return;
     }
@@ -914,9 +919,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
              * application nothing) */
             int was_online = n->online;
             n->cur_server = i;
-            node_sig_race_drop(n);
-            node_sig_drop(n);
-            npf_sig_close(s);
+            node_sig_close(n);
             n->backoff_ms = 1000;
             sig_gone(n, "redirected", was_online);
         }
@@ -954,7 +957,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         npf_log("signaling: the next attempt %s", n->sig_via_vpn ? "on the default route (through the VPN)"
                                                                 : "around the VPN");
     }
-    node_sig_drop(n);
+    sig_drop(n);
     /* "replaced" counts for the close that follows it, not for one long
      * after (a server that did not close) */
     if (n->replaced_ms && npf_mono_ms() - n->replaced_ms < 10000) {
@@ -1083,17 +1086,10 @@ static void idle_cb(npf_loop *loop, void *arg)
         return;
     }
     npf_log("signaling: not needed for %d s: disconnecting until it is", n->cfg.sig_idle_ms / 1000);
-    node_sig_race_drop(n);
-    if (n->sig)
-        npf_sig_close(n->sig);
-    n->sig = NULL;
-    n->online = 0;
+    node_sig_close(n);
     n->dormant = 1;
-    n->sleeps++;
     if (n->cfg.udp_on_demand && !n->calls)
         node_udp_close_idle(n);
-    npf_timer_stop(loop, &n->t_ping);
-    expect_stop(n);
     node_sig_fail_pending(n);
     if (n->cfg.sig_wake_ms > 0)
         n->t_wake = npf_timer_add(loop, node_wake_delay(n->cfg.sig_wake_ms), wake_cb, n);

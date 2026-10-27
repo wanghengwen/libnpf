@@ -18,8 +18,9 @@ int node_server_pick(npf_node *n, int prio, int skip);
 int  node_wake_delay(int ms);           /* sig_wake_ms +-20 % (the unit tests) */
 const uint8_t *node_day_key(const npf_node *n, const npf_daykey keys[2]);
 void node_sig_fail_pending(npf_node *n);
-void node_sig_race_drop(npf_node *n);
-void node_sig_drop(npf_node *n);
+/* the connection in use and the second access point closed: offline, the
+ * ping and the watch stopped */
+void node_sig_close(npf_node *n);
 void node_sig_abort(npf_node *n, const char *why);
 void node_sig_connect(npf_node *n);
 /* something seems lost (a call of ours timed out): ask the server with a ping;
