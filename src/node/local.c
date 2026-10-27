@@ -1,6 +1,5 @@
 /* local.json (local.h). */
 #define _GNU_SOURCE
-#include "npf/text.h"
 #include "npf/sys.h"
 #include <errno.h>
 #include <stdio.h>
@@ -200,84 +199,6 @@ int npf_local_fwd_del(npf_ldev *d, const npf_lfwd *f)
     return -1;
 }
 
-static char *trim(char *s)
-{
-    char *e;
-    while (*s == ' ' || *s == '\t')
-        s++;
-    for (e = s + strlen(s); e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\n' || e[-1] == '\r');)
-        *--e = 0;
-    return s;
-}
-
-/* the words of a saved peer ("TARGET [-L SPEC]... [--psk-file F] ...") into a
- * record: the "peer = ..." lines of local.conf of earlier versions */
-static void dev_from_words(npf_local *l, char *line)
-{
-    char *w[64], *t, *save;
-    int n = 0, i;
-    npf_ldev *d;
-    for (t = strtok_r(line, " \t", &save); t && n < 64; t = strtok_r(NULL, " \t", &save))
-        w[n++] = t;
-    if (n < 1 || !(d = npf_local_dev(l, w[0], 1)))
-        return;
-    d->save = 1;
-    for (i = 1; i + 1 < n; i += 2) {
-        if (strcmp(w[i], "--psk-file") == 0)    /* (their forwards are not carried over) */
-            snprintf(d->psk_file, sizeof d->psk_file, "%s", w[i + 1]);
-        else if (strcmp(w[i], "--psk") == 0)
-            snprintf(d->psk, sizeof d->psk, "%s", w[i + 1]);
-        else if (strcmp(w[i], "--name") == 0 && npf_name_valid(w[i + 1]))
-            snprintf(d->name, sizeof d->name, "%s", w[i + 1]);
-    }
-}
-
-/* earlier versions: local.conf ("key = value"; peer lines) and known
- * ("NUMBER KEY" lines); renamed *.old once taken over */
-static int convert_old(npf_local *l, const char *dir)
-{
-    char p[1100], old[1110], line[1200];
-    FILE *f;
-    int any = 0;
-    snprintf(p, sizeof p, "%s/local.conf", dir);
-    if ((f = fopen(p, "r"))) {
-        while (fgets(line, sizeof line, f)) {
-            char *eq, *k, *v, *h = strchr(line, '#');
-            if (h)
-                *h = 0;
-            if (!(eq = strchr(line, '=')))
-                continue;
-            *eq = 0;
-            k = trim(line);
-            v = trim(eq + 1);
-            if (strcmp(k, "peer") == 0)
-                dev_from_words(l, v);
-            else if (*k)
-                npf_conf_set(&l->settings, k, v);
-        }
-        fclose(f);
-        snprintf(old, sizeof old, "%s.old", p);
-        rename(p, old);
-        any = 1;
-    }
-    snprintf(p, sizeof p, "%s/known", dir);
-    if ((f = fopen(p, "r"))) {
-        while (fgets(line, sizeof line, f)) {
-            char num[32], k[128];
-            const char *w = line;
-            npf_ldev *d;
-            if (npf_text_word(&w, num, sizeof num) == 0 && npf_text_word(&w, k, sizeof k) == 0 && (d = npf_local_dev(l, num, 1))
-                && npf_b64url_decode(k, strlen(k), d->key, 32) == 32)
-                d->has_key = 1;
-        }
-        fclose(f);
-        snprintf(old, sizeof old, "%s.old", p);
-        rename(p, old);
-        any = 1;
-    }
-    return any;
-}
-
 static void get_str(const npf_json *j, int obj, const char *k, char *buf, size_t cap)
 {
     if (npf_json_get_str(j, obj, k, buf, cap) < 0)
@@ -417,7 +338,7 @@ int npf_local_load(npf_local *l, const char *dir, char *err, size_t errcap)
     snprintf(l->path, sizeof l->path, "%s/local.json", dir);
     snprintf(l->settings.path, sizeof l->settings.path, "%s", l->path);
     n = npf_file_read(l->path, &s);
-    if (n < 0) {                            /* none yet: perhaps the files of an earlier version */
+    if (n < 0) {                            /* none yet: a first run */
         int e = npf_file_unreadable(l->path);
         if (e) {
             /* there but not readable (another user's file, an I/O error): not
@@ -425,10 +346,6 @@ int npf_local_load(npf_local *l, const char *dir, char *err, size_t errcap)
              * saved nodes, settings and pinned keys */
             snprintf(err, errcap, "cannot read %s: %s (it must belong to the user npf runs as)", l->path,
                      strerror(e));
-            return -1;
-        }
-        if (convert_old(l, dir) && npf_local_save(l) < 0) {
-            snprintf(err, errcap, "cannot write %s", l->path);
             return -1;
         }
         return 0;

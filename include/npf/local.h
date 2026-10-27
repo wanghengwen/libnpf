@@ -19,9 +19,7 @@
  *    "resources": [{"name", "target", "type", "desc", "path"}]   what this node publishes
  *
  * The secrets (identity, state.json, control.token) and the certificates
- * stay in files of their own. A local.conf of "key = value" lines and a
- * "known" file of earlier versions are converted once, then renamed *.old.
- * Written atomically; at most NPF_LOCAL_MAX_DEV devices. */
+ * stay in files of their own. Written atomically; at most NPF_LOCAL_MAX_DEV devices. */
 #ifndef NPF_LOCAL_H
 #define NPF_LOCAL_H
 
