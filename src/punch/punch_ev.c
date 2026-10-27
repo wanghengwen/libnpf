@@ -371,20 +371,30 @@ static void s2b_pass(npf_punch *p)
     }
 }
 
+/* S2B's fresh socket, S2's first new one: its mapping not known yet (a
+ * BIND_REQ to E1 again, four at most) */
+static int bind_pending(const npf_punch *p)
+{
+    const npf_punch_plan *pl = &p->cfg.plan;
+    return p->nsock > 1 && !p->own_port && p->bsent < 4
+           && (pl->strategy == NPF_PUNCH_S2B || (pl->measure && pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD));
+}
+
+static void bind_retry(npf_punch *p, int64_t now)
+{
+    static const int next_ms[] = {200, 400, 800, 1600};
+    if (bind_pending(p) && now >= p->bnext) {
+        s2b_bind(p, 0, p->btx);
+        p->bnext = now + next_ms[p->bsent++];
+    }
+}
+
 static void s2b_tick(npf_punch *p, int64_t now)
 {
     const npf_punch_plan *pl = &p->cfg.plan;
     struct sockaddr_storage pa;
     int i;
-    if (!p->own_port) {
-        if (p->bsent < 4 && now >= p->bnext) {
-            static const int next_ms[] = {200, 400, 800, 1600};
-            s2b_bind(p, 0, p->btx);
-            p->bnext = now + next_ms[p->bsent++];
-        }
-        return;
-    }
-    if (!p->peer_port || !pl->peer_ip4.s_addr)
+    if (!p->own_port || !p->peer_port || !pl->peer_ip4.s_addr)
         return;                     /* no public IP of the peer's to send to: nothing (H-1) */
     if (p->pass < (pl->passes > 0 ? pl->passes : 4) && now >= p->pass_next) {
         s2b_pass(p);
@@ -556,14 +566,22 @@ static int64_t quiet_end(const npf_punch *p)
     return INT64_MAX;
 }
 
-/* IPv6 peers probed from the main path's IPv6 socket alongside a strategy
- * that does not probe the candidates itself */
-static int v6_alongside(const npf_punch *p)
+/* the main socket probes all the peer's candidates: S1, S3's easy side,
+ * S3's hard side without sockets of its own (the node's budget is held by
+ * other punches) */
+static int probes_all(const npf_punch *p)
 {
     const npf_punch_plan *pl = &p->cfg.plan;
-    if (!p->nv6 || p->cfg.fd6 < 0 || pl->strategy == NPF_PUNCH_S1)
-        return 0;
-    return !(pl->strategy == NPF_PUNCH_S3 && (pl->side == NPF_PUNCH_EASY || p->nsock == 1));
+    return pl->strategy == NPF_PUNCH_S1
+           || (pl->strategy == NPF_PUNCH_S3 && (pl->side == NPF_PUNCH_EASY || p->nsock == 1));
+}
+
+/* otherwise the IPv6 peers, from the main path's IPv6 socket: both with
+ * global IPv6, probed in every strategy (7.1: a firewall may block it,
+ * IPv4 goes on) */
+static int v6_alongside(const npf_punch *p)
+{
+    return p->nv6 && p->cfg.fd6 >= 0 && !probes_all(p);
 }
 
 void npf_punch_stop(npf_punch *p)
@@ -602,42 +620,14 @@ static void tick_cb(npf_loop *loop, void *arg)
         if (p->finished)
             return;                 /* the owner ended it */
     }
-    if (pl->strategy == NPF_PUNCH_S1 || (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY)) {
-        int64_t ivl = now - p->start < S1_FAST_MS ? S1_FAST_IVL : S1_SLOW_IVL;
-        if (now >= p->socks[0].next_send) {
-            for (k = 0; k < p->cfg.npeers; k++)
+    if ((probes_all(p) || v6_alongside(p)) && now >= p->socks[0].next_send) {
+        int all = probes_all(p);
+        for (k = 0; k < p->cfg.npeers; k++)
+            if (all || p->cfg.peers[k].ss_family == AF_INET6)
                 probe(p, 0, &p->cfg.peers[k]);
-            p->socks[0].next_send = now + ivl;
-        }
+        p->socks[0].next_send = now + (now - p->start < S1_FAST_MS ? S1_FAST_IVL : S1_SLOW_IVL);
     }
-    if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD && p->nsock == 1) {
-        /* no sockets of its own (the node's budget is held by other punches):
-         * the main socket probes the peer, like S1 */
-        int64_t ivl = now - p->start < S1_FAST_MS ? S1_FAST_IVL : S1_SLOW_IVL;
-        if (now >= p->socks[0].next_send) {
-            for (k = 0; k < p->cfg.npeers; k++)
-                probe(p, 0, &p->cfg.peers[k]);
-            p->socks[0].next_send = now + ivl;
-        }
-    }
-    if (v6_alongside(p)) {
-        /* both with global IPv6: probed from the IPv6 socket in every
-         * strategy, as in S1 (7.1: a firewall may block it, IPv4 goes on) */
-        int64_t ivl = now - p->start < S1_FAST_MS ? S1_FAST_IVL : S1_SLOW_IVL;
-        if (now >= p->socks[0].next_send) {
-            for (k = 0; k < p->cfg.npeers; k++)
-                if (p->cfg.peers[k].ss_family == AF_INET6)
-                    probe(p, 0, &p->cfg.peers[k]);
-            p->socks[0].next_send = now + ivl;
-        }
-    }
-    if (pl->measure && pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD && p->nsock > 1 && !p->own_port
-        && p->bsent < 4 && now >= p->bnext) {
-        /* S2: the first new socket's mapping, from E1 (as S2B's) */
-        static const int next_ms[] = {200, 400, 800, 1600};
-        s2b_bind(p, 0, p->btx);
-        p->bnext = now + next_ms[p->bsent++];
-    }
+    bind_retry(p, now);
     if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD) {
         for (i = 1; i < p->nsock; i++) {
             if (now >= p->socks[i].next_send) {
@@ -699,9 +689,10 @@ static int64_t next_due(const npf_punch *p, int64_t now)
     int64_t due = p->deadline;
     int i;
 #define DUE(t) do { int64_t t_ = (t); if (t_ < due) due = t_; } while (0)
-    if (pl->strategy == NPF_PUNCH_S1 || (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY)
-        || (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD && p->nsock == 1))
+    if (probes_all(p) || v6_alongside(p))
         DUE(p->socks[0].next_send);
+    if (bind_pending(p))
+        DUE(p->bnext);
     if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD)
         for (i = 1; i < p->nsock; i++)
             DUE(p->socks[i].next_send);
@@ -709,25 +700,15 @@ static int64_t next_due(const npf_punch *p, int64_t now)
         int64_t ivl = pl->pps > 0 ? 1000 / pl->pps : 5;
         DUE(spray_due(p->spray_next, ivl < 1 ? 1 : ivl, now));
     }
-    if (pl->strategy == NPF_PUNCH_S2B && p->nsock > 1) {
-        if (!p->own_port) {
-            if (p->bsent < 4)
-                DUE(p->bnext);
-        } else if (p->peer_port && pl->peer_ip4.s_addr) {
-            if (p->pass < (pl->passes > 0 ? pl->passes : 4))
-                DUE(p->pass_next);
-            if (p->resend_next)
-                DUE(p->resend_next);
-        }
+    if (pl->strategy == NPF_PUNCH_S2B && p->nsock > 1 && p->own_port && p->peer_port && pl->peer_ip4.s_addr) {
+        if (p->pass < (pl->passes > 0 ? pl->passes : 4))
+            DUE(p->pass_next);
+        if (p->resend_next)
+            DUE(p->resend_next);
     }
     if (pl->role == NPF_PUNCH_CONTROLLING && p->have_valid)
         DUE(p->nom_sent ? p->nom_next : p->nom_at);
     DUE(quiet_end(p));
-    if (v6_alongside(p))
-        DUE(p->socks[0].next_send);
-    if (pl->measure && pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD && p->nsock > 1 && !p->own_port
-        && p->bsent < 4)
-        DUE(p->bnext);
 #undef DUE
     return due;
 }
