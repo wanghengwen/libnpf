@@ -326,7 +326,6 @@ static void netcheck_cb(npf_loop *loop, void *arg)
 
 static void node_net_check(npf_node *n, const char *why)
 {
-    n->netchecks++;
     npf_log("network: %s: checking the connections", why);
     if (n->udp_fd >= 0 && !n->t_udp_reopen && !udp_alive(n->udp_fd, AF_INET)) {
         udp_failed(n, n->udp_fd, npf_sock_strerror());

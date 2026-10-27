@@ -293,7 +293,6 @@ struct npf_node {
     int           dormant;          /* closed for want of use: no reconnect until npf_node_wake */
     int64_t       busy_at;          /* monotonic: the last time something needed the connection */
     npf_timer    *t_idle, *t_wake;
-    int           sleeps;           /* times it went dormant */
     int           req_seq;
     npf_pending   pending[NPF_PENDING_MAX];
     npf_end_report ends[NPF_ENDS_MAX];  /* call_end reports not answered yet */
@@ -353,7 +352,6 @@ struct npf_node {
     int64_t       watch_boot_ms;    /* npf_boot_ms of the last tick */
     uint32_t      watch_addrs;      /* digest of the interfaces' addresses, 0 not yet */
     int64_t       netcheck_ms;      /* monotonic: the signaling ping of a check went out */
-    int           netchecks;        /* checks since the start (status) */
     int           repunch_on_nat;   /* a network check: the relayed calls punch again once the NAT is measured */
     void        (*on_udp_ready)(npf_node *n, void *arg);
     struct sockaddr_in srflx;
