@@ -15,7 +15,6 @@ static inline void timer_stop(npf_loop *l, npf_timer **t)
 
 /* node_servers.c */
 /* a signed list from the login, a push or an external channel (via): 1 when adopted */
-int  node_wake_delay(int ms);
 int  node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via);
 void node_servers_load(npf_node *n);
 void node_server_failed(npf_server_entry *e, int weight);
@@ -23,8 +22,8 @@ int node_eff_prio(const npf_server_entry *e);
 int node_server_pick(npf_node *n);
 
 /* node_signal.c */
+int  node_wake_delay(int ms);           /* sig_wake_ms +-20 % (the unit tests) */
 const uint8_t *node_day_key(const npf_node *n, const npf_daykey keys[2]);
-void node_apply_keys(npf_node *n, const npf_json *j, int d);
 void node_sig_fail_pending(npf_node *n);
 void node_sig_race_drop(npf_node *n);
 void node_sig_drop(npf_node *n);
@@ -44,8 +43,6 @@ void node_watch_start(npf_node *n);
 
 /* nat.c */
 void node_nat_refresh(npf_node *n);
-/* a call starts (caller) or is accepted (callee): the main socket's mapping
- * asked of E1 meanwhile, against the srflx the call went out with */
 
 /* sources.c: the server list's external channels */
 void node_sources_check(npf_node *n);   /* at each failed attempt: time for a round? */
@@ -82,8 +79,7 @@ void node_nat_regather(npf_node *n);
  * before, else once the first one is measured */
 void node_nat_login(npf_node *n);
 
-/* call_punch.c: the srflx changed: the sessions not direct yet send it to their peers */
-/* a check of the NAT unanswered (call_punch.c): a sign it is short of ports
+/* call_punch.c: a check of the NAT unanswered (call_punch.c): a sign it is short of ports
  * if a hard-side punch held them or just did (nat-traversal.md 8) */
 void call_port_pressure(npf_node *n, const char *what);
 

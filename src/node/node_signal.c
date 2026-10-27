@@ -683,7 +683,7 @@ static void probe_changed(npf_node *n)
         node_nat_refresh(n);
 }
 
-void node_apply_keys(npf_node *n, const npf_json *j, int d)
+static void apply_keys(npf_node *n, const npf_json *j, int d)
 {
     uint8_t t[64];
     if (npf_json_get_b64(j, d, "ticket", t, sizeof t) == 28)
@@ -740,7 +740,7 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     if (npf_json_get_int(j, d, "ping_s", 5, 3600, &v) == 0)
         n->ping_s = (int)v;
     node_upgrade_apply(n, j, npf_json_get(j, d, "upgrade"), 0);
-    node_apply_keys(n, j, d);
+    apply_keys(n, j, d);
     node_apply_probe(n, j, d);          /* measured below (node_nat_login) */
     /* a (re)issued certificate: a node's own certificate in "cert"; the
      * account (client) certificate in "account_cert" for nodes, in "cert" for
@@ -905,7 +905,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         return;
     }
     if (strcmp(type, "keys") == 0) {
-        node_apply_keys(n, j, d);
+        apply_keys(n, j, d);
         if (node_apply_probe(n, j, d))
             probe_changed(n);
         return;

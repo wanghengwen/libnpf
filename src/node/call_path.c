@@ -35,13 +35,6 @@ int call_no_p2p(const npf_call *c)
 }
 
 
-/* nat-traversal.md 10.3: unacknowledged data and nothing heard on the direct
- * path for 3 s while the relay is bound -> back to the relay, punch again later */
-/* nat-traversal.md 10.3. A long queue on a loaded uplink can hold packets for
- * seconds, so silence alone does not prove the direct path dead: with
- * unacknowledged data and nothing heard for max(3 s, 2 RTO), send on both
- * paths (asking for a relay if it was released); give the direct path up
- * only if it stays silent for another 10 s. */
 /* ---- direct path check ----
  * Hearing the peer on the direct path does not prove that it hears us: with
  * a path that died one way (a firewall, a cut in a test) the peer's
@@ -93,7 +86,11 @@ static void path_check_timer(npf_loop *loop, void *arg)
 }
 
 
-/* nat-traversal.md 10.3 */
+/* nat-traversal.md 10.3. A long queue on a loaded uplink can hold packets for
+ * seconds, so silence alone does not prove the direct path dead: with
+ * unacknowledged data and nothing heard for max(3 s, 2 RTO), send on both
+ * paths (asking for a relay if it was released); give the direct path up
+ * only if it stays silent for another 10 s. */
 void call_check_p2p(npf_call *c)
 {
     anl_stats st;
