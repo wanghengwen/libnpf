@@ -70,11 +70,6 @@ static int doh_list(const npf_node *n, struct sockaddr_storage *addr, char host[
     return k;
 }
 
-static void src_reconnect_now(npf_node *n)
-{
-    node_reconnect_now(n);
-}
-
 /* a body that is the blob, or its Base64url text */
 static int try_blob(npf_node *n, const uint8_t *b, size_t len, const char *via)
 {
@@ -105,7 +100,7 @@ static void got_txt(const uint8_t *txt, size_t len, void *arg)
 {
     src_req *r = arg;
     if (try_blob(r->n, txt, len, r->via))
-        src_reconnect_now(r->n);
+        node_reconnect_now(r->n);
 }
 
 static void doh_done(int status, const uint8_t *body, size_t len, const char *err, void *arg)
@@ -125,14 +120,17 @@ static void https_done(int status, const uint8_t *body, size_t len, const char *
     src_req *r = arg;
     if (status == 200) {
         if (try_blob(r->n, body, len, r->via))
-            src_reconnect_now(r->n);
+            node_reconnect_now(r->n);
     } else {
         npf_logd("server list: %s: %s (%d)", r->via, status < 0 ? err : "HTTP error", status);
     }
     req_done(r);
 }
 
-static src_req *new_req(npf_node *n, const char *via)
+/* a request of a round (addr NULL: url's host resolved): 1 started, 0 not,
+ * -1 no room for another */
+static int req_start(npf_node *n, const char *via, const char *url, const struct sockaddr_storage *addr,
+                     const char *accept, size_t cap, npf_http_fn done)
 {
     int i;
     src_req *r;
@@ -140,31 +138,29 @@ static src_req *new_req(npf_node *n, const char *via)
         if (!n->src_req[i])
             break;
     if (i == (int)(sizeof n->src_req / sizeof n->src_req[0]) || !(r = calloc(1, sizeof *r)))
-        return NULL;
+        return -1;
     r->n = n;
     r->slot = i;
     snprintf(r->via, sizeof r->via, "%s", via);
-    return r;
+    if (!(r->h = npf_http_get(n->loop, url, addr, accept, cap, 15000, done, r))) {
+        free(r);
+        return 0;
+    }
+    n->src_req[i] = r;
+    n->nsrc_req++;
+    return 1;
 }
 
 static void start_round(npf_node *n, const char *why)
 {
     struct sockaddr_storage addr[8];
     char host[8][128];
-    int nd = doh_list(n, addr, host, 8), i, k, started = 0;
+    int nd = doh_list(n, addr, host, 8), i, k, r, started = 0;
     const npf_list_meta *m = &n->sl_meta;
     for (i = 0; i < m->nhttps; i++) {
-        src_req *r = new_req(n, m->https[i]);
-        if (!r)
+        if ((r = req_start(n, m->https[i], m->https[i], NULL, "application/octet-stream", SRC_BODY_MAX, https_done)) < 0)
             break;
-        r->h = npf_http_get(n->loop, m->https[i], NULL, "application/octet-stream", SRC_BODY_MAX, 15000, https_done, r);
-        if (r->h) {
-            n->src_req[r->slot] = r;
-            n->nsrc_req++;
-            started++;
-        } else {
-            free(r);
-        }
+        started += r;
     }
     for (i = 0; i < m->ndoh && nd > 0; i++) {
         uint8_t q[300];
@@ -177,19 +173,11 @@ static void start_round(npf_node *n, const char *why)
         for (k = 0; k < (nd > 1 ? 2 : 1); k++) {     /* two services in random order */
             int d = (first + k) % nd;
             char via[400];
-            src_req *r;
             snprintf(url, sizeof url, "https://%.127s/dns-query?dns=%.419s", host[d], q64);
             snprintf(via, sizeof via, "DoH %.127s (%.127s)", m->doh[i], host[d]);
-            if (!(r = new_req(n, via)))
+            if ((r = req_start(n, via, url, &addr[d], "application/dns-message", 65536, doh_done)) < 0)
                 break;
-            r->h = npf_http_get(n->loop, url, &addr[d], "application/dns-message", 65536, 15000, doh_done, r);
-            if (r->h) {
-                n->src_req[r->slot] = r;
-                n->nsrc_req++;
-                started++;
-            } else {
-                free(r);
-            }
+            started += r;
         }
     }
     if (started)
