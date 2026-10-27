@@ -273,38 +273,19 @@ static int match(const npf_policy_rule *r, int n, int fam, const uint8_t *a, uin
     return 0;
 }
 
-int npf_policy_rules_match(const npf_policy_rule *r, int n, const struct sockaddr *sa)
+/* the address of sa as 16 bytes (a v4-mapped IPv6 address, ::ffff:a.b.c.d,
+ * as IPv4), its family and port; dst: 0.0.0.0/8 as 127.0.0.1 (it reaches
+ * the host itself on Linux). 0, or -1 for another family */
+static int sa_parts(const struct sockaddr *sa, int dst, uint8_t a[16], int *famp, uint16_t *portp)
 {
-    uint8_t a[16];
     int fam = sa->sa_family;
-    if (fam == AF_INET) {
-        memcpy(a, &((const struct sockaddr_in *)sa)->sin_addr, 4);
-    } else if (fam == AF_INET6) {
-        const struct in6_addr *v6 = &((const struct sockaddr_in6 *)sa)->sin6_addr;
-        if (IN6_IS_ADDR_V4MAPPED(v6)) {
-            fam = AF_INET;
-            memcpy(a, (const uint8_t *)v6 + 12, 4);
-        } else {
-            memcpy(a, v6, 16);
-        }
-    } else {
-        return 0;
-    }
-    return match(r, n, fam, a, 0) || match(r, n, fam, a, 65535);
-}
-
-/* the address of dst as 16 bytes (a v4-mapped IPv6 address as IPv4), its
- * family and port; 0, or -1 for another family */
-static int dst_parts(const struct sockaddr *dst, uint8_t a[16], int *famp, uint16_t *portp)
-{
-    int fam = dst->sa_family;
     uint16_t port;
     if (fam == AF_INET) {
-        memcpy(a, &((const struct sockaddr_in *)dst)->sin_addr, 4);
-        port = ntohs(((const struct sockaddr_in *)dst)->sin_port);
+        memcpy(a, &((const struct sockaddr_in *)sa)->sin_addr, 4);
+        port = ntohs(((const struct sockaddr_in *)sa)->sin_port);
     } else if (fam == AF_INET6) {
-        const struct in6_addr *v6 = &((const struct sockaddr_in6 *)dst)->sin6_addr;
-        port = ntohs(((const struct sockaddr_in6 *)dst)->sin6_port);
+        const struct in6_addr *v6 = &((const struct sockaddr_in6 *)sa)->sin6_addr;
+        port = ntohs(((const struct sockaddr_in6 *)sa)->sin6_port);
         if (IN6_IS_ADDR_V4MAPPED(v6)) {
             fam = AF_INET;
             memcpy(a, (const uint8_t *)v6 + 12, 4);
@@ -314,11 +295,21 @@ static int dst_parts(const struct sockaddr *dst, uint8_t a[16], int *famp, uint1
     } else {
         return -1;
     }
-    if (fam == AF_INET && a[0] == 0)            /* 0.0.0.0/8 reaches the host itself on Linux */
+    if (dst && fam == AF_INET && a[0] == 0)
         memcpy(a, (const uint8_t[]){127, 0, 0, 1}, 4);
     *famp = fam;
     *portp = port;
     return 0;
+}
+
+int npf_policy_rules_match(const npf_policy_rule *r, int n, const struct sockaddr *sa)
+{
+    uint8_t a[16];
+    int fam;
+    uint16_t port;
+    if (sa_parts(sa, 0, a, &fam, &port) < 0)
+        return 0;
+    return match(r, n, fam, a, 0) || match(r, n, fam, a, 65535);
 }
 
 /* UDP: only the "udp" resources (theirs "*" too), never net's or socks'
@@ -328,7 +319,7 @@ int npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst)
     uint8_t a[16];
     int fam;
     uint16_t port;
-    if (!p || dst_parts(dst, a, &fam, &port) < 0)
+    if (!p || sa_parts(dst, 1, a, &fam, &port) < 0)
         return 0;
     if (p->udp_any)
         return 1;
@@ -338,29 +329,14 @@ int npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst)
 int npf_policy_allowed(npf_policy *p, const struct sockaddr *dst)
 {
     uint8_t a[16];
-    int fam = dst->sa_family;
+    int fam;
     uint16_t port;
     if (!p)
         return 0;
     if (p->any)
         return 1;
-    if (fam == AF_INET) {
-        memcpy(a, &((const struct sockaddr_in *)dst)->sin_addr, 4);
-        port = ntohs(((const struct sockaddr_in *)dst)->sin_port);
-    } else if (fam == AF_INET6) {
-        const struct in6_addr *v6 = &((const struct sockaddr_in6 *)dst)->sin6_addr;
-        port = ntohs(((const struct sockaddr_in6 *)dst)->sin6_port);
-        if (IN6_IS_ADDR_V4MAPPED(v6)) {         /* judge ::ffff:a.b.c.d as IPv4 */
-            fam = AF_INET;
-            memcpy(a, (const uint8_t *)v6 + 12, 4);
-        } else {
-            memcpy(a, v6, 16);
-        }
-    } else {
+    if (sa_parts(dst, 1, a, &fam, &port) < 0)
         return 0;
-    }
-    if (fam == AF_INET && a[0] == 0)            /* 0.0.0.0/8 reaches the host itself on Linux */
-        memcpy(a, (const uint8_t[]){127, 0, 0, 1}, 4);
     if (match(p->rules, p->nrules, fam, a, port))
         return 1;
     if (!p->lan)
@@ -378,29 +354,6 @@ int npf_policy_allowed(npf_policy *p, const struct sockaddr *dst)
 #define GUARDS 4
 static struct sockaddr_storage g_guard[GUARDS];
 static int g_nguard;
-
-static int sa_parts(const struct sockaddr *sa, uint8_t a[16], int *fam, uint16_t *port)
-{
-    if (sa->sa_family == AF_INET) {
-        memcpy(a, &((const struct sockaddr_in *)sa)->sin_addr, 4);
-        *port = ntohs(((const struct sockaddr_in *)sa)->sin_port);
-        *fam = AF_INET;
-        return 0;
-    }
-    if (sa->sa_family == AF_INET6) {
-        const struct in6_addr *v6 = &((const struct sockaddr_in6 *)sa)->sin6_addr;
-        *port = ntohs(((const struct sockaddr_in6 *)sa)->sin6_port);
-        if (IN6_IS_ADDR_V4MAPPED(v6)) {
-            memcpy(a, (const uint8_t *)v6 + 12, 4);
-            *fam = AF_INET;
-        } else {
-            memcpy(a, v6, 16);
-            *fam = AF_INET6;
-        }
-        return 0;
-    }
-    return -1;
-}
 
 static int is_loopback(int fam, const uint8_t *a)
 {
@@ -441,10 +394,10 @@ int npf_guard_blocked(const struct sockaddr *dst)
     uint8_t d[16], g[16];
     int df, gf, i;
     uint16_t dp, gp;
-    if (!g_nguard || sa_parts(dst, d, &df, &dp) < 0)
+    if (!g_nguard || sa_parts(dst, 0, d, &df, &dp) < 0)
         return 0;
     for (i = 0; i < g_nguard; i++) {
-        if (sa_parts((const struct sockaddr *)&g_guard[i], g, &gf, &gp) < 0 || gp != dp)
+        if (sa_parts((const struct sockaddr *)&g_guard[i], 0, g, &gf, &gp) < 0 || gp != dp)
             continue;
         /* its port on this host: a loopback address (any of 127/8, the port
          * may be served there too), its own address, or any local one when
