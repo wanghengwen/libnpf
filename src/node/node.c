@@ -183,6 +183,8 @@ void npf_node_stop(npf_node *n)
         npf_sock_close(n->udp6_fd);
         n->udp6_fd = -1;
     }
+    free(n->upgrade.packages);
+    n->upgrade.packages = NULL;
     free(n->servers);
     free(n->list);
     n->servers = n->list = NULL;
