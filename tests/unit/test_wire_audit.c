@@ -23,8 +23,8 @@ int main(int argc, char **argv)
     if (!argv[1] || strcmp(argv[1], "ws_close") == 0) {
         npf_ws *ws = calloc(1, sizeof *ws);
         CHECK(ws);
-        ws->fd = -1;
-        ws->state = ST_RESOLVING;
+        ws->tcp.fd = -1;
+        ws->state = ST_CONNECTING;              /* npf_tcp: resolving */
         ws->cbs.on_close = close_from_callback;
         ws_fail(ws, 0, "resolution failed");
         CHECK(closed == 1);
@@ -32,7 +32,7 @@ int main(int argc, char **argv)
     if (!argv[1] || strcmp(argv[1], "http_cancel") == 0) {
         npf_http *h = calloc(1, sizeof *h);
         CHECK(h);
-        h->fd = -1;
+        h->tcp.fd = -1;
         h->fn = cancel_from_callback;
         h->arg = h;
         h_fail(h, "read failed");

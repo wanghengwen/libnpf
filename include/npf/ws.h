@@ -2,7 +2,7 @@
  *
  * wss:// uses mbedTLS without certificate verification (security.md 7.1, D5):
  * TLS is camouflage, authentication is the Noise handshake inside. ws:// is
- * accepted for tests. Hostname resolution is synchronous (getaddrinfo). */
+ * accepted for tests. Host names are looked up off the loop (npf/resolve.h). */
 #ifndef NPF_WS_H
 #define NPF_WS_H
 
@@ -39,7 +39,7 @@ void npf_ws_free(npf_ws *ws);
 /* monotonic ms of the last frame received (pongs included), 0 = none yet */
 int64_t npf_ws_last_rx(const npf_ws *ws);
 
-/* split "wss://host:port/path"; returns 0 or -1 */
+/* split "wss://host:port/path" (also https:// and http://); returns 0 or -1 */
 int npf_url_parse(const char *url, int *tls, char *host, size_t hcap, int *port, char *path, size_t pcap);
 
 #endif
