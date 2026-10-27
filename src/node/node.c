@@ -160,6 +160,8 @@ void npf_node_stop(npf_node *n)
     npf_timer_stop(n->loop, &n->t_udp_reopen);
     npf_timer_stop(n->loop, &n->t_nat_retry);
     node_udp_close(n);
+    free(n->upgrade.packages);
+    n->upgrade.packages = NULL;
     free(n->servers);
     free(n->list);
     n->servers = n->list = NULL;

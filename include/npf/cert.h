@@ -23,6 +23,7 @@ enum {
 
 #define NPF_PERM_SERVERLIST (1u << 8)
 #define NPF_PERM_GRANT      (1u << 9)
+#define NPF_PERM_UPDATE     (1u << 10)
 #define NPF_CERT_MAX        512
 
 typedef struct npf_cert {
@@ -53,6 +54,12 @@ int npf_cert_chain_parse(const uint8_t (*roots)[32], int nroots, const uint8_t *
  * periods are not checked (an expired list stays usable, D15). */
 int npf_serverlist_verify(const uint8_t (*roots)[32], int nroots, const uint8_t *blob, size_t len,
                           const uint8_t **payload, size_t *payload_len);
+
+/* Verify a signed update manifest (the same blob as the server list, its own
+ * permission and domain; docs/design/upgrade.md 5); *payload is the manifest's
+ * JSON, inside blob. Validity periods are not checked. */
+int npf_manifest_verify(const uint8_t (*roots)[32], int nroots, const uint8_t *blob, size_t len,
+                        const uint8_t **payload, size_t *payload_len);
 
 /* Hosted-trust grant (security.md 8.2, 8.4):
  *   ver(1)=1 | kind(1) | number(8) | caller_dh(32) | account(8) | issued(4) | expires(4)

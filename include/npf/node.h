@@ -256,6 +256,7 @@ struct npf_node {
         int  required;                  /* below the lowest version: no login until upgraded */
         char min[40], latest[40];
         char url[320], notes[320];
+        char *packages;                 /* the offer's signed install manifests, a JSON array as sent (malloc'd; NULL none) */
     } upgrade;
     int64_t       src_next;         /* monotonic ms: no round before */
     int           src_backoff;      /* ms */

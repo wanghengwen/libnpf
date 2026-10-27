@@ -210,9 +210,14 @@ void node_reconnect_now(npf_node *n)
 /* The platform's upgrade policy for this program, from a welcome's
  * "upgrade", an "upgrade" event or the data of upgrade_required (d: the
  * object; d < 0: none, which clears what was offered) */
-static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int required)
+#define UPGRADE_PACKAGES_MAX 16384
+
+/* notify: tell the modules of an offer (the "upgrade" event does reach them
+ * by itself; a welcome's does not) */
+static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int required, int notify)
 {
     int r = required, was = n->upgrade.latest[0] || n->upgrade.required;
+    free(n->upgrade.packages);
     memset(&n->upgrade, 0, sizeof n->upgrade);
     if (d >= 0) {
         npf_json_bool(j, npf_json_get(j, d, "required"), &r);
@@ -221,12 +226,23 @@ static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int requir
         npf_json_get_str(j, d, "latest", n->upgrade.latest, sizeof n->upgrade.latest);
         npf_json_get_str(j, d, "url", n->upgrade.url, sizeof n->upgrade.url);
         npf_json_get_str(j, d, "notes", n->upgrade.notes, sizeof n->upgrade.notes);
+        {
+            int pk = npf_json_get(j, d, "packages");
+            size_t len;
+            if (pk >= 0 && j->tok[pk].type == NPF_JT_ARRAY && (len = j->tok[pk].end - j->tok[pk].start) <= UPGRADE_PACKAGES_MAX
+                && (n->upgrade.packages = malloc(len + 1))) {
+                memcpy(n->upgrade.packages, j->s + j->tok[pk].start, len);
+                n->upgrade.packages[len] = 0;
+            }
+        }
         if (r)
             npf_logw("upgrade: this version is too old for the platform (%s needed%s%s)", n->upgrade.min,
                      n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
         else if (n->upgrade.latest[0])
             npf_log("upgrade: version %s is available%s%s", n->upgrade.latest, n->upgrade.url[0] ? ", see " : "",
                     n->upgrade.url);
+        if (notify && (r || n->upgrade.latest[0]) && n->hooks.on_event)
+            n->hooks.on_event(n, "upgrade", j, d, n->hook_arg);
     } else if (was) {
         npf_log("upgrade: no newer version offered any more");
     }
@@ -735,7 +751,7 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     }
     if (npf_json_get_int(j, d, "ping_s", 5, 3600, &v) == 0)
         n->ping_s = (int)v;
-    node_upgrade_apply(n, j, npf_json_get(j, d, "upgrade"), 0);
+    node_upgrade_apply(n, j, npf_json_get(j, d, "upgrade"), 0, 1);
     apply_keys(n, j, d);
     node_apply_probe(n, j, d);          /* measured below (node_nat_login) */
     /* a (re)issued certificate: a node's own certificate in "cert"; the
@@ -856,7 +872,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
             npf_json_get_str(j, 0, "error", err, sizeof err);
             npf_logw("login: rejected (%s)", err);
             if (strcmp(err, "upgrade_required") == 0) {
-                node_upgrade_apply(n, j, npf_json_get(j, 0, "data"), 1);
+                node_upgrade_apply(n, j, npf_json_get(j, 0, "data"), 1, 1);
                 n->upgrade.required = 1;
                 snprintf(n->sig_error, sizeof n->sig_error, "this version is too old for the platform: upgrade to %s%s",
                          n->upgrade.min[0] ? n->upgrade.min : "the newest version",
@@ -879,7 +895,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
         return;
     }
     if (strcmp(type, "upgrade") == 0) {     /* the policy changed; the application hears of it too */
-        node_upgrade_apply(n, j, d, 0);
+        node_upgrade_apply(n, j, d, 0, 0);
         node_dispatch(n, type, j, d);
         return;
     }

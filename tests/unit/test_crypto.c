@@ -192,6 +192,15 @@ static void test_noise(void)
     }
 }
 
+static int has_text(const uint8_t *p, size_t n, const char *t)
+{
+    size_t l = strlen(t), i;
+    for (i = 0; i + l <= n; i++)
+        if (memcmp(p + i, t, l) == 0)
+            return 1;
+    return 0;
+}
+
 static void test_cert(void)
 {
     uint8_t roots[1][32], inter_raw[512], leaf_raw[512], chain[1024], list[512];
@@ -217,6 +226,19 @@ static void test_cert(void)
           && plen == 12 && memcmp(pl, "{\"serial\":5}", 12) == 0, "server list");
     list[ln - 1] ^= 1;
     CHECK(npf_serverlist_verify(roots, 1, list, ln, &pl, &plen) != 0, "server list tampered");
+
+    /* update manifests (docs/design/upgrade.md 5): signed by an intermediate with NPF_PERM_UPDATE */
+    {
+        uint8_t mf[768], other[768];
+        size_t mn = unhex(V_MANIFEST, mf, sizeof mf), on = unhex(V_MANIFEST_BY_LISTER, other, sizeof other);
+        CHECK(npf_manifest_verify(roots, 1, mf, mn, &pl, &plen) == 0 && plen > 20
+              && has_text(pl, plen, "\"version\":\"0.2.0\""), "update manifest");
+        CHECK(npf_serverlist_verify(roots, 1, mf, mn, &pl, &plen) != 0, "a manifest is not a server list");
+        CHECK(npf_manifest_verify(roots, 1, other, on, &pl, &plen) != 0, "a blob of the server-list domain is not a manifest");
+        CHECK(npf_manifest_verify(roots, 1, list, ln, &pl, &plen) != 0, "a server list is not a manifest");
+        mf[mn - 70] ^= 1;
+        CHECK(npf_manifest_verify(roots, 1, mf, mn, &pl, &plen) != 0, "manifest tampered");
+    }
 }
 
 static void test_grant(void)
