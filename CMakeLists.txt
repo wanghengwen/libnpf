@@ -95,7 +95,6 @@ add_library(npf_common STATIC
   src/platform/sys.c
   src/platform/loop.c
   src/platform/log.c
-  third_party/log/log.c
   src/platform/out.c
   src/platform/text.c
   src/platform/resolve.c
@@ -204,7 +203,7 @@ else()
   target_compile_definitions(npf_common PUBLIC NPF_NO_PEERS)
 endif()
 # src/api: the internals (npf_int.h), for a program's modules too
-target_include_directories(npf_common PUBLIC include src/api PRIVATE third_party/log)
+target_include_directories(npf_common PUBLIC include src/api)
 target_link_libraries(npf_common PUBLIC anliu monocypher)
 if(NPF_USE_OPENSSL)
   target_compile_definitions(npf_common PRIVATE NPF_USE_OPENSSL)

@@ -1,4 +1,4 @@
-/* Logging: levels and sinks on rxi/log.c (third_party/log, MIT).
+/* Logging: levels and sinks.
  *
  *   2026-10-06 13:01:14.013 INFO  call x: direct path 1.2.3.4:5 (213 ms)
  *
@@ -18,7 +18,6 @@
 
 #include <stddef.h>
 
-/* the same values as rxi/log.c's LOG_TRACE .. LOG_FATAL */
 enum { NPF_LOG_TRACE, NPF_LOG_DEBUG, NPF_LOG_INFO, NPF_LOG_WARN, NPF_LOG_ERROR };
 
 /* MinGW: the C99 formats (%zu, %lld) of its own printf (log.c uses it) */

@@ -1,6 +1,6 @@
-/* Logging (npf/log.h): rxi/log.c dispatches by level under a lock; the one
- * sink here writes the line to the log file (rotated) or stderr and keeps the
- * last lines in memory for the control socket. A libnpf instance's lines
+/* Logging (npf/log.h): the process log's sink writes a line under a lock to
+ * the log file (rotated) or stderr and keeps the last lines in memory for the
+ * control socket. A libnpf instance's lines
  * (this thread's log context) stay with the instance: its recent lines and
  * its callback, which runs outside every lock. */
 #ifndef _WIN32
@@ -11,7 +11,6 @@
 #include <string.h>
 #include <time.h>
 
-#include "log.h"                    /* third_party/log */
 #include "npf/log.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
@@ -21,9 +20,8 @@
 #include <io.h>
 #include <windows.h>
 static SRWLOCK g_lock = SRWLOCK_INIT;
-static void lock_fn(bool lock, void *udata)
+static void lock_fn(int lock)
 {
-    (void)udata;
     if (lock)
         AcquireSRWLockExclusive(&g_lock);
     else
@@ -34,9 +32,8 @@ static void lock_fn(bool lock, void *udata)
 #include <pthread.h>
 #include <unistd.h>
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static void lock_fn(bool lock, void *udata)
+static void lock_fn(int lock)
 {
-    (void)udata;
     if (lock)
         pthread_mutex_lock(&g_lock);
     else
@@ -180,14 +177,11 @@ static int make_line(int lv, const char *file, int ln, const char *msg, char *li
     return n;
 }
 
-/* rxi/log.c callback, called under the lock; ev->fmt is "%s" with the
- * formatted message. Only the process log: no application code here. */
-static void sink(log_Event *ev)
+/* the process log, called under the lock: no application code here */
+static void sink(int lv, const char *file, int ln, const char *msg)
 {
     char line[2300];
-    int lv = ev->level < 0 ? 0 : ev->level > NPF_LOG_ERROR ? NPF_LOG_ERROR : ev->level;
-    const char *msg = va_arg(ev->ap, const char *);
-    int n = make_line(lv, ev->file, ev->line, msg, line, sizeof line);
+    int n = make_line(lv, file, ln, msg, line, sizeof line);
     ring_put(g_ring, &g_ring_pos, &g_ring_len, line, (size_t)n);
     /* a file gets the date as well; the terminal only the time */
     if (g_logf) {
@@ -203,36 +197,6 @@ static void sink(log_Event *ev)
     if (g_logf && g_log_size > g_log_rot)
         log_rotate();
 }
-
-static void init_rxi(void)
-{
-    log_set_lock(lock_fn, NULL);
-    log_set_quiet(true);            /* rxi's own stderr writer: the sink does it */
-    log_set_level(NPF_LOG_TRACE);   /* filtered in npf_log_at, before formatting */
-    log_add_callback(sink, NULL, NPF_LOG_TRACE);
-}
-
-#ifdef _WIN32
-static INIT_ONCE g_once = INIT_ONCE_STATIC_INIT;
-static BOOL CALLBACK once_fn(PINIT_ONCE o, PVOID p, PVOID *c)
-{
-    (void)o;
-    (void)p;
-    (void)c;
-    init_rxi();
-    return TRUE;
-}
-static void init(void)
-{
-    InitOnceExecuteOnce(&g_once, once_fn, NULL, NULL);
-}
-#else
-static pthread_once_t g_once = PTHREAD_ONCE_INIT;
-static void init(void)
-{
-    pthread_once(&g_once, init_rxi);
-}
-#endif
 
 npf_log_ctx *npf_log_ctx_swap(npf_log_ctx *c)
 {
@@ -251,9 +215,9 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
     char msg[2048];
     va_list ap;
     npf_log_ctx *c = t_ctx;
+    int lv = level < 0 ? 0 : level > NPF_LOG_ERROR ? NPF_LOG_ERROR : level;
     if (level < level_now())
         return;
-    init();
     va_start(ap, fmt);
 #ifdef __MINGW32__
     __mingw_vsnprintf(msg, sizeof msg, fmt, ap);
@@ -263,7 +227,6 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
     va_end(ap);
     if (c) {                                /* an instance's line: its ring, its callback */
         char ln[2300];
-        int lv = level < 0 ? 0 : level > NPF_LOG_ERROR ? NPF_LOG_ERROR : level;
         int n = make_line(lv, file, line, msg, ln, sizeof ln);
         if (c->ring)
             ring_put(c->ring, &c->ring_pos, &c->ring_len, ln, (size_t)n);
@@ -273,7 +236,9 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
             return;
         }
     }
-    log_log(level, file, line, "%s", msg);
+    lock_fn(1);
+    sink(lv, file, line, msg);
+    lock_fn(0);
 }
 
 void npf_log_set_level(int level)
@@ -324,9 +289,9 @@ size_t npf_log_recent(char *out, size_t cap)
         }
         return ring_copy(t_ctx->ring, t_ctx->ring_pos, t_ctx->ring_len, out, cap);
     }
-    lock_fn(true, NULL);
+    lock_fn(1);
     r = ring_copy(g_ring, g_ring_pos, g_ring_len, out, cap);
-    lock_fn(false, NULL);
+    lock_fn(0);
     return r;
 }
 
@@ -358,13 +323,13 @@ int npf_log_open(const char *path, long max_bytes)
     int r;
     if (npf_abspath(path, abs, sizeof abs) < 0)
         return -1;
-    lock_fn(true, NULL);                /* a line being written may rotate the old path */
+    lock_fn(1);                /* a line being written may rotate the old path */
     memcpy(g_log_path, abs, sizeof abs);
     if (max_bytes > 0)
         g_log_max = max_bytes;
     g_own_stderr = 1;
     r = log_attach(1);
-    lock_fn(false, NULL);
+    lock_fn(0);
     return r;
 }
 
@@ -374,13 +339,13 @@ int npf_log_open_app(const char *path, long max_bytes)
     int r;
     if (npf_abspath(path, abs, sizeof abs) < 0)
         return -1;
-    lock_fn(true, NULL);                /* a line being written may rotate the old path */
+    lock_fn(1);                /* a line being written may rotate the old path */
     memcpy(g_log_path, abs, sizeof abs);
     if (max_bytes > 0)
         g_log_max = max_bytes;
     g_own_stderr = 0;
     r = log_attach(0);
-    lock_fn(false, NULL);
+    lock_fn(0);
     return r;
 }
 
@@ -389,30 +354,30 @@ int npf_log_open_app(const char *path, long max_bytes)
 int npf_log_open_daemon(const char *path)
 {
     int r;
-    lock_fn(true, NULL);
+    lock_fn(1);
     snprintf(g_log_path, sizeof g_log_path, "%s", path);
     r = log_attach(0);
     g_echo = r == 0;
-    lock_fn(false, NULL);
+    lock_fn(0);
     return r;
 }
 
 void npf_log_detach_terminal(void)
 {
-    lock_fn(true, NULL);
+    lock_fn(1);
     g_echo = 0;
 #ifndef _WIN32
     if (g_logf)
         dup2(fileno(g_logf), 2);    /* from now on the terminal may be gone */
 #endif
-    lock_fn(false, NULL);
+    lock_fn(0);
 }
 
 void npf_log_reopen(void)
 {
     if (!g_log_path[0])
         return;
-    lock_fn(true, NULL);
+    lock_fn(1);
     log_attach(!g_echo && g_own_stderr);
-    lock_fn(false, NULL);
+    lock_fn(0);
 }

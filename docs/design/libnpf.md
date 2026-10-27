@@ -25,7 +25,7 @@
 
 ## 2. 构建与集成
 
-需要 CMake 3.16 或更新版本、C99 编译器和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher、mbedTLS 和 rxi/log.c；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
+需要 CMake 3.16 或更新版本、C99 编译器和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher 和 mbedTLS；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib
