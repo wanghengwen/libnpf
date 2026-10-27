@@ -12,7 +12,7 @@
 void npf_kdf(uint8_t out[32], const void *key, size_t key_len, const void *msg, size_t msg_len)
 {
 #ifdef NPF_USE_OPENSSL
-    if (key_len && ossl_mac(out, 32, "BLAKE2BMAC", key, key_len, msg, msg_len, NULL, 0) == 0)
+    if (key_len && ossl_mac(out, 32, 0, key, key_len, msg, msg_len, NULL, 0) == 0)
         return;
 #endif
     /* OpenSSL 3.0 has no variable-length unkeyed BLAKE2b. Keep its exact
@@ -25,7 +25,7 @@ void npf_kdf2(uint8_t out[32], const void *key, size_t key_len,
 {
     crypto_blake2b_ctx ctx;
 #ifdef NPF_USE_OPENSSL
-    if (key_len && ossl_mac(out, 32, "BLAKE2BMAC", key, key_len, a, a_len, b, b_len) == 0)
+    if (key_len && ossl_mac(out, 32, 0, key, key_len, a, a_len, b, b_len) == 0)
         return;
 #endif
     crypto_blake2b_keyed_init(&ctx, 32, key, key_len);
@@ -106,7 +106,7 @@ void npf_hmac_blake2b(uint8_t out[64], const uint8_t *key, size_t key_len,
     crypto_blake2b_ctx ctx;
     size_t i;
 #ifdef NPF_USE_OPENSSL
-    if (ossl_mac(out, 64, "HMAC", key, key_len, data, data_len, NULL, 0) == 0) return;
+    if (ossl_mac(out, 64, 1, key, key_len, data, data_len, NULL, 0) == 0) return;
 #endif
     memset(k, 0, sizeof k);
     if (key_len > 128)
