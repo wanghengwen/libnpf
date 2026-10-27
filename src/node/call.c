@@ -731,7 +731,7 @@ void npf_node_check_paths(npf_node *n, const char *why)
 void npf_node_ws_calls_udp_back(npf_node *n)
 {
     npf_call *c;
-    if (getenv("NPF_NO_UDP"))
+    if (n->test_no_udp)
         return;
     for (c = n->calls; c; c = c->next) {
         if (c->ended || !c->caller || !c->ws_mode || c->secure)

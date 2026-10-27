@@ -59,11 +59,13 @@ static const char *learn_str(int learn)
     return learn == RELAY_LEARNED ? "learned" : learn == RELAY_UNSTABLE ? "unstable" : "learning";
 }
 
-/* may this node have a spare (9.1): a UDP socket of its own, an account or a node's identity */
+/* may this node have a spare (9.1): a UDP socket of its own, an account or a
+ * node's identity; not in tests without UDP (NPF_NO_UDP) or spares (NPF_NO_HOME) */
 static int home_allowed(const npf_node *n)
 {
     return !n->cfg.home_off && !n->cfg.offline && !n->cfg.udp_on_demand && !n->cfg.hosted_service
-           && !n->cfg.hosted_exec && n->udp_fd >= 0 && (n->cfg.callable || n->account_id) && !getenv("NPF_NO_HOME");
+           && !n->cfg.hosted_exec && n->udp_fd >= 0 && (n->cfg.callable || n->account_id) && !n->test_no_udp
+           && !getenv("NPF_NO_HOME");
 }
 
 /* the main socket's sends watched (again, after a reopen) toward the relay
