@@ -125,16 +125,6 @@ static void lan_addrs_json(npf_out *o)
     npf_out_printf(o, "]");
 }
 
-/* the peer whose session this is, if any */
-static npf_peer *peer_of_call(npf_t *c, npf_call *call)
-{
-    npf_peer *p;
-    for (p = npf_peers_first(c->peers); p; p = npf_peer_next(p))
-        if (npf_peer_call(p) == call)
-            return p;
-    return NULL;
-}
-
 /* ---- status ---- */
 
 void npf_cmd_status_json(npf_t *c, npf_out *o)
@@ -302,7 +292,7 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
     npf_out_printf(o, "[");
     for (first = 1, call = npf_node_calls(n); call; call = npf_call_next(call)) {
         npf_call_info i;
-        npf_peer *pp = peer_of_call(c, call);
+        npf_peer *pp = npf_peer_of_call(c, call);
         int g = 1;
         npf_call_info_get(call, &i);
         if (i.state == NPF_CALL_CLOSED)

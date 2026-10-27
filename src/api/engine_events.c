@@ -79,11 +79,10 @@ npf_call *npf_session_call(npf_t *n, uint32_t id)
     return NULL;
 }
 
-/* the peer whose session this is (an outgoing one) */
-static npf_peer *peer_of_call(npf_t *n, npf_call *call)
+npf_peer *npf_peer_of_call(npf_t *n, npf_call *call)
 {
     npf_peer *p;
-    for (p = n->peers ? npf_peers_first(n->peers) : NULL; p; p = npf_peer_next(p))
+    for (p = npf_peers_first(n->peers); p; p = npf_peer_next(p))
         if (npf_peer_call(p) == call)
             return p;
     return NULL;
@@ -107,7 +106,7 @@ static uint32_t sess_add(npf_t *n, npf_call *call)
         n->next_sess = 1;
     {
         npf_sess *ss = &n->sess[n->nsess];
-        npf_peer *p = peer_of_call(n, call);
+        npf_peer *p = npf_peer_of_call(n, call);
         memset(ss, 0, sizeof *ss);
         ss->id = n->next_sess;
         ss->call = call;

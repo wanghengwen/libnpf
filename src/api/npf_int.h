@@ -164,6 +164,8 @@ void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
     ;
 uint32_t npf_session_of(npf_t *n, npf_call *call);
 npf_call *npf_session_call(npf_t *n, uint32_t id);
+/* the peer whose session call is (an outgoing one), or NULL */
+npf_peer *npf_peer_of_call(npf_t *n, npf_call *call);
 /* {"session", "peer", "path", "direction", "call_id"} */
 void npf_session_info_out(npf_t *n, npf_call *call, npf_out *o);
 uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid);
@@ -197,6 +199,10 @@ const char *npf_cmd_tag_name(int tag);
 int  npf_pub_load(npf_t *n, char *err, size_t errcap);  /* npf.conf + local.json, the policy */
 int  npf_pub_apply(npf_t *n);                           /* the policy again (a node now) */
 void npf_pub_free(npf_t *n);
+/* the resources of a JSON text (an array): their number, *r (malloc'd,
+ * NPF_RES_MAX of them, for the caller to free); NPF_ENOMEM or NPF_EFAIL with
+ * err and *r NULL */
+int  npf_pub_res_text(const char *json, struct npf_res **r, char *err, size_t errcap);
 void npf_pub_send(npf_t *n, npf_call *c);               /* to a caller whose session came up */
 void npf_pub_json(npf_t *n, npf_out *o);                /* this node's list (status) */
 void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d);
