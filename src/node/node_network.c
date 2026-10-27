@@ -75,9 +75,13 @@ int node_udp_open4(npf_node *n)
         setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof sz);
         setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof sz);
     }
+    if (npf_loop_add(n->loop, fd, NPF_EV_READ, udp_cb, n) < 0) {
+        npf_sock_close(fd);                 /* nothing left behind: udp_fd stays -1 */
+        return -1;
+    }
     n->udp_fd = fd;
     n->udp_port = ntohs(a.sin_port);
-    return npf_loop_add(n->loop, fd, NPF_EV_READ, udp_cb, n);
+    return 0;
 }
 
 /* the IPv6 main socket (nat-traversal.md 7.1 S0): v6 only, the IPv4 port when
@@ -119,9 +123,6 @@ int npf_node_udp_open(npf_node *n)
         return 0;
     if (node_udp_open4(n) < 0) {
         npf_loge("udp: cannot open the socket: %s", npf_sock_strerror());
-        if (n->udp_fd >= 0)
-            npf_sock_close(n->udp_fd);
-        n->udp_fd = -1;
         return -1;
     }
     if (!n->cfg.offline)
@@ -288,9 +289,6 @@ static void udp_reopen_cb(npf_loop *loop, void *arg)
     if (node_udp_open4(n) < 0) {
         npf_loge("udp: cannot open the socket again: %s; trying again in %d s", npf_sock_strerror(),
                  UDP_REOPEN_RETRY_MS / 1000);
-        if (n->udp_fd >= 0)
-            npf_sock_close(n->udp_fd);
-        n->udp_fd = -1;
         n->t_udp_reopen = npf_timer_add(n->loop, UDP_REOPEN_RETRY_MS, udp_reopen_cb, n);
         return;
     }
