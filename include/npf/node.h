@@ -268,7 +268,8 @@ struct npf_node {
     int           logins;           /* welcomes since the start: logins - 1 are logins again */
     int           calls_out, calls_in;  /* sessions started / incoming calls (platform and direct) */
     int           backoff_ms;
-    int           replaced;             /* the platform said this identity logged in elsewhere (replaced) */
+    int64_t       replaced_ms;          /* when the platform said this identity logged in elsewhere
+                                           (replaced, npf_mono_ms), 0 not */
     int           replaced_backoff_ms;  /* the wait after that, 10 s doubling to 5 min (two processes of one
                                            identity would push each other off every second) */
     /* one key per model: the last enrolment (status "enroll") */
