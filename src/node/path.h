@@ -126,15 +126,14 @@ void pm_add(npf_pm *m, npf_path *p);
 void pm_del(npf_pm *m, npf_path *p);
 void pm_health(npf_pm *m, npf_path *p, int health);
 
-/* the health rules' transitions: SUSPECT from now (the rules, or a reason
- * of the path's own); probed while UP for window ms (no doubt: the
- * standby's check); a round trip proven: 1 when it brought the path UP;
- * the path's own verdict. pm_tick: the rules at now, the next time
+/* the health rules' transitions (a path's own verdict: pm_health DEAD):
+ * SUSPECT from now (the rules, or a reason of the path's own); probed while
+ * UP for window ms (no doubt: the standby's check); a round trip proven: 1
+ * when it brought the path UP. pm_tick: the rules at now, the next time
  * anything is due (INT64_MAX none) */
 void pm_suspect(npf_pm *m, npf_path *p, int64_t now);
 void pm_probe(npf_path *p, int64_t now, int64_t window);
 int  pm_rt(npf_pm *m, npf_path *p, int64_t now);
-void pm_dead(npf_pm *m, npf_path *p);
 int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto);
 
 static inline int pm_has(const npf_pm *m, int kind)

@@ -158,7 +158,7 @@ static void doubt(int kind)
         CHECK(pm_tick(&m, t, 0, 200) == INT64_MAX, "kind %d: a due time in doubt", kind);
     CHECK(x->probes == 0 && x->deads == 0 && x->p.health == PH_SUSPECT, "kind %d: probed (%d) or lost (%d) by time",
           kind, x->probes, x->deads);
-    pm_dead(&m, &x->p);                 /* its own verdict (every address tried, reconnects failed) */
+    pm_health(&m, &x->p, PH_DEAD);                 /* its own verdict (every address tried, reconnects failed) */
     CHECK(x->p.health == PH_DEAD && pm_tick(&m, 500000, 0, 200) == INT64_MAX && x->deads == 0, "kind %d: DEAD", kind);
 }
 

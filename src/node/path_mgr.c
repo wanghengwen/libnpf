@@ -100,11 +100,6 @@ int pm_rt(npf_pm *m, npf_path *p, int64_t now)
     return 1;
 }
 
-void pm_dead(npf_pm *m, npf_path *p)
-{
-    pm_health(m, p, PH_DEAD);
-}
-
 int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
 {
     int64_t due = INT64_MAX;
@@ -161,7 +156,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
         if (p->health != PH_SUSPECT)
             continue;
         if (r->t_verdict && now - p->suspect_at >= r->t_verdict) {
-            pm_dead(m, p);
+            pm_health(m, p, PH_DEAD);
             p->ops->dead(p);
             continue;
         }
@@ -259,19 +254,13 @@ const char *pm_name(const npf_pm *m)
 
 const char *pm_label(const npf_pm *m)
 {
-    if (m->fixed)
-        return "Direct";
-    if (!m->primary)
-        return "none";
-    return m->primary->kind == PK_DIRECT ? "P2P" : "Relayed";
+    return m->fixed ? "Direct" : !m->primary ? "none" : m->primary->kind == PK_DIRECT ? "P2P" : "Relayed";
 }
 
 /* npf.h's NPF_PATH_DIRECT, _UDP_RELAY, _WS_RELAY are 1 + the kind (test_path.c) */
 int pm_code(const npf_pm *m)
 {
-    if (m->fixed)
-        return 1 + PK_DIRECT;
-    return m->primary ? 1 + m->primary->kind : 0;
+    return m->fixed ? 1 + PK_DIRECT : m->primary ? 1 + m->primary->kind : 0;
 }
 
 /* a new call's paths: none in use */

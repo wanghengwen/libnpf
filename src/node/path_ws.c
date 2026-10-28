@@ -96,9 +96,8 @@ static void wsr_gone(npf_wsr *r, const char *why, void *arg)
         npf_log("call %s: WS relay: %s", c->call_id_s, why);
         return;
     }
-    c->pw.wsr = NULL;              /* already freed */
-    npf_timer_stop(c->n->loop, &c->pw.t_flush);
-    c->pw.re_at = 0;                            /* its pairing's deadline */
+    c->pw.wsr = NULL;                           /* already freed */
+    call_ws_leave_conn(c);
     call_ws_failed(c, why);
 }
 
@@ -171,7 +170,7 @@ void call_ws_failed(npf_call *c, const char *why)
         if (c->pw.paired_once)
             npf_logw("call %s: WS relay: connected again %d times, never paired: giving it up", c->call_id_s,
                      c->pw.fails);
-        pm_dead(&c->pm, &c->pw.p);
+        pm_health(&c->pm, &c->pw.p, PH_DEAD);
         call_ws_leave_conn(c);
         if (!c->caller)
             npf_log("call %s: waiting for the platform to move the session (the caller asks)", c->call_id_s);

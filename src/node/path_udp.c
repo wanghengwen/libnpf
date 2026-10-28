@@ -84,7 +84,7 @@ void path_udp_tick(npf_call *c)
     } else if (r < 0) {
         npf_log("call %s: UDP relay unreachable%s", c->call_id_s,
                 c->caller && c->st == CS_CALLING ? " before the accept: binding it again then" : "");
-        pm_dead(&c->pm, &c->pu.p);
+        pm_health(&c->pm, &c->pu.p, PH_DEAD);
         pm_check(c);
     }
 }
