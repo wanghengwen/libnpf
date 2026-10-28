@@ -18,6 +18,7 @@
 
 static void grant_update(npf_call *c, const npf_json *j);
 static void anl_schedule(npf_call *c);
+static void anl_kick(npf_call *c);
 
 /* a data message waiting for the stream (callee, data-channel.md 4) */
 typedef struct dmsg {
@@ -54,6 +55,10 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
     return 0;
 }
 
+/* the accept callback: AnLiu allows only the stream getters and
+ * anl_stream_set_user from here (anliu.h), so what needs more waits for the
+ * end of the input (anl_drain: the data that waited for the data stream;
+ * the UDP stream's frame age comes from the last srtt seen) */
 static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user)
 {
     npf_call *c = user;
@@ -61,7 +66,7 @@ static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user
     /* the caller's UDP stream (udpfwd.h) */
     if (anl_stream_tag(s) == NPF_TAG_UDP) {
         npf_udpf *u = c->caller ? NULL : call_udp_of(c);
-        return u ? npf_udpf_accept(u, s, opt) : -1;
+        return u ? npf_udpf_accept(u, s, opt, c->anl_srtt) : -1;
     }
     /* a media stream of the peer (libnpf, media.h) */
     if ((anl_stream_tag(s) & ~NPF_MEDIA_TAG_RDK) >= NPF_TAG_MEDIA) {
@@ -77,16 +82,25 @@ static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user
                  NPF_ANL_DATA_WND);
         return -1;
     }
-    c->stream = s;
-    while (c->dpend) {                      /* what waited for it (sent from the next flush on) */
+    c->stream = s;                          /* what waited for it goes after the input (dpend_send) */
+    return 0;
+}
+
+/* the callee's data messages that waited for the data stream, now that it
+ * is here (in order: tun_write_data queues behind them until then) */
+static void dpend_send(npf_call *c)
+{
+    if (!c->stream || !c->dpend)
+        return;
+    while (c->dpend) {
         dmsg *m = c->dpend;
         c->dpend = m->next;
-        anl_stream_send(s, (const char *)m->d, (int)m->len);
+        anl_stream_send(c->stream, (const char *)m->d, (int)m->len);
         free(m);
     }
     c->dpend_tail = &c->dpend;
     c->dpend_bytes = 0;
-    return 0;
+    anl_kick(c);
 }
 
 
@@ -117,7 +131,7 @@ static int tun_write_data(void *arg, const uint8_t *msg, size_t len)
 {
     npf_call *c = arg;
     c->tx_bytes += len;
-    if (!c->stream && !c->caller && c->anl) {
+    if ((!c->stream || c->dpend) && !c->caller && c->anl) {
         dmsg *m = malloc(sizeof *m + len);
         if (!m)
             return -1;
@@ -383,6 +397,7 @@ static void anl_drain(npf_call *c)
     char *buf;
     if (!c->anl)
         return;
+    dpend_send(c);
     if (c->media && npf_media_poll(c->media) < 0)  /* the peer's new media streams: taken or not */
         return;
     if (!(buf = npf_scratch(ANL_MSG_MAX)))     /* kept by the thread between uses (sys.h): no larger than needed */
@@ -518,7 +533,10 @@ static void auth_fail_check(npf_call *c)
 {
     anl_stats st;
     int64_t now = npf_mono_ms();
-    if (!c->anl || anl_get_stats(c->anl, &st) < 0 || st.rx_auth_fail < c->auth_fail_seen + AUTH_FAIL_WARN
+    if (!c->anl || anl_get_stats(c->anl, &st) < 0)
+        return;
+    c->anl_srtt = (int)st.srtt;             /* for the accept callback (anl_accept) */
+    if (st.rx_auth_fail < c->auth_fail_seen + AUTH_FAIL_WARN
         || (c->auth_fail_at && now - c->auth_fail_at < AUTH_FAIL_EVERY_MS))
         return;
     npf_logw("call %s: %llu datagram(s) with this session's conv failed authentication (forged or replayed: dropped)",

@@ -73,6 +73,7 @@ struct npf_call {
     int64_t     p2p_rx_ms;
     uint64_t    auth_fail_seen;     /* AnLiu rx_auth_fail last reported (forged datagrams with our conv) */
     int64_t     auth_fail_at;       /* when */
+    int         anl_srtt;           /* AnLiu's srtt at its last timer (ms, 0 none yet) */
     int64_t     p2p_since;
     int64_t     p2p_suspect;        /* direct path suspected dead since (ms); 0 = no */
     npf_siv_keys path_keys;         /* PATH_CHECK / PATH_ECHO, from the E2E keys */

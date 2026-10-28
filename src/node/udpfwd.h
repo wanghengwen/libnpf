@@ -68,8 +68,10 @@ void npf_udpf_set_shared(npf_udpf *u, npf_tunnel_shared *node, npf_tunnel_shared
 /* the session ended: flows and sockets go, nothing is sent */
 void npf_udpf_free(npf_udpf *u);
 
-/* AnLiu, callee: the accept callback for the caller's UDP stream; 0 takes it */
-int  npf_udpf_accept(npf_udpf *u, anl_stream_t *s, anl_stream_opt *opt);
+/* AnLiu, callee: the accept callback for the caller's UDP stream; 0 takes it.
+ * srtt (ms, 0 unknown): the connection's, read before the input (AnLiu
+ * allows no anl_get_stats from the accept callback) */
+int  npf_udpf_accept(npf_udpf *u, anl_stream_t *s, anl_stream_opt *opt, int srtt);
 int  npf_udpf_is_stream(const npf_udpf *u, const anl_stream_t *s);
 /* the stream is readable */
 void npf_udpf_drain(npf_udpf *u, anl_stream_t *s);
