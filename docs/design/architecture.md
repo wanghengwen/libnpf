@@ -4,7 +4,7 @@
 
 本文是 libnpf 逐步重构的依据：先写清现在的结构和问题（第 1 节），再给出目标的分层与接口（第 2 节）、各部分的状态机（第 3 节）、定时方式（第 4 节）、信令消息的描述表（第 5 节）、测试钩子（第 6 节）、库的边界（第 7 节），最后是分步迁移的计划（第 8 节）和不做的事（第 9 节）。重构是渐进的：每一步单独合入、单独现场测试，不做整体重写。
 
-凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）；第 1c 步去掉了 `call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_standby_done`、`pm_standby_start`、`path_ws.c:ws_elsewhere`、`call.c:npf_node_ws_calls_udp_back` 与 `npf_node_calls_to_ws`，路径之间的决定都在 `path_mgr.c:pm_decide`，向平台的请求都经 `call_need`（第 3.6 节"1c 的实现"）；第 1d 步把呼叫的 8 个定时器合成一个（`call.c:call_tick`，`anl_timer`、`timeout_cb`、`punch_timer`、`linger_done`、`direct_retry`、`pm_timer`、`ws_reconnect` / `ws_pair_late` 的定时器、`relay_keepalive_timer` 变成各部分的截止时间与 tick），去掉了 `relay_bind.c` 的 `relay_bind_run`、`relay_bind_probe`（第 4 节"1d 的实现"）。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
+凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）；第 1c 步去掉了 `call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_standby_done`、`pm_standby_start`、`path_ws.c:ws_elsewhere`、`call.c:npf_node_ws_calls_udp_back` 与 `npf_node_calls_to_ws`，路径之间的决定都在 `path_mgr.c:pm_decide`，向平台的请求都经 `call_need`（第 3.6 节"1c 的实现"）；第 1d 步把呼叫的 8 个定时器合成一个（`call.c:call_tick`，`anl_timer`、`timeout_cb`、`punch_timer`、`linger_done`、`direct_retry`、`pm_timer`、`ws_reconnect` / `ws_pair_late` 的定时器、`relay_keepalive_timer` 变成各部分的截止时间与 tick），去掉了 `relay_bind.c` 的 `relay_bind_run`、`relay_bind_probe`（第 4 节"1d 的实现"）；第 2 步给绑定器与备用分配写了显式的状态与一个截止时间（第 3.3、3.4 节"2 的实现"）。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
 
 ## 1. 现状
 
@@ -389,41 +389,47 @@ struct npf_path {
 |---|---|---|---|
 | `NONE` | 拿到分配 | `BINDING(i=0, k=0)` | 发 `RELAY_BIND`；截止 +700 ms |
 | `BINDING` | 截止到，`k < 3` | `BINDING(i, k+1)` | 再发 |
-| `BINDING` | 截止到，`k = 3`，还有地址 | `BINDING(i+1, 0)` | 发往下一个地址 |
-| `BINDING` | 截止到，都试过 | `GAVE_UP` | 告诉上层 |
-| `BINDING` | 质询 | `BINDING` | 立即回显 cookie（至少隔 200 ms） |
-| `BINDING` | `BIND_ACK{state=1}` 或经它来的对方数据 | `BOUND` | 截止 = +25 s（保活）；早先地址的迟到应答使它成为当前地址 |
+| `BINDING` | 截止到，`k = 3`，还有地址 | `BINDING(i+1, 0)` | 发往下一个地址；数据跟着走 |
+| `BINDING` / `PROBING` | 截止到，都试过 | `GAVE_UP` | 告诉所有者；无截止（所有者决定何时再绑：呼叫是路径管理器，备用分配是退避） |
+| 未绑定的 | 质询 | 不变 | 立即回显 cookie（至少隔 200 ms）；`BOUND` 时同样（NAT 换了端口） |
+| `BINDING` / `PROBING` / `GAVE_UP` | `BIND_ACK{state=1}` 或经它来的对方数据 | `BOUND` | 截止 = +25 s（保活；备用分配没有：中转 ping 它）；回应的地址成为当前地址（早先地址、放弃之后的迟到应答也是） |
 | `BOUND` | 保活截止 | `BOUND` | 发 `RELAY_BIND`；+25 s |
-| `BOUND` | 路径管理器判可疑（会话依赖它时） | `PROBING(当前地址)` | 发 `RELAY_BIND`；截止 +700 ms（Q2：今天从第一个地址重来） |
-| `PROBING` | 回应 | `BOUND` | — |
-| `PROBING` | 截止到 | `BINDING(下一个地址…)` → `GAVE_UP` | 同上 |
-| 任何 | 释放 / 交给呼叫（备用分配被取用） | `NONE` | 绑定（cookie、`kseq`、地址）原样交出 |
+| `BOUND` | 路径管理器判可疑（会话依赖它时）；备用分配的看门狗 | `PROBING(当前地址)` | 发 `RELAY_BIND`；截止 +700 ms；数据留在当前地址（Q2） |
+| `PROBING` | 截止到 | `PROBING(其余地址按顺序)` → `GAVE_UP` | 同 `BINDING`，数据不动，直到别的地址回应 |
+| `GAVE_UP` | 所有者重绑 | `BINDING(0, 0)` | 同 `NONE` |
+| 任何 | 释放 / 交给呼叫（备用分配被取用） | `NONE` | 绑定（cookie、`kseq`、地址、状态）原样交出 |
 
 **取代**：`relay.active`、`relay.bound`、`t_bind` 的两种用法、`cur`/`tries` 的含义、`relay_rx_ms`、`relay_busy_since`、`t_rcheck`。呼叫一侧在 `GAVE_UP` 之后的决定（今天 `call_relay.c:relay_gave_up` 的五个分支）交给路径管理器（第 3.6 节）。
 
+**2 的实现**（2026-10-29，`relay_bind.h`）：`relay_c` 的 `state`（`RB_NONE`、`RB_BINDING`、`RB_PROBING`、`RB_BOUND`、`RB_GAVE_UP`）与唯一的截止时间 `at`（0 表示没有）；转移函数是 `relay_bind_take`（`NONE` → `BINDING`）、`relay_bind_begin(probe, now)`（`BINDING` 或 `PROBING`）、`relay_bind_tick(now, ka)`（到期的事：1 发一个绑定，−1 都试过）、`relay_bind_up(now, ka)`（`BOUND`，保活间隔 `ka`，备用分配给 0），以及原有的 `relay_addr_take`（回应的地址）和 `relay_bind_ack`（返回 2 表示这个质询要立即回显，原来的 `relay_bind_echo_due` 并入）。绑定器不发报文、不建定时器：所有者发 `RELAY_BIND`（呼叫的 `relay_bind_send`、备用分配的 `bind_send`），并把 `at` 排进自己的一个定时器（呼叫的 `call_due` 读 `pu.r.at`，备用分配的 `home_due`）。去掉的：`relay_c` 的 `active`、`bound`、`keep`，`path_udp` 的 `bind_at`，`relay_bind_step`，`relay_bind_take` 里给 WS 分配用的 `addr == NULL` 分支（1c 之后没有调用者），`path_udp.c` 的 `bind_next` 与 `udp_gave_up`。与上表原稿不同的两处都是保留今天的行为：`GAVE_UP` 也认迟到的应答（原来 `active && !bound` 就认）；`PROBING` 一直到放弃都把数据留在当前地址（1b 起）。单元测试 UT-25（`test_relay.c:bind_table`）在假时钟下逐行走这张表，不用套接字；回显与哪些 `BIND_ACK` 算数仍由同一文件里对着回环假中转的部分检查。
+
 ### 3.4 备用分配
 
-今天已经是显式状态（`home.c` `enum {H_OFF, H_OPENING, H_BINDING, H_BOUND, H_LOST, H_BACKOFF, H_TAKEN}`）。目标只做两件事：绑定换成第 3.3 节的状态机，三个定时器（`t_dog`、`t_retry`、`r.t_bind`）合成一个截止时间。
+原来已经是显式状态（`home.c` `enum {H_OFF, H_OPENING, H_BINDING, H_BOUND, H_LOST, H_BACKOFF, H_TAKEN}`），另有隐含的 `lost` 与三个定时器（`t_dog`、`t_retry`、`t_bind`）。第 2 步：有分配时的状态就是绑定器的（`BINDING`、`LOST` = `RB_PROBING`、`BOUND`、`BACKOFF` = `RB_GAVE_UP`），`home.c` 自己的 `state` 只剩没有分配时的 `OFF`、`OPENING`、`TAKEN`；三个定时器合成一个截止时间。
 
 | 状态 | 事件 | 下一状态 | 动作 / 截止时间 |
 |---|---|---|---|
 | `OFF` | 登录且允许（`home.c:home_allowed`） | `OPENING` | `home_open`（无截止：应答或断线是事件） |
-| `OPENING` | 应答：新分配 | `BINDING` | 绑定器开始 |
+| `OPENING` | 应答：新分配 | `BINDING` | 绑定器开始（截止：绑定器的） |
+| `OPENING` | 应答因断线丢掉 | `OPENING` | 无截止：下次登录再发 |
 | `OPENING` | 被拒 | `OFF` | 截止 = +60 s（`rate_limited`）或 +300 s |
-| `BINDING` / `LOST` | 绑上 | `BOUND` | 看门狗截止 = max(最后发, 最后收) + T + 4.5 s + 5 s；断过之后重测 NAT |
-| `BINDING` / `LOST` | 绑定器 `GAVE_UP` | `BACKOFF` | 截止 = +5 / 20 / 60 / 180 s；在线时每次都 `home_open{resume}` |
-| `BOUND` | ping | `BOUND` | 立即 `PONG`；看门狗后移 |
-| `BOUND` | 看门狗到 | `LOST` | 从第一个地址重绑 |
-| `BOUND` | 网络变化 | `BOUND` | 立即发带 `NEWNET` 的 `RELAY_BIND` |
-| `BACKOFF` | 截止到 | `BINDING` | 重绑 |
+| `OFF` / `TAKEN` | 截止到且在线 | `OPENING` | `home_open` |
+| `BINDING` / `LOST` | 绑定器的截止 | 不变 | 下一个绑定 |
+| `BINDING` / `LOST` | 都试过 | `BACKOFF` | 截止 = +5 / 20 / 60 / 180 s（自上次绑上以来第几次放弃）；在线时每次都 `home_open{resume}` |
+| `BINDING` / `LOST` / `BACKOFF` | 绑上 | `BOUND` | 看门狗截止 = max(最后发, 最后收) + T + 4.5 s + 5 s；放弃过（`backoff > 0`）就重测 NAT，`backoff` 清零 |
+| `BOUND` | ping | `BOUND` | 立即 `PONG`（主 socket 向别处发过时带 `OTHER`）；看门狗后移 |
+| `BOUND` | 看门狗到 | `LOST` | 从当前地址起重绑（Q2），`drops` 加 1 |
+| `BOUND` | 网络变化 | `BOUND` | 立即发带 `NEWNET` 的 `RELAY_BIND`，看门狗从它算 |
+| `LOST` / `BACKOFF` | 网络变化 | `LOST` / `BINDING` | 立即重绑 |
+| `BACKOFF` | 截止到 | `BINDING` | 从第一个地址重绑 |
 | `BACKOFF` | UDP 又通了（呼叫的中转绑上、NAT 探测有回应） | `BINDING` | 立即重绑并问一次 |
-| `BACKOFF` | `resume` 的应答：还在 | `BACKOFF` | 等退避的截止（见 D11） |
-| 任何有分配的 | 呼叫取用 | `TAKEN` | 截止 = +30 s（等 `relay_spare`） |
-| `TAKEN` / `OFF` | 截止到且在线 | `OPENING` | `home_open` |
-| 任何 | `relay_spare` | `BINDING` | 换成新的 |
-| 任何 | 退出、`home_bind=off` | `OFF` | `home_close`（尽力） |
+| `BACKOFF` | `resume` 的应答：还在 | `BACKOFF` | 等退避的截止（D11） |
+| 任何有分配的 | 呼叫取用 | `TAKEN` | 绑定交给呼叫；截止 = +30 s（等 `relay_spare`） |
+| 任何 | `relay_spare`（取用之后、每小时轮换）或 `home_open` 带来新分配 | `BINDING` | 换成新的 |
+| 有分配的 | 登录到另一台服务器 | `OFF` → `OPENING` | 那里新开 |
+| 任何 | 退出、`home_bind=off` | `OFF` | `home_close`（尽力），无截止 |
 
-**与今天不同之处**：`OPENING` 的应答因断线丢掉时（`home.c:open_reply` 收到 `j == NULL`）状态停在 `OPENING`、没有定时器，靠下次登录再发——按表这是"事件驱动、无需截止"，可以接受，但要写进测试。状态 JSON 把 `BACKOFF` 显示为 `binding`（`home.c` `k_state`），是显示上的选择（Q8）。
+**2 的实现**（2026-10-29）：一个定时器 `t_due`，排在 `home_due`：`BINDING` / `LOST` 是绑定器的 `r.at`，`BOUND` 是看门狗（由最后收发的时刻与 T 算出，不另存），其余是 `at`（`BACKOFF` 的退避、`OFF` 被拒后的重试、`TAKEN` 的 30 s，0 表示等事件）；`home_tick(h, now)` 做到期的事，每个事件（登录、应答、`relay_spare`、取用、UDP 又通、网络变化、中转来的报文）之后 `home_arm` 重排一次（每个 ping 一次，与原来看门狗的重排相同）。去掉的：`t_dog`、`t_retry`、`t_bind` 与 `dog_arm`、`dog_check`、`dog_timer`、`retry_timer`、`bind_timer`；`lost`（就是 `backoff > 0`："上次绑上以来放弃过"）；`H_BINDING`、`H_BOUND`、`H_LOST`、`H_BACKOFF`（绑定器的状态）；`home_take`（并入 `spare_take`）；`node_home_sig_lost`（信令断开时 `node_sig_fail_pending` 已经以空应答调用 `open_reply`，清掉 `opening`）；D11 的分支。与原来不同之处：（1）`backoff` 只在绑上时清零（原来新分配到来、UDP 又通时也清零）：放弃之后到来的新分配、UDP 又通之后的重绑若又失败，退避接着 20、60、180 s，而不是从 5 s 重来；重测 NAT 的时机不变（原来 `lost` 也只在绑上时清零）；（2）状态 JSON 的 `BACKOFF` 显示为 `backoff`（Q8，原来是 `binding`）；（3）"spare bound again" 的日志也带上中转 ping 的间隔，与第一次绑上同一格式。单元测试 UT-29（`test_home.c:test_table`）在假时钟下逐行走这张表，不用套接字（没有主 socket 时不发绑定；节点"在线"而没有信令连接，问平台的次数看请求编号），并检查每个状态都有截止时间或在等事件；对着回环假中转的部分照旧。
 
 ### 3.5 WS 中转连接
 
@@ -493,7 +499,7 @@ struct npf_path {
 | D10 | 备用分配 `BACKOFF` 在状态 JSON 里显示为 `binding` | `home.c` `k_state` | 显示上的选择 |
 | D11 | `open_reply` 里"`resumed` 且 `H_BACKOFF && !lost` 就立即重绑"的分支走不到：进入 `H_BACKOFF` 只有 `gave_up` 一处，它同时置 `lost = 1`，而 `lost` 只在绑上（`H_BOUND`）时清零。隐含状态造成的死代码；按表删掉，行为不变 | `home.c:open_reply`、`gave_up`、`ack_in` | 死代码 |
 
-1b 改掉了 D2、D3、D6、D9；1c（2026-10-29）改掉了 D1（请求的重发，`call_need`）、D4（等打洞到时也先等正在进行的重绑：决定只在 UDP 中转 `DEAD` 时做，绑定中的 `NEW` 什么都不决定）、D5（Q4，每 5 分钟试回 UDP）、D7（等待与重试按每次失去中转计）。
+1b 改掉了 D2、D3、D6、D9；1c（2026-10-29）改掉了 D1（请求的重发，`call_need`）、D4（等打洞到时也先等正在进行的重绑：决定只在 UDP 中转 `DEAD` 时做，绑定中的 `NEW` 什么都不决定）、D5（Q4，每 5 分钟试回 UDP）、D7（等待与重试按每次失去中转计）；第 2 步（2026-10-29）改掉了 D10（Q8，显示 `backoff`）与 D11（删掉，第 3.4 节）。
 
 ### 3.8 待用户决定的问题
 
@@ -533,11 +539,11 @@ struct npf_path {
 | `t_rcheck` | 呼叫 | 去掉：健康由 `last_rx` 算出截止时间 |
 | `t_standby` | 呼叫 | 管理器的热备截止 |
 | `t_ws_wait` | 呼叫 | 管理器的 `DIRECT_PENDING(until)` |
-| `relay.t_bind` | 呼叫 / 备用分配 | 绑定器的 `due`（重发、保活、探测） |
+| `relay.t_bind` | 呼叫 / 备用分配 | 绑定器的 `due`（重发、保活、探测）；第 2 步：`relay_c.at` |
 | `t_wsre` | 呼叫 | WS 路径的重连截止 |
 | `t_direct` | 呼叫 | 直连握手的重发（呼叫的 `due`） |
 | `t_wsflush`、`t_free` | 呼叫 | 保留（下一轮循环） |
-| `t_dog`、`t_retry` | 备用分配 | 备用分配的 `due` |
+| `t_dog`、`t_retry` | 备用分配 | 备用分配的 `due`；第 2 步：`home_due`，连同 `t_bind` 一个定时器 |
 | 节点的 11 个 | 节点 | 第 8 节之后再做：信令（`t_reconnect`、`t_ping`、`t_expect`、`t_login`、`t_idle`、`t_wake`）、网络（`t_watch`、`t_netcheck`、`t_udp_reopen`、`t_nat_retry`）、`t_pm` 各成一组 |
 
 一个呼叫从 13 个定时器变成 1 个（另有 2 个下一轮回调），备用分配从 3 个变成 1 个。1b 去掉了 `t_pcheck`、`t_rcheck`（管理器的 `t_check`），1c 去掉了 `t_ws_wait` 与 `t_standby`（管理器的 `act_at`，同一个 `t_check`）：现在每个呼叫 9 个（`t_anl`、`t_timeout`、`t_punch`、`t_linger`、`t_direct`、`t_free`、`pm.t_check`、`pw.t_flush`、`pw.t_re`），另有 `relay.t_bind`。
@@ -549,7 +555,7 @@ struct npf_path {
 - `call_tick` 的顺序同规则 3：会话（`tr_tick`：`anl_update`、合并的 flush、失效检查、排空）→ 路径（`path_udp_tick`、`path_ws_tick`）→ 管理器（`pm_check`：有 AnLiu 连接时每次 tick 都跑，同 1c 的"每个 AnLiu 定时器一次"，没有时只在 `check_at`）→ 打洞（`call_punch_tick`）→ 直连重发（`call_direct_tick`）→ 期限；每一步之后呼叫结束了就停。
 - AnLiu 的定时器合并了，没有单独留：忙时它约 20 ms 一次，合并后每次多做的只是 7 个截止时间的比较；每个数据报的 `call_at` 是两次比较（先内联、不跨文件调用：跨文件调用时 `npf_cpuprobe` 的指令数多约 0.15 %，内联后持平）。测量见第 8 节"1d 实际"。
 - 不变式：没有结束的呼叫总有截止时间（建立之前是期限，有了密钥之后是 AnLiu 的 `anl_check`，它总是有限的：保活、空闲超时或 5 s 的安静检查），定时器不晚于最早的截止时间。单元测试 UT-35（`test_call.c`）在新呼叫、会话建立、已建立、UDP 中转绑定中、WS 中转待重连各检查一次，并检查截止时间提前、推后、完成三种重排。
-- 绑定器（`relay_bind.c`）不再有自己的定时器：`relay_bind_run`、`relay_bind_probe` 与 `relay_c` 里的定时器和回调去掉，呼叫与备用分配都用 `relay_bind_begin` / `relay_bind_step`，时间由所有者管（呼叫是 `pu.bind_at`，备用分配是 `home.c` 的 `t_bind`，第 2 步并入备用分配的一个截止时间）。
+- 绑定器（`relay_bind.c`）不再有自己的定时器：`relay_bind_run`、`relay_bind_probe` 与 `relay_c` 里的定时器和回调去掉，呼叫与备用分配都用 `relay_bind_begin` / `relay_bind_step`，时间由所有者管（呼叫是 `pu.bind_at`，备用分配是 `home.c` 的 `t_bind`，第 2 步并入备用分配的一个截止时间）。第 2 步之后：`pu.bind_at` 是绑定器自己的 `pu.r.at`，`relay_bind_step` 换成 `relay_bind_tick`，备用分配的三个定时器合成一个（第 3.3、3.4 节"2 的实现"）。
 
 ## 5. 信令消息描述表
 
@@ -777,6 +783,8 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 **1d 实际**（2026-10-29）：库的 `src` + `include` 38 423 → 38 440 行（+17；不计注释与空行 31 926 → 31 926，持平），`src/node` 15 948 → 15 965 行（`git diff` +259 −242），而不是计划的 −80。去掉的：8 个定时器的回调与它们的启停（`anl_timer` 的排程、`anl_after_input` 里的比较、`timeout_cb`、`call_timers_stop`、`punch_timer`、`linger_done`、`direct_retry`、`pm_timer`、`ws_pair_late` 与 `ws_reconnect` 的定时器部分、`relay_keepalive_timer` / `relay_keepalive`），以及绑定器自己的定时器（`relay_bind_run`、`relay_bind_probe`、`run_start`、`run_timer` 与 `relay_c` 的 `t_bind`、回调，约 45 行，备用分配改为在 `home.c` 自己驱动 `relay_bind_begin` / `relay_bind_step`）；加的：单一定时器本身（`call_arm` / `call_at`、`call_timer`、`call_due`、`call_tick`，约 55 行，含注释）、各部分的 tick 入口与截止时间字段（`tr_tick` / `tr_due`、`path_udp_tick`、`path_ws_tick`、`call_punch_tick`、`call_direct_tick`）。原来的回调本来就短，它们的内容变成 tick 照样留着，所以代码行持平；多出的 17 行是新接口与字段的注释。新增单元测试 79 行（UT-35，`test_call.c`）。
 
 热路径与空闲（改前 1c `7ffe7bf`、改后交替运行；数字见 npf 的 `docs/implementation.md`）：AnLiu 的定时器并进来了，`call_at` 先在头文件里内联比较（跨文件调用时 `npf_cpuprobe` 的指令数多约 0.15 %，内联后持平：64 MB 8 次中位数 2 638.5 / 2 637.5 百万条）；每个空闲会话每分钟的唤醒（`npf` 进程的上下文切换，有会话减没有会话）直连 24–26 → 20–21、UDP 中转 25–28 → 22–23、WS 中转 24–25 → 23，少的是管理器那个定时器单独醒的几次；剩下的就是 AnLiu 的 5 s 安静检查、15 s 保活与对方的保活、中转 25 s 的保活与应答。
+
+**2 实际**（2026-10-29）：库的 `src` + `include` 38 440 → 38 390 行（−50；不计注释与空行 31 926 → 31 874，−52），`src/node` 15 965 → 15 915 行（`git diff` +284 −334），计划是 −60。去掉的：`relay_c` 的 `active`、`bound`、`keep` 与读写它们的各处，`path_udp` 的 `bind_at`、`bind_next`、`udp_gave_up`，`relay_bind_step`、`relay_bind_echo_due`，`relay_bind_take` 里没有调用者的 WS 分支（约 45 行）；备用分配的 `t_dog`、`t_retry`、`t_bind`，`dog_arm`、`dog_check`、`dog_timer`、`retry_timer`、`bind_timer`，`lost`，`H_BINDING` 到 `H_BACKOFF` 四个状态，`home_take`，`node_home_sig_lost`，D11 的分支（约 110 行）；加的：绑定器的状态枚举与 `at`、`relay_bind_tick`、`relay_bind_up`（约 35 行，含注释），备用分配的 `home_due`、`home_tick`、`home_timer`、`home_arm`（约 55 行，含注释），`spare_bound`（从 `ack_in` 分出，单元测试直接调用它）。新增单元测试约 220 行（`test_relay.c:bind_table`、`test_home.c:test_table`）。热路径没有动：`RELAY_DATA` 的收发与分发不变，呼叫的截止时间里 `pu.bind_at` 换成 `pu.r.at`。
 
 合计库净减约 800 行（±30 %），新增单元测试约 1 500 行。1a–1d 合起来就是"第 1 步：路径抽象及其截止时间与状态机"；四个小步各自可以合入、现场测试，任何一步都可以单独回退。
 
