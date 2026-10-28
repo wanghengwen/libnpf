@@ -257,10 +257,10 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
             npf_sock_close(fd);
             continue;
         }
-        if (peer_may_wait(f->p)
-            && (!f->p->call || npf_call_state(f->p->call) != NPF_CALL_ESTABLISHED)) {
-            /* no session yet (on demand), or between two (a kept peer
-             * reconnecting): it waits, and the session starts now */
+        if (peer_may_wait(f->p) && !npf_call_ready(f->p->call)) {
+            /* no session yet (on demand), between two (a kept peer
+             * reconnecting), or one established whose transport is not
+             * ready: it waits (the session starts now if there is none) */
             peers_demand_wait(f, fd, cid);
             continue;
         }
@@ -288,7 +288,7 @@ static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         }
         if (r > NPF_UDP_PAYLOAD_MAX)
             continue;
-        if (p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
+        if (npf_call_ready(p->call))
             npf_call_udp_send(p->call, fd, &ss, sl, f->host, (uint16_t)f->hostport, p->ps->ubuf, (size_t)r);
         else if (peer_may_wait(p))
             peers_udp_wait(f, &ss, sl, p->ps->ubuf, (size_t)r);

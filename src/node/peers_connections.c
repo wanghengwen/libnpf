@@ -306,14 +306,17 @@ void peers_conn_open(pfwd *f, int fd, uint64_t cid)
         sid = npf_call_open_rated(p->call, fd, f->socks, f->host, (uint16_t)f->hostport, f->pub ? (uint32_t)f->id : 0,
                                   f->rate);
     if (sid < 0) {
-        /* no session, or one that carries as many connections as the
-         * other side takes (NPF_MAX_SUBLINKS) */
-        int full = p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED;
+        /* no session, one whose transport is not ready, or one that carries
+         * as many connections as the other side takes (NPF_MAX_SUBLINKS):
+         * full only when it was ready to take one */
+        int full = npf_call_ready(p->call);
         npf_sock_close(fd);
         if (cid)
-            npf_logd("%s: connection to %s:%d refused (%s)", p->name, f->bind, f->port, full ? "session full" : "no session");
+            npf_logd("%s: connection to %s:%d refused (%s)", p->name, f->bind, f->port,
+                     full ? "session full" : p->call ? "session not ready" : "no session");
         else
-            npf_logw("%s: %s, connection to %s:%d refused", p->name, full ? "the session carries all it can" : "session not ready",
+            npf_logw("%s: %s, connection to %s:%d refused", p->name,
+                     full ? "the session carries all it can" : p->call ? "the session's transport is not ready" : "no session",
                      f->bind, f->port);
         peers_conn_gone(p->ps, cid, full ? "session_full" : "no_session");
         return;

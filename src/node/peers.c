@@ -452,6 +452,7 @@ static void peer_drop(npf_peer *p)
         npf_node_cancel_requests(p->ps->n, p);
     p->waiting = p->renewing = 0;
     npf_timer_stop(p->ps->n->loop, &p->t_demand);
+    npf_timer_stop(p->ps->n->loop, &p->t_ready);
     peers_demand_drop(p, "closed");
     if (c)
         npf_call_end(c, "closed");
@@ -766,8 +767,12 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         npf_log("%s: connected (%s)", p->name, npf_call_path_label(c));
         p->up_since = npf_mono_ms();
         peers_forwards_start(p);        /* a mapping that fails retries on its own */
-        peers_demand_flush(p);          /* the connections that waited for it */
-        peers_udp_queue_flush(p);
+        if (npf_call_ready(c)) {
+            peers_demand_flush(p);      /* the connections that waited for it */
+            peers_udp_queue_flush(p);
+        } else {
+            peers_ready_wait(p);        /* ... once its transport can take them */
+        }
         {                               /* and those of the modules' forwards */
             int k;
             for (k = 0; k < p->ps->nkinds; k++)

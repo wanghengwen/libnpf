@@ -20,6 +20,7 @@ static void demand_tick(npf_loop *loop, void *arg);
 
 #define DEMAND_WAIT_MS     30000    /* how long one waits for it */
 #define DEMAND_TICK_MS     5000
+#define READY_POLL_MS      100      /* an established session whose transport is not ready: asked this often */
 #define UDP_PENDING_BYTES  (256 * 1024)
 
 /* someone waits for the session (a connection, a datagram, a module's
@@ -81,6 +82,30 @@ void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
             return;
     }
     peers_demand_timer(p);
+    peers_ready_wait(p);
+}
+
+static void ready_poll(npf_loop *loop, void *arg)
+{
+    npf_peer *p = arg;
+    (void)loop;
+    p->t_ready = NULL;
+    if (npf_call_ready(p->call)) {
+        peers_demand_flush(p);
+        peers_udp_queue_flush(p);
+    } else {
+        peers_ready_wait(p);
+    }
+}
+
+/* the session is established but its tunnel cannot take a connection yet
+ * (its transport not ready): what waits goes in as soon as it can, not at
+ * the next state change (there may be none: the state stays established);
+ * the waiting ones' deadline is demand_tick's */
+void peers_ready_wait(npf_peer *p)
+{
+    if (!p->t_ready && (p->npend || p->nuq) && p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
+        p->t_ready = npf_timer_add(p->ps->n->loop, READY_POLL_MS, ready_poll, p);
 }
 
 /* the session is up: the waiting connections go into it */
@@ -181,6 +206,7 @@ void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, c
             return;
     }
     peers_demand_timer(p);
+    peers_ready_wait(p);
 }
 
 /* waiting connections past their time; a session without connections ends */

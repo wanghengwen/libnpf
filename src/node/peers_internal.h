@@ -98,6 +98,7 @@ struct npf_peer {
     int        nuq;
     size_t     uq_bytes;
     npf_timer *t_demand;            /* pending deadlines, idle check */
+    npf_timer *t_ready;             /* connections wait for an established session's transport */
     int64_t    idle_since;          /* no connection in the session since (ms), 0: some */
     int64_t    retry_at;            /* monotonic ms of the next attempt */
     char       last_why[32];        /* why the last session ended */
@@ -178,6 +179,7 @@ pfwd *peers_fwd_by_id(const npf_peers *ps, int id);
 int  peers_kick(npf_peer *p);
 void peers_demand_timer(npf_peer *p);
 void peers_demand_wait(pfwd *f, int fd, uint64_t cid);
+void peers_ready_wait(npf_peer *p);
 void peers_demand_flush(npf_peer *p);
 void peers_udp_queue_drop(npf_peer *p, int slot);
 void peers_udp_queue_flush(npf_peer *p);
