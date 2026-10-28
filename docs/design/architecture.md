@@ -128,7 +128,7 @@
 
 ### 1.5 结构问题
 
-"相关的现场问题"一列里，"10-27 (n)" 指 npf 的 `docs/implementation.md` 第 461 行（libnpf 代码评审的修正）的第 n 条，"10-31" 指第 468 行（int-1031 现场测试发现的问题）。
+"相关的现场问题"一列里，"10-27 (n)" 指 npf 的 `docs/implementation.md` 第 461 行（libnpf 代码评审的修正）的第 n 条，"int-1031" 指第 468 行（int-1031 现场测试发现的问题）。
 
 | # | 问题 | 代码 | 相关的现场问题 |
 |---|---|---|---|
@@ -723,10 +723,10 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 | 步 | 范围（文件） | 行数（库，净） | 风险 | 守护 | 新测试 | 从此不可能的错误 |
 |---|---|---|---|---|---|---|
 | **1a** 路径对象，不改行为 | 新 `node/path.h`、`path_direct.c`、`path_udp.c`、`path_ws.c`、`path_mgr.c`（先只做发送与命名）；`call_path.c`、`call_relay.c`、`call_ws.c` 的内容移入；`call_transport.c:anl_out` 改为 `pm_send`；`npf_call_path` 由管理器给出，`api/ops.c:npf_path_code` 改为枚举；路径用到的钩子（`DROP_P2P`、`BLOCK_RELAY`、`DROP_BIND_ACK`、`NO_P2P`）先进第 6 节的结构 | +150（约 1 000 行移动） | 中：热路径的发送与分发 | `scripts/check.sh`（单元、loopback、mesh、wsswitch 等）；natlab 全部；`npf_cpuprobe`（`tests/unit/cpuprobe.c`：一个会话搬 N MB 的 CPU 与空闲开销）前后对比 | `test_path.c`：假的路径实现，验证发送的路由（主、双发、WS 排他）；经 UDP 中转的吞吐与 CPU 对比（今天只有直连的 `cpuprobe` 与只测封装的 `relayprobe`） | 发送的路径与显示的路径不一致；路径名字符串被解析回枚举 |
-| **1b** 统一的健康模型 | `path_*.c`、`path_mgr.c`；去掉 `call_check_p2p`、`call_check_relay` 的重复部分；WS 的无声检测（新） | −150（含新增 40） | 高：行为变化（Q2、Q3、Q5） | natlab `udp-lost`（NL-36）、`udp-back`、`stale`、`skew-relay`；mesh（单向切断）；wsswitch；RN-16 | 假时钟下每条健康规则一行一测；natlab 新用例：中转第一个地址不通、WS 半开（丢掉 TCP 而不关连接） | 被依赖却没有健康检查的路径（10-28 那类）；同一问题几套规则 |
+| **1b** 统一的健康模型 | `path_*.c`、`path_mgr.c`；去掉 `call_check_p2p`、`call_check_relay` 的重复部分；WS 的无声检测（新） | −150（含新增 40） | 高：行为变化（Q2、Q3、Q5） | natlab `udp-lost`（NL-36）、`udp-back`、`stale`、`skew-relay`；mesh（单向切断）；wsswitch；RN-16 | 假时钟下每条健康规则一行一测；natlab 新用例：中转第一个地址不通、WS 半开（丢掉 TCP 而不关连接） | 被依赖却没有健康检查的路径（int-1031 那类）；同一问题几套规则 |
 | **1c** 管理器的策略与请求 | `path_mgr.c`、`call.c`、`call_punch.c`（提示）；去掉 `relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call.c` 里四个对所有呼叫的循环中路径的部分 | −100 | 高：WS 的去留、请求的重发（Q1、Q4、Q7） | 同 1b，另加 resume、callsetup、hosted | 第 3.6 节逐行；平台不应答 `relay_switch` 时的重发（需要测试平台的一个开关：丢掉某呼叫的 `relay_switch`） | 没有截止时间的请求（`relay_switch` 只发一次那类）；WS 会话被打洞"打通"（10-27 (5)）；"每个呼叫一次"的重试 |
 | **1d** 呼叫的单一截止时间 | `call.c`、`call_transport.c`、`call_punch.c`、`path_*`：13 个定时器 → 1 个（加 2 个下一轮回调） | −80 | 中：时序、热路径 | `npf_cpuprobe`（含 S 个空闲会话的开销）；RN-16（长时间、空闲唤醒）；check.sh | 不变式测试（每个状态有截止）；空闲会话的唤醒次数（不多于保活所需） | 标志依赖定时器存在（`accepted` 那类）；状态没有定时器 |
-| **2** 绑定器与备用分配 | `relay_bind.c`（状态枚举，保活显式）、`home.c`（一个截止时间） | −60 | 中 | homebind；natlab `home*`、`learn`、`stale-nospare`；`test_home.c`、`test_relay.c` | 第 3.3、3.4 节逐行，不用套接字 | BACKOFF 没有定时器（10-27 (6)）；一直续用已回收的分配（10-28） |
+| **2** 绑定器与备用分配 | `relay_bind.c`（状态枚举，保活显式）、`home.c`（一个截止时间） | −60 | 中 | homebind；natlab `home*`、`learn`、`stale-nospare`；`test_home.c`、`test_relay.c` | 第 3.3、3.4 节逐行，不用套接字 | BACKOFF 没有定时器（10-27 (6)）；一直续用已回收的分配（int-1031） |
 | **3** 打洞与呼叫的状态机 | `call_punch.c`、`call.c`、`call_handshake.c` | −120 | 中 | punch、callsetup、loopback；natlab 各策略 | 第 3.1、3.2 节逐行 | 漏记接受而丢掉 `punch_update`（10-27 (1)）；端口给错轮次（10-27 (4)） |
 | **4** 描述表：呼叫相关的消息 | 新 `proto/msg.c`；`call*.c`、`home.c`、`relay_bind.c` 约 25 种消息 | −100（±100） | 低–中：解析的边界 | `test_json`、`tests/fuzz`；`test_home.c` 里平台的向量；集成全部 | 每张表的往返（解析 → 写出 → 解析）；按表生成的模糊输入；对照 signaling.md 的字段表 | 缺必需字段被静默忽略；同一字段两处范围不同；秘密字段忘了擦除 |
 | **5** 描述表：其余消息；配置键表 | `node_signal.c`、`call_reverse.c`、`call_transport.c`（控制）、`proto/wsrelay.c`；`conf.c`、`api/engine_config.c`、`api/setup.c`、`node/setup.c`、`api/cmd.c` | −250 | 中：配置的优先次序 | `test_conf`；API 测试（`test_contract`、`test_api` 的 `npf_config_*`）；`test_module` | 每个键的来源优先次序；`npf_setup` 与 `overrides` 冲突 | 一个键在两处有不同的解析；只能来自 npf.conf 的键从别处进来 |
