@@ -4,7 +4,7 @@
 
 本文是 libnpf 逐步重构的依据：先写清现在的结构和问题（第 1 节），再给出目标的分层与接口（第 2 节）、各部分的状态机（第 3 节）、定时方式（第 4 节）、信令消息的描述表（第 5 节）、测试钩子（第 6 节）、库的边界（第 7 节），最后是分步迁移的计划（第 8 节）和不做的事（第 9 节）。重构是渐进的：每一步单独合入、单独现场测试，不做整体重写。
 
-凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）；第 1c 步去掉了 `call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_standby_done`、`pm_standby_start`、`path_ws.c:ws_elsewhere`、`call.c:npf_node_ws_calls_udp_back` 与 `npf_node_calls_to_ws`，路径之间的决定都在 `path_mgr.c:pm_decide`，向平台的请求都经 `call_need`（第 3.6 节"1c 的实现"）。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
+凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）；第 1c 步去掉了 `call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_standby_done`、`pm_standby_start`、`path_ws.c:ws_elsewhere`、`call.c:npf_node_ws_calls_udp_back` 与 `npf_node_calls_to_ws`，路径之间的决定都在 `path_mgr.c:pm_decide`，向平台的请求都经 `call_need`（第 3.6 节"1c 的实现"）；第 1d 步把呼叫的 8 个定时器合成一个（`call.c:call_tick`，`anl_timer`、`timeout_cb`、`punch_timer`、`linger_done`、`direct_retry`、`pm_timer`、`ws_reconnect` / `ws_pair_late` 的定时器、`relay_keepalive_timer` 变成各部分的截止时间与 tick），去掉了 `relay_bind.c` 的 `relay_bind_run`、`relay_bind_probe`（第 4 节"1d 的实现"）。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
 
 ## 1. 现状
 
@@ -542,6 +542,15 @@ struct npf_path {
 
 一个呼叫从 13 个定时器变成 1 个（另有 2 个下一轮回调），备用分配从 3 个变成 1 个。1b 去掉了 `t_pcheck`、`t_rcheck`（管理器的 `t_check`），1c 去掉了 `t_ws_wait` 与 `t_standby`（管理器的 `act_at`，同一个 `t_check`）：现在每个呼叫 9 个（`t_anl`、`t_timeout`、`t_punch`、`t_linger`、`t_direct`、`t_free`、`pm.t_check`、`pw.t_flush`、`pw.t_re`），另有 `relay.t_bind`。
 
+**1d 的实现**（2026-10-29，`call.c` 的"the call's one timer"一节）：上面的 8 个定时器（`t_anl`、`t_timeout`、`t_punch`、`t_linger`、`t_direct`、`pm.t_check`、`pw.t_re`、`relay.t_bind`）合成 `npf_call` 的一个 `t_due`（排在 `due_at`），只留 `t_free` 与 `pw.t_flush` 两个下一轮回调。
+
+- 各部分的截止时间（单调毫秒，0 表示没有）：呼叫的期限 `limit_at`、打洞的开始 `punch_at` 与余留 `linger_at`、直连发起方的重发 `direct_at`、管理器的 `pm.check_at`、UDP 中转的 `pu.bind_at`（绑定中是 700 ms 的下一次绑定，绑上后是 25 s 的保活，由绑定器的 `bound` 区分）、WS 中转的 `pw.re_at`（没有连接时是 2 s 后重连，重连的连接是 10 s 的配对期限）；AnLiu 的是 `tr_due`（`anl_check`）。
+- `call_at(c, at)`：某个截止时间设成了 `at`；只在比已排的早时重排（内联：每个数据报都问一次，同今天 `anl_after_input`）。截止时间推后或取消时什么都不做，定时器早到一次、`call_tick` 发现没有到期的事，再按 `call_due` 排下一次。tick 期间（`ticking`）不重排，结束后排一次。
+- `call_tick` 的顺序同规则 3：会话（`tr_tick`：`anl_update`、合并的 flush、失效检查、排空）→ 路径（`path_udp_tick`、`path_ws_tick`）→ 管理器（`pm_check`：有 AnLiu 连接时每次 tick 都跑，同 1c 的"每个 AnLiu 定时器一次"，没有时只在 `check_at`）→ 打洞（`call_punch_tick`）→ 直连重发（`call_direct_tick`）→ 期限；每一步之后呼叫结束了就停。
+- AnLiu 的定时器合并了，没有单独留：忙时它约 20 ms 一次，合并后每次多做的只是 7 个截止时间的比较；每个数据报的 `call_at` 是两次比较（先内联、不跨文件调用：跨文件调用时 `npf_cpuprobe` 的指令数多约 0.15 %，内联后持平）。测量见第 8 节"1d 实际"。
+- 不变式：没有结束的呼叫总有截止时间（建立之前是期限，有了密钥之后是 AnLiu 的 `anl_check`，它总是有限的：保活、空闲超时或 5 s 的安静检查），定时器不晚于最早的截止时间。单元测试 UT-35（`test_call.c`）在新呼叫、会话建立、已建立、UDP 中转绑定中、WS 中转待重连各检查一次，并检查截止时间提前、推后、完成三种重排。
+- 绑定器（`relay_bind.c`）不再有自己的定时器：`relay_bind_run`、`relay_bind_probe` 与 `relay_c` 里的定时器和回调去掉，呼叫与备用分配都用 `relay_bind_begin` / `relay_bind_step`，时间由所有者管（呼叫是 `pu.bind_at`，备用分配是 `home.c` 的 `t_bind`，第 2 步并入备用分配的一个截止时间）。
+
 ## 5. 信令消息描述表
 
 ### 5.1 格式
@@ -764,6 +773,10 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 **1b 实际**（2026-10-28）：库的 `src` + `include` 38 175 → 38 519 行（+344；不计注释与空行 31 690 → 31 911，+221），`src/node` 15 710 → 16 046 行，而不是计划的 −150。去掉的是 `call_check_p2p`、`call_check_relay` 与两个检查定时器（约 120 行）；加的是规则本身（`pm_tick`、`pm_rules_of`、`pm_check`，约 130 行）、WS 中转原来没有的无声检测、配对期限与放弃（约 80 行）、绑定器的两种次序（约 40 行）和热备的探测窗口（约 30 行），以及按这个仓库的习惯写在代码旁的说明。新增单元测试约 380 行（`test_path_health.c`、`test_relay.c` 的地址次序、`test_call.c` 的 WS 放弃）。
 
 **1c 实际**（2026-10-29）：库的 `src` + `include` 38 527 → 38 423 行（−104；不计注释与空行 32 009 → 31 926，−83，用同一个脚本数的前后两版），`src/node` 16 054 → 15 948 行（−106）（`git diff` +349 −453）。去掉的：`call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_relay_ask_ok` / `asked`（约 125 行），`call_standby_done`、`pm_standby_start` 与 `t_standby`、`standby_check` 的各处（约 70 行），`ws_elsewhere` 与 `fail_wait`（约 25 行），`npf_node_ws_calls_udp_back`、`npf_node_calls_to_ws`（约 35 行），`direct_doubt` 与 `direct_lost` 里的请求（约 30 行），`call_relay_take`（并入 `path_udp_setup`），三处一样的"结束打洞、交还难侧套接字"（改为 `call_punch_end`）；加的：`pm_decide`（约 75 行，含注释）、`call_need`（约 60 行）、`pm_check` 里的输入与动作（约 35 行）、`path.h` 的状态与枚举（约 35 行）、Q4 的测试开关与节点的 `udp_back_ms`。新增单元测试 260 行（`test_path_decide.c`，`test_call.c` 的重发时刻）；测试平台的开关 `NPF_TEST_DROP_RELAY_SWITCH` 在 npf 的服务器里（8 行）。热路径没有动（每个数据报仍只写一个时间戳），`pm_decide` 在每次 `pm_check`（AnLiu 的定时器）跑一遍：`npf_cpuprobe`、`npf_relayprobe` 与 npf 的 `tests/bench/relay.sh`（UDP、WS 中转）前后持平，在波动之内（数字见 npf 的 `docs/implementation.md`）。
+
+**1d 实际**（2026-10-29）：库的 `src` + `include` 38 423 → 38 440 行（+17；不计注释与空行 31 926 → 31 926，持平），`src/node` 15 948 → 15 965 行（`git diff` +259 −242），而不是计划的 −80。去掉的：8 个定时器的回调与它们的启停（`anl_timer` 的排程、`anl_after_input` 里的比较、`timeout_cb`、`call_timers_stop`、`punch_timer`、`linger_done`、`direct_retry`、`pm_timer`、`ws_pair_late` 与 `ws_reconnect` 的定时器部分、`relay_keepalive_timer` / `relay_keepalive`），以及绑定器自己的定时器（`relay_bind_run`、`relay_bind_probe`、`run_start`、`run_timer` 与 `relay_c` 的 `t_bind`、回调，约 45 行，备用分配改为在 `home.c` 自己驱动 `relay_bind_begin` / `relay_bind_step`）；加的：单一定时器本身（`call_arm` / `call_at`、`call_timer`、`call_due`、`call_tick`，约 55 行，含注释）、各部分的 tick 入口与截止时间字段（`tr_tick` / `tr_due`、`path_udp_tick`、`path_ws_tick`、`call_punch_tick`、`call_direct_tick`）。原来的回调本来就短，它们的内容变成 tick 照样留着，所以代码行持平；多出的 17 行是新接口与字段的注释。新增单元测试 79 行（UT-35，`test_call.c`）。
+
+热路径与空闲（改前 1c `7ffe7bf`、改后交替运行；数字见 npf 的 `docs/implementation.md`）：AnLiu 的定时器并进来了，`call_at` 先在头文件里内联比较（跨文件调用时 `npf_cpuprobe` 的指令数多约 0.15 %，内联后持平：64 MB 8 次中位数 2 638.5 / 2 637.5 百万条）；每个空闲会话每分钟的唤醒（`npf` 进程的上下文切换，有会话减没有会话）直连 24–26 → 20–21、UDP 中转 25–28 → 22–23、WS 中转 24–25 → 23，少的是管理器那个定时器单独醒的几次；剩下的就是 AnLiu 的 5 s 安静检查、15 s 保活与对方的保活、中转 25 s 的保活与应答。
 
 合计库净减约 800 行（±30 %），新增单元测试约 1 500 行。1a–1d 合起来就是"第 1 步：路径抽象及其截止时间与状态机"；四个小步各自可以合入、现场测试，任何一步都可以单独回退。
 
