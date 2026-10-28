@@ -184,14 +184,17 @@ static size_t tun_backlog(void *arg)
     return (c->stream ? (size_t)anl_stream_waitsnd(c->stream) * ANL_MTU : 0) + c->dpend_bytes;
 }
 
-/* where the forwards pause (data-channel.md 6): on AnLiu about two
+/* where the forwards pause (data-channel.md 6): on AnLiu four
  * bandwidth-delay products of the path (BBR's bottleneck bandwidth, the
  * minimum RTT: queueing does not inflate it), 256 KiB .. 4 MiB, 1 MiB before
- * the first estimate. Enough to keep a long fat path full (4 MiB: ~3x the
- * throughput of 1 MiB at 200 ms / 100 Mbit/s), no more on a slow one, where
- * an interactive sublink would wait behind it (all sublinks share the data
- * stream: 4 MiB at 20 Mbit/s added ~1 s). The WS relay keeps 1 MiB: its
- * queue is TCP's, more only adds delay (tests/bench/anlws) */
+ * the first estimate. Four: AnLiu's window is already ~2 BDP and reads resume
+ * at half, so with two its queue ran dry, the samples were app-limited and
+ * the estimate (and the pause) stayed low (-35 % at 20 Mbit/s); with four the
+ * throughput is that of a fixed 4 MiB on a long fat path (~3x 1 MiB at
+ * 200 ms / 100 Mbit/s) and of 1 MiB elsewhere, and an interactive sublink
+ * behind a bulk one waits less than with 1 MiB except on long slow paths
+ * (all sublinks share the data stream; tests/bench/anlws/npf-backlog.sh).
+ * The WS relay keeps 1 MiB: its queue is TCP's, more only adds delay */
 #define BACKLOG_MIN   (256 * 1024)
 #define BACKLOG_MAX   (4 * 1024 * 1024)
 static size_t tun_backlog_max(void *arg)
@@ -201,7 +204,7 @@ static size_t tun_backlog_max(void *arg)
     uint64_t v;
     if (c->ws_mode || !c->anl || anl_get_stats(c->anl, &st) < 0 || !st.bw_estimate || !st.min_rtt)
         return NPF_TUNNEL_BACKLOG;
-    v = 2 * (uint64_t)st.bw_estimate * st.min_rtt / 1000;
+    v = 4 * (uint64_t)st.bw_estimate * st.min_rtt / 1000;
     return v < BACKLOG_MIN ? BACKLOG_MIN : v > BACKLOG_MAX ? BACKLOG_MAX : (size_t)v;
 }
 
