@@ -382,10 +382,9 @@ static void watch_cb(npf_loop *loop, void *arg)
             n->test_no_udp = z;
             npf_logw("test: UDP %s", z ? "gone" : "back");
             npf_node_report_nat(n);         /* as a probe's new profile would */
-            if (z)
-                npf_node_calls_to_ws(n);
-            else
-                npf_node_ws_calls_udp_back(n);
+            if (!z)
+                n->udp_back_ms = npf_mono_ms();
+            npf_node_calls_decide(n);
         }
     }
 #endif

@@ -18,6 +18,7 @@ static void th_read(npf_test_hooks *t)
     t->drop_p2p_ms = v ? atoll(v) : -1;
     t->drop_p2p_port = v && strchr(v, ':') ? atoi(strchr(v, ':') + 1) : 0;
     t->block_relay = getenv("NPF_TEST_BLOCK_RELAY");
+    t->udp_again_ms = (v = getenv("NPF_TEST_UDP_AGAIN_MS")) ? atoll(v) : 0;
 }
 
 const npf_test_hooks *npf_th(void)

@@ -23,6 +23,7 @@ add_executable(npf_unit_tests
   test_call.c
   test_path.c
   test_path_health.c
+  test_path_decide.c
 )
 if(NPF_PORTMAP)
   target_sources(npf_unit_tests PRIVATE test_portmap.c)

@@ -114,8 +114,7 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
         if (had)
             call_punch_sockets_back(c->n);
     }
-    c->punched = 1;
-    call_ws_wait_end(c, res->ok);        /* the UDP relay was unreachable: a failed punch leaves the WS relay */
+    c->punched = 1;                      /* a wait for it is over (pm_decide) */
     result_begin(c, &w, data, sizeof data, c->punch_of, res->ok);
     if (res->ok) {
         getsockname(fd, (struct sockaddr *)&ls, &ll);
@@ -141,13 +140,13 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
         npf_logw("call %s: punching failed after %d ms (%d probes sent, %d received)", c->call_id_s,
                 res->elapsed_ms, res->probes_sent, res->probes_recv);
         c->t_linger = npf_timer_add(c->n->loop, 0, linger_done, c);
+        pm_check(c);                /* the UDP relay unreachable meanwhile: the next step */
         return;                     /* the platform plans what comes next */
     }
     npf_log("call %s: direct path %s (%d ms)", c->call_id_s, npf_addr_str(&res->peer, a, sizeof a),
             res->elapsed_ms);
     path_direct_up(c, fd, &res->peer);
     c->t_linger = npf_timer_add(c->n->loop, PUNCH_LINGER_MS, linger_done, c);
-    pm_standby_start(c);
     call_path_up(c);
 }
 
@@ -207,6 +206,19 @@ void call_port_pressure(npf_node *n, const char *what)
     n->port_pressure = now;
 }
 
+/* the punch goes (a new round, the move to the WS relay, the call's end):
+ * a running hard-side one gives its sockets back */
+void call_punch_end(npf_call *c)
+{
+    int had = c->punch_socks > 0;
+    npf_timer_stop(c->n->loop, &c->t_linger);
+    npf_punch_free(c->punch);
+    c->punch = NULL;
+    c->punch_socks = 0;
+    if (had)
+        call_punch_sockets_back(c->n);
+}
+
 /* a punch gave its sockets (the NAT's ports) back: the relays that could
  * not bind meanwhile try again */
 void call_punch_sockets_back(npf_node *n)
@@ -217,11 +229,8 @@ void call_punch_sockets_back(npf_node *n)
         if (o->punch && o->punch_socks > 0)
             return;                     /* another one still holds them */
     for (o = n->calls; o; o = o->next)
-        if (o->pu.waits_ports && !o->ended && !o->pu.r.bound && !call_has_ws(o)) {
-            o->pu.waits_ports = 0;
-            npf_log("call %s: the punch gave the NAT's ports back: trying the UDP relay again", o->call_id_s);
-            call_relay_rebind(o);
-        }
+        if (o->pm.wait == PM_IN_PORTS)
+            pm_check(o);                /* bound again (pm_decide) */
 }
 
 /* S2B: this side's fresh mapping, to the peer (punch_info, nat-traversal.md 7.6) */
@@ -303,15 +312,15 @@ void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
  * round goes on to its timeout for a late peer): the platform hears of the
  * failure now, a round planned otherwise comes sooner (signaling.md
  * punch_result early). Not while the UDP relay is unreachable and this punch
- * decides the WS relay (call_ws_wait_end at its real end): a late peer's
- * direct path keeps the session off the WS relay, which cannot go direct */
+ * decides the WS relay (pm_decide, at its real end): a late peer's direct
+ * path keeps the session off the WS relay, which cannot go direct */
 static void punch_quiet(npf_punch *p, const npf_punch_result *res, void *arg)
 {
     npf_call *c = arg;
     char data[256];
     npf_jw w;
     (void)p;
-    if (c->pm.t_ws_wait || c->ended || call_has_p2p(c))
+    if (c->pm.wait == PM_IN_PUNCH || c->ended || call_has_p2p(c))
         return;
     result_begin(c, &w, data, sizeof data, c->punch_of, 0);
     npf_jw_kbool(&w, "early", 1);
@@ -349,15 +358,7 @@ void call_start_punch_now(npf_call *c)
         return;
     }
     memcpy(c->pcfg->plan.nominate_key, c->nominate_key, 32);
-    if (c->punch) {                 /* the last round's, lingering or still running */
-        int had = c->punch_socks > 0;
-        npf_timer_stop(c->n->loop, &c->t_linger);
-        npf_punch_free(c->punch);
-        c->punch = NULL;
-        if (had)                    /* a running hard-side one: the calls waiting for its sockets */
-            call_punch_sockets_back(c->n);
-    }
-    c->punch_socks = 0;
+    call_punch_end(c);              /* the last round's, lingering or still running */
     c->punch_of = c->punch_round;
     if (c->pcfg->plan.strategy == NPF_PUNCH_S3 && c->pcfg->plan.side == NPF_PUNCH_HARD) {
         int want = c->pcfg->plan.n_sockets, budget = npf_node_punch_budget(c->n);
@@ -375,8 +376,7 @@ void call_start_punch_now(npf_call *c)
             else
                 npf_log("call %s: punch round %d: another hard-side punch holds the NAT's ports: waiting for it to end",
                         c->call_id_s, c->punch_round);
-            c->punched = 1;
-            punch_busy(c);          /* the peer's part ends now: no spray into nothing */
+            punch_busy(c);          /* (not punched: the round comes again) */          /* the peer's part ends now: no spray into nothing */
             return;
         }
         if (c->pcfg->plan.n_sockets < want)
@@ -565,6 +565,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         return;
     }
     c->punch_round = (int)v;
+    c->punched = 0;
     npf_timer_stop(c->n->loop, &c->t_punch);    /* the last round's start: this one replaces it */
     c->punch_wait_keys = 0;
     if (!c->pcfg && !(c->pcfg = malloc(sizeof *c->pcfg)))
@@ -578,7 +579,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         npf_log("call %s: punch round %d: both NATs are hard, no strategy works between them: the session stays on the relay",
                 c->call_id_s, c->punch_round);
         c->punched = 1;
-        call_ws_wait_end(c, 0);
+        pm_check(c);
         return;
     }
     if (npf_json_get_b64(j, d, "punch_id", pid, 8) != 8 || npf_json_get_b64(j, d, "punch_key", pl->punch_key, 32) != 32)

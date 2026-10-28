@@ -198,7 +198,7 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
             goto fail;
     }
     npf_log("call %s: accepted%s", c->call_id_s,
-            call_has_ws(c) ? (c->pw.wsr && !c->pw.fail_wait ? " (the WS relay connected since the reply)" : "")
+            call_has_ws(c) ? (c->pw.wsr ? " (the WS relay connected since the reply)" : "")
             : c->pu.r.bound ? " (the UDP relay bound since the reply)" : call_has_relay(c) ? " (the UDP relay being bound)" : "");
     /* connecting first: with the relay from the reply our hello goes as the
      * transport is made, and the session is established then (the caller
@@ -207,11 +207,7 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
     if (call_finish_handshake(c) < 0)
         goto fail;
     call_relay_setup(c, j, d);
-    if (c->pw.fail_wait && !c->ended) {
-        /* the WS relay failed before the accept: now it can be replaced */
-        c->pw.fail_wait = 0;
-        call_ws_failed(c, "unreachable (before the accept)");
-    }
+    pm_check(c);                /* a relay that failed before the accept: replaced now (pm_decide) */
     /* what the callee sent through the relay before the keys, now: after
      * connecting (its hello may establish the session at once) */
     if (!c->ended)

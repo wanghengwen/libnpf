@@ -351,6 +351,7 @@ struct npf_node {
     int           nat_retries;
     int           nat_again;        /* the probe heard nothing: measuring once more before udp = 0 */
     int64_t       nat_ok_ms;        /* the last probe that was answered (mono ms) */
+    int64_t       udp_back_ms;      /* ... after one that was not (mono ms) */
     /* the network watch (node.c): a suspended process (iOS, a laptop's
      * sleep) or other addresses: the connections are checked at once */
     npf_timer    *t_watch, *t_netcheck;
@@ -460,11 +461,10 @@ void node_calls_punch_report(npf_node *n, const char *why);
 /* the published resources changed: reverse-mapping listeners they no longer
  * allow are closed (call.c) */
 void npf_node_reverse_recheck(npf_node *n);
-/* UDP works again after a NAT probe without an answer: the calls this side
- * made on the WS relay end, their peers reconnect over UDP (call.c) */
-void npf_node_ws_calls_udp_back(npf_node *n);
-/* tests (NPF_TEST_WS_FILE): UDP is gone, every session asks for the WS relay */
-void npf_node_calls_to_ws(npf_node *n);
+/* the node's UDP changed: UDP works again after a NAT probe without an
+ * answer (udp_back_ms: the sessions on the WS relay ask for the UDP relay),
+ * tests (NPF_TEST_WS_FILE): gone or back; every session decides (call.c) */
+void npf_node_calls_decide(npf_node *n);
 /* the network the UDP sockets go out on changed (an app: a VPN came or went):
  * both are opened again, as when they fail (their calls end and reconnect).
  * 0: they reopen (now, or with the retry already waiting), and the network

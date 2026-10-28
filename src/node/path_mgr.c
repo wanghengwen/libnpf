@@ -1,9 +1,9 @@
-/* The path manager (path.h, architecture.md 2.4): which of a session's
+/* The path manager (path.h, architecture.md 2.4, 3.6): which of a session's
  * paths AnLiu's datagrams go on, the name of the one in use, the paths'
- * health by one set of rules; then the decisions between the paths a
- * session makes today (architecture.md 3.6 to come): the platform's relay
- * allocations, the relay's standby, the way to the WS relay when the UDP
- * relay cannot be reached. */
+ * health by one set of rules, the decisions between them (what to wait for,
+ * what the session needs of the platform: pm_decide), and the session's
+ * side of them: the platform's relay allocations, the relay's standby, the
+ * requests and their deadlines (call_need). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -186,6 +186,83 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
     return due;
 }
 
+static int pm_wait(npf_pm *m, unsigned wait, int64_t at, int r)
+{
+    m->wait = wait;
+    m->act_at = at;
+    return r;
+}
+
+/* What the session needs (path.h), by architecture.md 3.6, from its paths'
+ * health and the inputs; each decision once, at the event or the time
+ * (act_at) that makes it. The WS relay given up: one elsewhere (the caller
+ * asks); UDP working: the UDP relay when UDP came back or udp_again after
+ * (Q4), straight back when that does not bind. No UDP relay: one while the
+ * direct path is in doubt, once asked until it comes. The direct path up:
+ * the relay stands by PM_STANDBY_MS, then goes once a round trip over the
+ * direct path is proven (a punch proves one way only: a probe first). It
+ * lost: dropped, path_lost unless the UDP relay is dead too. The UDP relay
+ * dead (every address tried): beside a doubt, bound once more; alone, after
+ * the accept: the ports a hard-side punch holds, then the round under way
+ * awaited (PM_WAIT_MS at most), bound once more, the WS relay; each loss
+ * afresh (Q7: once a call before), a bind under way awaited first (D4) */
+int pm_decide(npf_pm *m, unsigned in, int64_t now)
+{
+    npf_path *d = m->p[PK_DIRECT], *u = m->p[PK_UDP_RELAY], *w = m->p[PK_WS_RELAY];
+    unsigned k;
+    if (u && u->health == PH_UP)
+        m->tried = 0;
+    if (m->fixed)
+        return PM_NONE;
+    if (w) {
+        if (w->health == PH_DEAD)
+            return pm_wait(m, 0, 0, (in & (PM_IN_CALLER | PM_IN_HOLD)) == PM_IN_CALLER ? PM_NEED_WS_ELSEWHERE : PM_NONE);
+        if (!(in & PM_IN_UDP) || !(in & (PM_IN_UP | PM_IN_UDP_BACK)))
+            return pm_wait(m, 0, 0, PM_NONE);
+        if (!(in & PM_IN_UDP_BACK) && now - w->since < m->udp_again)
+            return pm_wait(m, 0, w->since + m->udp_again, PM_NONE);
+        m->tried = PM_IN_PORTS | PM_IN_PUNCH | PM_T_RETRY;
+        return pm_wait(m, 0, 0, PM_NEED_UDP_BACK);
+    }
+    if (in & PM_IN_NOUDP)
+        return pm_wait(m, 0, 0, PM_NEED_WS);
+    if (d && d->health == PH_DEAD)
+        return pm_wait(m, 0, 0, u && u->health == PH_DEAD ? PM_DROP : PM_NEED_PATH_LOST);
+    if (!u)
+        return pm_wait(m, 0, 0, (d ? d->health == PH_SUSPECT : m->need == PM_NEED_UDP) ? PM_NEED_UDP : PM_NONE);
+    if (d && d->health == PH_UP) {
+        if (m->wait != PM_W_STANDBY && m->wait != PM_W_PROBE)
+            return pm_wait(m, PM_W_STANDBY, now + PM_STANDBY_MS, PM_NONE);
+        if (d->rt_ok >= d->since && (m->wait == PM_W_PROBE || now >= m->act_at))
+            return pm_wait(m, 0, 0, PM_NEED_RELEASE);
+        if (now < m->act_at)
+            return PM_NONE;
+        if (m->wait == PM_W_PROBE)
+            return pm_wait(m, PM_W_STANDBY, now + PM_STANDBY_MS, PM_STANDBY_ON);
+        pm_probe(m, d, now, PM_PROBE_MS);
+        return pm_wait(m, PM_W_PROBE, now + PM_PROBE_MS, PM_PROBE);
+    }
+    if (u->health != PH_DEAD || in & PM_IN_HOLD || (d && m->tried & PM_T_RETRY))
+        return pm_wait(m, 0, 0, PM_NONE);
+    if (m->wait && in & m->wait && now < m->act_at)
+        return PM_NONE;
+    k = m->wait == PM_IN_PORTS && !(in & PM_IN_PORTS);
+    pm_wait(m, 0, 0, PM_NONE);
+    if (k)
+        return PM_REBIND;
+    if (m->need == PM_NEED_WS)
+        return PM_NEED_WS;
+    if (!d && (k = in & (PM_IN_PORTS | PM_IN_PUNCH) & ~m->tried) != 0) {
+        k = k & PM_IN_PORTS ? PM_IN_PORTS : PM_IN_PUNCH;
+        m->tried |= k;
+        return pm_wait(m, k, now + PM_WAIT_MS, k == PM_IN_PORTS ? PM_WAIT_PORTS : PM_WAIT_PUNCH);
+    }
+    if (m->tried & PM_T_RETRY)
+        return PM_NEED_WS;
+    m->tried |= PM_T_RETRY;
+    return PM_RETRY;
+}
+
 const char *pm_name(const npf_pm *m)
 {
     if (m->fixed)
@@ -220,6 +297,7 @@ void call_paths_init(npf_call *c)
     c->pu.p.kind = PK_UDP_RELAY;
     c->pw.p.ops = &path_ws_ops;
     c->pw.p.kind = PK_WS_RELAY;
+    c->pm.udp_again = c->n->th->udp_again_ms > 0 ? c->n->th->udp_again_ms : PM_UDP_AGAIN_MS;
 }
 
 
@@ -233,96 +311,75 @@ static void pm_timer(npf_loop *loop, void *arg)
     pm_check(c);
 }
 
-/* The health rules now (pm_tick) for a session with its AnLiu connection:
- * from AnLiu's timer, the manager's own (at the next thing due: a probe, a
- * verdict, a silence long enough; earlier only when it moved earlier, as
- * AnLiu's timer, call_transport.c:anl_after_input) and the events that
- * change a path's health. Nothing on the hot path: a datagram only writes
- * its path's last_rx. */
+/* The health rules now (pm_tick) for a session with its AnLiu connection,
+ * then the decisions (pm_decide, call_need): from AnLiu's timer, the
+ * manager's own (at the next thing due: a probe, a verdict, a silence long
+ * enough, a wait's end, a request's deadline; earlier only when it moved
+ * earlier, as AnLiu's timer, call_transport.c:anl_after_input) and the
+ * events that change a path's health or an input. Nothing on the hot path:
+ * a datagram only writes its path's last_rx. */
 void pm_check(npf_call *c)
 {
+    static const char *const act[] = {
+        "the UDP relay unreachable while a punch holds the NAT's ports: trying again when it ends",
+        "the UDP relay unreachable: waiting for the punch before asking for the WS relay",
+        "trying the UDP relay once more before the WS relay",
+        "the punch gave the NAT's ports back: trying the UDP relay again", "",
+        "no echo over the direct path in 10 s: the relay stands by 30 s more", ""};
+    npf_node *n = c->n;
+    npf_pm *m = &c->pm;
     anl_stats st;
-    int64_t now, due;
-    int k, busy = 0;
-    if (c->ended || !c->anl)
+    int64_t now = npf_mono_ms(), due = INT64_MAX;
+    int k, busy = 0, r;
+    unsigned in;
+    if (c->ended)
         return;
     /* AnLiu's stats only for a path whose rules look at the data in
      * flight (the WS relay's do not) */
     for (k = 0; k < PK_N; k++)
-        busy |= c->pm.p[k] && c->pm.p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(&c->pm, c->pm.p[k]);
+        busy |= m->p[k] && m->p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(m, m->p[k]);
     memset(&st, 0, sizeof st);
-    if (busy && anl_get_stats(c->anl, &st) < 0)
+    if (c->anl && (!busy || anl_get_stats(c->anl, &st) == 0)) {
+        if (call_has_ws(c))
+            path_ws_heard(c);
+        due = pm_tick(m, now, st.inflight, (int)st.rto);
+    }
+    in = (c->caller ? PM_IN_CALLER : 0) | (c->caller && c->state == NPF_CALL_CALLING ? PM_IN_HOLD : 0)
+         | (c->state == NPF_CALL_ESTABLISHED ? PM_IN_UP : 0) | (!call_no_p2p(c) && !c->punched ? PM_IN_PUNCH : 0)
+         | (n->nat_valid && n->nat_udp && !n->test_no_udp ? PM_IN_UDP : 0)
+         | (n->udp_back_ms > c->pw.p.since ? PM_IN_UDP_BACK : 0) | (n->test_no_udp && c->keys_ready ? PM_IN_NOUDP : 0)
+         | (call_has_relay(c) && c->pu.p.health == PH_DEAD && call_hard_punches(c) > 0 ? PM_IN_PORTS : 0);
+    if (c->ended)
         return;
-    now = npf_mono_ms();
-    if (call_has_ws(c))
-        path_ws_heard(c);
-    due = pm_tick(&c->pm, now, st.inflight, (int)st.rto);
-    if (c->ended || due == INT64_MAX || (c->pm.t_check && c->pm.check_at <= due))
+    r = pm_decide(m, in, now);
+    if (r >= PM_WAIT_PORTS && *act[r - PM_WAIT_PORTS])
+        npf_log("call %s: %s", c->call_id_s, act[r - PM_WAIT_PORTS]);
+    if (r == PM_PROBE)
+        path_direct_check(c);           /* a new nonce: only an echo of these counts */
+    if (r == PM_DROP || r == PM_NEED_PATH_LOST) {
+        call_p2p_drop(c);
+        anl_flush(c->anl);
+    }
+    if (r == PM_PROBE || r == PM_DROP || r == PM_NEED_PATH_LOST)
+        due = now;                      /* the probe, the next decision: at once */
+    call_need(c, r < PM_WAIT_PORTS ? r : PM_NONE, now);
+    if (r == PM_WAIT_PORTS)
+        call_port_pressure(n, "the UDP relay unreachable");
+    else if (r == PM_RETRY || r == PM_REBIND)
+        call_relay_rebind(c);
+    if (m->act_at && m->act_at < due)
+        due = m->act_at;
+    if (m->need && m->ask_at < due)
+        due = m->ask_at;
+    if (c->ended || due == INT64_MAX || (m->t_check && m->check_at <= due))
         return;
-    npf_timer_stop(c->n->loop, &c->pm.t_check);
-    c->pm.check_at = due;
-    c->pm.t_check = npf_timer_add(c->n->loop, due > now ? due - now : 0, pm_timer, c);
+    npf_timer_stop(n->loop, &m->t_check);
+    m->check_at = due;
+    m->t_check = npf_timer_add(n->loop, due > now ? due - now : 0, pm_timer, c);
 }
 
 
-/* ---- the session's decisions between its paths ---- */
-
-/* the direct path up (or alive again): the UDP relay stands by for
- * RELAY_STANDBY_MS, then goes (call_standby_done) */
-void pm_standby_start(npf_call *c)
-{
-    if (call_has_relay(c) && !c->pu.t_standby)
-        c->pu.t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
-}
-
-#define STANDBY_CHECK_MS 10000      /* the direct path's check before the relay goes: its echo within this */
-
-/* the direct path held for 30 s: stop using the relay; the caller tells the
- * platform to free both allocations (data-channel.md 3) */
-void call_standby_done(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    char data[96];
-    (void)loop;
-    c->pu.t_standby = NULL;
-    if (!call_has_p2p(c) || !call_has_relay(c))
-        return;
-    if (c->pd.p.health == PH_SUSPECT) {   /* not while the direct path is in doubt */
-        if (!c->pd.standby_check)
-            c->pu.t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
-        return;
-    }
-    if (c->pd.p.rt_ok < c->pd.p.since) {
-        /* the punch proved only that the peer's datagrams reach us (a path
-         * cut one way still passes it): a path check answered over the direct
-         * path first, else the session would lose the relay it still needs.
-         * A probe, not a doubt (it was: the data on both paths meanwhile and,
-         * with no echo in 10 s, the direct path given up): no echo, the relay
-         * stands by on and the check comes again; a path dead one way goes
-         * silent in the peer's direction and the health rules find it */
-        if (!c->pd.standby_check) {
-            c->pd.standby_check = 1;
-            path_direct_check(c);
-            pm_probe(&c->pm, &c->pd.p, npf_mono_ms(), STANDBY_CHECK_MS);
-            pm_check(c);
-            c->pu.t_standby = npf_timer_add(c->n->loop, STANDBY_CHECK_MS, call_standby_done, c);
-            return;
-        }
-        c->pd.standby_check = 0;
-        npf_log("call %s: no echo over the direct path in %d s: the relay stands by %d s more", c->call_id_s,
-                STANDBY_CHECK_MS / 1000, RELAY_STANDBY_MS / 1000);
-        c->pu.t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
-        return;
-    }
-    path_udp_off(c);
-    c->pu.r.bound = 0;
-    npf_timer_stop(c->n->loop, &c->pu.r.t_bind);
-    if (c->caller) {
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
-        npf_node_send(c->n, "relay_release", 0, data);
-    }
-    npf_log("call %s: relay released", c->call_id_s);
-}
+/* ---- the session's side of the decisions ---- */
 
 /* the platform's relay allocation (the reply to the call, incoming,
  * call_accepted, relay_switch): the UDP relay's (path_udp_setup) or the WS
@@ -336,10 +393,10 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
     if (r < 0 || j->tok[r].type != NPF_JT_OBJECT || (naddr = relay_obj_parse(j, r, mode, id, key, addr)) < 0)
         return;
     if (strcmp(mode, "ws") == 0) {
-        if (call_has_ws(c) && (c->pw.wsr || c->pw.fail_wait) && memcmp(id, c->pu.r.relay_id, 8) == 0)
+        if (call_has_ws(c) && (c->pw.wsr || c->pw.p.health == PH_DEAD) && memcmp(id, c->pw.id, 8) == 0)
             return;                 /* the one in use, sent again (both sides asked; the reply to the
                                      * call, then call_accepted): its sublinks stay */
-        call_relay_take(c, id, key, NULL, 0);
+        memcpy(c->pw.id, id, 8);    /* (the UDP relay's binder keeps its own allocation) */
         if (call_ws_setup(c, j, r) < 0)
             call_ws_failed(c, "cannot connect");
         return;
@@ -352,118 +409,61 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
     path_udp_setup(c, id, key, addr, naddr);
 }
 
-/* the WS relay for this call (relay_switch{mode:"ws"}); the platform moves both sides */
-void call_ask_ws_relay(npf_call *c)
+/* What the session needs of the platform (architecture.md 2.4), each time
+ * the manager says so (pm_decide): its message, sent again 10 s later, 30 s
+ * after and every 30 s on while it holds with no allocation (the platform
+ * drops some without a word: asked once, a session stayed without a relay),
+ * within the switch quota (a burst of 6, then one in 30 s: signaling.md
+ * "中转方式的选择"); path_lost and the release once */
+void call_need(npf_call *c, int need, int64_t now)
 {
-    char data[128];
-    npf_timer_stop(c->n->loop, &c->pm.t_ws_wait);
-    if (call_has_ws(c))                 /* on it already */
+    static const char *const what[] = {"", "a UDP relay", "the WS relay", "one on our own server", "the UDP relay"};
+    static const char *const how[] = {"", "\"mode\":\"udp\"", "\"mode\":\"ws\"", "\"unreachable\":true",
+                                      "\"mode\":\"udp\""};
+    npf_pm *m = &c->pm;
+    char data[1024];
+    npf_jw w;
+    if (need == PM_NEED_PATH_LOST) {    /* once: no answer to wait for (a round, or none) */
+        call_punch_report(c, "path_lost");
         return;
-    npf_log("call %s: asking for the WS relay", c->call_id_s);
-    snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"ws\"}", c->call_id_s);
+    }
+    if (need == PM_NEED_RELEASE) {      /* once: only the caller frees both allocations (data-channel.md 3) */
+        path_udp_off(c);
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
+        if (c->caller)
+            npf_node_send(c->n, "relay_release", 0, data);
+        npf_log("call %s: relay released", c->call_id_s);
+        return;
+    }
+    if (need != m->need) {
+        m->need = need;
+        m->asks = 0;
+        m->ask_at = now;
+    }
+    if (!need || now < m->ask_at)
+        return;
+    if (m->asks)
+        npf_log("call %s: no allocation %d s after asking for %s: asking again", c->call_id_s,
+                m->asks == 1 ? RELAY_ASK_AGAIN_MS / 1000 : RELAY_ASK_LATER_MS / 1000, what[need]);
+    else
+        npf_log("call %s: %sasking for %s", c->call_id_s,
+                need == PM_NEED_UDP_BACK ? "UDP works: " : need == PM_NEED_WS_ELSEWHERE ? "relay unreachable, " : "",
+                what[need]);
+    m->ask_at = now + (m->asks++ ? RELAY_ASK_LATER_MS : RELAY_ASK_AGAIN_MS);
+    if (need == PM_NEED_UDP_BACK) {
+        npf_jw_init(&w, data, sizeof data);
+        npf_jw_obj(&w);
+        npf_jw_kstr(&w, "call_id", c->call_id_s);
+        npf_jw_kstr(&w, "why", "udp_back");
+        npf_node_write_nat(c->n, &w);
+        npf_jw_end(&w);
+        if (npf_jw_finish(&w) > 0)
+            npf_node_send(c->n, "punch_update", 0, data);
+    }
+    snprintf(data, sizeof data, "{\"call_id\":\"%s\",%s}", c->call_id_s, how[need]);
     npf_node_send(c->n, "relay_switch", 0, data);
-    call_relay_asked(c);
-    /* UDP believed to work: measured again, so that when it fails the profile
-     * says so and the probe's retries see it come back (udp_back brings the
-     * session back to UDP) */
-    if (c->n->nat_valid && c->n->nat_udp && !c->n->probe && c->n->udp_fd >= 0)
+    /* UDP believed to work: measured again, so that when it fails the
+     * profile says so and the probe's retries see it come back (udp_back) */
+    if (need == PM_NEED_WS && m->asks == 1 && c->n->nat_valid && c->n->nat_udp && !c->n->probe && c->n->udp_fd >= 0)
         node_nat_refresh(c->n);
-}
-
-/* may a relay_switch go out: none is waiting for its allocation, or the last
- * one is RELAY_ASK_AGAIN_MS old. The platform drops some without a word (the
- * call not accepted yet, no token left, refused before the session is up, no
- * relay to give): a session asked once only never had a relay again */
-int call_relay_ask_ok(const npf_call *c)
-{
-    return !c->pm.asked_ms || npf_mono_ms() - c->pm.asked_ms >= RELAY_ASK_AGAIN_MS;
-}
-
-void call_relay_asked(npf_call *c)
-{
-    int64_t now = npf_mono_ms();
-    c->pm.asked_ms = now ? now : 1;
-}
-
-static void ws_wait_done(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    (void)loop;
-    c->pm.t_ws_wait = NULL;
-    c->pu.waits_ports = 0;
-    if (!call_has_p2p(c) && !c->pu.r.bound) {
-        npf_log("call %s: no direct path within %d s", c->call_id_s, WS_WAIT_MS / 1000);
-        call_ask_ws_relay(c);
-    }
-}
-
-/* every address of the UDP relay tried (relay_bind_run) */
-void call_relay_gave_up(void *arg)
-{
-    npf_call *c = arg;
-    if (c->caller && c->state == NPF_CALL_CALLING) {
-        /* bound from the reply to the call, before the callee accepted:
-         * the platform takes no relay_switch yet. The accept brings the
-         * same allocation, which binds it again from its first address
-         * (call_relay_setup), the usual way on from there */
-        npf_log("call %s: UDP relay unreachable before the accept: binding it again then", c->call_id_s);
-    } else if (call_has_p2p(c)) {
-        /* in doubt (SUSPECT): the verdict decides (lost: the WS relay,
-         * path_direct.c:direct_lost); no punching on the WS relay */
-        npf_log("call %s: UDP relay unreachable; the direct path carries the session%s", c->call_id_s,
-                c->pd.p.health == PH_SUSPECT ? " while it is checked" : "");
-    } else if (!c->pu.ports_waited && call_hard_punches(c) > 0) {
-        /* a hard-side punch holds hundreds of the NAT's ports: a carrier
-         * NAT with a quota of them (the phone's APDM CGNAT, about 500) then
-         * maps nothing new, the relay included. Measured: every relay bind
-         * failed while two punches ran, the next one after them bound at
-         * once. Again when they end (call_punch_sockets_back), WS_WAIT_MS at most */
-        npf_log("call %s: UDP relay unreachable while a punch holds the NAT's ports: trying again when it ends",
-                c->call_id_s);
-        c->pu.ports_waited = 1;
-        c->pu.waits_ports = 1;
-        call_port_pressure(c->n, "the UDP relay unreachable");
-        if (!c->pm.t_ws_wait)
-            c->pm.t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
-    } else if (!c->punched && !call_no_p2p(c)) {
-        /* a WS relay session gets no punching rounds (they come back
-         * only with UDP): let the first punch round decide.
-         * Measured: a Linux node's UDP relay unreachable 2 s before the
-         * punch plan arrived, the direct path up 6 s later, the session
-         * stuck on the WS relay at 14 KB/s */
-        npf_log("call %s: UDP relay unreachable; waiting for the punch before asking for the WS relay",
-                c->call_id_s);
-        if (!c->pm.t_ws_wait)
-            c->pm.t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
-    } else {
-        npf_log("call %s: UDP relay unreachable", c->call_id_s);
-        call_ask_ws_relay(c);
-    }
-}
-
-/* a round that did not go direct (failed, or none planned) while the UDP
- * relay was unreachable: the UDP relay once more, then the WS relay */
-void call_ws_wait_end(npf_call *c, int ok)
-{
-    if (!c->pm.t_ws_wait)
-        return;
-    npf_timer_stop(c->n->loop, &c->pm.t_ws_wait);
-    if (!ok && !c->pu.r.bound && c->pu.r.t_bind) {
-        /* the UDP relay is being bound again (the punch gave the NAT's ports
-         * back): its answer first; when it gives up, relay_bind_timer asks
-         * for the WS relay (asked here at once, a bind about to succeed was
-         * replaced: the phone's sessions, measured) */
-        npf_log("call %s: the UDP relay is being bound: its answer before the WS relay", c->call_id_s);
-        return;
-    }
-    if (!ok && !c->pu.retried && !c->pu.r.bound && !c->pu.r.t_bind) {
-        /* once more first: a WS relay session gets no punching rounds, and
-         * the UDP relay may have been lost to a passing storm (the phone at a
-         * start, five punches at once: its binds went unanswered for 5 s) */
-        npf_log("call %s: trying the UDP relay once more before the WS relay", c->call_id_s);
-        c->pu.retried = 1;
-        call_relay_rebind(c);
-    } else if (!ok) {
-        call_ask_ws_relay(c);
-    }
 }

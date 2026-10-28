@@ -41,24 +41,8 @@ uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
  * calls): it could still end ok and make a WS session "direct" */
 void call_relay_leave(npf_call *c)
 {
-    npf_loop *l = c->n->loop;
-    if (c->punch) {
-        int had = c->punch_socks > 0;
-        npf_timer_stop(l, &c->t_linger);
-        npf_punch_free(c->punch);
-        c->punch = NULL;
-        c->punch_socks = 0;
-        if (had)
-            call_punch_sockets_back(c->n);
-    }
-    npf_timer_stop(l, &c->pu.r.t_bind);
-    c->pu.r.bound = 0;
-    c->pu.waits_ports = 0;
-    npf_timer_stop(l, &c->pm.t_ws_wait);
-    if (call_has_p2p(c) && c->pd.p.health == PH_SUSPECT)
-        pm_health(&c->pm, &c->pd.p, PH_UP);
-    c->pd.standby_check = 0;
-    npf_timer_stop(l, &c->t_punch);
+    call_punch_end(c);
+    npf_timer_stop(c->n->loop, &c->t_punch);
     c->punch_wait_keys = 0;
 }
 
@@ -138,8 +122,8 @@ npf_call *call_new(npf_node *n, int caller)
  * no one's now */
 static void call_timers_stop(npf_call *c)
 {
-    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->pm.t_ws_wait, &c->pm.t_check,
-                       &c->pu.t_standby, &c->t_direct, &c->pu.r.t_bind, &c->pw.t_re};
+    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->pm.t_check,
+                       &c->t_direct, &c->pu.r.t_bind, &c->pw.t_re};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++)
         npf_timer_stop(c->n->loop, t[i]);
@@ -195,17 +179,9 @@ void call_free(npf_call *c)
     if (n->relay_hit == c)
         n->relay_hit = NULL;
     call_timers_stop(c);
-    npf_timer_stop(n->loop, &c->t_linger);
     npf_timer_stop(n->loop, &c->t_free);    /* freed now (the node stops): not again */
     call_ws_leave_conn(c);
-    if (c->punch) {
-        npf_punch_free(c->punch);
-        c->punch = NULL;
-        if (c->punch_socks > 0) {
-            c->punch_socks = 0;
-            call_punch_sockets_back(c->n);
-        }
-    }
+    call_punch_end(c);
     call_rev_close_all(c);
     call_relay_early_free(c);
     call_data_free(c);
@@ -696,41 +672,16 @@ void npf_node_check_paths(npf_node *n, const char *why)
 }
 
 
-/* UDP works again (a NAT probe answered after one did not): a session on
- * the WS relay asks for the UDP relay, with this side's profile first; the
- * platform moves it when both sides have UDP (relay_switch), the AnLiu
- * connection and everything on it stay (data-channel.md 3) */
-void npf_node_ws_calls_udp_back(npf_node *n)
-{
-    npf_call *c;
-    if (n->test_no_udp)
-        return;
-    for (c = n->calls; c; c = c->next) {
-        char data[1024];
-        npf_jw w;
-        if (c->ended || !call_has_ws(c) || c->direct)
-            continue;
-        npf_log("call %s: UDP works again: asking for the UDP relay", c->call_id_s);
-        npf_jw_init(&w, data, sizeof data);
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "call_id", c->call_id_s);
-        npf_jw_kstr(&w, "why", "udp_back");
-        npf_node_write_nat(n, &w);
-        npf_jw_end(&w);
-        if (npf_jw_finish(&w) > 0)
-            npf_node_send(n, "punch_update", 0, data);
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"udp\"}", c->call_id_s);
-        npf_node_send(n, "relay_switch", 0, data);
-        call_relay_asked(c);
-    }
-}
-
-void npf_node_calls_to_ws(npf_node *n)
+/* the node's UDP changed (udp_back_ms; tests: NPF_TEST_WS_FILE): each
+ * session's manager decides again (pm_decide: a session on the WS relay
+ * asks for the UDP relay, its profile first, and the platform moves it when
+ * both sides have UDP, the AnLiu connection and everything on it stay,
+ * data-channel.md 3; with no UDP, the WS relay) */
+void npf_node_calls_decide(npf_node *n)
 {
     npf_call *c;
     for (c = n->calls; c; c = c->next)
-        if (!c->ended && !c->direct && !call_has_ws(c) && c->keys_ready)
-            call_ask_ws_relay(c);
+        pm_check(c);
 }
 
 void node_calls_free(npf_node *n)

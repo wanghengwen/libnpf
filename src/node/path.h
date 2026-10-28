@@ -2,9 +2,9 @@
  * (path_direct.c), the UDP relay (path_udp.c) and the WS relay (path_ws.c),
  * each an npf_path, and the path manager (path_mgr.c), the one place that
  * says where AnLiu's datagrams go (pm_send), names the path in use
- * (npf_call_path) and keeps the paths' health by one set of rules
- * (pm_tick, pm_rules_of). The decisions on the relays (which to ask the
- * platform for, and when) are still the session's own (path_mgr.c). */
+ * (npf_call_path), keeps the paths' health by one set of rules (pm_tick,
+ * pm_rules_of) and decides between them: what to wait for, what to ask the
+ * platform for (pm_decide, architecture.md 3.6). */
 #ifndef NPF_PATH_H
 #define NPF_PATH_H
 
@@ -79,33 +79,27 @@ typedef struct path_direct {
     npf_siv_keys keys;              /* PATH_CHECK / PATH_ECHO, from the E2E keys */
     int      keys_ready;
     uint64_t nonce;                 /* of the checks in flight (a new one each time it is in doubt) */
-    int      standby_check;         /* the check before the relay goes: echo -> release */
 } path_direct;
 
 /* the UDP relay (path_udp.c); p.last_rx: the relay last answered (a
  * BIND_ACK, the peer's data through it) */
 typedef struct path_udp {
     npf_path p;
-    relay_c  r;                     /* the binder (relay_bind.h): the allocation; also the WS relay's id and key;
-                                     * r.bound: UP (NEW binding, SUSPECT probing, DEAD every address tried) */
-    npf_timer *t_standby;           /* the direct path up: the relay goes after RELAY_STANDBY_MS */
-    int      retried;               /* tried again once after a failed punch, before the WS relay */
-    int      waits_ports;           /* unreachable while punches held the NAT's ports: again when they end */
-    int      ports_waited;          /* that wait was had (once) */
+    relay_c  r;                     /* the binder (relay_bind.h): the allocation; r.bound: UP (NEW binding,
+                                     * SUSPECT probing, DEAD every address tried) */
 } path_udp;
 
-/* the WS relay (path_ws.c): a connection to the relay of the allocation
- * (its id and key: the UDP relay's binder, call_relay_take) */
+/* the WS relay (path_ws.c): a connection to the relay of the allocation;
+ * p.since: the allocation came */
 typedef struct path_ws {
     npf_path p;
     npf_wsr *wsr;                   /* the relay connection, NULL none (lost: connected again) */
     char     url[256];              /* the allocation's relay, for a connection lost after pairing */
-    uint8_t  pub[32];
+    uint8_t  pub[32], id[8];        /* ... its key, the allocation's id */
     npf_timer *t_flush;             /* the datagrams queued this turn of the loop go out in one write */
     npf_timer *t_re;                /* connected again after a loss; a connection made again: paired by then */
     int      paired_once;           /* it worked at least once */
     int      fails;                 /* connections made again in a row that did not pair (5: DEAD) */
-    int      fail_wait;             /* caller: it failed before the accept: asked about after it */
 } path_ws;
 
 /* The manager: the paths in use, by kind, and where pm_send sends. A WS
@@ -118,12 +112,37 @@ typedef struct npf_pm {
     npf_path *p[PK_N];              /* NULL: none of that kind */
     npf_path *primary, *second;     /* pm_route's choice */
     int       fixed;                /* a direct connection's (no platform): a fixed direct path, no health rules */
-    npf_timer *t_check;             /* the health rules again (pm_check), at check_at */
+    npf_timer *t_check;             /* the rules and the decisions again (pm_check), at check_at */
     int64_t   check_at;
-    /* the session's requests and waits (path_mgr.c) */
-    int64_t   asked_ms;             /* relay_switch sent at (monotonic ms), waiting for a new allocation; 0 none */
-    npf_timer *t_ws_wait;           /* UDP relay unreachable: waiting for the punch first */
+    /* the decisions (pm_decide): the UDP relay unreachable, this loss of it
+     * has had the waits and the retry in tried (PM_IN_PORTS, PM_IN_PUNCH,
+     * PM_T_RETRY); wait: what act_at is the end of (a wait: PM_IN_PORTS,
+     * PM_IN_PUNCH; the standby: PM_W_STANDBY, its probe PM_W_PROBE); on the
+     * WS relay, UDP is tried again at act_at (udp_again after it came) */
+    unsigned  tried, wait;
+    int64_t   act_at, udp_again;
+    /* what the call asked the platform for (call_need): no allocation yet,
+     * sent asks times, again at ask_at */
+    int       need, asks;
+    int64_t   ask_at;
 } npf_pm;
+
+/* pm_decide's inputs: the caller; the platform takes no relay_switch yet
+ * (before the accept); established; a punching round may still bring a
+ * direct path; a hard-side punch holds the NAT's ports; UDP works (the NAT
+ * probe), and came back since the WS relay did; tests: no UDP at all. Its
+ * answer: what the session needs of the platform (PM_NEED_*, 2.4), or what
+ * to do now (wait, bind the UDP relay again, probe the direct path, stand
+ * by on, drop the lost direct path) */
+enum { PM_IN_CALLER = 1, PM_IN_HOLD = 2, PM_IN_UP = 4, PM_IN_PUNCH = 8, PM_IN_PORTS = 16, PM_IN_UDP = 32,
+       PM_IN_UDP_BACK = 64, PM_IN_NOUDP = 128, PM_T_RETRY = 256, PM_W_STANDBY = 512, PM_W_PROBE = 1024 };
+enum { PM_NONE, PM_NEED_UDP, PM_NEED_WS, PM_NEED_WS_ELSEWHERE, PM_NEED_UDP_BACK, PM_NEED_PATH_LOST, PM_NEED_RELEASE,
+       PM_WAIT_PORTS, PM_WAIT_PUNCH, PM_RETRY, PM_REBIND, PM_PROBE, PM_STANDBY_ON, PM_DROP };
+#define PM_WAIT_MS      15000       /* the UDP relay unreachable: a wait (the punch, the ports) at most this */
+#define PM_UDP_AGAIN_MS 300000      /* on the WS relay while UDP works: the UDP relay tried again after this */
+#define PM_STANDBY_MS   30000       /* the relay standing by after the direct path came up, then released */
+#define PM_PROBE_MS     10000       /* ... once the direct path's check had an echo within this */
+int pm_decide(npf_pm *m, unsigned in, int64_t now);
 
 /* a path in use from now on (once of each kind), or no longer; its health:
  * each changes the choice */

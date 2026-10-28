@@ -131,28 +131,20 @@ static void direct_probe(npf_path *p)
 }
 
 /* an echo of these checks (a doubt's, the standby's): a round trip over
- * the path, it is UP */
+ * the path, it is UP; the relay standing by may go (pm_decide) */
 static void direct_alive(npf_call *c)
 {
-    int up = pm_rt(&c->pm, &c->pd.p, npf_mono_ms());
-    if (c->pd.standby_check) {         /* both ways: now the relay may go */
-        c->pd.standby_check = 0;
-        npf_timer_stop(c->n->loop, &c->pu.t_standby);
-        call_standby_done(c->n->loop, c);
-        return;
-    }
-    if (!up)
-        return;
-    npf_log("call %s: direct path alive again (checked both ways)", c->call_id_s);
-    pm_standby_start(c);
+    if (pm_rt(&c->pm, &c->pd.p, npf_mono_ms()))
+        npf_log("call %s: direct path alive again (checked both ways)", c->call_id_s);
+    pm_check(c);
 }
 
 /* nat-traversal.md 10.3. A long queue on a loaded uplink can hold packets for
  * seconds, so silence alone does not prove the direct path dead: with
  * unacknowledged data and nothing heard for max(3 s, 2 RTO) (the health
- * rules, pm_tick), send on both paths (asking for a relay if it was
- * released); give the direct path up only if it stays silent for another
- * 10 s (direct_lost). */
+ * rules, pm_tick), send on both paths (the manager asks for a relay if it
+ * was released, binds one that never bound: pm_decide); give the direct
+ * path up only if it stays silent for another 10 s (direct_lost). */
 static void direct_suspect(npf_path *p, int64_t quiet)
 {
     npf_call *c = CALL_OF(p, pd.p);
@@ -164,33 +156,21 @@ static void direct_suspect(npf_path *p, int64_t quiet)
     direct_doubt(c, why);
 }
 
-/* in doubt 10 s, no echo: the direct path lost */
+/* in doubt 10 s, no echo: the direct path lost (pm_decide drops it; the
+ * platform plans the next round at once: with no relay to fall back on, an
+ * anonymous caller's session ends at AnLiu's idle timeout) */
 static void direct_lost(npf_path *p)
 {
     npf_call *c = CALL_OF(p, pd.p);
     npf_logw("call %s: direct path lost%s", c->call_id_s,
              call_has_relay(c) && c->pu.r.bound ? ", staying on the relay"
              : call_has_relay(c) && c->pu.r.t_bind ? ", the UDP relay still binding" : "");
-    call_p2p_drop(c);
-    anl_flush(c->anl);
-    if (call_has_relay(c) && !c->pu.r.bound && !c->pu.r.t_bind) {
-        /* the UDP relay did not bind either (binding still: it asks for
-         * the WS relay itself when it gives up) */
-        npf_logw("call %s: no UDP relay bound: the WS relay", c->call_id_s);
-        call_ask_ws_relay(c);
-        return;
-    }
-    /* the platform plans the next round (at once: with no relay to fall
-     * back on, an anonymous caller's session ends at AnLiu's idle timeout) */
-    call_punch_report(c, "path_lost");
 }
 
 /* the direct path given up (lost, or the session moves to the WS relay) */
 void call_p2p_drop(npf_call *c)
 {
-    c->pd.standby_check = 0;
     pm_del(&c->pm, &c->pd.p);
-    npf_timer_stop(c->n->loop, &c->pu.t_standby);
     if (c->pd.owned) {
         npf_loop_del(c->n->loop, c->pd.fd);
         npf_sock_close(c->pd.fd);
@@ -200,28 +180,12 @@ void call_p2p_drop(npf_call *c)
 }
 
 /* the direct path is in doubt (SUSPECT): checked both ways (PATH_CHECK),
- * the data on the relay too meanwhile (asked for when it was released) */
+ * the data on the relay too meanwhile (asked for when it was released, the
+ * manager's: pm_decide) */
 static void direct_doubt(npf_call *c, const char *why)
 {
     path_direct_check(c);
-    c->pd.standby_check = 0;            /* the doubt's checks instead; the standby again once it is over */
-    npf_timer_stop(c->n->loop, &c->pu.t_standby);
-    if (call_has_relay(c)) {
-        npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);
-        if (!c->pu.r.bound && !c->pu.r.t_bind) {
-            /* it never bound (the direct path carried the session): bound
-             * now, or the session had nothing left when the path went */
-            npf_log("call %s: the UDP relay never bound: binding it again", c->call_id_s);
-            call_relay_rebind(c);
-        }
-    } else if (call_relay_ask_ok(c)) {
-        /* the relay was released after the standby: ask for a new allocation */
-        char data[96];
-        npf_log("call %s: %s, asking for a relay", c->call_id_s, why);
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"udp\"}", c->call_id_s);
-        npf_node_send(c->n, "relay_switch", 0, data);
-        call_relay_asked(c);
-    }
+    npf_log("call %s: %s%s", c->call_id_s, why, call_has_relay(c) ? ", sending on the relay too" : "");
     anl_flush(c->anl);
 }
 

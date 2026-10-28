@@ -254,8 +254,10 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
     /* the sessions made meanwhile went to the WS relay (udp false: no UDP
      * relay, no punching) and would stay there: they ask for UDP again
      * (their AnLiu connection moves, nothing ends) */
-    if (udp_back)
-        npf_node_ws_calls_udp_back(n);
+    if (udp_back) {
+        n->udp_back_ms = npf_mono_ms();
+        npf_node_calls_decide(n);
+    }
 }
 
 static void nat_retry_cb(npf_loop *loop, void *arg)

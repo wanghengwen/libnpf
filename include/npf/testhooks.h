@@ -2,7 +2,7 @@
  * once per process on first use and only read after that: none is looked up
  * per datagram or per call. Not for programs: integration tests and natlab
  * set them. So far the paths' (DROP_P2P, BLOCK_RELAY, DROP_BIND_ACK,
- * NO_P2P); the others still read their own variables. */
+ * NO_P2P, UDP_AGAIN_MS); the others still read their own variables. */
 #ifndef NPF_TESTHOOKS_H
 #define NPF_TESTHOOKS_H
 
@@ -14,6 +14,7 @@ typedef struct npf_test_hooks {
     int64_t     drop_p2p_ms;        /* NPF_TEST_DROP_P2P=ms[:port]: the direct path cut this long after it came up; -1 off */
     int         drop_p2p_port;      /* ... only the one to the peer on this port; 0 every one */
     const char *block_relay;        /* NPF_TEST_BLOCK_RELAY="addr,url,...": these relay endpoints unreachable; NULL none */
+    int64_t     udp_again_ms;       /* NPF_TEST_UDP_AGAIN_MS: on the WS relay while UDP works, UDP tried after this; 0 5 min */
 } npf_test_hooks;
 
 const npf_test_hooks *npf_th(void);

@@ -64,7 +64,7 @@ struct npf_call {
     npf_timer  *t_anl, *t_timeout, *t_punch, *t_linger;
     int64_t     anl_due;            /* when t_anl fires (monotonic ms) */
     int         flush_pending;
-    int         punched;            /* a punch round has finished (either way) */
+    int         punched;            /* the last punch round planned has ended (either way) */
 
     npf_pm      pm;                 /* the session's paths (path.h) */
     path_direct pd;
@@ -151,9 +151,8 @@ typedef struct call_hs {
 
 /* shared by call.c, call_punch.c, the paths */
 #define RELAY_KEEPALIVE_MS 25000     /* RELAY_BIND refresh while the relay is in use */
-#define RELAY_STANDBY_MS   30000     /* relay kept after the direct path is up, then released */
-#define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
-#define RELAY_ASK_AGAIN_MS 10000     /* a relay_switch with no allocation after this long: may be asked again */
+#define RELAY_ASK_AGAIN_MS 10000     /* a request with no allocation: sent again after this, */
+#define RELAY_ASK_LATER_MS 30000     /* ... then after this each time (call_need) */
 #define PUNCH_LINGER_MS    10000
 #define PUNCH_ROUNDS_MAX 10         /* the platform's counted rounds of a call (a sanity limit here) */
 #define LABEL_PATH         "NPF-PCHECK-1"       /* the direct path check (path_direct.c), its keys from the session's */
@@ -217,18 +216,12 @@ static inline int call_has_p2p(const npf_call *c) { return pm_has(&c->pm, PK_DIR
 static inline int call_has_relay(const npf_call *c) { return pm_has(&c->pm, PK_UDP_RELAY); }
 static inline int call_has_ws(const npf_call *c) { return pm_has(&c->pm, PK_WS_RELAY); }
 
-/* path_mgr.c: the session's paths; the decisions between them: the
- * relay's allocations and standby, the way to the WS relay (data-channel.md 9) */
+/* path_mgr.c: the session's paths; the decisions between them, the
+ * relay's allocations and standby, the requests (data-channel.md 3, 9) */
 void call_paths_init(npf_call *c);
-void pm_check(npf_call *c);             /* the paths' health rules now; the manager's timer */
+void pm_check(npf_call *c);             /* the health rules and the decisions now; the manager's timer */
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
-void pm_standby_start(npf_call *c);
-void call_standby_done(npf_loop *loop, void *arg);
-void call_ask_ws_relay(npf_call *c);
-int  call_relay_ask_ok(const npf_call *c);
-void call_relay_asked(npf_call *c);
-void call_relay_gave_up(void *arg);
-void call_ws_wait_end(npf_call *c, int ok);
+void call_need(npf_call *c, int need, int64_t now);     /* PM_NEED_* to the platform, its deadline */
 
 /* path_direct.c: the direct path, its check, its loss */
 void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer);
@@ -261,6 +254,7 @@ int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct 
 void call_punch_report(npf_call *c, const char *why);
 int call_hard_punches(const npf_call *c);
 void call_punch_sockets_back(npf_node *n);
+void call_punch_end(npf_call *c);
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
 void call_start_punch_now(npf_call *c);
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
@@ -269,8 +263,6 @@ int call_no_p2p(const npf_call *c);
 /* path_udp.c: the UDP relay client (data-channel.md 9) */
 void path_udp_on(npf_call *c);
 void path_udp_off(npf_call *c);
-int  call_relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
-                     int naddr);
 void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
                     int naddr);
 void call_relay_rebind(npf_call *c);

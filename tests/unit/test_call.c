@@ -4,8 +4,9 @@
  *   (the time limit gone with the peer's hello) takes that punch_start as
  *   the accept: the platform then hears of its rounds (punch_update
  *   path_lost); it did not, every punch_update of the callee was dropped;
- * - a relay_switch the platform dropped without a word is asked again after
- *   RELAY_ASK_AGAIN_MS, not before (it was asked once only);
+ * - a request the platform dropped without a word is sent again 10 s after
+ *   it, 30 s after that and every 30 s on, not between; a need that holds
+ *   no longer is not (architecture.md Q1; it was sent once only);
  * - the peer's punch_info port of a round goes to the punch of that round:
  *   with the next round planned while the last one still runs, it is kept
  *   for the next one (it went to the old punch, the new one never had it);
@@ -103,7 +104,11 @@ static int count(const char *s, const char *what)
 
 static void relay_asked_again(npf_node *n)
 {
+    static const int64_t at[] = {9999, 10000, 39999, 40000, 69999, 70000, 100000};
+    static const int sends[] = {1, 2, 2, 3, 3, 4, 5};
     npf_call *c = call_new(n, 1);
+    int64_t t0 = 1000000;
+    size_t i;
     CHECK(c != NULL, "call");
     if (!c)
         return;
@@ -112,12 +117,22 @@ static void relay_asked_again(npf_node *n)
     pm_add(&c->pm, &c->pw.p);           /* the session on the WS relay */
     seen_clear();
     call_ws_failed(c, "test");          /* the WS relay never worked: a relay on our own server */
-    call_ws_failed(c, "test");          /* again at once: still waiting for the first */
-    CHECK(count(seen, "asking for one on our own server") == 1, "asked %d times at once: %s",
+    call_ws_failed(c, "test");          /* again at once: given up already */
+    CHECK(c->pw.p.health == PH_DEAD && count(seen, "asking for one on our own server") == 1, "asked %d times at once: %s",
           count(seen, "asking for one on our own server"), seen);
-    c->pm.asked_ms -= RELAY_ASK_AGAIN_MS;    /* no allocation came: the platform dropped it */
-    call_ws_failed(c, "test");
-    CHECK(count(seen, "asking for one on our own server") == 2, "not asked again: %s", seen);
+    call_need(c, PM_NONE, t0);
+    seen_clear();
+    call_need(c, PM_NEED_WS_ELSEWHERE, t0);
+    for (i = 0; i < sizeof at / sizeof at[0]; i++) {
+        call_need(c, PM_NEED_WS_ELSEWHERE, t0 + at[i]);
+        CHECK(count(seen, "asking for one on our own server") == sends[i],
+              "at %lld ms: sent %d times, not %d: %s", (long long)at[i], count(seen, "asking for one on our own server"),
+              sends[i], seen);
+    }
+    CHECK(count(seen, "asking again") == 4, "the resends not logged once each: %s", seen);
+    call_need(c, PM_NONE, t0 + 100001);         /* an allocation came, or the need is gone */
+    call_need(c, PM_NONE, t0 + 200000);
+    CHECK(count(seen, "asking for one on our own server") == 5, "sent with no need: %s", seen);
     npf_call_end(c, "test");
 }
 
