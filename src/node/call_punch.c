@@ -92,14 +92,6 @@ static void result_send(npf_call *c, npf_jw *w, const char *buf)
         npf_node_send(c->n, "punch_result", 0, buf);
 }
 
-static void linger_done(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    (void)loop;
-    c->t_linger = NULL;
-    npf_punch_free(c->punch);
-    c->punch = NULL;
-}
 static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *arg)
 {
     npf_call *c = arg;
@@ -139,14 +131,16 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
     if (!res->ok) {
         npf_logw("call %s: punching failed after %d ms (%d probes sent, %d received)", c->call_id_s,
                 res->elapsed_ms, res->probes_sent, res->probes_recv);
-        c->t_linger = npf_timer_add(c->n->loop, 0, linger_done, c);
+        c->linger_at = npf_mono_ms();       /* freed after this callback */
+        call_at(c, c->linger_at);
         pm_check(c);                /* the UDP relay unreachable meanwhile: the next step */
         return;                     /* the platform plans what comes next */
     }
     npf_log("call %s: direct path %s (%d ms)", c->call_id_s, npf_addr_str(&res->peer, a, sizeof a),
             res->elapsed_ms);
     path_direct_up(c, fd, &res->peer);
-    c->t_linger = npf_timer_add(c->n->loop, PUNCH_LINGER_MS, linger_done, c);
+    c->linger_at = npf_mono_ms() + PUNCH_LINGER_MS;
+    call_at(c, c->linger_at);
     call_path_up(c);
 }
 
@@ -211,7 +205,7 @@ void call_port_pressure(npf_node *n, const char *what)
 void call_punch_end(npf_call *c)
 {
     int had = c->punch_socks > 0;
-    npf_timer_stop(c->n->loop, &c->t_linger);
+    c->linger_at = 0;
     npf_punch_free(c->punch);
     c->punch = NULL;
     c->punch_socks = 0;
@@ -287,8 +281,8 @@ void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
     if (npf_json_bool(j, npf_json_get(j, d, "stop"), &stop) == 0 && stop) {
         /* the caller let this round go (its hard-side punches one at a
          * time): no spray into nothing for the round's time */
-        if (round == c->punch_round && c->t_punch) {
-            npf_timer_stop(c->n->loop, &c->t_punch);
+        if (round == c->punch_round && c->punch_at) {
+            c->punch_at = 0;
             npf_log("call %s: punch round %lld let go by the peer: not started", c->call_id_s, (long long)round);
         } else if (round == c->punch_round && c->punch_of == c->punch_round && c->punch && !npf_punch_finished(c->punch))
             npf_punch_stop(c->punch);
@@ -426,12 +420,18 @@ void call_start_punch_now(npf_call *c)
         npf_punch_peer_port(c->punch, c->info_port);
 }
 
-static void punch_timer(npf_loop *loop, void *arg)
+/* the call's tick (call_tick): a punch's linger over, a round's start */
+void call_punch_tick(npf_call *c, int64_t now)
 {
-    npf_call *c = arg;
-    (void)loop;
-    c->t_punch = NULL;
-    if (!call_has_p2p(c) && !c->ended)       /* the last round's punch may have gone direct meanwhile */
+    if (c->linger_at && c->linger_at <= now) {
+        c->linger_at = 0;
+        npf_punch_free(c->punch);
+        c->punch = NULL;
+    }
+    if (!c->punch_at || c->punch_at > now)
+        return;
+    c->punch_at = 0;
+    if (!call_has_p2p(c))                   /* the last round's punch may have gone direct meanwhile */
         call_start_punch_now(c);
 }
 
@@ -566,7 +566,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
     }
     c->punch_round = (int)v;
     c->punched = 0;
-    npf_timer_stop(c->n->loop, &c->t_punch);    /* the last round's start: this one replaces it */
+    c->punch_at = 0;                            /* the last round's start: this one replaces it */
     c->punch_wait_keys = 0;
     if (!c->pcfg && !(c->pcfg = malloc(sizeof *c->pcfg)))
         return;
@@ -674,7 +674,8 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
     v = start_at - npf_node_time(c->n) - c->n->punch_lead_ms;
     if (getenv("NPF_TEST_PUNCH_DELAY"))     /* tests: this side starts late (a slow plan, as over a loaded link) */
         v += atoi(getenv("NPF_TEST_PUNCH_DELAY"));
-    c->t_punch = npf_timer_add(c->n->loop, v > 0 ? v : 0, punch_timer, c);
+    c->punch_at = npf_mono_ms() + (v > 0 ? v : 0);
+    call_at(c, c->punch_at);
 }
 /* the NAT measured again: after a network change (npf_node_network,
  * network), or a probe that may bring candidates the calls lacked (profile):

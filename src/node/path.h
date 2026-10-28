@@ -87,6 +87,7 @@ typedef struct path_udp {
     npf_path p;
     relay_c  r;                     /* the binder (relay_bind.h): the allocation; r.bound: UP (NEW binding,
                                      * SUSPECT probing, DEAD every address tried) */
+    int64_t  bind_at;               /* the next bind (binding: RELAY_BIND_MS; bound: the keepalive); 0 none */
 } path_udp;
 
 /* the WS relay (path_ws.c): a connection to the relay of the allocation;
@@ -97,7 +98,7 @@ typedef struct path_ws {
     char     url[256];              /* the allocation's relay, for a connection lost after pairing */
     uint8_t  pub[32], id[8];        /* ... its key, the allocation's id */
     npf_timer *t_flush;             /* the datagrams queued this turn of the loop go out in one write */
-    npf_timer *t_re;                /* connected again after a loss; a connection made again: paired by then */
+    int64_t  re_at;                 /* connected again after a loss; a connection made again: paired by then */
     int      paired_once;           /* it worked at least once */
     int      fails;                 /* connections made again in a row that did not pair (5: DEAD) */
 } path_ws;
@@ -112,8 +113,7 @@ typedef struct npf_pm {
     npf_path *p[PK_N];              /* NULL: none of that kind */
     npf_path *primary, *second;     /* pm_route's choice */
     int       fixed;                /* a direct connection's (no platform): a fixed direct path, no health rules */
-    npf_timer *t_check;             /* the rules and the decisions again (pm_check), at check_at */
-    int64_t   check_at;
+    int64_t   check_at;             /* the rules and the decisions again (pm_check) */
     /* the decisions (pm_decide): the UDP relay unreachable, this loss of it
      * has had the waits and the retry in tried (PM_IN_PORTS, PM_IN_PUNCH,
      * PM_T_RETRY); wait: what act_at is the end of (a wait: PM_IN_PORTS,

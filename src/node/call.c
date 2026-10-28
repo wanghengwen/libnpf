@@ -42,7 +42,7 @@ uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
 void call_relay_leave(npf_call *c)
 {
     call_punch_end(c);
-    npf_timer_stop(c->n->loop, &c->t_punch);
+    c->punch_at = 0;
     c->punch_wait_keys = 0;
 }
 
@@ -54,8 +54,8 @@ void call_set_state(npf_call *c, int st, const char *why)
     /* the time limit ends with the peer's hello: a caller is established
      * with its own (call_hello), and a callee that never answers it still
      * ends the call in time */
-    if (st == NPF_CALL_ESTABLISHED && c->t_timeout && c->peer_hello)
-        npf_timer_stop(c->n->loop, &c->t_timeout);
+    if (st == NPF_CALL_ESTABLISHED && c->peer_hello)
+        c->limit_at = 0;
     if (c->state == st)
         return;
     c->state = st;
@@ -65,15 +65,70 @@ void call_set_state(npf_call *c, int st, const char *why)
         c->n->hooks.on_call_state(c->n, c, st, why, c->n->hook_arg);
 }
 
-static void timeout_cb(npf_loop *loop, void *arg)
+/* ---- the call's one timer (architecture.md 4) ---- */
+
+static void call_timer(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
     (void)loop;
-    c->t_timeout = NULL;
-    npf_logw("call %s: timed out", c->call_id_s);
-    if (c->caller)
-        node_sig_probe(c->n);           /* the platform may have stopped hearing us */
-    npf_call_end(c, "timeout");
+    c->t_due = NULL;
+    c->ticking = 1;
+    call_tick(c, npf_mono_ms());
+    c->ticking = 0;
+    call_at(c, call_due(c, npf_mono_ms()));
+}
+
+void call_arm(npf_call *c, int64_t at)
+{
+    if (c->ended || c->ticking || at == INT64_MAX)
+        return;
+    npf_timer_stop(c->n->loop, &c->t_due);
+    c->due_at = at;
+    c->t_due = npf_timer_add(c->n->loop, at - npf_mono_ms(), call_timer, c);
+}
+
+static int64_t first(int64_t a, int64_t at)
+{
+    return at && at < a ? at : a;
+}
+
+int64_t call_due(const npf_call *c, int64_t now)
+{
+    int64_t d = tr_due(c, now);
+    d = first(first(first(d, c->limit_at), c->punch_at), c->linger_at);
+    d = first(first(first(d, c->direct_at), c->pm.check_at), c->pu.bind_at);
+    return first(d, c->pw.re_at);
+}
+
+static int due(int64_t at, int64_t now)
+{
+    return at && at <= now;
+}
+
+/* the parts in order (architecture.md 4): the session, the paths, the
+ * manager (each AnLiu tick, as before, and at its own time), punching, the
+ * call's own; none after the call ended */
+void call_tick(npf_call *c, int64_t now)
+{
+    if (c->anl)
+        tr_tick(c, now);
+    if (!c->ended && due(c->pu.bind_at, now))
+        path_udp_tick(c);
+    if (!c->ended && due(c->pw.re_at, now))
+        path_ws_tick(c);
+    if (!c->ended && (c->anl || due(c->pm.check_at, now)))
+        pm_check(c);
+    if (!c->ended && (due(c->punch_at, now) || due(c->linger_at, now)))
+        call_punch_tick(c, now);
+    if (!c->ended && due(c->direct_at, now))
+        call_direct_tick(c);
+    if (!c->ended && due(c->limit_at, now)) {
+        c->limit_at = 0;
+        npf_logw("call %s: timed out", c->call_id_s);
+        if (c->caller)
+            node_sig_probe(c->n);           /* the platform may have stopped hearing us */
+        npf_call_end(c, "timeout");
+    }
 }
 
 /* the call accepted on the platform (the caller: call_accepted; the callee:
@@ -88,10 +143,8 @@ void call_accept_seen(npf_call *c)
     if (c->accepted)
         return;
     c->accepted = 1;
-    if (!c->t_timeout)
-        return;
-    npf_timer_cancel(c->n->loop, c->t_timeout);
-    c->t_timeout = npf_timer_add(c->n->loop, CALL_TIMEOUT_MS + 10000, timeout_cb, c);
+    if (c->limit_at)
+        c->limit_at = npf_mono_ms() + CALL_TIMEOUT_MS + 10000;
 }
 
 npf_call *call_new(npf_node *n, int caller)
@@ -113,20 +166,9 @@ npf_call *call_new(npf_node *n, int caller)
     call_paths_init(c);
     c->next = n->calls;
     n->calls = c;
-    c->t_timeout = npf_timer_add(n->loop, CALL_TIMEOUT_MS + 10000, timeout_cb, c);
+    c->limit_at = npf_mono_ms() + CALL_TIMEOUT_MS + 10000;
+    call_at(c, c->limit_at);
     return c;
-}
-
-/* an ended call does nothing more: what its timers would start (a punch, a
- * relay bind or switch, a path check, a retry, a probe of the signaling) is
- * no one's now */
-static void call_timers_stop(npf_call *c)
-{
-    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->pm.t_check,
-                       &c->t_direct, &c->pu.r.t_bind, &c->pw.t_re};
-    size_t i;
-    for (i = 0; i < sizeof t / sizeof t[0]; i++)
-        npf_timer_stop(c->n->loop, t[i]);
 }
 
 /* the session's data transport goes: its tunnel, UDP forwarding and media
@@ -148,8 +190,7 @@ void call_data_free(npf_call *c)
 }
 
 /* the AnLiu connection goes (after call_data_free), with its data stream,
- * its conv's entry and the datagrams waiting for it. Not its timer
- * (t_anl): call_timers_stop */
+ * its conv's entry and the datagrams waiting for it */
 void call_anl_drop(npf_call *c)
 {
     anl_t *a = c->anl;
@@ -178,7 +219,7 @@ void call_free(npf_call *c)
         }
     if (n->relay_hit == c)
         n->relay_hit = NULL;
-    call_timers_stop(c);
+    npf_timer_stop(n->loop, &c->t_due);
     npf_timer_stop(n->loop, &c->t_free);    /* freed now (the node stops): not again */
     call_ws_leave_conn(c);
     call_punch_end(c);
@@ -220,11 +261,13 @@ static void free_later(npf_loop *loop, void *arg)
 }
 
 /* the end of a call, after its CLOSED: the requests waiting for replies get
- * none, its timers stop, it is freed on the next turn of the loop (once) */
+ * none, its timer stops (what it would start, a punch, a relay bind or
+ * switch, a path check, a retry, a probe of the signaling, is no one's
+ * now), it is freed on the next turn of the loop (once) */
 static void call_ended(npf_call *c)
 {
     call_ctl_fail_all(c);                   /* after CLOSED: the peers know the session is gone */
-    call_timers_stop(c);
+    npf_timer_stop(c->n->loop, &c->t_due);
     if (!c->t_free)
         c->t_free = npf_timer_add(c->n->loop, 0, free_later, c);
 }
@@ -623,12 +666,12 @@ void npf_node_dump(npf_node *n)
             if (c->stream)
                 anl_stream_get_stats(c->stream, &ss);
             fprintf(stderr, "  anl: waitsnd=%d state=%d srtt=%u rto=%u min_rtt=%u cwnd=%u inflight=%u pace=%u bw=%u cc=%d "
-                    "retrans=%u tx=%llu rx=%llu authfail=%llu stale=%llu rcv_bytes=%u t_anl=%p | stream state=%d "
+                    "retrans=%u tx=%llu rx=%llu authfail=%llu stale=%llu rcv_bytes=%u t_due=%p | stream state=%d "
                     "rmt_wnd=%u backlog=%u\n",
                     c->stream ? anl_stream_waitsnd(c->stream) : -1, anl_state(c->anl), st.srtt, st.rto, st.min_rtt, st.cwnd,
                     st.inflight, st.pace_rate, st.bw_estimate, st.cc_state, st.retrans, (unsigned long long)st.tx_datagrams,
                     (unsigned long long)st.rx_datagrams, (unsigned long long)st.rx_auth_fail,
-                    (unsigned long long)st.rx_stale, st.rcv_bytes, (void *)c->t_anl, ss.state, ss.rmt_wnd,
+                    (unsigned long long)st.rx_stale, st.rcv_bytes, (void *)c->t_due, ss.state, ss.rmt_wnd,
                     ss.backlog_bytes);
         }
         if (c->tun)

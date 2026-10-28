@@ -61,8 +61,13 @@ struct npf_call {
     struct dmsg **dpend_tail;
     size_t        dpend_bytes;
     npf_tunnel *tun;
-    npf_timer  *t_anl, *t_timeout, *t_punch, *t_linger;
-    int64_t     anl_due;            /* when t_anl fires (monotonic ms) */
+    /* the call's one timer, at the earliest of its parts' deadlines
+     * (architecture.md 4: call_due, call_tick); the deadlines (monotonic
+     * ms, 0 none): the time limit, the punch's start, its linger's end */
+    npf_timer  *t_due;
+    int64_t     due_at;             /* when t_due fires */
+    int         ticking;            /* in call_tick: what it sets is scheduled after it */
+    int64_t     limit_at, punch_at, linger_at;
     int         flush_pending;
     int         punched;            /* the last punch round planned has ended (either way) */
 
@@ -81,7 +86,7 @@ struct npf_call {
     int         up_told;            /* callee: call_established sent to the platform */
     uint64_t    tx_bytes, rx_bytes; /* tunnel bytes (sublink frames) */
     int         punch_round;
-    int         accepted;           /* the platform's accept arrived: t_timeout counts from it */
+    int         accepted;           /* the platform's accept arrived: limit_at counts from it */
     int         secure;             /* connect_mode secure on either side: relays only, no punching */
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
     int         nrearly;
@@ -97,7 +102,7 @@ struct npf_call {
     struct npf_policy *policy;      /* callee: target policy of this session's sublinks */
     int         dtries;             /* direct initiator: message 1 sent this many times */
     int         direct_tries;       /* direct initiator: message 2 attempts read (64 at most) */
-    npf_timer  *t_direct;
+    int64_t     direct_at;          /* direct initiator: message 1 again then */
     struct npf_key_share *kshare;   /* callee: its caller key's share of the node's tunnel limits */
     uint64_t    grant_account;      /* callee: the account of the grant that admitted the caller */
     char        caller_app[72];     /* callee: the caller's program ("name ver", incoming caller.app) */
@@ -172,6 +177,19 @@ typedef struct npf_key_share {
 
 
 /* call.c: the state, the end, dispatch, the node's sessions */
+/* the call's one timer (architecture.md 4): a part's deadline set to at,
+ * the timer moved only when at is earlier, as the AnLiu timer was (inline:
+ * each datagram asks; one that moved later or went leaves the timer early,
+ * and the tick finds nothing due then); the earliest deadline (INT64_MAX
+ * none); what is due done */
+void call_arm(npf_call *c, int64_t at);
+static inline void call_at(npf_call *c, int64_t at)
+{
+    if (!c->t_due || at < c->due_at)
+        call_arm(c, at);
+}
+int64_t call_due(const npf_call *c, int64_t now);
+void call_tick(npf_call *c, int64_t now);
 void call_accept_seen(npf_call *c);
 npf_call *call_find(npf_node *n, const npf_json *j, int d);
 void call_relay_leave(npf_call *c);
@@ -197,6 +215,8 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d);
 void call_handle_handshake(npf_call *c, const npf_json *j, int d);
 
 /* call_transport.c: AnLiu and its carriers, the tunnel's callbacks, media and UDP adapters */
+int64_t tr_due(const npf_call *c, int64_t now);         /* anl_check's (INT64_MAX: no connection) */
+void tr_tick(npf_call *c, int64_t now);
 int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len);
 void call_path_up(npf_call *c);
 void call_hello(npf_call *c);         /* our hello, the session has a path (a caller established with it) */
@@ -219,7 +239,7 @@ static inline int call_has_ws(const npf_call *c) { return pm_has(&c->pm, PK_WS_R
 /* path_mgr.c: the session's paths; the decisions between them, the
  * relay's allocations and standby, the requests (data-channel.md 3, 9) */
 void call_paths_init(npf_call *c);
-void pm_check(npf_call *c);             /* the health rules and the decisions now; the manager's timer */
+void pm_check(npf_call *c);             /* the health rules and the decisions now, the next at pm.check_at */
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
 void call_need(npf_call *c, int need, int64_t now);     /* PM_NEED_* to the platform, its deadline */
 
@@ -246,9 +266,11 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r);
 void call_ws_leave(npf_call *c);        /* back to UDP: the WS relay connection goes */
 void call_ws_leave_conn(npf_call *c);
 void path_ws_heard(npf_call *c);        /* the path's last_rx from the connection's last frame */
+void path_ws_tick(npf_call *c);         /* pw.re_at: connected again, or not paired again in time */
 
 /* call_direct.c: direct connections (no platform) */
 int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
+void call_direct_tick(npf_call *c);     /* direct_at: message 1 again */
 
 /* call_punch.c: the punching rounds the platform sends, their sockets (nat-traversal.md 7) */
 void call_punch_report(npf_call *c, const char *why);
@@ -257,6 +279,7 @@ void call_punch_sockets_back(npf_node *n);
 void call_punch_end(npf_call *c);
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
 void call_start_punch_now(npf_call *c);
+void call_punch_tick(npf_call *c, int64_t now);     /* punch_at, linger_at */
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 int call_no_p2p(const npf_call *c);
 
@@ -266,6 +289,7 @@ void path_udp_off(npf_call *c);
 void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
                     int naddr);
 void call_relay_rebind(npf_call *c);
+void path_udp_tick(npf_call *c);        /* pu.bind_at: a bind again, or the keepalive */
 void call_relay_early_feed(npf_call *c);
 void call_relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len);
 void call_relay_early_free(npf_call *c);

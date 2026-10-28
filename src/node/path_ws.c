@@ -88,7 +88,7 @@ static void wsr_paired(npf_wsr *r, int peer_udp, void *arg)
     (void)r;
     c->pw.paired_once = 1;
     c->pw.fails = 0;
-    npf_timer_stop(c->n->loop, &c->pw.t_re);    /* its pairing's deadline */
+    c->pw.re_at = 0;                            /* its pairing's deadline */
     c->pw.p.last_rx = now;
     pm_rt(&c->pm, &c->pw.p, now);
     npf_log("call %s: WS relay paired%s%s", c->call_id_s, again ? " again" : "",
@@ -112,30 +112,30 @@ static void wsr_datagram(npf_wsr *r, const uint8_t *d, size_t len, void *arg)
 
 static int ws_open(npf_call *c);
 
-/* a connection made again that has not paired by now: it failed */
-static void ws_pair_late(npf_loop *loop, void *arg)
+static void ws_reconnect(npf_call *c)
 {
-    npf_call *c = arg;
-    (void)loop;
-    c->pw.t_re = NULL;
-    if (!c->pw.wsr || npf_wsr_paired(c->pw.wsr))
-        return;
-    call_ws_leave_conn(c);
-    call_ws_failed(c, "not paired again within 10 s");
-}
-
-static void ws_reconnect(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    (void)loop;
-    c->pw.t_re = NULL;
     if (!call_has_ws(c) || c->pw.wsr || c->ended || c->pw.p.health == PH_DEAD)
         return;
     npf_log("call %s: WS relay: connecting again", c->call_id_s);
-    if (ws_open(c) < 0)
+    if (ws_open(c) < 0) {
         call_ws_failed(c, "cannot connect");
-    else
-        c->pw.t_re = npf_timer_add(c->n->loop, WS_PAIR_MS, ws_pair_late, c);
+    } else {
+        c->pw.re_at = npf_mono_ms() + WS_PAIR_MS;
+        call_at(c, c->pw.re_at);
+    }
+}
+
+/* re_at (call_tick): connected again after a loss, or a connection made
+ * again that has not paired by now: it failed */
+void path_ws_tick(npf_call *c)
+{
+    c->pw.re_at = 0;
+    if (!c->pw.wsr) {
+        ws_reconnect(c);
+    } else if (!npf_wsr_paired(c->pw.wsr)) {
+        call_ws_leave_conn(c);
+        call_ws_failed(c, "not paired again within 10 s");
+    }
 }
 
 /* nothing from the relay for 30 s (the health rules, pm_tick; its pong
@@ -150,7 +150,7 @@ static void ws_suspect(npf_path *p, int64_t quiet)
              (long long)quiet / 1000);
     c->pw.fails = 0;
     call_ws_leave_conn(c);
-    ws_reconnect(c->n->loop, c);
+    ws_reconnect(c);
 }
 
 /* The WS relay failed. Before it ever worked, or WS_RECONNECTS times in a
@@ -180,8 +180,10 @@ void call_ws_failed(npf_call *c, const char *why)
         pm_check(c);
         return;
     }
-    if (!c->pw.wsr && !c->pw.t_re)
-        c->pw.t_re = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
+    if (!c->pw.wsr && !c->pw.re_at) {
+        c->pw.re_at = npf_mono_ms() + WS_RECONNECT_MS;
+        call_at(c, c->pw.re_at);
+    }
 }
 
 static void wsr_gone(npf_wsr *r, const char *why, void *arg)
@@ -193,7 +195,7 @@ static void wsr_gone(npf_wsr *r, const char *why, void *arg)
     }
     c->pw.wsr = NULL;              /* already freed */
     npf_timer_stop(c->n->loop, &c->pw.t_flush);
-    npf_timer_stop(c->n->loop, &c->pw.t_re);    /* its pairing's deadline */
+    c->pw.re_at = 0;                            /* its pairing's deadline */
     call_ws_failed(c, why);
 }
 
@@ -251,11 +253,11 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     return 0;
 }
 
-/* the relay connection closed, its timers stopped (the carrier stays) */
+/* the relay connection closed, its flush and deadline gone (the carrier stays) */
 void call_ws_leave_conn(npf_call *c)
 {
     npf_timer_stop(c->n->loop, &c->pw.t_flush);
-    npf_timer_stop(c->n->loop, &c->pw.t_re);
+    c->pw.re_at = 0;
     if (c->pw.wsr)
         npf_wsr_close(c->pw.wsr);
     c->pw.wsr = NULL;

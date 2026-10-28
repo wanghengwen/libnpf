@@ -99,8 +99,7 @@ static void anl_kick(npf_call *c)
 {
     if (!c->flush_pending) {
         c->flush_pending = 1;
-        npf_timer_stop(c->n->loop, &c->t_anl);
-        anl_schedule(c);
+        call_at(c, npf_mono_ms());
     }
 }
 
@@ -450,14 +449,11 @@ static void anl_drain_with(npf_call *c, char *buf, size_t cap)
 
 static void auth_fail_check(npf_call *c);
 
-static void anl_timer(npf_loop *loop, void *arg)
+/* the session's part of the call's tick (call_tick): AnLiu's timers, the
+ * flush a send asked for, what came in */
+void tr_tick(npf_call *c, int64_t now)
 {
-    npf_call *c = arg;
-    (void)loop;
-    c->t_anl = NULL;
-    if (!c->anl)
-        return;
-    anl_update(c->anl, (uint32_t)npf_mono_ms());
+    anl_update(c->anl, (uint32_t)now);
     if (c->flush_pending) {
         c->flush_pending = 0;
         anl_flush(c->anl);
@@ -469,25 +465,22 @@ static void anl_timer(npf_loop *loop, void *arg)
     }
     auth_fail_check(c);
     anl_drain(c);
-    if (c->ended)
-        return;
-    pm_check(c);                    /* the paths' health (path_mgr.c) */
-    anl_schedule(c);
+}
+
+int64_t tr_due(const npf_call *c, int64_t now)
+{
+    uint32_t n32 = (uint32_t)now;
+    int32_t d;
+    if (!c->anl)
+        return INT64_MAX;
+    d = c->flush_pending ? 0 : (int32_t)(anl_check(c->anl, n32) - n32);
+    return now + (d > 0 ? d : 0);
 }
 
 static void anl_schedule(npf_call *c)
 {
-    uint32_t now, next;
-    int64_t d;
-    if (!c->anl || c->t_anl)
-        return;
-    now = (uint32_t)npf_mono_ms();
-    next = c->flush_pending ? now : anl_check(c->anl, now);
-    d = (int32_t)(next - now);
-    if (d < 0)
-        d = 0;
-    c->anl_due = npf_mono_ms() + d;
-    c->t_anl = npf_timer_add(c->n->loop, d, anl_timer, c);
+    int64_t now = npf_mono_ms();
+    call_at(c, tr_due(c, now));
 }
 
 static void anl_after_input(npf_call *c);
@@ -551,21 +544,12 @@ int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len)
 }
 
 /* after a datagram: the timer moved only when AnLiu wants to be called
- * sooner than it fires (it was made again for every datagram) */
+ * sooner than it fires (call_at; it was made again for every datagram) */
 static void anl_after_input(npf_call *c)
 {
     anl_drain(c);
-    if (c->ended)
-        return;
-    if (c->t_anl) {
-        int64_t now = npf_mono_ms();
-        uint32_t n32 = (uint32_t)now, next = c->flush_pending ? n32 : anl_check(c->anl, n32);
-        int32_t d = (int32_t)(next - n32);
-        if (c->anl_due <= now + (d > 0 ? d : 0))
-            return;                         /* it comes first and schedules the next one */
-        npf_timer_stop(c->n->loop, &c->t_anl);
-    }
-    anl_schedule(c);
+    if (!c->ended)
+        anl_schedule(c);
 }
 /* ---- libnpf media streams (media.h) ---- */
 
@@ -846,6 +830,5 @@ void call_path_up(npf_call *c)
         return;
     anl_update(c->anl, (uint32_t)npf_mono_ms());
     anl_flush(c->anl);
-    npf_timer_stop(c->n->loop, &c->t_anl);
     anl_schedule(c);
 }

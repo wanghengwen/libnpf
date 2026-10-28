@@ -18,7 +18,7 @@
  * a PATH_CHECK every 500 ms, lost 10 s after. The UDP relay: the same
  * silences (20 s idle: the relay's 10 s was below AnLiu's keepalive and
  * bound it again every 10-15 s, architecture.md D3); its probe is a bind,
- * its address in use first (relay_bind_probe), its verdict every address
+ * its address in use first (path_udp.c:bind_run), its verdict every address
  * tried. The WS relay: TCP's own retransmission with data in flight; 30 s
  * without any frame (its ping every 25 s, the peer's keepalives) is a
  * half-open connection: connected again, DEAD after 5 that do not pair
@@ -303,21 +303,13 @@ void call_paths_init(npf_call *c)
 
 /* ---- the session's paths' health ---- */
 
-static void pm_timer(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    (void)loop;
-    c->pm.t_check = NULL;
-    pm_check(c);
-}
-
 /* The health rules now (pm_tick) for a session with its AnLiu connection,
- * then the decisions (pm_decide, call_need): from AnLiu's timer, the
- * manager's own (at the next thing due: a probe, a verdict, a silence long
- * enough, a wait's end, a request's deadline; earlier only when it moved
- * earlier, as AnLiu's timer, call_transport.c:anl_after_input) and the
- * events that change a path's health or an input. Nothing on the hot path:
- * a datagram only writes its path's last_rx. */
+ * then the decisions (pm_decide, call_need): from the call's tick (each
+ * one while it has an AnLiu connection, else at check_at: the next thing
+ * due, a probe, a verdict, a silence long enough, a wait's end, a
+ * request's deadline) and the events that change a path's health or an
+ * input. Nothing on the hot path: a datagram only writes its path's
+ * last_rx. */
 void pm_check(npf_call *c)
 {
     static const char *const act[] = {
@@ -371,11 +363,8 @@ void pm_check(npf_call *c)
         due = m->act_at;
     if (m->need && m->ask_at < due)
         due = m->ask_at;
-    if (c->ended || due == INT64_MAX || (m->t_check && m->check_at <= due))
-        return;
-    npf_timer_stop(n->loop, &m->t_check);
     m->check_at = due;
-    m->t_check = npf_timer_add(n->loop, due > now ? due - now : 0, pm_timer, c);
+    call_at(c, due);
 }
 
 

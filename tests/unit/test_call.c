@@ -16,7 +16,13 @@
  * - a WS relay lost after it worked is connected again; after 5 connections
  *   in a row that did not pair it is given up (DEAD) and the caller asks
  *   for a relay elsewhere, the callee waits (architecture.md Q5; it was
- *   connected again every 2 s for good). */
+ *   connected again every 2 s for good);
+ * - the call's one timer (architecture.md 4): a call not ended always has
+ *   a deadline and its timer is never later than the earliest one, in
+ *   each phase (the time limit, the session's AnLiu, a UDP relay binding,
+ *   a WS relay connected again); a deadline moved earlier moves the timer,
+ *   one moved later or gone leaves it early and the tick finds nothing due
+ *   then, an ended call has none. */
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -80,12 +86,12 @@ static void callee_accept_after_relay(npf_node *n)
     /* established through the relay: the peer's hello ends the time limit */
     c->peer_hello = 1;
     call_set_state(c, NPF_CALL_ESTABLISHED, "relay");
-    CHECK(!c->t_timeout && !c->accepted, "established, the time limit gone");
+    CHECK(!c->limit_at && !c->accepted, "established, the time limit gone");
     /* the first punch_start (a round planned later): the accept */
     CHECK(msg(&j, tok, 32, buf, sizeof buf, "{\"call_id\":\"accept-test\"}") == 0, "punch_start JSON");
     call_handle_punch_start(c, &j, 0);
     CHECK(c->accepted, "a punch_start after the time limit is not taken as the accept");
-    CHECK(!c->t_timeout, "the time limit armed again on an established call");
+    CHECK(!c->limit_at, "the time limit armed again on an established call");
     /* the direct path lost later: the platform hears it */
     seen_clear();
     call_punch_report(c, "path_lost");
@@ -232,24 +238,94 @@ static void ws_gives_up(npf_node *n, int caller)
     pm_rt(&c->pm, &c->pw.p, npf_mono_ms());
     seen_clear();
     call_ws_failed(c, "relay connection closed");   /* lost: in doubt, connected again in 2 s */
-    CHECK(c->pw.p.health == PH_SUSPECT && c->pw.t_re && c->pw.fails == 0, "a WS relay lost: health %d, fails %d",
+    CHECK(c->pw.p.health == PH_SUSPECT && c->pw.re_at && c->pw.fails == 0, "a WS relay lost: health %d, fails %d",
           c->pw.p.health, c->pw.fails);
     for (k = 1; k < 5; k++) {
         call_ws_failed(c, "cannot connect");
-        CHECK(c->pw.p.health == PH_SUSPECT && c->pw.fails == k && c->pw.t_re, "reconnect %d failed: health %d",
+        CHECK(c->pw.p.health == PH_SUSPECT && c->pw.fails == k && c->pw.re_at, "reconnect %d failed: health %d",
               k, c->pw.p.health);
     }
     CHECK(!strstr(seen, "giving it up") && !strstr(seen, "relay_switch"), "given up before 5: %s", seen);
     call_ws_failed(c, "cannot connect");
-    CHECK(c->pw.p.health == PH_DEAD && !c->pw.t_re && !c->pw.wsr, "5 failed: health %d", c->pw.p.health);
+    CHECK(c->pw.p.health == PH_DEAD && !c->pw.re_at && !c->pw.wsr, "5 failed: health %d", c->pw.p.health);
     CHECK(strstr(seen, "never paired: giving it up") != NULL, "not given up: %s", seen);
     CHECK(caller ? strstr(seen, "asking for one on our own server") != NULL
                  : strstr(seen, "asking for one") == NULL && strstr(seen, "waiting for the platform") != NULL,
           "%s: %s", caller ? "the caller did not ask elsewhere" : "the callee asked", seen);
     seen_clear();
     call_ws_failed(c, "cannot connect");            /* given up: nothing more */
-    CHECK(!c->pw.t_re && !strstr(seen, "asking"), "after the verdict: %s", seen);
+    CHECK(!c->pw.re_at && !strstr(seen, "asking"), "after the verdict: %s", seen);
     n->th = old;
+    npf_call_end(c, "test");
+}
+
+/* a call not ended has a deadline, its timer no later than the earliest one */
+static int armed(const npf_call *c)
+{
+    int64_t d = call_due(c, npf_mono_ms());
+    return d < INT64_MAX && c->t_due && c->due_at <= d;
+}
+
+/* the loop run until at, or until *flag (NULL none) is at least want */
+static void run_until(npf_loop *l, int64_t at, const int *flag, int want)
+{
+    while (npf_mono_ms() <= at && !(flag && *flag >= want))
+        npf_loop_once(l, 5);
+}
+
+static void deadline_invariant(npf_node *n, int caller)
+{
+    static const uint8_t rid[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    uint8_t key[32] = {9};
+    struct sockaddr_storage ra;
+    npf_call *c = call_new(n, caller);
+    CHECK(c != NULL, "call");
+    if (!c)
+        return;
+    snprintf(c->call_id_s, sizeof c->call_id_s, "due-test-%d", caller);
+    CHECK(armed(c) && c->due_at == c->limit_at, "a new call: its time limit");
+    c->state = NPF_CALL_CONNECTING;
+    npf_random(c->k12, sizeof c->k12);
+    CHECK(call_start_transport(c) == 0 && armed(c), "the session made");
+    c->peer_hello = 1;
+    call_set_state(c, NPF_CALL_ESTABLISHED, "test");
+    CHECK(!c->limit_at && armed(c), "established: no time limit, AnLiu's deadline");
+    npf_addr_parse("127.0.0.1:9", &ra);
+    path_udp_setup(c, rid, key, &ra, 1);
+    CHECK(c->pu.bind_at && armed(c), "a UDP relay binding");
+    run_until(n->loop, npf_mono_ms() + 5000, &c->pu.r.tries, 2);
+    CHECK(c->pu.r.tries == 2 && armed(c), "binding: %d binds again", c->pu.r.tries);
+    path_udp_off(c);
+    pm_add(&c->pm, &c->pw.p);
+    c->pw.paired_once = 1;
+    pm_rt(&c->pm, &c->pw.p, npf_mono_ms());
+    call_ws_failed(c, "relay connection closed");
+    CHECK(c->pw.re_at && armed(c), "a WS relay to connect again");
+    npf_call_end(c, "test");
+    CHECK(!c->t_due, "an ended call's timer");
+}
+
+static void deadline_moves(npf_node *n)
+{
+    npf_call *c = call_new(n, 1);
+    int64_t t;
+    CHECK(c != NULL, "call");
+    if (!c)
+        return;
+    snprintf(c->call_id_s, sizeof c->call_id_s, "move-test");
+    c->linger_at = npf_mono_ms() + 20;          /* earlier than the time limit */
+    call_at(c, c->linger_at);
+    CHECK(c->due_at == c->linger_at, "a deadline earlier: the timer not moved");
+    run_until(n->loop, c->linger_at, NULL, 0);
+    CHECK(!c->linger_at && c->due_at == c->limit_at, "the linger done: the timer at %lld, not the limit's",
+          (long long)(c->due_at - c->limit_at));
+    t = c->limit_at = npf_mono_ms() + 20;
+    call_at(c, c->limit_at);
+    call_accept_seen(c);                        /* the limit later: 25 s from now */
+    CHECK(c->due_at == t && c->limit_at > t + 20000, "a deadline later: the timer moved at once");
+    run_until(n->loop, t, NULL, 0);
+    CHECK(!c->ended && c->due_at == c->limit_at, "the tick before the limit: %s, the timer %lld ms early",
+          c->ended ? "ended" : "not ended", (long long)(c->limit_at - c->due_at));
     npf_call_end(c, "test");
 }
 
@@ -282,6 +358,9 @@ int test_call(void)
     ws_leaves_punch(&node);
     ws_gives_up(&node, 1);
     ws_gives_up(&node, 0);
+    deadline_invariant(&node, 1);
+    deadline_invariant(&node, 0);
+    deadline_moves(&node);
 
     npf_log_ctx_swap(old);
     npf_node_stop(&node);
