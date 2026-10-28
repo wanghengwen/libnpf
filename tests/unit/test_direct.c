@@ -108,7 +108,6 @@ static int ws_move(npf_call *c)
 static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, const uint8_t psk[32], side *L)
 {
     static side A2;
-    static npf_test_hooks th;
     move_rec r1;
     npf_call *c;
     int want = L->established;
@@ -116,9 +115,7 @@ static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, 
     memset(&r1, 0, sizeof r1);
     CHECK(init_side(&A2, loop) == 0, "a node for the move");
     /* the relay's URL blocked: the move connects nowhere */
-    th = *npf_th();
-    th.block_relay = "wss://127.0.0.1:9/r";
-    A2.node.th = &th;
+    A2.node.th.block_relay = "wss://127.0.0.1:9/r";
     A2.node.cfg.server_url = "wss://127.0.0.1:9/";
     c = npf_direct_connect(&A2.node, to, psk);
     run_until(loop, &A2.established, 1, 3000);

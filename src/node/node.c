@@ -17,7 +17,6 @@
 #include "npf/conf.h"
 #include "npf/node.h"
 #include "npf/platform.h"
-#include "npf/testhooks.h"
 
 #include "node_internal.h"
 #include "home.h"
@@ -95,7 +94,7 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
     n->cur_server = -1;
     n->udp_fd = -1;
     n->udp6_fd = -1;
-    n->th = npf_th();
+    npf_th_read(&n->th);
     n->test_udp_fail = getenv("NPF_TEST_UDP_FAIL");
     n->test_no_udp = getenv("NPF_NO_UDP") != NULL;
     n->test_ws_file = getenv("NPF_TEST_WS_FILE");

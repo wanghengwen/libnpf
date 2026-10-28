@@ -1,8 +1,6 @@
 /* Test hooks (architecture.md 6): the environment's test switches, read
- * once per process on first use and only read after that: none is looked up
- * per datagram or per call. Not for programs: integration tests and natlab
- * set them. So far the paths' (DROP_P2P, BLOCK_RELAY, DROP_BIND_ACK,
- * NO_P2P, UDP_AGAIN_MS); the others still read their own variables. */
+ * once per node (npf_node_init), never per datagram or per call. So far the
+ * paths'; the others still read their own variables. */
 #ifndef NPF_TESTHOOKS_H
 #define NPF_TESTHOOKS_H
 
@@ -17,6 +15,6 @@ typedef struct npf_test_hooks {
     int64_t     udp_again_ms;       /* NPF_TEST_UDP_AGAIN_MS: on the WS relay while UDP works, UDP tried after this; 0 5 min */
 } npf_test_hooks;
 
-const npf_test_hooks *npf_th(void);
+void npf_th_read(npf_test_hooks *t);
 
 #endif

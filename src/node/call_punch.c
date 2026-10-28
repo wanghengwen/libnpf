@@ -40,7 +40,7 @@ static void write_pressure(const npf_call *c, npf_jw *w)
  * only, neither side's address goes to the other), or tests (NPF_NO_P2P) */
 int call_no_p2p(const npf_call *c)
 {
-    return c->secure || c->n->th->no_p2p;
+    return c->secure || c->n->th.no_p2p;
 }
 
 /* the platform hears what changed for the call's rounds (punch_update):

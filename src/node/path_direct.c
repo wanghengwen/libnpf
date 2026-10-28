@@ -16,8 +16,8 @@
  * came up; with a port only the path to the peer on that port (many-to-many) */
 int call_p2p_cut(const npf_call *c)
 {
-    int64_t cut = c->n->th->drop_p2p_ms;
-    int port = c->n->th->drop_p2p_port;
+    int64_t cut = c->n->th.drop_p2p_ms;
+    int port = c->n->th.drop_p2p_port;
     if (cut < 0 || !call_has_p2p(c) || npf_mono_ms() - c->pd.p.since <= cut)
         return 0;
     return !port || ntohs(c->pd.addr.ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)&c->pd.addr)->sin6_port

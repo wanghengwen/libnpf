@@ -17,7 +17,6 @@
 #include "npf/platform.h"
 #include "npf/punch.h"
 #include "npf/siv.h"
-#include "npf/testhooks.h"
 #include "npf/tunnel.h"
 #include "npf/wsrelay.h"
 #include "media.h"

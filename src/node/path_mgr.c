@@ -297,7 +297,7 @@ void call_paths_init(npf_call *c)
     c->pu.p.kind = PK_UDP_RELAY;
     c->pw.p.ops = &path_ws_ops;
     c->pw.p.kind = PK_WS_RELAY;
-    c->pm.udp_again = c->n->th->udp_again_ms > 0 ? c->n->th->udp_again_ms : PM_UDP_AGAIN_MS;
+    c->pm.udp_again = c->n->th.udp_again_ms > 0 ? c->n->th.udp_again_ms : PM_UDP_AGAIN_MS;
 }
 
 

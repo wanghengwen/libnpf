@@ -17,14 +17,14 @@
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
 int call_relay_blocked(const npf_node *n, const char *what)
 {
-    const char *v = n->th->block_relay;
+    const char *v = n->th.block_relay;
     return v && *what && strstr(v, what) != NULL;
 }
 
 static int addr_blocked(const npf_call *c, const struct sockaddr_storage *a)
 {
     char s[64];
-    return c->n->th->block_relay && call_relay_blocked(c->n, npf_addr_str(a, s, sizeof s));
+    return c->n->th.block_relay && call_relay_blocked(c->n, npf_addr_str(a, s, sizeof s));
 }
 
 /* RELAY_BIND (relay_bind.c) to the address being bound or kept (bi): the
@@ -199,7 +199,7 @@ static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
     if (a.state == RELAY_ACK_BOUND) {
         /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that confirms
          * the binding (the challenges still come: without one nothing binds) */
-        if (c->pu.r.state != RB_BOUND && !c->n->th->drop_bind_ack && call_has_relay(c))
+        if (c->pu.r.state != RB_BOUND && !c->n->th.drop_bind_ack && call_has_relay(c))
             relay_bound(c, "");     /* (a late one after the relay went, the standby's or the move to WS: no) */
         return;
     }

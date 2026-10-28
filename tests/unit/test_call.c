@@ -97,8 +97,7 @@ static void relay_asked_again(npf_node *n)
 /* the WS relay lost after pairing: SUSPECT, connected again; 5 that fail: DEAD */
 static void ws_gives_up(npf_node *n, int caller)
 {
-    static npf_test_hooks th;
-    const npf_test_hooks *old = n->th;
+    npf_test_hooks old = n->th;
     npf_call *c = call_new(n, caller);
     int k;
     CHECK(c != NULL, "call");
@@ -106,9 +105,7 @@ static void ws_gives_up(npf_node *n, int caller)
         return;
     snprintf(c->call_id_s, sizeof c->call_id_s, "ws-test-%d", caller);
     c->st = CS_UP;
-    th = *old;
-    th.block_relay = "wss://blocked.test/relay";    /* every connection fails at once */
-    n->th = &th;
+    n->th.block_relay = "wss://blocked.test/relay";    /* every connection fails at once */
     snprintf(c->pw.url, sizeof c->pw.url, "wss://blocked.test/relay");
     pm_add(&c->pm, &c->pw.p);
     c->pw.paired_once = 1;

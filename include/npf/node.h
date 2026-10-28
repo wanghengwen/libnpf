@@ -20,6 +20,7 @@
 #include "npf/natprobe.h"
 #include "npf/portmap.h"
 #include "npf/sig.h"
+#include "npf/testhooks.h"
 #include "npf/tunnel.h"
 
 #define NPF_MAX_SERVERS   32
@@ -321,7 +322,7 @@ struct npf_node {
     /* UDP */
     int           udp_fd;
     uint16_t      udp_port;
-    const struct npf_test_hooks *th;    /* the test hooks (npf/testhooks.h): npf_th(), a test's own */
+    npf_test_hooks th;              /* the test hooks (npf/testhooks.h) */
     const char   *test_udp_fail;    /* NPF_TEST_UDP_FAIL (node_network.c), read once: not every watch tick */
     int           test_no_udp;      /* NPF_NO_UDP: no UDP at all (sessions on the WS relay, no spare) */
     const char   *test_ws_file;     /* NPF_TEST_WS_FILE: no UDP while this file exists (node_network.c) */

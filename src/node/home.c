@@ -16,7 +16,6 @@
 #include "npf/json.h"
 #include "npf/platform.h"
 #include "npf/siv.h"
-#include "npf/testhooks.h"
 
 #include "home.h"
 #include "node_internal.h"
@@ -107,7 +106,7 @@ static void bind_send(struct npf_home *h, int flags, uint32_t ping_id)
     char a[64];
     int len;
     if (n->udp_fd < 0 || !h->r.state
-        || (n->th->block_relay && call_relay_blocked(n, npf_addr_str(RELAY_BIND_DST(&h->r), a, sizeof a))))
+        || (n->th.block_relay && call_relay_blocked(n, npf_addr_str(RELAY_BIND_DST(&h->r), a, sizeof a))))
         return;
     watch_sync(h);
     if (h->newnet)
@@ -473,7 +472,7 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
         return;
     }
     /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that binds, as a call's (path_udp.c) */
-    if (h->n->th->drop_bind_ack)
+    if (h->n->th.drop_bind_ack)
         return;
     h->newnet = 0;
     learn_seen(h, a.t_s, a.learn);
