@@ -324,7 +324,7 @@ void pm_check(npf_call *c)
     int64_t now = npf_mono_ms(), due = INT64_MAX;
     int k, busy = 0, r;
     unsigned in;
-    if (c->ended)
+    if (call_over(c))
         return;
     /* AnLiu's stats only for a path whose rules look at the data in
      * flight (the WS relay's do not) */
@@ -336,12 +336,12 @@ void pm_check(npf_call *c)
             path_ws_heard(c);
         due = pm_tick(m, now, st.inflight, (int)st.rto);
     }
-    in = (c->caller ? PM_IN_CALLER : 0) | (c->caller && c->state == NPF_CALL_CALLING ? PM_IN_HOLD : 0)
-         | (c->state == NPF_CALL_ESTABLISHED ? PM_IN_UP : 0) | (!call_no_p2p(c) && !c->punched ? PM_IN_PUNCH : 0)
+    in = (c->caller ? PM_IN_CALLER : 0) | (c->caller && c->st == CS_CALLING ? PM_IN_HOLD : 0)
+         | (call_up(c) ? PM_IN_UP : 0) | (!call_no_p2p(c) && c->punch_st < PN_LINGER ? PM_IN_PUNCH : 0)
          | (n->nat_valid && n->nat_udp && !n->test_no_udp ? PM_IN_UDP : 0)
          | (n->udp_back_ms > c->pw.p.since ? PM_IN_UDP_BACK : 0) | (n->test_no_udp && c->keys_ready ? PM_IN_NOUDP : 0)
-         | (call_has_relay(c) && c->pu.p.health == PH_DEAD && call_hard_punches(c) > 0 ? PM_IN_PORTS : 0);
-    if (c->ended)
+         | (call_has_relay(c) && c->pu.p.health == PH_DEAD && call_hard_punches(n, c) > 0 ? PM_IN_PORTS : 0);
+    if (call_over(c))
         return;
     r = pm_decide(m, in, now);
     if (r >= PM_WAIT_PORTS && *act[r - PM_WAIT_PORTS])

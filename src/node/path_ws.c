@@ -74,7 +74,7 @@ void path_ws_heard(npf_call *c)
  * model again and sends what is unacknowledged once */
 void call_ws_carrier(npf_call *c)
 {
-    if (!call_has_ws(c) || !c->anl || !c->pw.wsr || !npf_wsr_paired(c->pw.wsr) || c->ended)
+    if (!call_has_ws(c) || !c->anl || !c->pw.wsr || !npf_wsr_paired(c->pw.wsr) || call_over(c))
         return;
     anl_set_option(c->anl, ANL_OPT_CARRIER, ANL_CARRIER_STREAM);
     call_path_up(c);
@@ -101,7 +101,7 @@ static void wsr_datagram(npf_wsr *r, const uint8_t *d, size_t len, void *arg)
 {
     npf_call *c = arg;
     (void)r;
-    if (!call_has_ws(c) || c->ended)
+    if (!call_has_ws(c) || call_over(c))
         return;                 /* back on UDP: a late one of the old carrier */
     if (c->caller && !c->keys_ready) {
         call_relay_early_keep(c, d, len);   /* the callee's hello before the accept brought the keys */
@@ -114,7 +114,7 @@ static int ws_open(npf_call *c);
 
 static void ws_reconnect(npf_call *c)
 {
-    if (!call_has_ws(c) || c->pw.wsr || c->ended || c->pw.p.health == PH_DEAD)
+    if (!call_has_ws(c) || c->pw.wsr || call_over(c) || c->pw.p.health == PH_DEAD)
         return;
     npf_log("call %s: WS relay: connecting again", c->call_id_s);
     if (ws_open(c) < 0) {
@@ -165,7 +165,7 @@ static void ws_suspect(npf_path *p, int64_t quiet)
 void call_ws_failed(npf_call *c, const char *why)
 {
     npf_log("call %s: WS relay %s", c->call_id_s, why);
-    if (c->ended || !call_has_ws(c) || c->pw.p.health == PH_DEAD)
+    if (call_over(c) || !call_has_ws(c) || c->pw.p.health == PH_DEAD)
         return;
     if (c->pw.paired_once && c->pw.p.health != PH_SUSPECT) {
         pm_suspect(&c->pm, &c->pw.p, npf_mono_ms());
@@ -241,7 +241,7 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     pm_add(&c->pm, &c->pw.p);
     c->pw.paired_once = 0;
     path_udp_off(c);
-    call_relay_leave(c);
+    call_punch_to(c, PN_NONE, 0);              /* a WS relay session cannot go direct; rounds again on UDP */
     if (call_has_p2p(c))
         call_p2p_drop(c);
     call_ws_leave_conn(c);

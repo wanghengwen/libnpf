@@ -148,7 +148,7 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
     c->call_req = npf_node_send(n, "call", 1, data);
     if (c->call_req < 0)
         goto fail;
-    c->state = NPF_CALL_CALLING;
+    c->st = CS_CALLING;
     npf_log("call %s: calling %llu (%s)", c->call_id_s, (unsigned long long)number,
             c->auth == AUTH_PAKE ? "pairing" : c->auth == AUTH_GRANT ? "the account's grant" : "paired");
     return c;
@@ -200,17 +200,17 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
     npf_log("call %s: accepted%s", c->call_id_s,
             call_has_ws(c) ? (c->pw.wsr ? " (the WS relay connected since the reply)" : "")
             : c->pu.r.state == RB_BOUND ? " (the UDP relay bound since the reply)" : call_has_relay(c) ? " (the UDP relay being bound)" : "");
-    /* connecting first: with the relay from the reply our hello goes as the
-     * transport is made, and the session is established then (the caller
-     * does not wait for the callee's hello, call_hello) */
-    call_set_state(c, NPF_CALL_CONNECTING, NULL);
+    /* accepted, connecting first: with the relay from the reply our hello
+     * goes as the transport is made, and the session is established then
+     * (the caller does not wait for the callee's hello, call_hello) */
+    call_accept(c);
     if (call_finish_handshake(c) < 0)
         goto fail;
     call_relay_setup(c, j, d);
     pm_check(c);                /* a relay that failed before the accept: replaced now (pm_decide) */
     /* what the callee sent through the relay before the keys, now: after
      * connecting (its hello may establish the session at once) */
-    if (!c->ended)
+    if (!call_over(c))
         call_relay_early_feed(c);
     return;
 fail:
@@ -253,14 +253,14 @@ static const char *incoming_pake(npf_call *c, const npf_json *j, int d, const ui
 
 #define SESSIONS_PER_KEY 4
 
-/* the sessions here of the caller with this key */
+/* the platform's sessions here (pub NULL), or those of the caller with this key */
 static int key_sessions(npf_node *n, const uint8_t *pub)
 {
     npf_call *x;
     int k = 0;
-    for (x = n->calls; pub && x; x = x->next)
-        if (!x->caller && !x->direct && !x->ended && x->keys_ready && npf_ct_eq(x->peer_pub, pub, 32) == 0)
-            k++;
+    for (x = n->calls; x; x = x->next)
+        k += !x->caller && !x->direct && !call_over(x)
+             && (!pub || (x->keys_ready && npf_ct_eq(x->peer_pub, pub, 32) == 0));
     return k;
 }
 
@@ -320,10 +320,7 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d)
     /* concurrent sessions (signaling.md "incoming": busy); direct sessions
      * have their own limit on the listener */
     {
-        int sessions = 0, max = n->cfg.max_calls > 0 ? n->cfg.max_calls : MAX_CALLS_DEFAULT;
-        for (c = n->calls; c; c = c->next)
-            if (!c->caller && !c->direct && !c->ended)
-                sessions++;
+        int sessions = key_sessions(n, NULL), max = n->cfg.max_calls > 0 ? n->cfg.max_calls : MAX_CALLS_DEFAULT;
         if (sessions >= max) {
             npf_logw("call: %d sessions already, refusing a new one (busy)", sessions);
             callee_reply_error(n, req, "busy");
@@ -386,7 +383,7 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d)
         return;
     }
     npf_node_reply(n, "incoming", req, "ok", NULL, data);
-    c->state = NPF_CALL_CONNECTING;
+    c->st = CS_ANSWERED;
     npf_log("call %s: incoming %s call accepted", c->call_id_s, c->auth == AUTH_PAKE ? "pairing" : "paired");
     call_relay_setup(c, j, d);
 }

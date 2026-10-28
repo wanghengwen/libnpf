@@ -67,7 +67,7 @@ static int direct_up(npf_call *c)
     npf_wipe(k1, 32);
     npf_wipe(k2, 32);
     pm_add(&c->pm, &c->pd.p);
-    call_set_state(c, NPF_CALL_CONNECTING, NULL);  /* first: the initiator is established with its hello */
+    call_set_state(c, CS_CONNECTING, NULL);    /* first: the initiator is established with its hello */
     if (call_start_transport(c) < 0)
         return -1;
     return 0;
@@ -113,7 +113,7 @@ npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, con
         return NULL;
     }
     c->hs->dmsg1_len = (size_t)len;
-    c->state = NPF_CALL_CALLING;
+    c->st = CS_CALLING;
     npf_udp_send(c->pd.fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->pd.addr);
     c->direct_at = npf_mono_ms() + 300;
     call_at(c, c->direct_at);
@@ -224,7 +224,7 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
     if (!direct_rate_ok(d, from))
         return;
     for (c = n->calls; c; c = c->next)
-        if (c->direct && !c->caller && !c->ended)
+        if (c->direct && !c->caller && !call_over(c))
             sessions++;
     if (sessions >= DIRECT_MAX_SESS)
         return;

@@ -215,9 +215,9 @@ void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
             continue;
         if (call_path_input(c, buf, (size_t)r))
             continue;
-        if (call_anl_feed(c, buf, (size_t)r) == 0 && !c->ended)
+        if (call_anl_feed(c, buf, (size_t)r) == 0 && !call_over(c))
             c->pd.p.last_rx = npf_mono_ms();
-        if (c->ended)
+        if (call_over(c))
             return;
     }
 }

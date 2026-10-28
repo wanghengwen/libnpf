@@ -106,7 +106,7 @@ static void rev_udp(npf_loop *loop, int fd, unsigned ev, void *arg)
             }
             continue;
         }
-        if (c->state == NPF_CALL_ESTABLISHED && call_udp_of(c))
+        if (call_up(c) && call_udp_of(c))
             npf_udpf_send_rev(c->udp, fd, &from, fl, l->id, buf, (size_t)r);
     }
     npf_scratch_done(buf);

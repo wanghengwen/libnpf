@@ -173,26 +173,14 @@ static size_t tun_backlog_max(void *arg)
     return v < BACKLOG_MIN ? BACKLOG_MIN : v > BACKLOG_MAX ? BACKLOG_MAX : (size_t)v;
 }
 
-/* both hellos: the peer's came (ours went before) */
+/* both hellos: the peer's came (ours went before): UP (call_set_state) */
 static void tun_ready(void *arg)
 {
     npf_call *c = arg;
-    c->peer_hello = 1;
     if (c->caller && c->auth == AUTH_PAKE && c->n->hooks.on_paired)
         c->n->hooks.on_paired(c->n, c->number, c->peer_pub, c->n->hook_arg);
-    if (c->ended)
-        return;
-    call_set_state(c, NPF_CALL_ESTABLISHED, NULL);
-    /* the callee tells the platform: the caller's hello came under the
-     * session's keys, so the E2E handshake held (a first pairing's password
-     * too); relay_switch allocates freely only from then on (security
-     * review M-2) */
-    if (!c->caller && !c->direct && !c->up_told && !c->ended) {
-        char data[64];
-        c->up_told = 1;
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
-        npf_node_send(c->n, "call_established", 0, data);
-    }
+    if (!call_over(c))
+        call_set_state(c, CS_UP, NULL);
 }
 
 /* our hello, once the session has a path (sent into nothing it would sit
@@ -206,11 +194,11 @@ static void tun_ready(void *arg)
  * only after its first RTO, holding up all that follows */
 void call_hello(npf_call *c)
 {
-    if (!c->tun || c->ended || (c->caller && c->auth == AUTH_PAKE))
+    if (!c->tun || call_over(c) || (c->caller && c->auth == AUTH_PAKE))
         return;
     npf_tunnel_start(c->tun);
-    if (c->caller && !c->ended && c->tun && npf_tunnel_is_ready(c->tun))
-        call_set_state(c, NPF_CALL_ESTABLISHED, NULL);
+    if (c->caller && !call_over(c) && c->tun && npf_tunnel_is_ready(c->tun))
+        call_set_state(c, CS_HALF, NULL);
 }
 
 /* Only ids emitted by ctl_request match a pending request. atoi accepted
@@ -251,8 +239,7 @@ static void tun_control(void *arg, const npf_json *j)
         char r[32] = "closed";
         npf_json_get_str(j, npf_json_get(j, 0, "data"), "reason", r, sizeof r);
         npf_log("call %s: peer closed the session (%s)", c->call_id_s, r);
-        c->peer_closed = 1;             /* the record names the peer (call_end peer) */
-        npf_call_end(c, r);
+        call_close(c, r, CALL_END_PEER);        /* the record names the peer (call_end peer) */
         return;
     }
     if (!c->caller && (strcmp(type, "reverse_listen") == 0 || strcmp(type, "reverse_close") == 0)) {
@@ -327,7 +314,7 @@ int npf_call_ctl_request(npf_call *c, const char *type, const char *data_json, n
 {
     char id[24];
     int i, k, seq;
-    if (!fn || c->ended || !c->tun || !npf_tunnel_is_ready(c->tun))
+    if (!fn || call_over(c) || !c->tun || !npf_tunnel_is_ready(c->tun))
         return -1;
     for (i = 0; i < NPF_CALL_CTL_MAX && c->ctl[i].fn; i++)
         ;
@@ -354,7 +341,7 @@ int npf_call_ctl_request(npf_call *c, const char *type, const char *data_json, n
 
 int npf_call_ctl_event(npf_call *c, const char *type, const char *data_json)
 {
-    if (c->ended || !c->tun || !npf_tunnel_is_ready(c->tun))
+    if (call_over(c) || !c->tun || !npf_tunnel_is_ready(c->tun))
         return -1;
     return ctl_send(c, type, NULL, NULL, NULL, NULL, data_json);
 }
@@ -407,10 +394,10 @@ static void anl_drain_with(npf_call *c, char *buf, size_t cap)
         if (!ctrl && rd[i] != c->stream) {
             if (npf_udpf_is_stream(c->udp, rd[i])) {
                 npf_udpf_drain(c->udp, rd[i]);
-                if (c->ended)
+                if (call_over(c))
                     return;
             } else if (npf_media_is_stream(c->media, rd[i])) {
-                if (npf_media_drain(c->media, rd[i]) < 0 || c->ended)
+                if (npf_media_drain(c->media, rd[i]) < 0 || call_over(c))
                     return;
             } else if (anl_stream_peeksize(rd[i]) == ANL_ECLOSED) {
                 anl_stream_close(rd[i]);
@@ -426,7 +413,7 @@ static void anl_drain_with(npf_call *c, char *buf, size_t cap)
                 if (ctrl ? npf_tunnel_input_ctrl(c->tun, (uint8_t *)buf, (size_t)r) < 0
                          : npf_tunnel_input_data(c->tun, (uint8_t *)buf, (size_t)r) < 0)
                     return;
-                if (c->ended)               /* the peer's close: nothing more goes to the tunnel */
+                if (call_over(c))               /* the peer's close: nothing more goes to the tunnel */
                     return;
                 continue;
             }
@@ -547,7 +534,7 @@ int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len)
 static void anl_after_input(npf_call *c)
 {
     anl_drain(c);
-    if (!c->ended)
+    if (!call_over(c))
         anl_schedule(c);
 }
 /* ---- libnpf media streams (media.h) ---- */
@@ -580,7 +567,7 @@ static void m_closed(void *arg, uint32_t id)
 
 static int m_ended(void *arg)
 {
-    return ((npf_call *)arg)->ended;
+    return call_over(arg);
 }
 
 static const npf_media_io media_io = {m_kick, m_open, m_frame, m_closed, m_ended};
@@ -588,7 +575,7 @@ static const npf_media_io media_io = {m_kick, m_open, m_frame, m_closed, m_ended
 /* the session's media streams, made on first use */
 npf_media *call_media_of(npf_call *c)
 {
-    if (!c->media && !c->ended && c->tun && c->anl)
+    if (!c->media && !call_over(c) && c->tun && c->anl)
         c->media = npf_media_new(c->n->loop, c->anl, !c->caller, &media_io, c);
     return c->media;
 }
@@ -611,7 +598,7 @@ static const npf_udpf_io udp_io = {u_unit, m_kick, u_allowed};
 
 npf_udpf *call_udp_of(npf_call *c)
 {
-    if (!c->udp && !c->ended && c->tun && c->anl) {
+    if (!c->udp && !call_over(c) && c->tun && c->anl) {
         c->udp = npf_udpf_new(c->n->loop, c->anl, c->caller, call_policy(c), &udp_io, c);
         if (c->udp)
             npf_udpf_set_shared(c->udp, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
@@ -812,10 +799,8 @@ int call_start_transport(npf_call *c)
     else if (c->pm.primary)
         call_hello(c);
     anl_schedule(c);
-    if (c->punch_wait_keys) {
-        c->punch_wait_keys = 0;
-        call_start_punch_now(c);
-    }
+    if (c->punch_st == PN_WAIT_KEYS)
+        call_punch_go(c);
     return 0;
 }
 /* a path became usable: direct, the relay taken (call_relay_setup) or bound */
@@ -825,7 +810,7 @@ void call_path_up(npf_call *c)
         return;
     if (c->tun && !npf_tunnel_is_ready(c->tun))
         call_hello(c);
-    if (c->ended || !c->anl)
+    if (call_over(c) || !c->anl)
         return;
     anl_update(c->anl, (uint32_t)npf_mono_ms());
     anl_flush(c->anl);

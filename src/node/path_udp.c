@@ -103,7 +103,7 @@ void path_udp_tick(npf_call *c)
         relay_bind_send(c);
     } else if (r < 0) {
         npf_log("call %s: UDP relay unreachable%s", c->call_id_s,
-                c->caller && c->state == NPF_CALL_CALLING ? " before the accept: binding it again then" : "");
+                c->caller && c->st == CS_CALLING ? " before the accept: binding it again then" : "");
         pm_dead(&c->pm, &c->pu.p);
         pm_check(c);
     }
@@ -253,15 +253,15 @@ void call_relay_early_feed(npf_call *c)
     c->nrearly = 0;
     while (e) {
         relay_early *next = e->next;
-        if (!c->ended && c->anl && call_anl_feed(c, e->d, e->len) == 0)
+        if (!call_over(c) && c->anl && call_anl_feed(c, e->d, e->len) == 0)
             fed++;
         free(e);
         e = next;
     }
-    if (fed && !c->ended)
+    if (fed && !call_over(c))
         npf_log("call %s: %d datagram%s from the peer came through the relay before the accept", c->call_id_s, fed,
                 fed == 1 ? "" : "s");
-    if (fed && !c->ended && call_has_relay(c) && c->pu.r.state != RB_BOUND)
+    if (fed && !call_over(c) && call_has_relay(c) && c->pu.r.state != RB_BOUND)
         relay_bound(c, " (the peer's data came through it)");
 }
 
@@ -276,7 +276,7 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
      * (the relay's keys are not the session's: a replay of an old one
      * with the relay's address would bring back a relay given up, on
      * the WS relay too) */
-    if (call_anl_feed(c, dg, len) < 0 || c->ended)
+    if (call_anl_feed(c, dg, len) < 0 || call_over(c))
         return;
     c->pu.p.last_rx = npf_mono_ms();
     if (!call_has_relay(c)) {     /* the peer sends on it: take it back, keep the binding fresh */
@@ -319,7 +319,7 @@ static int relay_data_try(npf_call *c, const uint8_t hint[RDATA_HINT], const uin
                           const struct sockaddr_storage *from)
 {
     int r;
-    if (c->ended || (r = relay_data_open(&c->pu.r, hint, buf, len, from)) < 0)
+    if (call_over(c) || (r = relay_data_open(&c->pu.r, hint, buf, len, from)) < 0)
         return 0;
     if (r > 0)
         relay_data_in(c, buf + RDATA_HDR, len - RDATA_HDR);

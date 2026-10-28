@@ -21,6 +21,7 @@ add_executable(npf_unit_tests
   test_peeraddr.c
   test_home.c
   test_call.c
+  test_call_state.c
   test_path.c
   test_path_health.c
   test_path_decide.c

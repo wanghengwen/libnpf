@@ -40,7 +40,7 @@ struct npf_call {
     uint64_t    caller_number;      /* callee: the caller's number when it is a node, else 0 */
     npf_node   *n;
     int         caller;
-    int         state;
+    int         st;                 /* CS_* (architecture.md 3.1) */
     int         auth;
     uint8_t     call_id[16];
     char        call_id_s[32];
@@ -63,13 +63,12 @@ struct npf_call {
     npf_tunnel *tun;
     /* the call's one timer, at the earliest of its parts' deadlines
      * (architecture.md 4: call_due, call_tick); the deadlines (monotonic
-     * ms, 0 none): the time limit, the punch's start, its linger's end */
+     * ms, 0 none): the time limit (before CS_UP), punching's (punch_st) */
     npf_timer  *t_due;
     int64_t     due_at;             /* when t_due fires */
     int         ticking;            /* in call_tick: what it sets is scheduled after it */
-    int64_t     limit_at, punch_at, linger_at;
+    int64_t     limit_at, punch_at;
     int         flush_pending;
-    int         punched;            /* the last punch round planned has ended (either way) */
 
     npf_pm      pm;                 /* the session's paths (path.h) */
     path_direct pd;
@@ -78,26 +77,20 @@ struct npf_call {
     uint64_t    auth_fail_seen;     /* AnLiu rx_auth_fail last reported (forged datagrams with our conv) */
     int64_t     auth_fail_at;       /* when */
     int         anl_srtt;           /* AnLiu's srtt at its last timer (ms, 0 none yet) */
-    npf_punch  *punch;
-    int         punch_of;           /* the round c->punch belongs to (a newer one may be planned meanwhile) */
+    int         punch_st;           /* PN_* (architecture.md 3.2) */
+    int         punch_round;        /* the last round planned (punch_start) */
+    npf_punch  *punch;              /* that round's, in PN_RUNNING and PN_LINGER */
     int         punch_socks;        /* S3 hard-side sockets of the running punch (node budget) */
+    uint16_t    punch_port;         /* S2B: the peer's punch_info port of the round, come before it started */
     int64_t     up_ms;              /* established at (monotonic ms), 0 = not yet */
-    int         peer_hello;         /* the peer's hello came (a caller is established before, call_hello) */
-    int         up_told;            /* callee: call_established sent to the platform */
     uint64_t    tx_bytes, rx_bytes; /* tunnel bytes (sublink frames) */
-    int         punch_round;
-    int         accepted;           /* the platform's accept arrived: limit_at counts from it */
     int         secure;             /* connect_mode secure on either side: relays only, no punching */
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
     int         nrearly;
     npf_punch_cfg *pcfg;            /* the rounds' plan and candidates: made at the first punch_start */
-    uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
-    int         info_round;
     struct sockaddr_storage tcand;  /* the peer's new srflx (its punch_info "cand"): in this round and the next */
     int         spray_refused_said; /* "not an address to spray" logged in this call */
-    int         punch_wait_keys;
 
-    int         ended;
     int         direct;             /* direct connection: no platform, fixed path */
     struct npf_policy *policy;      /* callee: target policy of this session's sublinks */
     int         dtries;             /* direct initiator: message 1 sent this many times */
@@ -120,7 +113,6 @@ struct npf_call {
         void *arg;
     } ctl[NPF_CALL_CTL_MAX];
     int         ctl_seq;
-    int         peer_closed;        /* the peer's close ended it (call_end peer) */
     npf_media  *media;              /* libnpf media streams (media.h), made on first use */
     npf_udpf   *udp;                /* the UDP forwards' flows (udpfwd.h), made on first use */
     npf_timer  *t_free;             /* its free on the next turn of the loop (ended) */
@@ -153,6 +145,22 @@ typedef struct call_hs {
     uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */
     size_t      dmsg1_len;
 } call_hs;
+
+/* The call's state (architecture.md 3.1), forward only. ANSWERED: a
+ * callee's answer sent, the platform's accept still to show (its first
+ * punch_start, or UP: its call_established, Q6); CONNECTING: accepted;
+ * HALF: established on a caller's own hello, the time limit waiting for the
+ * peer's; UP: both hellos; CLOSED: ended, freed on the next turn */
+enum { CS_NEW, CS_CALLING, CS_ANSWERED, CS_CONNECTING, CS_HALF, CS_UP, CS_CLOSED };
+static inline int call_over(const npf_call *c) { return c->st == CS_CLOSED; }
+static inline int call_accepted(const npf_call *c) { return c->st >= CS_CONNECTING; }
+static inline int call_up(const npf_call *c) { return c->st == CS_HALF || c->st == CS_UP; }
+
+/* Punching (architecture.md 3.2), one round at a time: NONE (none yet, one
+ * let go, or the WS relay's: rounds to come), SCHEDULED (to start at punch_at), WAIT_KEYS
+ * (the E2E keys to come), RUNNING, LINGER (over; its punch freed at
+ * punch_at: 10 s after a success, at once after a failure), IDLE (over) */
+enum { PN_NONE, PN_SCHEDULED, PN_WAIT_KEYS, PN_RUNNING, PN_LINGER, PN_IDLE };
 
 /* shared by call.c, call_punch.c, the paths */
 #define RELAY_KEEPALIVE_MS 25000     /* RELAY_BIND refresh while the relay is in use */
@@ -190,15 +198,18 @@ static inline void call_at(npf_call *c, int64_t at)
 }
 int64_t call_due(const npf_call *c, int64_t now);
 void call_tick(npf_call *c, int64_t now);
-void call_accept_seen(npf_call *c);
+void call_accept(npf_call *c);
 npf_call *call_find(npf_node *n, const npf_json *j, int d);
-void call_relay_leave(npf_call *c);
 /* the peer's addresses this node sends to (security.md H-1): a candidate;
  * the public IP the sprays aim at */
 int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);
 int call_peer_spray_ok(const npf_call *c, struct in_addr ip);
 int call_peer_ip4_usable(const npf_node *n, struct in_addr ip);
-void call_set_state(npf_call *c, int st, const char *why);
+void call_set_state(npf_call *c, int st, const char *why);      /* CS_*, forward only */
+/* the end; how: CALL_END_LOCAL (npf_call_end: call_end and close), _PEER (the
+ * same, the record naming the peer), _QUIET (no word: the platform told us) */
+enum { CALL_END_LOCAL, CALL_END_PEER, CALL_END_QUIET };
+void call_close(npf_call *c, const char *why, int how);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);
 void call_hs_free(npf_call *c);         /* the handshake's state wiped and freed (keys ready, or the call goes) */
@@ -274,12 +285,12 @@ void call_direct_tick(npf_call *c);     /* direct_at: message 1 again */
 
 /* call_punch.c: the punching rounds the platform sends, their sockets (nat-traversal.md 7) */
 void call_punch_report(npf_call *c, const char *why);
-int call_hard_punches(const npf_call *c);
-void call_punch_sockets_back(npf_node *n);
-void call_punch_end(npf_call *c);
+int call_hard_punches(const npf_node *n, const npf_call *c);
+void call_punch_to(npf_call *c, int st, int64_t at);    /* PN_*: the one transition, at its deadline */
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
-void call_start_punch_now(npf_call *c);
-void call_punch_tick(npf_call *c, int64_t now);     /* punch_at, linger_at */
+void call_punch_go(npf_call *c);        /* SCHEDULED at its start, WAIT_KEYS with the keys */
+void call_punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *arg);
+void call_punch_tick(npf_call *c);     /* punch_at */
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 int call_no_p2p(const npf_call *c);
 

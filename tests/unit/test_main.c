@@ -34,6 +34,7 @@ int test_relay_data(void);
 int test_peeraddr(void);
 int test_home(void);
 int test_call(void);
+int test_call_state(void);
 int test_path(void);
 int test_path_health(void);
 int test_path_decide(void);
@@ -247,6 +248,7 @@ int main(void)
     failures += test_peeraddr();
     failures += test_home();
     failures += test_call();
+    failures += test_call_state();
     failures += test_path();
     failures += test_path_health();
     failures += test_path_decide();
