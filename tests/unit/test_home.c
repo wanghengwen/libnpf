@@ -288,7 +288,7 @@ static void test_client(void)
         memset(&rc, 0, sizeof rc);
         nid[0] = (uint8_t)~bid[0];
         CHECK(!node_home_adopt(&node, nid, &rc), "another allocation adopted");
-        CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.bound && rc.kseq == b3.kseq && !node.home->t_bind
+        CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.state == RB_BOUND && rc.kseq == b3.kseq && !node.home->t_bind
               && memcmp(rc.cookie, ck, 8) == 0 && node.home->state == 6, "the spare adopted");
         CHECK(next_bind(fr, &keys, bid, 100, &b2) == 0, "the spare taken still binds");
         /* relay_spare: the next one, bound from scratch */
@@ -322,7 +322,7 @@ static void test_client(void)
         char m[] = "{\"v\":1,\"type\":\"reply\",\"status\":\"error\",\"error\":\"rate_limited\"}";
         CHECK(npf_json_parse(&j, m, strlen(m), tok, 16) == 0, "reply JSON");
         open_reply(&node, &j, 0, node.home);
-        CHECK(node.home->r.active && node.home->t_retry, "no timer after home_open refused while backing off");
+        CHECK(node.home->r.state && node.home->t_retry, "no timer after home_open refused while backing off");
     }
     node.cfg.offline = 1;
     node_home_stop(&node);

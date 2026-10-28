@@ -58,7 +58,7 @@ static void udp_send(npf_path *p, const uint8_t *dgram, size_t len)
 
 static const char *udp_name(const npf_path *p)
 {
-    return ((const path_udp *)(const void *)p)->r.bound ? "relay" : "relay (binding)";
+    return ((const path_udp *)(const void *)p)->r.state == RB_BOUND ? "relay" : "relay (binding)";
 }
 
 static void udp_suspect(npf_path *p, int64_t quiet);
@@ -67,72 +67,52 @@ static void udp_suspect(npf_path *p, int64_t quiet);
  * no periodic probe, no verdict by time */
 const npf_path_ops path_udp_ops = {udp_send, udp_name, udp_suspect, NULL, NULL};
 
-/* the allocation in use from now on, or no longer, its binding stopped
- * (the binder's active says the same: relay_addr_take reads it); UP when
- * bound, else NEW */
+/* the allocation in use from now on (UP when bound, else NEW), or no
+ * longer, its binding stopped (NONE) */
 void path_udp_on(npf_call *c)
 {
-    c->pu.r.active = 1;
     c->pu.p.since = npf_mono_ms();
-    c->pu.p.health = c->pu.r.bound ? PH_UP : PH_NEW;
+    c->pu.p.health = c->pu.r.state == RB_BOUND ? PH_UP : PH_NEW;
     pm_add(&c->pm, &c->pu.p);
 }
 
 void path_udp_off(npf_call *c)
 {
-    c->pu.r.active = c->pu.r.bound = 0;
-    c->pu.bind_at = 0;
+    c->pu.r.state = RB_NONE;
+    c->pu.r.at = 0;
     pm_del(&c->pm, &c->pu.p);
 }
 
-/* the next bind: binding, the run's next one (RELAY_BIND_MS); bound, the
- * binding refreshed (NAT mapping, server idle timer) while in use */
-static void bind_next(npf_call *c)
+/* a binding run from now (relay_bind_begin; probe: from the address in use) */
+static void bind_run(npf_call *c, int probe)
 {
-    c->pu.bind_at = npf_mono_ms() + (c->pu.r.bound ? RELAY_KEEPALIVE_MS : RELAY_BIND_MS);
-    call_at(c, c->pu.bind_at);
-}
-
-/* a binding run (relay_bind_begin; keep: from the address in use) from now */
-static void bind_run(npf_call *c, int keep)
-{
-    relay_bind_begin(&c->pu.r, keep);
+    relay_bind_begin(&c->pu.r, probe, npf_mono_ms());
     relay_bind_send(c);
-    bind_next(c);
+    call_at(c, c->pu.r.at);
 }
 
-static void udp_gave_up(npf_call *c);
-
+/* the binder's deadline: the run's next bind; bound, the binding refreshed
+ * (NAT mapping, server idle timer) while in use; every address tried: DEAD,
+ * the manager decides (pm_decide). Bound from the reply to the call, before
+ * the callee accepted: the platform takes no relay_switch yet, and the
+ * accept brings the same allocation, bound again from its first address */
 void path_udp_tick(npf_call *c)
 {
-    c->pu.bind_at = 0;
-    if (!call_has_relay(c))
-        return;
-    if (!c->pu.r.bound && relay_bind_step(&c->pu.r) < 0) {
-        udp_gave_up(c);         /* every address tried */
-        return;
+    int r = relay_bind_tick(&c->pu.r, npf_mono_ms(), RELAY_KEEPALIVE_MS);
+    if (r > 0) {
+        relay_bind_send(c);
+    } else if (r < 0) {
+        npf_log("call %s: UDP relay unreachable%s", c->call_id_s,
+                c->caller && c->state == NPF_CALL_CALLING ? " before the accept: binding it again then" : "");
+        pm_dead(&c->pm, &c->pu.p);
+        pm_check(c);
     }
-    relay_bind_send(c);
-    bind_next(c);
 }
 
-/* every address tried (bind_run): DEAD, the
- * manager decides (pm_decide). Bound from the reply to the call, before the
- * callee accepted: the platform takes no relay_switch yet, and the accept
- * brings the same allocation, bound again from its first address */
-static void udp_gave_up(npf_call *c)
-{
-    npf_log("call %s: UDP relay unreachable%s", c->call_id_s,
-            c->caller && c->state == NPF_CALL_CALLING ? " before the accept: binding it again then" : "");
-    pm_dead(&c->pm, &c->pu.p);
-    pm_check(c);
-}
-
-/* the UDP relay bound again from its first address (a BIND every 700 ms) */
+/* the UDP relay (not bound) bound again from its first address */
 void call_relay_rebind(npf_call *c)
 {
-    if (call_has_relay(c) && !c->pu.r.bound)
-        pm_health(&c->pm, &c->pu.p, PH_NEW);
+    pm_health(&c->pm, &c->pu.p, PH_NEW);
     bind_run(c, 0);
 }
 
@@ -154,53 +134,7 @@ static void udp_suspect(npf_path *p, int64_t quiet)
     npf_call *c = CALL_OF(p, pu.p);
     npf_logw("call %s: the UDP relay silent for %lld ms while the session relies on it: probing it, %s first",
              c->call_id_s, (long long)quiet, c->pu.r.naddr > 1 ? "its address in use" : "its address");
-    c->pu.r.bound = 0;
     bind_run(c, 1);
-}
-
-
-static void relay_bound(npf_call *c, const char *how);
-
-/* the platform's UDP relay allocation (call_relay_setup); one that is no use
- * leaves the relay in use as it is (it used to take its id and key at once,
- * then bind the old addresses with them) */
-void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
-                    int naddr)
-{
-    if (call_has_relay(c) && memcmp(id, c->pu.r.relay_id, 8) == 0
-        && npf_ct_eq(key, c->pu.r.alloc_key, 32) == 0) {
-        /* the one in use, sent again (the reply to the call, then
-         * call_accepted; both sides asked for it): bound or being bound, it
-         * stays so; one that gave up binding before the accept binds again */
-        if (!c->pu.r.bound && !c->pu.bind_at)
-            call_relay_rebind(c);
-        return;
-    }
-    c->pu.bind_at = 0;
-    c->pu.p.last_rx = npf_mono_ms();         /* a new allocation: silent from now on counts */
-    c->pu.p.busy_since = 0;
-    if (node_home_adopt(c->n, id, &c->pu.r)) {
-        /* the node's spare (home-binding.md v0.5, 7), bound already from
-         * the main socket or being bound: nothing to bind when bound; the
-         * platform sends another */
-        path_udp_on(c);
-        if (c->pu.r.bound) {
-            relay_bound(c, " (the node's spare)");
-        } else {
-            npf_log("call %s: UDP relay: the node's spare, binding it", c->call_id_s);
-            call_relay_rebind(c);
-            call_path_up(c);
-        }
-        return;
-    }
-    relay_bind_take(&c->pu.r, c->n, id, key, addr, naddr);
-    path_udp_on(c);
-    c->pu.r.bound = 0;
-    call_relay_rebind(c);
-    /* our data may go at once, with the first bind: the relay forwards what
-     * our key seals from an address it has not bound yet; only what comes to
-     * us waits for the cookie's round trip (the callee's hello, call_path_up) */
-    call_path_up(c);
 }
 
 /* the relay works (a BIND_ACK, or the peer's data through it): bound, the
@@ -208,10 +142,46 @@ void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], con
 static void relay_bound(npf_call *c, const char *how)
 {
     node_home_udp_ok(c->n);                 /* a spare stuck backing off: UDP works */
-    c->pu.r.bound = 1;
-    bind_next(c);
+    relay_bind_up(&c->pu.r, npf_mono_ms(), RELAY_KEEPALIVE_MS);
+    call_at(c, c->pu.r.at);
     pm_rt(&c->pm, &c->pu.p, npf_mono_ms());
     npf_log("call %s: UDP relay bound%s", c->call_id_s, how);
+    call_path_up(c);
+}
+
+/* the platform's UDP relay allocation (call_relay_setup); one that is no use
+ * leaves the relay in use as it is (it used to take its id and key at once,
+ * then bind the old addresses with them) */
+void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
+                    int naddr)
+{
+    int spare;
+    if (call_has_relay(c) && memcmp(id, c->pu.r.relay_id, 8) == 0
+        && npf_ct_eq(key, c->pu.r.alloc_key, 32) == 0) {
+        /* the one in use, sent again (the reply to the call, then
+         * call_accepted; both sides asked for it): bound or being bound, it
+         * stays so; one that gave up binding before the accept binds again */
+        if (c->pu.r.state == RB_GAVE_UP)
+            call_relay_rebind(c);
+        return;
+    }
+    c->pu.p.last_rx = npf_mono_ms();         /* a new allocation: silent from now on counts */
+    c->pu.p.busy_since = 0;
+    /* the node's spare (home-binding.md v0.5, 7), bound already from the
+     * main socket or being bound; the platform sends another */
+    if (!(spare = node_home_adopt(c->n, id, &c->pu.r)))
+        relay_bind_take(&c->pu.r, c->n, id, key, addr, naddr);
+    path_udp_on(c);
+    if (c->pu.r.state == RB_BOUND) {
+        relay_bound(c, " (the node's spare)");
+        return;
+    }
+    if (spare)
+        npf_log("call %s: UDP relay: the node's spare, binding it", c->call_id_s);
+    bind_run(c, 0);
+    /* our data may go at once, with the first bind: the relay forwards what
+     * our key seals from an address it has not bound yet; only what comes to
+     * us waits for the cookie's round trip (the callee's hello, call_path_up) */
     call_path_up(c);
 }
 
@@ -222,17 +192,18 @@ static void relay_bound(npf_call *c, const char *how)
 static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
 {
     relay_ack a;
-    if (!relay_bind_ack(&c->pu.r, c->n, plain, pl, &a))
+    int k = relay_bind_ack(&c->pu.r, c->n, plain, pl, &a);
+    if (!k)
         return;
     c->pu.p.last_rx = npf_mono_ms();
     if (a.state == RELAY_ACK_BOUND) {
         /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that confirms
          * the binding (the challenges still come: without one nothing binds) */
-        if (!c->pu.r.bound && !c->n->th->drop_bind_ack && call_has_relay(c))
+        if (c->pu.r.state != RB_BOUND && !c->n->th->drop_bind_ack && call_has_relay(c))
             relay_bound(c, "");     /* (a late one after the relay went, the standby's or the move to WS: no) */
         return;
     }
-    if (call_has_relay(c) && relay_bind_echo_due(&c->pu.r))
+    if (call_has_relay(c) && k == 2)
         relay_bind_send(c);
 }
 
@@ -290,7 +261,7 @@ void call_relay_early_feed(npf_call *c)
     if (fed && !c->ended)
         npf_log("call %s: %d datagram%s from the peer came through the relay before the accept", c->call_id_s, fed,
                 fed == 1 ? "" : "s");
-    if (fed && !c->ended && call_has_relay(c) && !c->pu.r.bound)
+    if (fed && !c->ended && call_has_relay(c) && c->pu.r.state != RB_BOUND)
         relay_bound(c, " (the peer's data came through it)");
 }
 
@@ -310,11 +281,11 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
     c->pu.p.last_rx = npf_mono_ms();
     if (!call_has_relay(c)) {     /* the peer sends on it: take it back, keep the binding fresh */
         npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
-        c->pu.r.bound = 1;
+        relay_bind_up(&c->pu.r, npf_mono_ms(), RELAY_KEEPALIVE_MS);
         path_udp_on(c);
         relay_bind_send(c);
-        bind_next(c);
-    } else if (!c->pu.r.bound) {
+        call_at(c, c->pu.r.at);
+    } else if (c->pu.r.state != RB_BOUND) {
         /* the relay forwards the peer's data to us: it has our binding,
          * whether or not its BIND_ACK came. Measured (a Mac <-> a Linux
          * node): data through the relay, no BIND_ACK in 2.1 s,

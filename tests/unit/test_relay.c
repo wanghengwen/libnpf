@@ -5,9 +5,10 @@
  * client send nothing (it would burn the allocation's bind tokens) and
  * binds nothing. A fake relay on loopback: the
  * client's binds read from its socket, the answers fed to call_relay_input.
- * First the binder's order of addresses (relay_bind.h): binding from the
- * first address, the data along; probing from the address in use, the
- * data staying on it until another answers (architecture.md Q2). */
+ * First the binder's table (architecture.md 3.3) at a fake time: binding
+ * from the first address, the data along; probing from the address in
+ * use, the data staying on it until another answers (Q2); the keepalive;
+ * giving up. */
 #define _GNU_SOURCE
 #include <poll.h>
 #include <stdio.h>
@@ -87,64 +88,93 @@ static int ack(npf_call *c, const npf_siv_keys *keys, const struct sockaddr_stor
     return n > 0 ? call_relay_input(c, out, (size_t)n, relay) : -1;
 }
 
-/* the binder (relay_bind.h): the run from the first address, 4 binds to
- * each, the data along; the probe from the address in use, then the others
- * in order, the data staying until another answers */
-static void bind_order(void)
+/* a run's binds, each at its deadline, until it gives up: their addresses
+ * and the address in use at each; their number */
+static int run_binds(relay_c *r, int seq[16], int cur[16])
+{
+    int n = 0;
+    do {
+        seq[n] = r->bi;
+        cur[n] = r->cur;
+    } while (++n < 16 && relay_bind_tick(r, r->at, RELAY_KEEPALIVE_MS) == 1);
+    return n;
+}
+
+/* The binder's table (architecture.md 3.3) row by row, a fake clock, no
+ * socket (the challenge's echo and which BIND_ACKs count: below, against a
+ * relay on loopback) */
+static void bind_table(void)
 {
     relay_c r;
-    int seq[16], cur[16], n = 0, k;
+    int seq[16], cur[16], n, k;
+    int64_t t = 1000000, ka = RELAY_KEEPALIVE_MS;
     static const int run3[] = {0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2};
     static const int probe3[] = {1, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 2};
     memset(&r, 0, sizeof r);
     r.naddr = 3;
     r.cur = r.bi = 2;
-    relay_bind_begin(&r, 0);
-    do {
-        seq[n] = r.bi;
-        cur[n] = r.cur;
-    } while (++n < 16 && relay_bind_step(&r) == 0);
-    CHECK(n == 12, "a run of %d binds", n);
+    /* NONE, an allocation: BINDING(0, 0), a bind now and the next 700 ms on */
+    relay_bind_begin(&r, 0, t);
+    CHECK(r.state == RB_BINDING && r.bi == 0 && r.cur == 0 && r.at == t + RELAY_BIND_MS, "binding: %d at %d",
+          r.state, r.bi);
+    CHECK(relay_bind_tick(&r, t + RELAY_BIND_MS - 1, ka) == 0 && r.at == t + RELAY_BIND_MS, "a bind before its time");
+    /* BINDING at its deadline: k < 3 the same address, k = 3 the next, the
+     * data along; every address tried: GAVE_UP, no deadline */
+    n = run_binds(&r, seq, cur);
+    CHECK(n == 12 && r.state == RB_GAVE_UP && !r.at, "a run of %d binds, then %d", n, r.state);
     for (k = 0; k < 12 && k < n; k++)
         CHECK(seq[k] == run3[k] && cur[k] == run3[k], "run: bind %d to %d (data to %d)", k, seq[k], cur[k]);
-
-    r.cur = r.bi = 1;
-    relay_bind_begin(&r, 1);
-    n = 0;
-    do {
-        seq[n] = r.bi;
-        cur[n] = r.cur;
-    } while (++n < 16 && relay_bind_step(&r) == 0);
-    CHECK(n == 12, "a probe of %d binds", n);
+    CHECK(relay_bind_tick(&r, t + 3600000, ka) == 0, "given up: a bind");
+    /* GAVE_UP: a late answer of any address makes it the one in use; BOUND
+     * the keepalive 25 s on */
+    CHECK(relay_addr_take(&r, 1) == 1 && r.cur == 1 && r.bi == 1, "given up: a late answer");
+    CHECK(relay_bind_up(&r, t, ka) == 1 && r.state == RB_BOUND && r.at == t + ka, "bound: %d at %lld", r.state,
+          (long long)r.at);
+    CHECK(relay_bind_up(&r, t, ka) == 0, "bound twice");
+    CHECK(relay_addr_take(&r, 0) == 0 && relay_addr_take(&r, 1) == 1 && r.cur == 1, "bound: another address taken");
+    /* BOUND at the keepalive: a bind to the address in use, 25 s on */
+    CHECK(relay_bind_tick(&r, t + ka - 1, ka) == 0 && relay_bind_tick(&r, t + ka, ka) == 1 && r.state == RB_BOUND
+          && r.at == t + 2 * ka && r.bi == 1, "the keepalive");
+    /* the spare's BOUND: no keepalive (its relay pings) */
+    relay_bind_up(&r, t, 0);
+    CHECK(!r.at && relay_bind_tick(&r, t + 10 * ka, 0) == 0, "a spare's keepalive");
+    /* BOUND, in doubt: PROBING from the address in use, then the others in
+     * order, the data staying on it; none answers: GAVE_UP */
+    relay_bind_begin(&r, 1, t);
+    CHECK(r.state == RB_PROBING && r.bi == 1 && r.cur == 1 && r.at == t + RELAY_BIND_MS, "probing");
+    n = run_binds(&r, seq, cur);
+    CHECK(n == 12 && r.state == RB_GAVE_UP, "a probe of %d binds", n);
     for (k = 0; k < 12 && k < n; k++)
         CHECK(seq[k] == probe3[k] && cur[k] == 1, "probe: bind %d to %d (data to %d)", k, seq[k], cur[k]);
-
-    /* the first address answers a probe from the second: the one in use, the binds there */
-    r.active = 1;
-    r.bound = 0;
-    r.cur = r.bi = 1;
-    relay_bind_begin(&r, 1);
+    /* PROBING: the first address answers: the one in use, the binds there; BOUND */
+    r.cur = 1;
+    relay_bind_begin(&r, 1, t);
     for (k = 0; k < 5; k++)
-        relay_bind_step(&r);
-    CHECK(r.bi == 0 && r.cur == 1, "probing the first address (%d, %d)", r.bi, r.cur);
+        relay_bind_tick(&r, r.at, ka);
+    CHECK(r.state == RB_PROBING && r.bi == 0 && r.cur == 1, "probing the first address (%d, %d)", r.bi, r.cur);
     CHECK(relay_addr_take(&r, 0) == 1 && r.cur == 0 && r.bi == 0, "the answer of the first");
-    /* the one in use answers late, the binds at the next: back to it */
-    r.cur = r.bi = 1;
-    relay_bind_begin(&r, 1);
+    CHECK(relay_bind_up(&r, t, ka) == 1 && r.state == RB_BOUND, "a probe answered");
+    /* PROBING: the one in use answers late, the binds at the next: back to it */
+    r.cur = 1;
+    relay_bind_begin(&r, 1, t);
     for (k = 0; k < 9; k++)
-        relay_bind_step(&r);
+        relay_bind_tick(&r, r.at, ka);
     CHECK(r.bi == 2 && relay_addr_take(&r, 1) == 1 && r.cur == 1 && r.bi == 1, "a late answer of the one in use");
-    /* bound: only the address in use */
-    r.bound = 1;
-    CHECK(relay_addr_take(&r, 0) == 0 && relay_addr_take(&r, 1) == 1, "bound: another address taken");
-
+    /* released, or handed to a call: NONE, no deadline, only the address in use */
+    r.state = RB_NONE;
+    r.at = 0;
+    CHECK(r.state == RB_NONE && !r.at && relay_bind_tick(&r, t + 3600000, ka) == 0 && relay_addr_take(&r, 0) == 0
+          && relay_addr_take(&r, 1) == 1, "released");
+    /* an address in use beyond the addresses: binding from the first */
+    r.cur = 3;
+    relay_bind_begin(&r, 1, t);
+    CHECK(r.state == RB_BINDING && r.cur == 0, "probing no address");
     /* one address: its 4 binds */
     memset(&r, 0, sizeof r);
     r.naddr = 1;
-    relay_bind_begin(&r, 1);
-    for (n = 1; n < 16 && relay_bind_step(&r) == 0; n++)
-        CHECK(r.bi == 0 && r.cur == 0, "one address: bind to %d", r.bi);
-    CHECK(n == 4, "one address: %d binds", n);
+    relay_bind_begin(&r, 1, t);
+    n = run_binds(&r, seq, cur);
+    CHECK(n == 4 && seq[3] == 0 && cur[3] == 0, "one address: %d binds", n);
 }
 
 int test_relay(void)
@@ -166,7 +196,7 @@ int test_relay(void)
     npf_call *c;
     int fr, fc, len;
 
-    bind_order();
+    bind_table();
     memset(&cfg, 0, sizeof cfg);
     memset(&hooks, 0, sizeof hooks);
     cfg.offline = 1;
@@ -193,7 +223,7 @@ int test_relay(void)
                    rb, kb, npf_addr_str(&relay, ra, sizeof ra));
     CHECK(npf_json_parse(&j, js, (size_t)len, tok, 32) >= 0, "relay JSON");
     call_relay_setup(c, &j, 0);
-    CHECK(call_has_relay(c) && !c->pu.r.bound, "the relay taken");
+    CHECK(call_has_relay(c) && c->pu.r.state == RB_BINDING, "the relay taken");
 
     /* the first bind; a challenge to a txid it never sent, and ones with its
      * txid but another ts_ms or kseq: nothing sent */
@@ -212,10 +242,10 @@ int test_relay(void)
     /* "bound" for a txid it did not send, or for none: not bound */
     ack(c, &keys, &relay, foreign, b2.ts, b2.kseq, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
     ack(c, &keys, &relay, zero, b2.ts, 0, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
-    CHECK(!c->pu.r.bound, "bound by a foreign BIND_ACK");
+    CHECK(c->pu.r.state == RB_BINDING, "bound by a foreign BIND_ACK");
     /* the answer to the echo binds */
     ack(c, &keys, &relay, b2.txid, b2.ts, b2.kseq, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
-    CHECK(c->pu.r.bound, "not bound by its own BIND_ACK");
+    CHECK(c->pu.r.state == RB_BOUND, "not bound by its own BIND_ACK");
 
     /* a challenge to its RELAY_DATA (no txid: the NAT gave a new port):
      * answered when newer than the last one and of about now, once */

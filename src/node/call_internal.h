@@ -289,7 +289,7 @@ void path_udp_off(npf_call *c);
 void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
                     int naddr);
 void call_relay_rebind(npf_call *c);
-void path_udp_tick(npf_call *c);        /* pu.bind_at: a bind again, or the keepalive */
+void path_udp_tick(npf_call *c);        /* pu.r.at: a bind again, or the keepalive */
 void call_relay_early_feed(npf_call *c);
 void call_relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len);
 void call_relay_early_free(npf_call *c);

@@ -89,7 +89,7 @@ void call_arm(npf_call *c, int64_t at)
 
 int64_t call_due(const npf_call *c, int64_t now)
 {
-    const int64_t at[] = {c->limit_at, c->punch_at, c->linger_at, c->direct_at, c->pm.check_at, c->pu.bind_at,
+    const int64_t at[] = {c->limit_at, c->punch_at, c->linger_at, c->direct_at, c->pm.check_at, c->pu.r.at,
                           c->pw.re_at};
     int64_t d = tr_due(c, now);
     size_t i;
@@ -111,7 +111,7 @@ void call_tick(npf_call *c, int64_t now)
 {
     if (c->anl)
         tr_tick(c, now);
-    if (!c->ended && due(c->pu.bind_at, now))
+    if (!c->ended && due(c->pu.r.at, now))
         path_udp_tick(c);
     if (!c->ended && due(c->pw.re_at, now))
         path_ws_tick(c);

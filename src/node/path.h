@@ -85,9 +85,8 @@ typedef struct path_direct {
  * BIND_ACK, the peer's data through it) */
 typedef struct path_udp {
     npf_path p;
-    relay_c  r;                     /* the binder (relay_bind.h): the allocation; r.bound: UP (NEW binding,
-                                     * SUSPECT probing, DEAD every address tried) */
-    int64_t  bind_at;               /* the next bind (binding: RELAY_BIND_MS; bound: the keepalive); 0 none */
+    relay_c  r;                     /* the binder (relay_bind.h): the allocation, its state and next bind;
+                                     * BOUND: UP (NEW binding, SUSPECT probing, DEAD given up) */
 } path_udp;
 
 /* the WS relay (path_ws.c): a connection to the relay of the allocation;

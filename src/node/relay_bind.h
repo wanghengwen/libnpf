@@ -52,9 +52,17 @@ int  rdata_hint(const uint8_t *w, size_t len, uint8_t hint[RDATA_HINT]);
 int  rdata_open(const rdata_keys *k, int dir, const uint8_t hint[RDATA_HINT], const uint8_t *w, size_t len,
                 uint32_t *seq);
 
+/* The binding (architecture.md 3.3): NONE; BINDING from the first address,
+ * the data going along; PROBING from the address in use, then the others in
+ * order, the data staying on it until another answers (a relay gone
+ * silent, Q2); BOUND, the relay sends to us (a BIND_ACK "bound", or the
+ * peer's data through it); GAVE_UP, every address tried. Its owner sends
+ * the binds (relay_bind_pack) and keeps the one deadline, at */
+enum { RB_NONE, RB_BINDING, RB_PROBING, RB_BOUND, RB_GAVE_UP };
+
 typedef struct relay_c {
-    int      active;
-    int      bound;             /* the relay sends to us: a BIND_ACK "bound", or the peer's data through it */
+    int      state;             /* RB_* */
+    int64_t  at;                /* the next bind (mono ms): BINDING, PROBING the run's next; BOUND the keepalive; 0 none */
     uint8_t  relay_id[8];
     uint8_t  alloc_key[32];
     npf_siv_keys keys;          /* the control packets */
@@ -64,12 +72,11 @@ typedef struct relay_c {
     int      cur;               /* the address in use: the data goes there */
     int      bi;                /* the address the binds go to (cur, but while a probe tries the others) */
     int      nth, first;        /* the run: its nth address (0..naddr-1), and the one it began with */
+    int      tries;             /* binds to bi in this run after the first */
     uint32_t seq;
     uint8_t  cookie[8];         /* the relay's cookie for our address (RELAY_BIND_ACK), echoed in RELAY_BIND */
     uint64_t kseq;              /* the last bind's */
     int64_t  echo_ms;           /* when a challenge was last answered at once (mono ms) */
-    int      tries;             /* binds to bi in this run after the first */
-    int      keep;              /* this run keeps the data on cur (relay_bind_begin) */
     struct {                    /* the last binds: a BIND_ACK counts once, for one of them */
         uint8_t  txid[NPF_TXID_SIZE];
         uint32_t ts;
@@ -105,22 +112,24 @@ int  relay_ping_parse(const uint8_t *body, size_t len, relay_ping *p);
 int  relay_obj_parse(const npf_json *j, int r, char mode[8], uint8_t id[8], uint8_t key[32],
                      struct sockaddr_storage addr[4]);
 
-/* an allocation to bind from its first address: no cookie, no binds
- * answered; addr NULL: the addresses and keys kept (a WS relay's id and key) */
+/* an allocation (NONE -> BINDING from its first address, relay_bind_begin):
+ * no cookie, no binds answered */
 void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t key[32],
                      const struct sockaddr_storage *addr, int naddr);
-/* a RELAY_BIND to the address in use, in wire (256 bytes): its length, or -1.
+/* a RELAY_BIND in wire (256 bytes): its length, or -1.
  * flags RELAY_F_PONG: the answer to ping_id, shorter than a bind (72..95) */
 int  relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire);
-/* A binding run: a bind now (relay_bind_begin) and at each RELAY_BIND_MS
- * (relay_bind_step: 0 a bind to send, to bi; -1 every address tried), 3
- * to an address, then the next; its owner keeps the time. From the first
- * address, the data going along; keep: from the address in use, then the
- * others in order (the binding of a relay gone silent, architecture.md
- * Q2), the data staying on the address in use until another one answers
- * (relay_addr_take) */
-void relay_bind_begin(relay_c *r, int keep);
-int  relay_bind_step(relay_c *r);
+/* The transitions (architecture.md 3.3). A run from now: BINDING, or
+ * PROBING (probe, an address in use), a bind to send now and one each
+ * RELAY_BIND_MS, 3 more to an address, then the next. The deadline at now:
+ * 1 a bind to send (the run's next; BOUND, the keepalive every ka ms), -1
+ * every address tried (GAVE_UP), 0 nothing due. BOUND (a BIND_ACK "bound",
+ * the peer's data through it), the keepalive every ka ms (0 none: the
+ * spare's relay pings): 1 when it was not. Released, or handed to a call:
+ * NONE */
+void relay_bind_begin(relay_c *r, int probe, int64_t now);
+int  relay_bind_tick(relay_c *r, int64_t now, int ka);
+int  relay_bind_up(relay_c *r, int64_t now, int ka);
 /* where the binds go */
 #define RELAY_BIND_DST(r) (&(r)->addr[(r)->bi])
 int  call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
@@ -132,8 +141,9 @@ int  relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct so
 /* from: which of the relay's addresses (-1 none) */
 int  relay_addr_index(const relay_c *r, const struct sockaddr_storage *from);
 /* an authenticated datagram from the relay's address i: 1 to take, 0 from
- * an address given up on (consumed); while binding, the address that
- * answers is the one in use (a late answer of one tried earlier too) */
+ * an address given up on (consumed); not bound (binding, probing, given
+ * up), the address that answers is the one in use (a late answer of one
+ * tried earlier too) */
 int  relay_addr_take(relay_c *r, int i);
 /* a RELAY_DATA from the relay to r (hint: its unmasked hint): 1 to take
  * (the datagram at RDATA_HDR), 0 consumed, -1 not ours */
@@ -143,9 +153,8 @@ int  relay_data_open(relay_c *r, const uint8_t hint[RDATA_HINT], const uint8_t *
  * its length; 0 too long or too short (RDATA_ATAG at least) */
 size_t relay_data_pack(relay_c *r, const uint8_t *dgram, size_t len, uint8_t *wire);
 /* a RELAY_BIND_ACK: 1 when it answers one of our last binds (or is a new
- * challenge to our RELAY_DATA), its cookie taken; 0 not ours */
+ * challenge to our RELAY_DATA), its cookie taken, 2 a challenge to answer
+ * at once (200 ms apart at most); 0 not ours */
 int  relay_bind_ack(relay_c *r, npf_node *n, const uint8_t *plain, size_t pl, relay_ack *a);
-/* a challenge answered at once: 200 ms apart at most */
-int  relay_bind_echo_due(relay_c *r);
 
 #endif

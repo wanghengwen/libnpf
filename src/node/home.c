@@ -33,7 +33,7 @@ struct npf_home {
     npf_node     *n;
     int           state;
     int           server;                   /* the server it is on */
-    relay_c       r;                        /* the spare and its binding (relay_bind.c); r.active: one */
+    relay_c       r;                        /* the spare and its binding (relay_bind.c); r.state: one */
     struct sockaddr_storage R;              /* where the relay sees us */
     int64_t       last_rx;                  /* npf_mono_ms: the last datagram from the relay */
     int64_t       ping_mark;                /* the last ping answered (or the binding): "elsewhere since" */
@@ -99,7 +99,7 @@ static void bind_send(struct npf_home *h, int flags, uint32_t ping_id)
     uint8_t wire[256];
     char a[64];
     int len;
-    if (n->udp_fd < 0 || !h->r.active
+    if (n->udp_fd < 0 || !h->r.state
         || (n->th->block_relay && call_relay_blocked(n, npf_addr_str(RELAY_BIND_DST(&h->r), a, sizeof a))))
         return;
     watch_sync(h);
@@ -158,7 +158,7 @@ static void retry_timer(npf_loop *loop, void *arg)
     struct npf_home *h = arg;
     (void)loop;
     h->t_retry = NULL;
-    if (h->state == H_BACKOFF && h->r.active)
+    if (h->state == H_BACKOFF && h->r.state)
         bind_start(h, 0);
     else if ((h->state == H_OFF || h->state == H_TAKEN) && h->n->online)
         home_open_send(h);
@@ -189,7 +189,7 @@ static void bind_timer(npf_loop *loop, void *arg)
 {
     struct npf_home *h = arg;
     h->t_bind = NULL;
-    if (relay_bind_step(&h->r) < 0) {
+    if (relay_bind_tick(&h->r, h->r.at, 0) < 0) {
         gave_up(h);
         return;
     }
@@ -204,8 +204,7 @@ static void bind_start(struct npf_home *h, int from_lost)
     npf_timer_stop(h->n->loop, &h->t_dog);
     npf_timer_stop(h->n->loop, &h->t_bind);
     h->state = from_lost ? H_LOST : H_BINDING;
-    h->r.bound = 0;
-    relay_bind_begin(&h->r, from_lost);
+    relay_bind_begin(&h->r, from_lost, npf_mono_ms());
     bind_send(h, 0, 0);
     h->t_bind = npf_timer_add(h->n->loop, RELAY_BIND_MS, bind_timer, h);
 }
@@ -218,7 +217,6 @@ static void home_take(struct npf_home *h, const uint8_t id[8], const uint8_t key
 {
     npf_timer_stop(h->n->loop, &h->t_retry);
     relay_bind_take(&h->r, h->n, id, key, addr, naddr);
-    h->r.active = 1;
     h->server = h->n->server_id;
     h->backoff = 0;
     h->srv_seen = 0;
@@ -260,8 +258,8 @@ static void open_reply(npf_node *n, const npf_json *j, int ok, void *arg)
         return;                             /* the connection went: the next login asks again */
     if (!ok) {
         npf_json_get_str(j, 0, "error", err, sizeof err);
-        npf_log("home: home_open refused (%s)%s", err, h->r.active ? ": the spare kept" : "");
-        if (!h->r.active) {
+        npf_log("home: home_open refused (%s)%s", err, h->r.state ? ": the spare kept" : "");
+        if (!h->r.state) {
             h->state = H_OFF;
             npf_timer_stop(n->loop, &h->t_retry);
             h->t_retry = npf_timer_add(n->loop, strcmp(err, "rate_limited") == 0 ? 60000 : 300000, retry_timer, h);
@@ -271,7 +269,7 @@ static void open_reply(npf_node *n, const npf_json *j, int ok, void *arg)
     d = npf_json_get(j, 0, "data");
     npf_json_bool(j, npf_json_get(j, d, "resumed"), &resumed);
     if (resumed) {
-        if (h->r.active && npf_json_get_b64(j, d, "relay_id", id, 8) == 8 && memcmp(id, h->r.relay_id, 8) == 0) {
+        if (h->r.state && npf_json_get_b64(j, d, "relay_id", id, 8) == 8 && memcmp(id, h->r.relay_id, 8) == 0) {
             npf_log("home: spare resumed (server %d)", n->server_id);
             h->server = n->server_id;
             if (h->state == H_BACKOFF && !h->lost) {   /* (after a give-up: its backoff's timer binds) */
@@ -291,9 +289,9 @@ static void home_open_send(struct npf_home *h)
     char data[64] = "{}";
     if (h->opening || !n->online)
         return;
-    if (h->r.active && h->server == n->server_id)
+    if (h->r.state && h->server == n->server_id)
         id_json(h, "resume", data, sizeof data);
-    else if (!h->r.active)
+    else if (!h->r.state)
         h->state = H_OPENING;
     if (npf_node_request(n, "home_open", data, open_reply, h) == 0)
         h->opening = 1;
@@ -317,7 +315,8 @@ static void spare_drop(struct npf_home *h, int state)
     npf_timer_stop(l, &h->t_dog);
     npf_timer_stop(l, &h->t_bind);
     npf_timer_stop(l, &h->t_retry);
-    h->r.active = h->r.bound = 0;
+    h->r.state = RB_NONE;
+    h->r.at = 0;
     h->state = state;
 }
 
@@ -331,7 +330,7 @@ void node_home_login(npf_node *n)
     }
     if (!(h = home_new(n)))
         return;
-    if (h->r.active && h->server != n->server_id) {
+    if (h->r.state && h->server != n->server_id) {
         /* another server now: its spare is no use here, a new one; the old
          * one idles out there */
         npf_log("home: on server %d now: a new spare there (the one on server %d left)", n->server_id, h->server);
@@ -351,7 +350,7 @@ void node_home_login(npf_node *n)
 void node_home_udp_ok(npf_node *n)
 {
     struct npf_home *h = n->home;
-    if (!h || !h->r.active || h->state != H_BACKOFF || !n->online || h->opening)
+    if (!h || !h->r.state || h->state != H_BACKOFF || !n->online || h->opening)
         return;
     npf_log("home: UDP works again: binding the spare at once, asking whether it is still there");
     npf_timer_stop(n->loop, &h->t_retry);
@@ -369,7 +368,7 @@ void node_home_sig_lost(npf_node *n)
 void node_home_net_change(npf_node *n)
 {
     struct npf_home *h = n->home;
-    if (!h || !h->r.active)
+    if (!h || !h->r.state)
         return;
     h->newnet = 1;                          /* another network: the relay learns again */
     if (h->state == H_BOUND) {
@@ -384,7 +383,7 @@ void node_home_net_change(npf_node *n)
 void node_home_close(npf_node *n)
 {
     struct npf_home *h = n->home;
-    if (!h || !h->r.active)
+    if (!h || !h->r.state)
         return;
     if (n->online) {                        /* best effort: else it idles out (330 s at most) */
         char data[48];
@@ -410,10 +409,9 @@ void node_home_stop(npf_node *n)
 int node_home_adopt(npf_node *n, const uint8_t id[8], relay_c *dst)
 {
     struct npf_home *h = n->home;
-    if (!h || !h->r.active || memcmp(id, h->r.relay_id, 8) != 0)
+    if (!h || !h->r.state || memcmp(id, h->r.relay_id, 8) != 0)
         return 0;
-    *dst = h->r;                            /* its binding: the cookie, kseq, the address in use */
-    dst->bound = h->state == H_BOUND;
+    *dst = h->r;                            /* its binding: the cookie, kseq, the address in use, bound or not */
     h->taken++;
     npf_logd("home: the spare taken by a call: the next one from the platform");
     spare_drop(h, H_TAKEN);
@@ -464,14 +462,14 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
     relay_ack a;
     int64_t now = npf_mono_ms();
     char x[64], y[64];
-    if (!relay_bind_ack(&h->r, n, plain, pl, &a) || a.rtt < 0)
+    int k = relay_bind_ack(&h->r, n, plain, pl, &a);
+    if (!k || a.rtt < 0)
         return;                             /* not an answer to one of ours (a replay, a stale one) */
     h->rtt = a.rtt;
     h->last_rx = now;
     r_seen(h, &a.addr);
     if (a.state != RELAY_ACK_BOUND) {
-        /* a challenge: this address is not the spare's (yet); its cookie at once */
-        if (relay_bind_echo_due(&h->r))
+        if (k == 2)                         /* a challenge: this address is not the spare's (yet) */
             bind_send(h, 0, 0);
         return;
     }
@@ -484,7 +482,7 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
         int first = !h->bound_ms;
         npf_timer_stop(n->loop, &h->t_bind);
         h->state = H_BOUND;
-        h->r.bound = 1;
+        relay_bind_up(&h->r, now, 0);
         h->bound_ms = now;
         h->ping_mark = now;
         h->backoff = 0;
@@ -546,7 +544,7 @@ int node_home_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const s
     struct npf_home *h = n->home;
     uint8_t plain[2048];
     int pl;
-    if (!h || !h->r.active || fd != n->udp_fd || from->ss_family != AF_INET || len < 12 + 20)
+    if (!h || !h->r.state || fd != n->udp_fd || from->ss_family != AF_INET || len < 12 + 20)
         return 0;
     if ((pl = relay_bind_open(&h->r, buf, len, from, plain)) <= 0)
         return pl == 0;
@@ -568,12 +566,12 @@ size_t npf_node_home_status(npf_node *n, char *buf, size_t cap)
     buf[0] = 0;
     if (!h)
         return 0;
-    if (h->r.active)
+    if (h->r.state)
         npf_addr_str(CUR(h), a, sizeof a);
     npf_jw_init(&w, buf, cap);
     npf_jw_obj(&w);
     npf_jw_kstr(&w, "state", k_state[h->state]);
-    if (h->r.active) {
+    if (h->r.state) {
         npf_jw_kint(&w, "server", h->server);
         npf_jw_kstr(&w, "relay", a);
     }

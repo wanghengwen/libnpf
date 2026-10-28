@@ -292,7 +292,7 @@ static void deadline_invariant(npf_node *n, int caller)
     CHECK(!c->limit_at && armed(c), "established: no time limit, AnLiu's deadline");
     npf_addr_parse("127.0.0.1:9", &ra);
     path_udp_setup(c, rid, key, &ra, 1);
-    CHECK(c->pu.bind_at && armed(c), "a UDP relay binding");
+    CHECK(c->pu.r.at && armed(c), "a UDP relay binding");
     run_until(n->loop, npf_mono_ms() + 5000, &c->pu.r.tries, 2);
     CHECK(c->pu.r.tries == 2 && armed(c), "binding: %d binds again", c->pu.r.tries);
     path_udp_off(c);

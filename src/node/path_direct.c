@@ -163,8 +163,8 @@ static void direct_lost(npf_path *p)
 {
     npf_call *c = CALL_OF(p, pd.p);
     npf_logw("call %s: direct path lost%s", c->call_id_s,
-             call_has_relay(c) && c->pu.r.bound ? ", staying on the relay"
-             : call_has_relay(c) && c->pu.bind_at ? ", the UDP relay still binding" : "");
+             call_has_relay(c) && c->pu.r.state == RB_BOUND ? ", staying on the relay"
+             : call_has_relay(c) && c->pu.r.at ? ", the UDP relay still binding" : "");
 }
 
 /* the direct path given up (lost, or the session moves to the WS relay) */
