@@ -364,6 +364,20 @@ struct npf_path {
 
 **取代**：`state`、`accepted`、`t_timeout`（变成"期限"）、`peer_hello`、`up_told`、`ended`、`peer_closed`、`t_free`。"已接受"成为状态里记下的事实，不再与定时器绑在一起（10-27 (1) 那类缺陷从此不可能）。
 
+**第 3 步的实现**（2026-10-29，`call.c`、`call_internal.h`）：`c->st` 是 `enum {CS_NEW, CS_CALLING, CS_ANSWERED, CS_CONNECTING, CS_HALF, CS_UP, CS_CLOSED}`，只向前走（`call_set_state` 不接受比现在小的状态），`npf_call_state` 按一张表给出 `NPF_CALL_*`（钩子只在它变了时听到），`npf.h`、module.h 的状态值与行为不变。与上表的对应：
+
+| 实现 | 上表 | 说明 |
+|---|---|---|
+| `CS_NEW` | `ANSWERING` | 被叫在 `call_handle_incoming` 里、应答发出之前（直连的监听方也从这里开始） |
+| `CS_CALLING` | `CALLING` | 主叫 |
+| `CS_ANSWERED` | 被叫的 `CONNECTING`，还没有接受 | 应答已发出；平台的接受还没显出来，`punch_update` 不发 |
+| `CS_CONNECTING` | `CONNECTING`，已接受 | 主叫的 `call_accepted`、被叫的第一个 `punch_start`（`call_accept`：期限从现在重新计 25 s）；直连两侧握手之后 |
+| `CS_HALF` | 主叫的 `ESTABLISHED`，期限还在 | 自己的 `hello` 发出（非首次配对的主叫、直连的发起方） |
+| `CS_UP` | 双方 `hello` 之后的 `ESTABLISHED` | 进入时取消期限；被叫（非直连）发 `call_established`，从此也算接受（Q6） |
+| `CS_CLOSED` | `CLOSING` 与 `CLOSED` | `call_close` 置位，下一轮循环释放（`t_free`，第 4 节第 5 条的"下一轮回调"） |
+
+"已接受" = `st >= CS_CONNECTING`（`call_accepted`），"已建立" = `CS_HALF` 或 `CS_UP`（`call_up`），"已结束" = `CS_CLOSED`（`call_over`），都由状态算出，没有另存的标志。结束只有一个函数 `call_close(c, why, how)`：`CALL_END_LOCAL`（`npf_call_end`：`call_end` 与隧道里的 `close`）、`CALL_END_PEER`（同上，记录写对方结束：对方的 `close`，原来的 `peer_closed`）、`CALL_END_QUIET`（不发：平台告诉我们的、被拒、信令断开），取代原来的 `npf_call_end`、`call_close_quiet`、`call_ended` 三处；结束时打洞立即结束（下表"呼叫结束"一行，原来等下一轮的释放）。去掉的成员：`state`（改为 `st`）、`accepted`、`peer_hello`、`up_told`、`ended`、`peer_closed`（`t_timeout` 在 1d 已变成期限 `limit_at`；`limit_at` 不再兼作"还没接受"的标志：接受只在 `CS_CALLING` 与 `CS_ANSWERED` 时重新计期限）。
+
 ### 3.2 打洞（节点一侧，每个呼叫）
 
 | 状态 | 事件 | 下一状态 | 动作 / 截止时间 |
@@ -382,6 +396,16 @@ struct npf_path {
 | 任何 | 新的 `punch_start` | `SCHEDULED` | 上一轮的打洞结束（今天 `call_start_punch_now`） |
 
 **取代**：`punch`、`punch_of`、`punch_round`、`punch_wait_keys`、`punched`、`info_port`、`info_round`、`t_punch`、`t_linger`。
+
+**第 3 步的实现**（2026-10-29，`call_punch.c`）：`c->punch_st` 是 `enum {PN_NONE, PN_SCHEDULED, PN_WAIT_KEYS, PN_RUNNING, PN_LINGER, PN_IDLE}`，唯一的转移函数 `call_punch_to(c, st, at)` 同时设截止时间（`SCHEDULED`：开始时刻；`LINGER`：释放打洞对象的时刻；其余为 0）并保证打洞对象只在 `RUNNING` 与 `LINGER` 存在（其余状态进入时结束它、交还难侧套接字）。一个呼叫同一时间只有一轮：`c->punch` 一定属于 `punch_round`，`punch_of` 去掉。与上表的不同：
+
+- 上表的 `IDLE` 分成两个：`PN_NONE`（还没有一轮、这一轮被让出、改走了 WS：平台还会发，回到 UDP 后重新安排，路径管理器的 `PM_IN_PUNCH` 仍成立）与 `PN_IDLE`（最后一轮已结束：失败、`no_strategy`、呼叫结束）；`PM_IN_PUNCH` = `punch_st < PN_LINGER`，取代 `punched`（原来 `punched` 改走 WS 时不变）。
+- 失败也进 `LINGER`，截止时间是现在（打洞对象不能在自己的回调里释放；原来的 `linger_at = now`），下一次 tick 进 `IDLE`。
+- 新的 `punch_start` 立即结束上一轮的打洞（原来等新一轮开始时，最多晚"两侧单向时延的较大值 + 100 ms"，有防火墙提前量时再加 300 ms）：于是 `punch_info{port}` 只可能交给它那一轮（10-27 (4) 从此不可能）。上一轮的端口丢掉；本轮开始之前到的端口记在 `punch_port`（取代 `info_port`、`info_round`），开始时交给打洞；比本轮新的轮次的端口也丢掉（原来留着：对方在测出端口之后才发，平台同时向双方发 `punch_start`，实际不会先到）。旧一轮在新一轮已经排上之后结束，也不再把"打洞已结束"记到新一轮上（原来 `punched` 置位，路径管理器不再等新一轮）。
+- `punch_info{stop}` 在 `WAIT_KEYS` 时也回 `NONE`（原来只看 `SCHEDULED`：密钥来了照样开始、向不再打的对方喷包）。
+- 呼叫结束时打洞立即结束（`call_close`），打洞的回调不再需要检查呼叫是否已结束。
+
+去掉的成员：`punch_of`、`punched`、`punch_wait_keys`、`info_port`、`info_round`、`linger_at`（1d 里 `t_punch`、`t_linger` 已变成 `punch_at`、`linger_at`，现在只剩 `punch_at`）；加 `punch_st`、`punch_port`。难侧套接字的交还合成一个 `socks_back`（原来打洞结束的回调与 `call_punch_end` 各写一遍，`call_punch_sockets_back` 去掉），`call.c:call_relay_leave` 去掉（改走 WS 时 `call_punch_to(c, PN_NONE, 0)`）。
 
 ### 3.3 UDP 中转绑定（呼叫的与备用分配的共用）
 
@@ -499,7 +523,7 @@ struct npf_path {
 | D10 | 备用分配 `BACKOFF` 在状态 JSON 里显示为 `binding` | `home.c` `k_state` | 显示上的选择 |
 | D11 | `open_reply` 里"`resumed` 且 `H_BACKOFF && !lost` 就立即重绑"的分支走不到：进入 `H_BACKOFF` 只有 `gave_up` 一处，它同时置 `lost = 1`，而 `lost` 只在绑上（`H_BOUND`）时清零。隐含状态造成的死代码；按表删掉，行为不变 | `home.c:open_reply`、`gave_up`、`ack_in` | 死代码 |
 
-1b 改掉了 D2、D3、D6、D9；1c（2026-10-29）改掉了 D1（请求的重发，`call_need`）、D4（等打洞到时也先等正在进行的重绑：决定只在 UDP 中转 `DEAD` 时做，绑定中的 `NEW` 什么都不决定）、D5（Q4，每 5 分钟试回 UDP）、D7（等待与重试按每次失去中转计）；第 2 步（2026-10-29）改掉了 D10（Q8，显示 `backoff`）与 D11（删掉，第 3.4 节）。
+1b 改掉了 D2、D3、D6、D9；1c（2026-10-29）改掉了 D1（请求的重发，`call_need`）、D4（等打洞到时也先等正在进行的重绑：决定只在 UDP 中转 `DEAD` 时做，绑定中的 `NEW` 什么都不决定）、D5（Q4，每 5 分钟试回 UDP）、D7（等待与重试按每次失去中转计）；第 2 步（2026-10-29）改掉了 D10（Q8，显示 `backoff`）与 D11（删掉，第 3.4 节）。第 3 步（2026-10-29）改掉了 D8（Q6：被叫发出 `call_established` 时也算接受，signaling.md 0.56）。
 
 ### 3.8 待用户决定的问题
 
@@ -788,7 +812,7 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 
 合计库净减约 800 行（±30 %），新增单元测试约 1 500 行。1a–1d 合起来就是"第 1 步：路径抽象及其截止时间与状态机"；四个小步各自可以合入、现场测试，任何一步都可以单独回退。
 
-**关于第 8 步**：`c->caller` 的大部分不是打洞调度带来的，而是协议与安全模型的角色：主叫是打洞的控制方（`NOMINATE`）、只有主叫发 `relay_release` 与 `relay_switch{unreachable}`、主叫打开数据流而被叫在接受回调里取它、被叫有目标策略与密钥份额、主叫的中转先于接受到达（`rearly`）、首次配对的 `hello` 次序、被叫发 `call_established`、被叫以第一个 `punch_start` 为接受、只有主叫让出难侧轮次（`busy`）。`call_transport.c` 的 20 处多是流与策略的所有权。平台接管打洞调度之后，与调度有关的不对称已经去掉（signaling.md "`punch_result` 与重试"）。所以这一步只是把这些角色差异集中成一张表，收益有限，放在最后。
+**关于第 8 步**：`c->caller` 的大部分不是打洞调度带来的，而是协议与安全模型的角色：主叫是打洞的控制方（`NOMINATE`）、只有主叫发 `relay_release` 与 `relay_switch{unreachable}`、主叫打开数据流而被叫在接受回调里取它、被叫有目标策略与密钥份额、主叫的中转先于接受到达（`rearly`）、首次配对的 `hello` 次序、被叫发 `call_established`、被叫以第一个 `punch_start` 或自己的 `call_established` 为接受（第 3 步，Q6）、只有主叫让出难侧轮次（`busy`）。`call_transport.c` 的 20 处多是流与策略的所有权。平台接管打洞调度之后，与调度有关的不对称已经去掉（signaling.md "`punch_result` 与重试"）。所以这一步只是把这些角色差异集中成一张表，收益有限，放在最后。
 
 ## 9. 不做的事与取舍
 
