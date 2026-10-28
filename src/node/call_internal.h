@@ -237,9 +237,9 @@ int call_start_transport(npf_call *c);
 /* the call of one of its paths (path.h): p is &c->member */
 #define CALL_OF(p, member) ((npf_call *)(void *)((char *)(p) - offsetof(npf_call, member)))
 
-static inline int call_has_p2p(const npf_call *c) { return pm_has(&c->pm, PK_DIRECT); }
-static inline int call_has_relay(const npf_call *c) { return pm_has(&c->pm, PK_UDP_RELAY); }
-static inline int call_has_ws(const npf_call *c) { return pm_has(&c->pm, PK_WS_RELAY); }
+static inline int call_has_p2p(const npf_call *c) { return c->pm.p[PK_DIRECT] != NULL; }
+static inline int call_has_relay(const npf_call *c) { return c->pm.p[PK_UDP_RELAY] != NULL; }
+static inline int call_has_ws(const npf_call *c) { return c->pm.p[PK_WS_RELAY] != NULL; }
 
 /* path_mgr.c: the session's paths, the decisions, the allocations, the requests */
 void call_paths_init(npf_call *c);
@@ -286,7 +286,6 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 int call_no_p2p(const npf_call *c);
 
 /* path_udp.c: the UDP relay client (data-channel.md 9) */
-void path_udp_on(npf_call *c);
 void path_udp_off(npf_call *c);
 void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
                     int naddr);

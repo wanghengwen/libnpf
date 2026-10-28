@@ -45,7 +45,7 @@ static void udp_send(npf_path *p, const uint8_t *dgram, size_t len)
 
 /* the allocation in use from now on (UP when bound, else NEW), or no
  * longer, its binding stopped (NONE) */
-void path_udp_on(npf_call *c)
+static void path_udp_on(npf_call *c)
 {
     c->pu.p.since = npf_mono_ms();
     c->pu.p.health = c->pu.r.state == RB_BOUND ? PH_UP : PH_NEW;

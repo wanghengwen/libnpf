@@ -136,11 +136,6 @@ void pm_probe(npf_path *p, int64_t now, int64_t window);
 int  pm_rt(npf_pm *m, npf_path *p, int64_t now);
 int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto);
 
-static inline int pm_has(const npf_pm *m, int kind)
-{
-    return m->p[kind] != NULL;
-}
-
 /* the session relies on p: the health rules apply to it */
 static inline int pm_relied(const npf_pm *m, const npf_path *p)
 {
