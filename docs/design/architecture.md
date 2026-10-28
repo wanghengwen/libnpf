@@ -4,7 +4,7 @@
 
 本文是 libnpf 逐步重构的依据：先写清现在的结构和问题（第 1 节），再给出目标的分层与接口（第 2 节）、各部分的状态机（第 3 节）、定时方式（第 4 节）、信令消息的描述表（第 5 节）、测试钩子（第 6 节）、库的边界（第 7 节），最后是分步迁移的计划（第 8 节）和不做的事（第 9 节）。重构是渐进的：每一步单独合入、单独现场测试，不做整体重写。
 
-凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
+凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）；第 1c 步去掉了 `call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_standby_done`、`pm_standby_start`、`path_ws.c:ws_elsewhere`、`call.c:npf_node_ws_calls_udp_back` 与 `npf_node_calls_to_ws`，路径之间的决定都在 `path_mgr.c:pm_decide`，向平台的请求都经 `call_need`（第 3.6 节"1c 的实现"）。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
 
 ## 1. 现状
 
@@ -327,14 +327,16 @@ struct npf_path {
 
 `call_established` 之前平台对 `relay_switch` 限次（每个呼叫分配 2 次）、所有 `relay_switch` 占切换配额（突发 6、之后 30 s 1 次，signaling.md "中转方式的选择"）：呼叫层的重发必须在这个配额内，第 3.6 节的"请求"状态带截止时间就是为此。
 
+**1c 的实现**（2026-10-29）：`pm_decide(m, in, now)` 返回上表的一项（`PM_NEED_*`）或一个动作（等端口、等打洞、再绑一次、端口交还后重绑、探直连、继续热备、丢掉失效的直连）；呼叫的 `call_need(c, need, now)` 把它变成消息：`UDP`、`WS`、`WS_ELSEWHERE`、`UDP_BACK` 在需要成立期间 10 s、30 s、之后每 30 s 重发（一个请求开头 10 s 内两次，之后 30 s 一次，与配额补充的速度相同，用不完突发的 6 次），每次一行日志；`PATH_LOST`、`RELEASE` 只发一次（`RELEASE` 同时停用中转）。"需要成立"每次从路径状态重新算：新分配到来（WS 路径加入、UDP 路径加入）、直连恢复、中转又绑上，需要就不再成立，重发停止，不另记"已应答"。`UDP_BACK` 也用于 Q4（节点的 NAT 探测说 UDP 可用、会话在 WS 上：分配到来 `udp_again` 后，默认 5 分钟，测试 `NPF_TEST_UDP_AGAIN_MS`）：先 `punch_update{udp_back}` 再 `relay_switch{udp}`，与探测从无到有时相同，平台不区分。
+
 ### 2.5 `npf_call` 的字段去哪里
 
 | 去处 | 字段（今天的名字） | 个数（约） |
 |---|---|---|
 | 路径（直连） | `p2p`、`p2p_fd`、`p2p_owned`、`p2p_addr`、`p2p_rx_ms`、`p2p_since`、`p2p_suspect`、`p2p_busy_since`、`path_keys`、`path_ready`、`path_nonce`、`path_echo_ms`、`standby_check`、`t_pcheck` | 14 |
-| 路径（UDP 中转） | （1a 时：绑定器 `relay_c` 还带着 WS 分配的 `relay_id` 与 `alloc_key`，`call_relay_take(..., NULL, 0)` 写入，绑定器留着旧的 UDP 密钥与地址，旧中转的 `BIND_ACK` 仍能打开；应属 `path_ws`，留给 1c / 2）`relay`、`relay_rx_ms`、`relay_busy_since`、`t_rcheck`、`relay_retried`、`relay_waits_ports`、`relay_ports_waited`、`t_standby` | 8 |
+| 路径（UDP 中转） | （1a 时：绑定器 `relay_c` 还带着 WS 分配的 `relay_id` 与 `alloc_key`，`call_relay_take(..., NULL, 0)` 写入，绑定器留着旧的 UDP 密钥与地址，旧中转的 `BIND_ACK` 仍能打开；1c 起 WS 分配的编号在 `path_ws.id`，`alloc_key` WS 连接用不着、不再存，绑定器只有 UDP 的状态）`relay`、`relay_rx_ms`、`relay_busy_since`、`t_rcheck`、`relay_retried`、`relay_waits_ports`、`relay_ports_waited`、`t_standby`（1c：后四个去掉，变成管理器的 `tried`、`wait`、`act_at`） | 8 |
 | 路径（WS 中转） | `ws_mode`、`wsr`、`ws_url`、`ws_pub`、`t_wsflush`、`t_wsre`、`ws_paired_once`、`ws_fail_wait` | 8 |
-| 路径管理器 | `t_ws_wait`、`relay_asked_ms`（变成请求状态） | 2 |
+| 路径管理器 | `t_ws_wait`、`relay_asked_ms`（变成请求状态；1c：`need`、`asks`、`ask_at`，`t_ws_wait` 与 `t_standby` 变成 `act_at`，管理器的定时器 `t_check` 排在它们与健康规则的最小值） | 2 |
 | 会话 | `anl`、`conv`、`conv_next`、`stream`、`dpend*`、`tun`、`media`、`udp`、`t_anl`、`anl_due`、`flush_pending`、`k12`、`nominate_key`、`keys_ready`、`anl_srtt`、`auth_fail_*`、`tx_bytes`、`rx_bytes`、`peer_hello`、`ctl[]`、`ctl_seq`、`sub_done`、`sub_arg`、`rearly`、`nrearly` | 约 28 |
 | 打洞 | `punch`、`punch_of`、`punch_socks`、`punch_round`、`pcfg`、`info_port`、`info_round`、`tcand`、`spray_refused_said`、`punch_wait_keys`、`punched`、`t_punch`、`t_linger` | 13 |
 | 呼叫 | 其余：`call_id*`、`req_id`、`call_req`、`number`、`caller_number`、`auth`、`state`、`accepted`、`secure`、`up_told`、`peer_closed`、`ended`、`t_timeout`、`t_free`、被叫的准入（`grant_*`、`targets`、`hosted_grant`、`kshare`、`policy`、`caller_app`）、反向监听 | 约 40 |
@@ -467,6 +469,14 @@ struct npf_path {
 
 **取代**：`t_ws_wait`、`relay_asked_ms`、`relay_retried`、`relay_waits_ports`、`relay_ports_waited`、`punched`（用于决定 WS 的那部分），以及 `call_relay.c:relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_path.c:call_check_p2p` 的决定部分。表中"本次失去中转"指一次从 `BOUND` 到 `GAVE_UP` 的过程，每次重新计，不是每个呼叫一次（P5，Q7）。
 
+**1c 的实现**（2026-10-29，`path_mgr.c:pm_decide`，纯函数：路径的健康、角色与一组输入位 → 一项需要或一个动作；单元测试 UT-34 逐行检查）：
+
+- 输入位（`PM_IN_*`）：主叫；平台还不接受 `relay_switch`（主叫在接受之前）；已建立；打洞还可能带来直连（`punched` 在每个 `punch_start` 清零、一轮结束时置位，"让出"的一轮不置位：平台会再发它）；难侧打洞占着端口；NAT 探测说 UDP 可用；UDP 在 WS 分配之后恢复过（节点的 `udp_back_ms`）；测试的没有 UDP。由 `pm_check` 每次算出（每个 AnLiu 定时器一次，热路径上没有）。
+- 状态：`tried`（本次失去中转已经有过的：等端口、等打洞、再试一次，中转 `UP` 时清零），`wait` + `act_at`（正在等什么、到什么时候：端口、打洞、热备、热备的探测；在 WS 上是 Q4 的时刻），请求（`need`、`asks`、`ask_at`，属于 `call_need`）。"提示"不是另存的标志：`DIRECT_PENDING` = 打洞还可能带来直连，`PORTS_HELD` = 难侧打洞占着端口，等待在原因消失（打洞结束、端口交还）或 15 s 到时结束。
+- 与上表不同或表里没写的：直连可疑时中转从没绑上就再绑一次，算作这次失去中转的"再试一次"；直连失效时中转也不通，不报 `path_lost`，直接按 UDP 中转的规则（已经再试过）要 WS；热备改为管理器的截止时间（`wait = PM_W_STANDBY / PM_W_PROBE`），取代 `t_standby` 与 `standby_check`，探测中收到回应在下一次 `pm_check` 释放（原来在回应的回调里立即释放，相差至多一次循环）；直连恢复之后才到的中转（直连可疑时要来的）也热备 30 s、之后释放（原来这时没有热备计时，中转一直保活到会话结束）；Q4 的试回把 `tried` 设满，新分配绑不上就直接要 WS（原来 `udp_back` 之后的失败也是这样，只是那时 `tried` 是每个呼叫的）。
+- WS 中转首次配对之前失败也判 `DEAD`（原来只记 `fail_wait`），于是"主叫在接受之前等待、接受后请求别处"就是 `PM_IN_HOLD` 的一条规则，`fail_wait` 去掉。
+- 节点级事件不再逐个呼叫写筛选：NAT 探测的 `udp_back` 与测试的 `NPF_TEST_WS_FILE` 只记下时刻 / 状态，`npf_node_calls_decide` 让每个呼叫 `pm_check` 一次；`npf_node_check_paths`（网络变化：直连可疑）与 `npf_node_calls_lost_fd` 仍是事件，没有动。
+
 ### 3.7 今天的行为与上表不同之处
 
 | # | 不同之处 | 代码 | 性质 |
@@ -482,6 +492,8 @@ struct npf_path {
 | D9 | 直连与中转的空闲阈值不同（20 s 与 10 s），回答的是同一个问题 | `call_path.c` `P2P_IDLE_SILENT_MS`、`call_relay.c` `RELAY_IDLE_SILENT_MS` | 设计选择 |
 | D10 | 备用分配 `BACKOFF` 在状态 JSON 里显示为 `binding` | `home.c` `k_state` | 显示上的选择 |
 | D11 | `open_reply` 里"`resumed` 且 `H_BACKOFF && !lost` 就立即重绑"的分支走不到：进入 `H_BACKOFF` 只有 `gave_up` 一处，它同时置 `lost = 1`，而 `lost` 只在绑上（`H_BOUND`）时清零。隐含状态造成的死代码；按表删掉，行为不变 | `home.c:open_reply`、`gave_up`、`ack_in` | 死代码 |
+
+1b 改掉了 D2、D3、D6、D9；1c（2026-10-29）改掉了 D1（请求的重发，`call_need`）、D4（等打洞到时也先等正在进行的重绑：决定只在 UDP 中转 `DEAD` 时做，绑定中的 `NEW` 什么都不决定）、D5（Q4，每 5 分钟试回 UDP）、D7（等待与重试按每次失去中转计）。
 
 ### 3.8 待用户决定的问题
 
@@ -528,7 +540,7 @@ struct npf_path {
 | `t_dog`、`t_retry` | 备用分配 | 备用分配的 `due` |
 | 节点的 11 个 | 节点 | 第 8 节之后再做：信令（`t_reconnect`、`t_ping`、`t_expect`、`t_login`、`t_idle`、`t_wake`）、网络（`t_watch`、`t_netcheck`、`t_udp_reopen`、`t_nat_retry`）、`t_pm` 各成一组 |
 
-一个呼叫从 13 个定时器变成 1 个（另有 2 个下一轮回调），备用分配从 3 个变成 1 个。
+一个呼叫从 13 个定时器变成 1 个（另有 2 个下一轮回调），备用分配从 3 个变成 1 个。1b 去掉了 `t_pcheck`、`t_rcheck`（管理器的 `t_check`），1c 去掉了 `t_ws_wait` 与 `t_standby`（管理器的 `act_at`，同一个 `t_check`）：现在每个呼叫 9 个（`t_anl`、`t_timeout`、`t_punch`、`t_linger`、`t_direct`、`t_free`、`pm.t_check`、`pw.t_flush`、`pw.t_re`），另有 `relay.t_bind`。
 
 ## 5. 信令消息描述表
 
@@ -750,6 +762,8 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 | **8** 主被叫的不对称 | `call*.c` 的 47 处 `c->caller` 收进一个"角色"表 | −50 | 低 | 全部 | 角色表的单元测试 | — |
 
 **1b 实际**（2026-10-28）：库的 `src` + `include` 38 175 → 38 519 行（+344；不计注释与空行 31 690 → 31 911，+221），`src/node` 15 710 → 16 046 行，而不是计划的 −150。去掉的是 `call_check_p2p`、`call_check_relay` 与两个检查定时器（约 120 行）；加的是规则本身（`pm_tick`、`pm_rules_of`、`pm_check`，约 130 行）、WS 中转原来没有的无声检测、配对期限与放弃（约 80 行）、绑定器的两种次序（约 40 行）和热备的探测窗口（约 30 行），以及按这个仓库的习惯写在代码旁的说明。新增单元测试约 380 行（`test_path_health.c`、`test_relay.c` 的地址次序、`test_call.c` 的 WS 放弃）。
+
+**1c 实际**（2026-10-29）：库的 `src` + `include` 38 527 → 38 423 行（−104；不计注释与空行 32 009 → 31 926，−83，用同一个脚本数的前后两版），`src/node` 16 054 → 15 948 行（−106）（`git diff` +349 −453）。去掉的：`call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_relay_ask_ok` / `asked`（约 125 行），`call_standby_done`、`pm_standby_start` 与 `t_standby`、`standby_check` 的各处（约 70 行），`ws_elsewhere` 与 `fail_wait`（约 25 行），`npf_node_ws_calls_udp_back`、`npf_node_calls_to_ws`（约 35 行），`direct_doubt` 与 `direct_lost` 里的请求（约 30 行），`call_relay_take`（并入 `path_udp_setup`），三处一样的"结束打洞、交还难侧套接字"（改为 `call_punch_end`）；加的：`pm_decide`（约 75 行，含注释）、`call_need`（约 60 行）、`pm_check` 里的输入与动作（约 35 行）、`path.h` 的状态与枚举（约 35 行）、Q4 的测试开关与节点的 `udp_back_ms`。新增单元测试 260 行（`test_path_decide.c`，`test_call.c` 的重发时刻）；测试平台的开关 `NPF_TEST_DROP_RELAY_SWITCH` 在 npf 的服务器里（8 行）。热路径没有动（每个数据报仍只写一个时间戳），`pm_decide` 在每次 `pm_check`（AnLiu 的定时器）跑一遍：`npf_cpuprobe`、`npf_relayprobe` 与 npf 的 `tests/bench/relay.sh`（UDP、WS 中转）前后持平，在波动之内（数字见 npf 的 `docs/implementation.md`）。
 
 合计库净减约 800 行（±30 %），新增单元测试约 1 500 行。1a–1d 合起来就是"第 1 步：路径抽象及其截止时间与状态机"；四个小步各自可以合入、现场测试，任何一步都可以单独回退。
 
