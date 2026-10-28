@@ -36,6 +36,13 @@ static void write_pressure(const npf_call *c, npf_jw *w)
         npf_jw_kint(w, "test_backoff_ms", atoll(t));
 }
 
+/* no punching in this session: connect_mode secure on either side (relays
+ * only, neither side's address goes to the other), or tests (NPF_NO_P2P) */
+int call_no_p2p(const npf_call *c)
+{
+    return c->secure || c->n->th->no_p2p;
+}
+
 /* the platform hears what changed for the call's rounds (punch_update):
  * why "network" (the NAT measured again after a network change),
  * "profile" (the node's first profile: a call made before had no
@@ -138,18 +145,9 @@ static void punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *
     }
     npf_log("call %s: direct path %s (%d ms)", c->call_id_s, npf_addr_str(&res->peer, a, sizeof a),
             res->elapsed_ms);
-    c->p2p = 1;
-    c->p2p_fd = fd;
-    c->p2p_addr = res->peer;
-    c->p2p_rx_ms = npf_mono_ms();
-    c->p2p_since = c->p2p_rx_ms;
-    if (fd != c->n->udp_fd && fd != c->n->udp6_fd) {
-        c->p2p_owned = 1;
-        npf_loop_add(c->n->loop, fd, NPF_EV_READ, call_p2p_input_cb, c);
-    }
+    path_direct_up(c, fd, &res->peer);
     c->t_linger = npf_timer_add(c->n->loop, PUNCH_LINGER_MS, linger_done, c);
-    if (c->relay.active && !c->t_standby)
-        c->t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
+    pm_standby_start(c);
     call_path_up(c);
 }
 
@@ -251,7 +249,7 @@ static void peer_cand(npf_call *c, const npf_json *j, int o)
 {
     char a[80];
     struct sockaddr_storage ss;
-    if (c->ended || c->p2p || c->ws_mode || call_no_p2p(c))
+    if (c->ended || call_has_p2p(c) || c->ws_mode || call_no_p2p(c))
         return;
     memset(&ss, 0, sizeof ss);
     if (!npf_json_eq(j, npf_json_get(j, o, "t"), "srflx") || npf_json_get_str(j, o, "a", a, sizeof a) <= 0
@@ -313,7 +311,7 @@ static void punch_quiet(npf_punch *p, const npf_punch_result *res, void *arg)
     char data[256];
     npf_jw w;
     (void)p;
-    if (c->t_ws_wait || c->ended || c->p2p)
+    if (c->t_ws_wait || c->ended || call_has_p2p(c))
         return;
     result_begin(c, &w, data, sizeof data, c->punch_of, 0);
     npf_jw_kbool(&w, "early", 1);
@@ -433,7 +431,7 @@ static void punch_timer(npf_loop *loop, void *arg)
     npf_call *c = arg;
     (void)loop;
     c->t_punch = NULL;
-    if (!c->p2p && !c->ended)       /* the last round's punch may have gone direct meanwhile */
+    if (!call_has_p2p(c) && !c->ended)       /* the last round's punch may have gone direct meanwhile */
         call_start_punch_now(c);
 }
 
@@ -549,7 +547,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
     char s[64], strat[8] = "S1";
     if (!c->caller)
         call_accept_seen(c);
-    if (c->p2p || c->ws_mode)       /* a WS relay session cannot move to a direct path */
+    if (call_has_p2p(c) || c->ws_mode)       /* a WS relay session cannot move to a direct path */
         return;
     if (call_no_p2p(c)) {                /* secure, or tests: the session stays on the relay */
         npf_log("call %s: punching disabled (%s)", c->call_id_s, c->secure ? "connect_mode secure" : "NPF_NO_P2P");
@@ -684,6 +682,6 @@ void node_calls_punch_report(npf_node *n, const char *why)
 {
     npf_call *c;
     for (c = n->calls; c; c = c->next)
-        if (!c->p2p)
+        if (!call_has_p2p(c))
             call_punch_report(c, why);
 }

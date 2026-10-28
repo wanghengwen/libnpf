@@ -1,6 +1,6 @@
 /* the call (npf_call) shared by call.c (the state, dispatch, the node's
- * sessions), call_handshake.c, call_transport.c, call_path.c, call_punch.c,
- * call_relay.c, call_reverse.c, call_ws.c and call_direct.c */
+ * sessions), call_handshake.c, call_transport.c, call_punch.c, call_relay.c,
+ * call_reverse.c, call_ws.c, call_direct.c and the paths (path.h) */
 #ifndef NPF_CALL_INTERNAL_H
 #define NPF_CALL_INTERNAL_H
 
@@ -24,6 +24,7 @@
 #include "udpfwd.h"
 #include "node_internal.h"
 #include "relay_bind.h"
+#include "path.h"
 
 /* short names for npf_node.h's NPF_AUTH_* */
 enum { AUTH_IK = NPF_AUTH_IK, AUTH_PAKE = NPF_AUTH_PAKE, AUTH_GRANT = NPF_AUTH_GRANT, AUTH_DIRECT = NPF_AUTH_DIRECT };
@@ -66,24 +67,12 @@ struct npf_call {
     int         punched;            /* a punch round has finished (either way) */
     npf_timer  *t_ws_wait;          /* UDP relay unreachable: waiting for the punch first */
 
+    npf_pm      pm;                 /* the session's paths (path.h) */
+    path_direct pd;
     relay_c     relay;
-    int         p2p;
-    int         p2p_fd;
-    int         p2p_owned;          /* S3 socket handed over by the punch */
-    struct sockaddr_storage p2p_addr;
-    int64_t     p2p_rx_ms;
     uint64_t    auth_fail_seen;     /* AnLiu rx_auth_fail last reported (forged datagrams with our conv) */
     int64_t     auth_fail_at;       /* when */
     int         anl_srtt;           /* AnLiu's srtt at its last timer (ms, 0 none yet) */
-    int64_t     p2p_since;
-    int64_t     p2p_suspect;        /* direct path suspected dead since (ms); 0 = no */
-    npf_siv_keys path_keys;         /* PATH_CHECK / PATH_ECHO, from the E2E keys */
-    int         path_ready;
-    uint64_t    path_nonce;         /* of the checks in flight */
-    int64_t     path_echo_ms;       /* the last matching echo (ms) */
-    int         standby_check;      /* the check before the relay goes: echo -> release */
-    npf_timer  *t_pcheck;
-    int64_t     p2p_busy_since;     /* data in flight since (ms); 0 = nothing unacknowledged */
     npf_punch  *punch;
     int         punch_of;           /* the round c->punch belongs to (a newer one may be planned meanwhile) */
     int         punch_socks;        /* S3 hard-side sockets of the running punch (node budget) */
@@ -184,7 +173,7 @@ typedef struct call_hs {
 #define RELAY_ASK_AGAIN_MS 10000     /* a relay_switch with no allocation after this long: may be asked again */
 #define PUNCH_LINGER_MS    10000
 #define PUNCH_ROUNDS_MAX 10         /* the platform's counted rounds of a call (a sanity limit here) */
-#define LABEL_PATH         "NPF-PCHECK-1"       /* the direct path check (call_path.c), its keys from the session's */
+#define LABEL_PATH         "NPF-PCHECK-1"       /* the direct path check (path_direct.c), its keys from the session's */
 #define PATH_PKT_LEN       (NPF_SIV_TAG_SIZE + 10)
 /* n->conv_tab: AnLiu datagrams find their call by conv without a scan */
 #define CONV_SLOT(conv) (((conv) ^ ((conv) >> 8) ^ ((conv) >> 16) ^ ((conv) >> 24)) & 255)
@@ -241,14 +230,27 @@ npf_tunnel *call_tunnel_new(npf_call *c);
 void call_ctl_fail_all(npf_call *c);
 int call_start_transport(npf_call *c);
 
-/* call_path.c: the direct path's check, its loss, the relay's standby */
-int call_no_p2p(const npf_call *c);
+/* the call of one of its paths (path.h): p is &c->member */
+#define CALL_OF(p, member) ((npf_call *)(void *)((char *)(p) - offsetof(npf_call, member)))
+
+static inline int call_has_p2p(const npf_call *c) { return pm_has(&c->pm, PK_DIRECT); }
+
+/* path_mgr.c: the session's paths; the decisions between them */
+void call_paths_init(npf_call *c);
+void pm_standby_start(npf_call *c);
+void call_standby_done(npf_loop *loop, void *arg);
+
+/* path_direct.c: the direct path, its check, its loss */
+void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer);
+void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer);
+void path_direct_gone(npf_call *c);
+void path_direct_suspect(npf_call *c, int64_t since);
+void path_direct_check(npf_call *c);
 int call_p2p_cut(const npf_call *c);
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len);
 void call_check_p2p(npf_call *c);
 void call_p2p_suspect_start(npf_call *c, const char *why);
 void call_p2p_drop(npf_call *c);
-void call_standby_done(npf_loop *loop, void *arg);
 void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 
 /* call_reverse.c: reverse mapping (data-channel.md 7.1) */
@@ -273,6 +275,7 @@ void call_punch_sockets_back(npf_node *n);
 void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
 void call_start_punch_now(npf_call *c);
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
+int call_no_p2p(const npf_call *c);
 
 /* call_relay.c: the UDP relay client, the way to the WS relay (data-channel.md 9) */
 void call_ask_ws_relay(npf_call *c);

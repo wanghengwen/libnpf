@@ -46,11 +46,11 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
         call_ws_send(c, (const uint8_t *)buf, (size_t)len);
         return 0;
     }
-    if (c->p2p && !call_p2p_cut(c))
-        npf_udp_send(c->p2p_fd, (const uint8_t *)buf, (size_t)len, &c->p2p_addr);
+    if (call_has_p2p(c) && !call_p2p_cut(c))
+        npf_udp_send(c->pd.fd, (const uint8_t *)buf, (size_t)len, &c->pd.addr);
     /* the relay carries the data when there is no direct path, and as a second
      * copy while the direct path is suspected (AnLiu drops the duplicates) */
-    if ((!c->p2p || c->p2p_suspect) && c->relay.active)
+    if ((!call_has_p2p(c) || c->pd.suspect) && c->relay.active)
         call_relay_send_data(c, (const uint8_t *)buf, (size_t)len);
     return 0;
 }
@@ -780,9 +780,9 @@ int call_start_transport(npf_call *c)
     {
         uint8_t pk[32];
         npf_kdf(pk, c->k12, 64, "npf path v1", 11);
-        npf_siv_derive(&c->path_keys, pk, LABEL_PATH);
+        npf_siv_derive(&c->pd.keys, pk, LABEL_PATH);
         npf_wipe(pk, sizeof pk);
-        c->path_ready = 1;
+        c->pd.keys_ready = 1;
     }
     c->conv = npf_rd32(cv);
     npf_wipe(cv, sizeof cv);
@@ -836,7 +836,7 @@ int call_start_transport(npf_call *c)
      * bound, call_relay_setup), or the WS relay once paired */
     if (c->ws_mode)
         call_ws_carrier(c);
-    else if (c->p2p || c->relay.active)
+    else if (call_has_p2p(c) || c->relay.active)
         call_hello(c);
     anl_schedule(c);
     if (c->punch_wait_keys) {

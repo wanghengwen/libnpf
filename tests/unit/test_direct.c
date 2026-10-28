@@ -132,7 +132,7 @@ static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, 
         CHECK(ws_move(c) == -1, "the blocked relay: no connection");
         CHECK(r1.fails == 0 && r1.sub_done == 0 && r1.sub_closed == 0, "the request and the sublink stay (%d/%d/%d)",
               r1.fails, r1.sub_done, r1.sub_closed);
-        CHECK(c->tun && c->anl && c->stream && c->ws_mode && !c->p2p && !c->ended,
+        CHECK(c->tun && c->anl && c->stream && c->ws_mode && !call_has_p2p(c) && !c->ended,
               "the AnLiu connection stays, on the WS relay's carrier");
         npf_call_end(c, "closed");
         CHECK(r1.fails == 1, "the request fails with the session's end");

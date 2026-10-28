@@ -11,6 +11,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "npf/loop.h"
+#include "npf/siv.h"
+
 enum { PK_DIRECT, PK_UDP_RELAY, PK_WS_RELAY, PK_N };     /* kinds, by rank: direct > UDP relay > WS relay */
 enum { PH_UP, PH_SUSPECT };                              /* health (so far only the direct path's doubt) */
 enum { PR_IDLE, PR_PRIMARY, PR_SECOND, PR_STANDBY };     /* the role the manager gives a path */
@@ -32,6 +35,21 @@ struct npf_path {
     int64_t  last_rx;               /* the peer last heard on it (monotonic ms; the UDP relay: its answers too) */
     int64_t  busy_since;            /* the session relies on it with data in flight since (ms); 0 no */
 };
+
+/* the direct path (path_direct.c) */
+typedef struct path_direct {
+    npf_path p;
+    int      fd;                    /* the main socket, or an S3 one the punch handed over (owned); -1 none */
+    int      owned;
+    struct sockaddr_storage addr;   /* the peer */
+    int64_t  suspect;               /* in doubt since (ms), 0 no (path_direct_suspect: the health with it) */
+    npf_siv_keys keys;              /* PATH_CHECK / PATH_ECHO, from the E2E keys */
+    int      keys_ready;
+    uint64_t nonce;                 /* of the checks in flight */
+    int64_t  echo_ms;               /* the last matching echo (ms) */
+    int      standby_check;         /* the check before the relay goes: echo -> release */
+    npf_timer *t_check;
+} path_direct;
 
 /* The manager: the paths in use, by kind, and where pm_send sends. A WS
  * relay is exclusive (data-channel.md 3: UDP gave out); else the direct
@@ -70,5 +88,7 @@ static inline void pm_send(const npf_pm *m, const uint8_t *dgram, size_t len)
 const char *pm_name(const npf_pm *m);
 const char *pm_label(const npf_pm *m);
 int pm_code(const npf_pm *m);
+
+extern const npf_path_ops path_direct_ops;
 
 #endif

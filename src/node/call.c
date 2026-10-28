@@ -1,7 +1,7 @@
 /* Calls: a session's state and end, the signaling messages dispatched to
  * it, the node's sessions as a whole (their datagrams, their ends, what the
  * library asks of them). The handshake in call_handshake.c, the transport
- * in call_transport.c, the direct path's check in call_path.c, punching in
+ * in call_transport.c, the paths in path_*.c (path.h), punching in
  * call_punch.c, the relays in call_relay.c and call_ws.c (signaling.md
  * "呼叫与端到端连接", data-channel.md, security.md 9). */
 #define _GNU_SOURCE
@@ -70,9 +70,9 @@ void call_relay_leave(npf_call *c)
     c->relay.bound = 0;
     c->relay_waits_ports = 0;
     npf_timer_stop(l, &c->t_ws_wait);
-    npf_timer_stop(l, &c->t_pcheck);
-    c->p2p_suspect = 0;
-    c->standby_check = 0;
+    npf_timer_stop(l, &c->pd.t_check);
+    path_direct_suspect(c, 0);
+    c->pd.standby_check = 0;
     npf_timer_stop(l, &c->t_punch);
     c->punch_wait_keys = 0;
 }
@@ -141,7 +141,7 @@ npf_call *call_new(npf_node *n, int caller)
         n->calls_out++;
     else
         n->calls_in++;
-    c->p2p_fd = -1;
+    call_paths_init(c);
     c->next = n->calls;
     n->calls = c;
     c->t_timeout = npf_timer_add(n->loop, CALL_TIMEOUT_MS + 10000, timeout_cb, c);
@@ -153,7 +153,7 @@ npf_call *call_new(npf_node *n, int caller)
  * no one's now */
 static void call_timers_stop(npf_call *c)
 {
-    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck,
+    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->pd.t_check,
                        &c->t_standby, &c->t_direct, &c->relay.t_bind, &c->t_wsre, &c->t_rcheck};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++)
@@ -230,9 +230,9 @@ void call_free(npf_call *c)
     call_hs_free(c);
     free(c->pcfg);
     call_anl_drop(c);
-    if (c->p2p_owned && c->p2p_fd >= 0) {
-        npf_loop_del(n->loop, c->p2p_fd);
-        npf_sock_close(c->p2p_fd);
+    if (c->pd.owned && c->pd.fd >= 0) {
+        npf_loop_del(n->loop, c->pd.fd);
+        npf_sock_close(c->pd.fd);
     }
     npf_wipe(c, sizeof *c);
     free(c);
@@ -333,8 +333,8 @@ void npf_call_info_get(const npf_call *c, npf_call_info *i)
     i->number = c->caller ? c->number : c->caller_number;     /* the other side's */
     memcpy(i->peer_pub, c->peer_pub, 32);
     i->path = npf_call_path(c);
-    if (c->p2p) {
-        i->p2p_addr = c->p2p_addr;
+    if (call_has_p2p(c)) {
+        i->p2p_addr = c->pd.addr;
         i->has_p2p_addr = 1;
     }
     i->up_s = c->up_ms ? (npf_mono_ms() - c->up_ms) / 1000 : -1;
@@ -369,7 +369,7 @@ const char *npf_call_path(const npf_call *c)
         return "direct";
     if (c->ws_mode)
         return "ws relay";
-    if (c->p2p)
+    if (call_has_p2p(c))
         return "p2p";
     if (c->relay.active)
         return c->relay.bound ? "relay" : "relay (binding)";
@@ -380,7 +380,7 @@ const char *npf_call_path_label(const npf_call *c)
 {
     if (c->direct)
         return "Direct";
-    if (c->p2p && !c->ws_mode)
+    if (call_has_p2p(c) && !c->ws_mode)
         return "P2P";
     if (c->ws_mode || c->relay.active)
         return "Relayed";
@@ -619,19 +619,19 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
             if (c->ended || c->conv != conv)
                 continue;
             matched = 1;
-            on_p2p = c->p2p && call_same_addr(from, &c->p2p_addr);
+            on_p2p = call_has_p2p(c) && call_same_addr(from, &c->pd.addr);
             if (on_p2p && call_p2p_cut(c))
                 return 1;
             if (call_anl_feed(c, buf, len) == 0) {
                 if (on_p2p && !c->ended)
-                    c->p2p_rx_ms = npf_mono_ms();
+                    c->pd.p.last_rx = npf_mono_ms();
                 return 1;
             }
         }
     }
     if (len == PATH_PKT_LEN)
         for (c = n->calls; c; c = c->next)
-            if (!c->ended && c->p2p && fd == c->p2p_fd && call_same_addr(from, &c->p2p_addr) && call_path_input(c, buf, len))
+            if (!c->ended && call_has_p2p(c) && fd == c->pd.fd && call_same_addr(from, &c->pd.addr) && call_path_input(c, buf, len))
                 return 1;
     /* a direct listener's answer (Noise message 2) to a connection being
      * made: after the sessions already up with that listener, whose every
@@ -639,7 +639,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
      * sessions' keepalives cost one each while a 17th connected) */
     for (c = n->calls; c; c = c->next)
         if (!c->ended && c->direct && c->caller && !c->keys_ready && fd == n->udp_fd
-            && call_same_addr(from, &c->p2p_addr) && call_direct_reply(c, buf, len, from))
+            && call_same_addr(from, &c->pd.addr) && call_direct_reply(c, buf, len, from))
             return 1;
     /* relayed data (data-channel.md 9.2): its hint names the allocation,
      * no session's keys are tried */
@@ -710,11 +710,9 @@ void npf_node_calls_lost_fd(npf_node *n, int fd, const char *reason)
 {
     npf_call *c;
     for (c = n->calls; c; c = c->next) {
-        int on_it = c->p2p_fd == fd && !c->p2p_owned;
-        if (on_it) {
-            c->p2p = 0;
-            c->p2p_fd = -1;
-        }
+        int on_it = c->pd.fd == fd && !c->pd.owned;
+        if (on_it)
+            path_direct_gone(c);
         /* platform sessions use the IPv4 socket for the relay too */
         if (!c->ended && (on_it || (!c->direct && fd == n->udp_fd)))
             npf_call_end(c, reason);
@@ -727,7 +725,7 @@ void npf_node_check_paths(npf_node *n, const char *why)
     char w[96];
     snprintf(w, sizeof w, "%s: checking the direct path", why);
     for (c = n->calls; c; c = c->next)
-        if (!c->ended && c->p2p && !c->direct && c->anl && !c->p2p_suspect)
+        if (!c->ended && call_has_p2p(c) && !c->direct && c->anl && !c->pd.suspect)
             call_p2p_suspect_start(c, w);
 }
 

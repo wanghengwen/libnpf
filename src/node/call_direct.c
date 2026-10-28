@@ -52,9 +52,7 @@ static npf_call *direct_call(npf_node *n, int caller, int fd, const struct socka
     c->auth = AUTH_DIRECT;
     npf_random(c->call_id, 16);
     npf_b64url_encode(c->call_id, 16, c->call_id_s);
-    c->p2p_fd = fd;
-    c->p2p_addr = *peer;
-    c->p2p_rx_ms = c->p2p_since = npf_mono_ms();
+    path_direct_fixed(c, fd, peer);
     return c;
 }
 
@@ -68,7 +66,7 @@ static int direct_up(npf_call *c)
     memcpy(c->k12 + 32, k2, 32);
     npf_wipe(k1, 32);
     npf_wipe(k2, 32);
-    c->p2p = 1;
+    pm_add(&c->pm, &c->pd.p);
     call_set_state(c, NPF_CALL_CONNECTING, NULL);  /* first: the initiator is established with its hello */
     if (call_start_transport(c) < 0)
         return -1;
@@ -87,11 +85,11 @@ static void direct_retry(npf_loop *loop, void *arg)
     if (++c->dtries > 8) {
         char a[64];
         npf_logw("direct %s: no answer from %s (wrong key, or the port is not reachable)", c->call_id_s,
-                npf_addr_str(&c->p2p_addr, a, sizeof a));
+                npf_addr_str(&c->pd.addr, a, sizeof a));
         npf_call_end(c, "timeout");
         return;
     }
-    npf_udp_send(c->p2p_fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->p2p_addr);
+    npf_udp_send(c->pd.fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->pd.addr);
     c->t_direct = npf_timer_add(c->n->loop, c->dtries < 3 ? 300LL << c->dtries : 2000, direct_retry, c);   /* ~14 s in all */
 }
 
@@ -117,7 +115,7 @@ npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, con
     }
     c->hs->dmsg1_len = (size_t)len;
     c->state = NPF_CALL_CALLING;
-    npf_udp_send(c->p2p_fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->p2p_addr);
+    npf_udp_send(c->pd.fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->pd.addr);
     c->t_direct = npf_timer_add(n->loop, 300, direct_retry, c);
     npf_log("direct %s: connecting to %s", c->call_id_s, npf_addr_str(to, a, sizeof a));
     return c;
@@ -404,10 +402,9 @@ void npf_direct_close(npf_direct *d)
         return;
     for (c = d->n->calls; c; c = next) {
         next = c->next;
-        if (c->direct && c->p2p_fd == d->fd) {
+        if (c->direct && c->pd.fd == d->fd) {
             npf_call_end(c, "closed");      /* tells the peer; freed later with the other calls */
-            c->p2p = 0;
-            c->p2p_fd = -1;
+            path_direct_gone(c);
         }
     }
     npf_loop_del(d->n->loop, d->fd);

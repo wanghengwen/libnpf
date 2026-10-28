@@ -170,7 +170,7 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     c->ws_paired_once = 0;
     c->relay.active = 0;
     call_relay_leave(c);
-    if (c->p2p)
+    if (call_has_p2p(c))
         call_p2p_drop(c);
     call_ws_leave_conn(c);
     snprintf(c->ws_url, sizeof c->ws_url, "%s", url);

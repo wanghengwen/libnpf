@@ -1,6 +1,7 @@
-/* Calls: the direct path once it is up. Its check both ways (PATH_CHECK /
+/* The direct path (path.h): a punched one, or a direct connection's fixed
+ * one (call_direct.c). Its sending, its check both ways (PATH_CHECK /
  * PATH_ECHO), the suspicion when it goes silent and the fall back to the
- * relay, the relay released when it held (nat-traversal.md 10.3). */
+ * relay (nat-traversal.md 10.3). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -21,18 +22,63 @@ int call_p2p_cut(const npf_call *c)
 {
     int64_t cut = c->n->th->drop_p2p_ms;
     int port = c->n->th->drop_p2p_port;
-    if (cut < 0 || !c->p2p || npf_mono_ms() - c->p2p_since <= cut)
+    if (cut < 0 || !call_has_p2p(c) || npf_mono_ms() - c->pd.p.since <= cut)
         return 0;
-    return !port || ntohs(c->p2p_addr.ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)&c->p2p_addr)->sin6_port
-                                                             : ((const struct sockaddr_in *)&c->p2p_addr)->sin_port) == port;
+    return !port || ntohs(c->pd.addr.ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)&c->pd.addr)->sin6_port
+                                                             : ((const struct sockaddr_in *)&c->pd.addr)->sin_port) == port;
 }
 
-
-/* no punching in this session: connect_mode secure on either side (relays
- * only, neither side's address goes to the other), or tests (NPF_NO_P2P) */
-int call_no_p2p(const npf_call *c)
+static void direct_send(npf_path *p, const uint8_t *dgram, size_t len)
 {
-    return c->secure || c->n->th->no_p2p;
+    npf_call *c = CALL_OF(p, pd.p);
+    if (!call_p2p_cut(c))
+        npf_udp_send(c->pd.fd, dgram, len, &c->pd.addr);
+}
+
+static const char *direct_name(const npf_path *p)
+{
+    (void)p;
+    return "p2p";
+}
+
+const npf_path_ops path_direct_ops = {direct_send, direct_name};
+
+/* a punch's path (punch_done): fd the main socket, or an S3 one handed over */
+void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
+{
+    pm_add(&c->pm, &c->pd.p);
+    c->pd.fd = fd;
+    c->pd.addr = *peer;
+    c->pd.p.last_rx = npf_mono_ms();
+    c->pd.p.since = c->pd.p.last_rx;
+    if (fd != c->n->udp_fd && fd != c->n->udp6_fd) {
+        c->pd.owned = 1;
+        npf_loop_add(c->n->loop, fd, NPF_EV_READ, call_p2p_input_cb, c);
+    }
+}
+
+/* a direct connection's path, used once its handshake is done (pm_add) */
+void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer)
+{
+    c->pm.fixed = 1;
+    c->pd.fd = fd;
+    c->pd.addr = *peer;
+    c->pd.p.last_rx = c->pd.p.since = npf_mono_ms();
+}
+
+/* its socket gone (not one of its own): the path too */
+void path_direct_gone(npf_call *c)
+{
+    pm_del(&c->pm, &c->pd.p);
+    c->pd.fd = -1;
+}
+
+/* in doubt since (monotonic ms), 0 no longer: the manager sends on the
+ * relay too meanwhile */
+void path_direct_suspect(npf_call *c, int64_t since)
+{
+    c->pd.suspect = since;
+    pm_health(&c->pm, &c->pd.p, since ? PH_SUSPECT : PH_UP);
 }
 
 
@@ -49,25 +95,25 @@ int call_no_p2p(const npf_call *c)
 static void path_send(npf_call *c, int type, uint64_t nonce)
 {
     uint8_t buf[PATH_PKT_LEN], *p = buf + NPF_SIV_TAG_SIZE;
-    if (!c->path_ready || !c->p2p || call_p2p_cut(c))
+    if (!c->pd.keys_ready || !call_has_p2p(c) || call_p2p_cut(c))
         return;
     p[0] = (uint8_t)type;
     p[1] = 0;
     npf_le64(p + 2, nonce);
-    npf_siv_seal(&c->path_keys, c->caller ? 0 : 1, buf, 10);
-    npf_udp_send(c->p2p_fd, buf, sizeof buf, &c->p2p_addr);
+    npf_siv_seal(&c->pd.keys, c->caller ? 0 : 1, buf, 10);
+    npf_udp_send(c->pd.fd, buf, sizeof buf, &c->pd.addr);
 }
 
 /* 1 when the datagram was a path check or echo of this call */
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len)
 {
     uint8_t plain[16];
-    if (!c->path_ready || len != PATH_PKT_LEN || npf_siv_open(&c->path_keys, c->caller ? 1 : 0, buf, len, plain) < 0)
+    if (!c->pd.keys_ready || len != PATH_PKT_LEN || npf_siv_open(&c->pd.keys, c->caller ? 1 : 0, buf, len, plain) < 0)
         return 0;
     if (plain[0] == PKT_PATH_CHECK)
         path_send(c, PKT_PATH_ECHO, npf_rd64(plain + 2));
-    else if (plain[0] == PKT_PATH_ECHO && c->p2p_suspect && npf_rd64(plain + 2) == c->path_nonce)
-        c->path_echo_ms = npf_mono_ms();
+    else if (plain[0] == PKT_PATH_ECHO && c->pd.suspect && npf_rd64(plain + 2) == c->pd.nonce)
+        c->pd.echo_ms = npf_mono_ms();
     return 1;
 }
 
@@ -76,14 +122,23 @@ static void path_check_timer(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
     (void)loop;
-    c->t_pcheck = NULL;
-    if (!c->p2p_suspect || c->ended)
+    c->pd.t_check = NULL;
+    if (!c->pd.suspect || c->ended)
         return;
     call_check_p2p(c);                           /* an echo, or the time is up (an idle session's AnLiu timer is far) */
-    if (!c->p2p_suspect || c->ended)
+    if (!c->pd.suspect || c->ended)
         return;
-    path_send(c, PKT_PATH_CHECK, c->path_nonce);
-    c->t_pcheck = npf_timer_add(c->n->loop, PATH_CHECK_MS, path_check_timer, c);
+    path_send(c, PKT_PATH_CHECK, c->pd.nonce);
+    c->pd.t_check = npf_timer_add(c->n->loop, PATH_CHECK_MS, path_check_timer, c);
+}
+
+/* the check both ways, every PATH_CHECK_MS from now on while in doubt (a
+ * new nonce: only an echo of these counts) */
+void path_direct_check(npf_call *c)
+{
+    npf_random(&c->pd.nonce, sizeof c->pd.nonce);
+    if (!c->pd.t_check)
+        path_check_timer(c->n->loop, c);
 }
 
 
@@ -96,22 +151,21 @@ void call_check_p2p(npf_call *c)
 {
     anl_stats st;
     int64_t now = npf_mono_ms(), quiet;
-    if (!c->p2p || c->direct || !c->anl || anl_get_stats(c->anl, &st) < 0)
+    if (!call_has_p2p(c) || c->direct || !c->anl || anl_get_stats(c->anl, &st) < 0)
         return;
-    if (c->p2p_suspect) {
-        if (c->path_echo_ms > c->p2p_suspect) {
-            c->p2p_suspect = 0;
-            if (c->standby_check) {         /* both ways: now the relay may go */
-                c->standby_check = 0;
+    if (c->pd.suspect) {
+        if (c->pd.echo_ms > c->pd.suspect) {
+            path_direct_suspect(c, 0);
+            if (c->pd.standby_check) {         /* both ways: now the relay may go */
+                c->pd.standby_check = 0;
                 call_standby_done(c->n->loop, c);
                 return;
             }
             npf_log("call %s: direct path alive again (checked both ways)", c->call_id_s);
-            if (c->relay.active && !c->t_standby)
-                c->t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
+            pm_standby_start(c);
             return;
         }
-        if (now - c->p2p_suspect < P2P_DUAL_MS)
+        if (now - c->pd.suspect < P2P_DUAL_MS)
             return;
         npf_logw("call %s: direct path lost%s", c->call_id_s,
                  c->relay.active && c->relay.bound ? ", staying on the relay"
@@ -138,15 +192,15 @@ void call_check_p2p(npf_call *c)
      * as suspect (measured: all of a node's UDP dropped mid-download, the
      * sender idle on credit, noticed only by the standby's check 22 s later) */
     if (st.inflight == 0) {
-        c->p2p_busy_since = 0;
-        if (now - (c->p2p_rx_ms > c->p2p_since ? c->p2p_rx_ms : c->p2p_since) >= P2P_IDLE_SILENT_MS)
+        c->pd.p.busy_since = 0;
+        if (now - (c->pd.p.last_rx > c->pd.p.since ? c->pd.p.last_rx : c->pd.p.since) >= P2P_IDLE_SILENT_MS)
             call_p2p_suspect_start(c, "nothing from the peer on the direct path for 20 s");
         return;
     }
-    if (!c->p2p_busy_since)
-        c->p2p_busy_since = now;
+    if (!c->pd.p.busy_since)
+        c->pd.p.busy_since = now;
     quiet = 2 * (int64_t)st.rto > P2P_SILENT_MS ? 2 * (int64_t)st.rto : P2P_SILENT_MS;
-    if (now - (c->p2p_rx_ms > c->p2p_busy_since ? c->p2p_rx_ms : c->p2p_busy_since) < quiet)
+    if (now - (c->pd.p.last_rx > c->pd.p.busy_since ? c->pd.p.last_rx : c->pd.p.busy_since) < quiet)
         return;
     {
         char why[64];
@@ -158,27 +212,25 @@ void call_check_p2p(npf_call *c)
 /* the direct path given up (lost, or the session moves to the WS relay) */
 void call_p2p_drop(npf_call *c)
 {
-    c->p2p_suspect = 0;
-    c->standby_check = 0;
-    c->p2p = 0;
-    npf_timer_stop(c->n->loop, &c->t_pcheck);
+    path_direct_suspect(c, 0);
+    c->pd.standby_check = 0;
+    pm_del(&c->pm, &c->pd.p);
+    npf_timer_stop(c->n->loop, &c->pd.t_check);
     npf_timer_stop(c->n->loop, &c->t_standby);
-    if (c->p2p_owned) {
-        npf_loop_del(c->n->loop, c->p2p_fd);
-        npf_sock_close(c->p2p_fd);
-        c->p2p_owned = 0;
+    if (c->pd.owned) {
+        npf_loop_del(c->n->loop, c->pd.fd);
+        npf_sock_close(c->pd.fd);
+        c->pd.owned = 0;
     }
-    c->p2p_fd = -1;
+    c->pd.fd = -1;
 }
 
 /* the direct path is in doubt: checked both ways (PATH_CHECK), the data on
  * the relay too meanwhile (asked for when it was released) */
 void call_p2p_suspect_start(npf_call *c, const char *why)
 {
-    c->p2p_suspect = npf_mono_ms();
-    npf_random(&c->path_nonce, sizeof c->path_nonce);
-    if (!c->t_pcheck)
-        path_check_timer(c->n->loop, c);
+    path_direct_suspect(c, npf_mono_ms());
+    path_direct_check(c);
     npf_timer_stop(c->n->loop, &c->t_standby);
     if (c->relay.active) {
         npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);
@@ -197,42 +249,6 @@ void call_p2p_suspect_start(npf_call *c, const char *why)
         call_relay_asked(c);
     }
     anl_flush(c->anl);
-}
-
-/* the direct path held for 30 s: stop using the relay; the caller tells the
- * platform to free both allocations (data-channel.md 3) */
-void call_standby_done(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    char data[96];
-    (void)loop;
-    c->t_standby = NULL;
-    if (!c->p2p || !c->relay.active)
-        return;
-    if (c->p2p_suspect) {   /* not while the direct path is in doubt */
-        if (!c->standby_check)
-            c->t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
-        return;
-    }
-    if (c->path_echo_ms < c->p2p_since) {
-        /* the punch proved only that the peer's datagrams reach us (a path
-         * cut one way still passes it): a path check answered over the direct
-         * path first, else the session would lose the relay it still needs */
-        c->standby_check = 1;
-        c->p2p_suspect = npf_mono_ms();
-        npf_random(&c->path_nonce, sizeof c->path_nonce);
-        if (!c->t_pcheck)
-            path_check_timer(c->n->loop, c);
-        return;
-    }
-    c->relay.active = 0;
-    c->relay.bound = 0;
-    npf_timer_stop(c->n->loop, &c->relay.t_bind);
-    if (c->caller) {
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
-        npf_node_send(c->n, "relay_release", 0, data);
-    }
-    npf_log("call %s: relay released", c->call_id_s);
 }
 
 
@@ -254,7 +270,7 @@ void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         if (call_path_input(c, buf, (size_t)r))
             continue;
         if (call_anl_feed(c, buf, (size_t)r) == 0 && !c->ended)
-            c->p2p_rx_ms = npf_mono_ms();
+            c->pd.p.last_rx = npf_mono_ms();
         if (c->ended)
             return;
     }

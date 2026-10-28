@@ -71,7 +71,7 @@ static void ws_wait_done(npf_loop *loop, void *arg)
     (void)loop;
     c->t_ws_wait = NULL;
     c->relay_waits_ports = 0;
-    if (!c->p2p && !c->relay.bound) {
+    if (!call_has_p2p(c) && !c->relay.bound) {
         npf_log("call %s: no direct path within %d s", c->call_id_s, WS_WAIT_MS / 1000);
         call_ask_ws_relay(c);
     }
@@ -98,11 +98,11 @@ static void relay_gave_up(void *arg)
          * same allocation, which binds it again from its first address
          * (call_relay_setup), the usual way on from there */
         npf_log("call %s: UDP relay unreachable before the accept: binding it again then", c->call_id_s);
-    } else if (c->p2p) {
+    } else if (call_has_p2p(c)) {
         /* in doubt (p2p_suspect): the verdict decides (lost: the WS
          * relay, check_p2p); no punching on the WS relay */
         npf_log("call %s: UDP relay unreachable; the direct path carries the session%s", c->call_id_s,
-                c->p2p_suspect ? " while it is checked" : "");
+                c->pd.suspect ? " while it is checked" : "");
     } else if (!c->relay_ports_waited && call_hard_punches(c) > 0) {
         /* a hard-side punch holds hundreds of the NAT's ports: a carrier
          * NAT with a quota of them (the phone's APDM CGNAT, about 500) then
@@ -446,7 +446,7 @@ void call_check_relay(npf_call *c)
     anl_stats st;
     int64_t now = npf_mono_ms(), quiet;
     /* bound: t_bind is its keepalive (binding is !bound with t_bind) */
-    if (!c->relay.active || !c->relay.bound || c->ws_mode || c->direct || (c->p2p && !c->p2p_suspect) || !c->anl
+    if (!c->relay.active || !c->relay.bound || c->ws_mode || c->direct || (call_has_p2p(c) && !c->pd.suspect) || !c->anl
         || anl_get_stats(c->anl, &st) < 0) {
         c->relay_busy_since = 0;
         npf_timer_stop(c->n->loop, &c->t_rcheck);
