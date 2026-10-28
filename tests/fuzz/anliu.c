@@ -75,7 +75,7 @@ int main(int argc, char **argv)
                 input[pos] ^= (char)(1u << (random32() % 8));
             }
             if ((random32() & 7) == 0) n = random32() % (n + 1);
-            (void)anl_input_plain(w, input, (long)n);
+            (void)anl_input_plain(w, input, (int)n);
             count = anl_readable(w, rd, ANL_MAX_STREAMS);
             for (k = 0; k < count && k < ANL_MAX_STREAMS; k++) {
                 if (rd[k]->mode == ANL_SEMI)

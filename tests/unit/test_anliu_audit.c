@@ -63,18 +63,20 @@ static int send_failure(int mode, int bytes)
     CHECK(h.live == 0);
     return 0;
 }
+/* sizes are int since AnLiu 39fa5f1: a negative one, or one above
+ * mtu_max, is refused before anything is read */
 static int input_length(void)
 {
-#if LONG_MAX > 0xffffffffL
     anl_config cfg;
     anl_t *w;
     char tiny[64] = {0};
     anl_config_default(&cfg, ANL_ROLE_CLIENT);
     w = anl_create(123, &cfg, NULL);
     CHECK(w);
-    CHECK(anl_input(w, tiny, (long)(0x100000000ULL + sizeof tiny)) == ANL_EFORMAT);
+    CHECK(anl_input(w, tiny, -1) == ANL_EFORMAT);
+    CHECK(anl_input(w, tiny, INT_MAX) == ANL_EFORMAT);
+    CHECK(anl_peek_conv(tiny, -1, &(uint32_t){0}) != ANL_OK);
     anl_release(w);
-#endif
     return 0;
 }
 static int option_limits(void)

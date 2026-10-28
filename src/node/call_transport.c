@@ -530,10 +530,10 @@ static void auth_fail_check(npf_call *c)
 int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len)
 {
     int r;
-    if (!c->anl)
+    if (!c->anl || len > 65535)             /* no datagram is longer (AnLiu's sizes are int) */
         return -1;
     anl_update(c->anl, (uint32_t)npf_mono_ms());
-    r = anl_input(c->anl, (const char *)buf, (long)len);
+    r = anl_input(c->anl, (const char *)buf, (int)len);
     if (r < 0)
         return r;
     anl_after_input(c);

@@ -4,10 +4,10 @@
 
 | 项目 | 值 |
 |---|---|
-| 上游提交 | `60b0ffde805f5e18d74afdfab57e9e2e3c798add` |
+| 上游提交 | `39fa5f1a378e9ddada91118d5baedbb2fa5803fd` |
 | 复制日期 | 2026-10-28 |
-| `anliu.c` SHA-256 | `e93f40ddcefde60146ab9d778eaf6d5a4d256ecd8bc71ed3668b5cac31a6f606`（上游文件，打补丁前） |
-| `anliu.h` SHA-256 | `dbf9f4355065e62d670898161ea3e3f2a77e313b4a15e6d0d40d189160750145`（上游文件，打补丁前） |
+| `anliu.c` SHA-256 | `3ecd05a6d67c16eab1a91fd6a63a38245184628da7b302807d1b23eb3f0e485a`（上游文件，打补丁前） |
+| `anliu.h` SHA-256 | `0f203e543aa061688dfe9bda8cbedeb4deabb65f83f7202ecb4cae9e83ab71af`（上游文件，打补丁前） |
 | 线上版本 | `ANL_VERSION 1`，与 libnpf 之前使用的私有分叉（2026-10-01）互不兼容 |
 | 补丁 | 无 |
 

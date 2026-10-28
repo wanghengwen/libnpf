@@ -611,7 +611,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
      * share a conv, the one whose keys authenticate the datagram takes it.
      * Anything else (relay, punching) reads as some random conv, which almost
      * never belongs to a call and then fails authentication. */
-    if (anl_peek_conv((const char *)buf, (long)len, &conv) == ANL_OK) {
+    if (len <= 65535 && anl_peek_conv((const char *)buf, (int)len, &conv) == ANL_OK) {    /* a datagram: int is enough */
         npf_call *next;
         for (c = n->conv_tab[CONV_SLOT(conv)]; c; c = next) {
             int on_p2p;
