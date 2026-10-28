@@ -17,6 +17,7 @@
 #include "npf/conf.h"
 #include "npf/node.h"
 #include "npf/platform.h"
+#include "npf/testhooks.h"
 
 #include "node_internal.h"
 #include "home.h"
@@ -94,15 +95,10 @@ int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const np
     n->cur_server = -1;
     n->udp_fd = -1;
     n->udp6_fd = -1;
-    {
-        const char *v = getenv("NPF_TEST_DROP_P2P");
-        n->test_cut_ms = v ? atoll(v) : -1;
-        n->test_block_relay = getenv("NPF_TEST_BLOCK_RELAY");
-        n->test_udp_fail = getenv("NPF_TEST_UDP_FAIL");
-        n->test_no_udp = getenv("NPF_NO_UDP") != NULL;
-        n->test_ws_file = getenv("NPF_TEST_WS_FILE");
-        n->test_cut_port = v && strchr(v, ':') ? atoi(strchr(v, ':') + 1) : 0;
-    }
+    n->th = npf_th();
+    n->test_udp_fail = getenv("NPF_TEST_UDP_FAIL");
+    n->test_no_udp = getenv("NPF_NO_UDP") != NULL;
+    n->test_ws_file = getenv("NPF_TEST_WS_FILE");
     n->punch_lead_ms = cfg->punch_lead_ms >= 0 ? cfg->punch_lead_ms : npf_firewall_lead_ms();
     {   /* four S3 hard sides at full size at once (256 each) when the descriptors allow */
         long lim = npf_fd_limit(65536);        /* sublinks: a descriptor each, NPF_MAX_SUBLINKS a session */

@@ -32,14 +32,14 @@ npf_call *call_find(npf_node *n, const npf_json *j, int d)
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
 int call_relay_blocked(const npf_node *n, const char *what)
 {
-    const char *v = n->test_block_relay;
+    const char *v = n->th->block_relay;
     return v && *what && strstr(v, what) != NULL;
 }
 
 int call_relay_addr_blocked(const npf_call *c)
 {
     char a[64];
-    return c->n->test_block_relay
+    return c->n->th->block_relay
            && call_relay_blocked(c->n, npf_addr_str(&c->relay.addr[c->relay.cur], a, sizeof a));
 }
 

@@ -19,8 +19,8 @@
  * came up; with a port only the path to the peer on that port (many-to-many) */
 int call_p2p_cut(const npf_call *c)
 {
-    int64_t cut = c->n->test_cut_ms;
-    int port = c->n->test_cut_port;
+    int64_t cut = c->n->th->drop_p2p_ms;
+    int port = c->n->th->drop_p2p_port;
     if (cut < 0 || !c->p2p || npf_mono_ms() - c->p2p_since <= cut)
         return 0;
     return !port || ntohs(c->p2p_addr.ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)&c->p2p_addr)->sin6_port
@@ -32,7 +32,7 @@ int call_p2p_cut(const npf_call *c)
  * only, neither side's address goes to the other), or tests (NPF_NO_P2P) */
 int call_no_p2p(const npf_call *c)
 {
-    return c->secure || getenv("NPF_NO_P2P") != NULL;
+    return c->secure || c->n->th->no_p2p;
 }
 
 

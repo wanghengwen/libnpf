@@ -321,13 +321,11 @@ struct npf_node {
     /* UDP */
     int           udp_fd;
     uint16_t      udp_port;
-    int64_t       test_cut_ms;      /* NPF_TEST_DROP_P2P (call.c), read once per node */
-    const char   *test_block_relay; /* NPF_TEST_BLOCK_RELAY (call.c), read once: not at each relayed datagram */
+    const struct npf_test_hooks *th;    /* the test hooks (npf/testhooks.h): npf_th(), a test's own */
     const char   *test_udp_fail;    /* NPF_TEST_UDP_FAIL (node_network.c), read once: not every watch tick */
     int           test_no_udp;      /* NPF_NO_UDP: no UDP at all (sessions on the WS relay, no spare) */
     const char   *test_ws_file;     /* NPF_TEST_WS_FILE: no UDP while this file exists (node_network.c) */
     struct npf_call *relay_hit;     /* the call the last relayed datagram was for: tried first */
-    int           test_cut_port;
     int           udp6_fd;          /* IPv6 main socket (S0, host6 candidates), -1 when the host has no IPv6 */
     uint16_t      pred_port;        /* sequential allocation: the next new mapping's port (the "pred" candidate) */
     /* the router's port mapping (nodemap.c) */

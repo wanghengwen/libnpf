@@ -247,7 +247,7 @@ static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
     if (a.state == RELAY_ACK_BOUND) {
         /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that confirms
          * the binding (the challenges still come: without one nothing binds) */
-        if (!c->relay.bound && !getenv("NPF_TEST_DROP_BIND_ACK"))
+        if (!c->relay.bound && !c->n->th->drop_bind_ack)
             relay_bound(c, "");
         return;
     }

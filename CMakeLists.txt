@@ -100,6 +100,7 @@ add_library(npf_common STATIC
   src/platform/resolve.c
   src/platform/hostinfo.c
   src/platform/vpnbypass.c
+  src/platform/testhooks.c
 
   # cryptography: SIV, Noise, CPace, certificates
   src/crypto/siv.c
