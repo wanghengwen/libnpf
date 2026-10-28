@@ -464,7 +464,7 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
             bind_send(h, 0, 0);
         return;
     }
-    /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that binds, as a call's (call_relay.c) */
+    /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that binds, as a call's (path_udp.c) */
     if (n->th->drop_bind_ack)
         return;
     h->newnet = 0;

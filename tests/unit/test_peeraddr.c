@@ -87,8 +87,8 @@ int test_peeraddr(void)
         return fails;
     snprintf(c->call_id_s, sizeof c->call_id_s, "peeraddr-test");
     c->keys_ready = 0;                  /* the punch waits for the keys: nothing is sent */
-    sin_of(&c->relay.addr[0], "203.0.113.5", 9900);
-    c->relay.naddr = 1;
+    sin_of(&c->pu.r.addr[0], "203.0.113.5", 9900);
+    c->pu.r.naddr = 1;
 
     n = start(c, 1,
               "{\"t\":\"host4\",\"a\":\"127.0.0.1:5000\"},{\"t\":\"srflx\",\"a\":\"224.0.0.1:5000\"},"

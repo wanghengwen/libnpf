@@ -13,6 +13,7 @@
 
 #include "npf/loop.h"
 #include "npf/siv.h"
+#include "relay_bind.h"
 
 enum { PK_DIRECT, PK_UDP_RELAY, PK_WS_RELAY, PK_N };     /* kinds, by rank: direct > UDP relay > WS relay */
 enum { PH_UP, PH_SUSPECT };                              /* health (so far only the direct path's doubt) */
@@ -51,6 +52,18 @@ typedef struct path_direct {
     npf_timer *t_check;
 } path_direct;
 
+/* the UDP relay (path_udp.c); p.last_rx: the relay last answered (a
+ * BIND_ACK, the peer's data through it) */
+typedef struct path_udp {
+    npf_path p;
+    relay_c  r;                     /* the binder (relay_bind.h): the allocation; also the WS relay's id and key */
+    npf_timer *t_check;             /* call_check_relay again while the session relies on it */
+    npf_timer *t_standby;           /* the direct path up: the relay goes after RELAY_STANDBY_MS */
+    int      retried;               /* tried again once after a failed punch, before the WS relay */
+    int      waits_ports;           /* unreachable while punches held the NAT's ports: again when they end */
+    int      ports_waited;          /* that wait was had (once) */
+} path_udp;
+
 /* The manager: the paths in use, by kind, and where pm_send sends. A WS
  * relay is exclusive (data-channel.md 3: UDP gave out); else the direct
  * path is the primary one with the UDP relay standing by, or the second one
@@ -61,6 +74,9 @@ typedef struct npf_pm {
     npf_path *p[PK_N];              /* NULL: none of that kind */
     npf_path *primary, *second;     /* pm_route's choice */
     int       fixed;                /* a direct connection's (no platform): a fixed direct path */
+    /* the session's requests and waits (path_mgr.c) */
+    int64_t   asked_ms;             /* relay_switch sent at (monotonic ms), waiting for a new allocation; 0 none */
+    npf_timer *t_ws_wait;           /* UDP relay unreachable: waiting for the punch first */
 } npf_pm;
 
 /* a path in use from now on (once of each kind), or no longer; its health:
@@ -89,6 +105,6 @@ const char *pm_name(const npf_pm *m);
 const char *pm_label(const npf_pm *m);
 int pm_code(const npf_pm *m);
 
-extern const npf_path_ops path_direct_ops;
+extern const npf_path_ops path_direct_ops, path_udp_ops;
 
 #endif

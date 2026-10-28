@@ -199,7 +199,7 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
     }
     npf_log("call %s: accepted%s", c->call_id_s,
             c->ws_mode ? (c->wsr && !c->ws_fail_wait ? " (the WS relay connected since the reply)" : "")
-            : c->relay.bound ? " (the UDP relay bound since the reply)" : c->relay.active ? " (the UDP relay being bound)" : "");
+            : c->pu.r.bound ? " (the UDP relay bound since the reply)" : call_has_relay(c) ? " (the UDP relay being bound)" : "");
     /* connecting first: with the relay from the reply our hello goes as the
      * transport is made, and the session is established then (the caller
      * does not wait for the callee's hello, call_hello) */

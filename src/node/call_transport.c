@@ -50,7 +50,7 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
         npf_udp_send(c->pd.fd, (const uint8_t *)buf, (size_t)len, &c->pd.addr);
     /* the relay carries the data when there is no direct path, and as a second
      * copy while the direct path is suspected (AnLiu drops the duplicates) */
-    if ((!call_has_p2p(c) || c->pd.suspect) && c->relay.active)
+    if ((!call_has_p2p(c) || c->pd.suspect) && call_has_relay(c))
         call_relay_send_data(c, (const uint8_t *)buf, (size_t)len);
     return 0;
 }
@@ -836,7 +836,7 @@ int call_start_transport(npf_call *c)
      * bound, call_relay_setup), or the WS relay once paired */
     if (c->ws_mode)
         call_ws_carrier(c);
-    else if (call_has_p2p(c) || c->relay.active)
+    else if (call_has_p2p(c) || call_has_relay(c))
         call_hello(c);
     anl_schedule(c);
     if (c->punch_wait_keys) {

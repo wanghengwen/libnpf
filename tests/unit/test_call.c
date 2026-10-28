@@ -111,7 +111,7 @@ static void relay_asked_again(npf_node *n)
     call_ws_failed(c, "test");          /* again at once: still waiting for the first */
     CHECK(count(seen, "asking for one on our own server") == 1, "asked %d times at once: %s",
           count(seen, "asking for one on our own server"), seen);
-    c->relay_asked_ms -= RELAY_ASK_AGAIN_MS;    /* no allocation came: the platform dropped it */
+    c->pm.asked_ms -= RELAY_ASK_AGAIN_MS;    /* no allocation came: the platform dropped it */
     call_ws_failed(c, "test");
     CHECK(count(seen, "asking for one on our own server") == 2, "not asked again: %s", seen);
     npf_call_end(c, "test");

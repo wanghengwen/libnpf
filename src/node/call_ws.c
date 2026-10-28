@@ -137,7 +137,7 @@ static int ws_open(npf_call *c)
 {
     if (call_relay_blocked(c->n, c->ws_url))
         return -1;
-    c->wsr = npf_wsr_open(c->n->loop, c->ws_url, c->ws_pub, &c->n->id, c->relay.relay_id, &wsr_cbs, c);
+    c->wsr = npf_wsr_open(c->n->loop, c->ws_url, c->ws_pub, &c->n->id, c->pu.r.relay_id, &wsr_cbs, c);
     return c->wsr ? 0 : -1;
 }
 
@@ -168,7 +168,7 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
         npf_log("call %s: the session moves to the WS relay (its connections stay)", c->call_id_s);
     c->ws_mode = 1;
     c->ws_paired_once = 0;
-    c->relay.active = 0;
+    path_udp_off(c);
     call_relay_leave(c);
     if (call_has_p2p(c))
         call_p2p_drop(c);

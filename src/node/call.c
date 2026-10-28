@@ -2,7 +2,7 @@
  * it, the node's sessions as a whole (their datagrams, their ends, what the
  * library asks of them). The handshake in call_handshake.c, the transport
  * in call_transport.c, the paths in path_*.c (path.h), punching in
- * call_punch.c, the relays in call_relay.c and call_ws.c (signaling.md
+ * call_punch.c, the WS relay in call_ws.c (signaling.md
  * "呼叫与端到端连接", data-channel.md, security.md 9). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
@@ -29,20 +29,6 @@ npf_call *call_find(npf_node *n, const npf_json *j, int d)
     return NULL;
 }
 
-/* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
-int call_relay_blocked(const npf_node *n, const char *what)
-{
-    const char *v = n->th->block_relay;
-    return v && *what && strstr(v, what) != NULL;
-}
-
-int call_relay_addr_blocked(const npf_call *c)
-{
-    char a[64];
-    return c->n->th->block_relay
-           && call_relay_blocked(c->n, npf_addr_str(&c->relay.addr[c->relay.cur], a, sizeof a));
-}
-
 
 int npf_call_auth(const npf_call *c) { return c->auth; }
 uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
@@ -66,10 +52,10 @@ void call_relay_leave(npf_call *c)
         if (had)
             call_punch_sockets_back(c->n);
     }
-    npf_timer_stop(l, &c->relay.t_bind);
-    c->relay.bound = 0;
-    c->relay_waits_ports = 0;
-    npf_timer_stop(l, &c->t_ws_wait);
+    npf_timer_stop(l, &c->pu.r.t_bind);
+    c->pu.r.bound = 0;
+    c->pu.waits_ports = 0;
+    npf_timer_stop(l, &c->pm.t_ws_wait);
     npf_timer_stop(l, &c->pd.t_check);
     path_direct_suspect(c, 0);
     c->pd.standby_check = 0;
@@ -153,8 +139,8 @@ npf_call *call_new(npf_node *n, int caller)
  * no one's now */
 static void call_timers_stop(npf_call *c)
 {
-    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->pd.t_check,
-                       &c->t_standby, &c->t_direct, &c->relay.t_bind, &c->t_wsre, &c->t_rcheck};
+    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->pm.t_ws_wait, &c->pd.t_check,
+                       &c->pu.t_standby, &c->t_direct, &c->pu.r.t_bind, &c->t_wsre, &c->pu.t_check};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++)
         npf_timer_stop(c->n->loop, t[i]);
@@ -371,8 +357,8 @@ const char *npf_call_path(const npf_call *c)
         return "ws relay";
     if (call_has_p2p(c))
         return "p2p";
-    if (c->relay.active)
-        return c->relay.bound ? "relay" : "relay (binding)";
+    if (call_has_relay(c))
+        return c->pu.r.bound ? "relay" : "relay (binding)";
     return "none";
 }
 
@@ -382,7 +368,7 @@ const char *npf_call_path_label(const npf_call *c)
         return "Direct";
     if (call_has_p2p(c) && !c->ws_mode)
         return "P2P";
-    if (c->ws_mode || c->relay.active)
+    if (c->ws_mode || call_has_relay(c))
         return "Relayed";
     return "none";
 }

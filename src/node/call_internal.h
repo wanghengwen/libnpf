@@ -1,5 +1,5 @@
 /* the call (npf_call) shared by call.c (the state, dispatch, the node's
- * sessions), call_handshake.c, call_transport.c, call_punch.c, call_relay.c,
+ * sessions), call_handshake.c, call_transport.c, call_punch.c,
  * call_reverse.c, call_ws.c, call_direct.c and the paths (path.h) */
 #ifndef NPF_CALL_INTERNAL_H
 #define NPF_CALL_INTERNAL_H
@@ -65,11 +65,10 @@ struct npf_call {
     int64_t     anl_due;            /* when t_anl fires (monotonic ms) */
     int         flush_pending;
     int         punched;            /* a punch round has finished (either way) */
-    npf_timer  *t_ws_wait;          /* UDP relay unreachable: waiting for the punch first */
 
     npf_pm      pm;                 /* the session's paths (path.h) */
     path_direct pd;
-    relay_c     relay;
+    path_udp    pu;
     uint64_t    auth_fail_seen;     /* AnLiu rx_auth_fail last reported (forged datagrams with our conv) */
     int64_t     auth_fail_at;       /* when */
     int         anl_srtt;           /* AnLiu's srtt at its last timer (ms, 0 none yet) */
@@ -83,14 +82,6 @@ struct npf_call {
     int         punch_round;
     int         accepted;           /* the platform's accept arrived: t_timeout counts from it */
     int         secure;             /* connect_mode secure on either side: relays only, no punching */
-    int         relay_retried;      /* the UDP relay tried again once after a failed punch, before the WS relay */
-    int         relay_waits_ports;  /* the UDP relay unreachable while punches held the NAT's ports: again when they end */
-    int         relay_ports_waited; /* that wait was had (once) */
-    npf_timer  *t_standby;
-    int64_t     relay_asked_ms;     /* relay_switch sent at (monotonic ms), waiting for a new allocation; 0 none */
-    int64_t     relay_rx_ms;        /* the UDP relay last answered (a BIND_ACK, the peer's data through it) */
-    int64_t     relay_busy_since;   /* the session relies on the UDP relay with data in flight since (ms); 0 no */
-    npf_timer  *t_rcheck;           /* call_check_relay again while the session relies on the relay */
     int         ws_fail_wait;       /* caller: the WS relay failed before the accept: asked about after it */
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
     int         nrearly;
@@ -166,7 +157,7 @@ typedef struct call_hs {
     size_t      dmsg1_len;
 } call_hs;
 
-/* shared by call.c, call_punch.c, call_relay.c */
+/* shared by call.c, call_punch.c, the paths */
 #define RELAY_KEEPALIVE_MS 25000     /* RELAY_BIND refresh while the relay is in use */
 #define RELAY_STANDBY_MS   30000     /* relay kept after the direct path is up, then released */
 #define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
@@ -192,9 +183,6 @@ typedef struct npf_key_share {
 /* call.c: the state, the end, dispatch, the node's sessions */
 void call_accept_seen(npf_call *c);
 npf_call *call_find(npf_node *n, const npf_json *j, int d);
-int call_relay_addr_blocked(const npf_call *c);
-int  call_relay_ask_ok(const npf_call *c);
-void call_relay_asked(npf_call *c);
 void call_relay_leave(npf_call *c);
 /* the peer's addresses this node sends to (security.md H-1): a candidate;
  * the public IP the sprays aim at */
@@ -234,11 +222,19 @@ int call_start_transport(npf_call *c);
 #define CALL_OF(p, member) ((npf_call *)(void *)((char *)(p) - offsetof(npf_call, member)))
 
 static inline int call_has_p2p(const npf_call *c) { return pm_has(&c->pm, PK_DIRECT); }
+static inline int call_has_relay(const npf_call *c) { return pm_has(&c->pm, PK_UDP_RELAY); }
 
-/* path_mgr.c: the session's paths; the decisions between them */
+/* path_mgr.c: the session's paths; the decisions between them: the
+ * relay's allocations and standby, the way to the WS relay (data-channel.md 9) */
 void call_paths_init(npf_call *c);
+void call_relay_setup(npf_call *c, const npf_json *j, int d);
 void pm_standby_start(npf_call *c);
 void call_standby_done(npf_loop *loop, void *arg);
+void call_ask_ws_relay(npf_call *c);
+int  call_relay_ask_ok(const npf_call *c);
+void call_relay_asked(npf_call *c);
+void call_relay_gave_up(void *arg);
+void call_ws_wait_end(npf_call *c, int ok);
 
 /* path_direct.c: the direct path, its check, its loss */
 void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer);
@@ -277,19 +273,23 @@ void call_start_punch_now(npf_call *c);
 void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 int call_no_p2p(const npf_call *c);
 
-/* call_relay.c: the UDP relay client, the way to the WS relay (data-channel.md 9) */
-void call_ask_ws_relay(npf_call *c);
+/* path_udp.c: the UDP relay client (data-channel.md 9) */
+void path_udp_on(npf_call *c);
+void path_udp_off(npf_call *c);
+int  call_relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
+                     int naddr);
+void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
+                    int naddr);
+int  call_relay_addr_blocked(const npf_call *c);
 void call_relay_rebind(npf_call *c);
 void call_relay_early_feed(npf_call *c);
 void call_relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len);
 void call_relay_early_free(npf_call *c);
-void call_relay_setup(npf_call *c, const npf_json *j, int d);
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 /* a RELAY_DATA from a relay (data-channel.md 9.2) to one of the calls'
  * allocations: its hint names it, its tag verifies; 1 consumed, 0 not one */
 int node_relay_data_input(npf_node *n, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);
-void call_ws_wait_end(npf_call *c, int ok);
-void call_check_relay(npf_call *c);    /* a bound UDP relay that went silent while in use (call_relay.c) */
+void call_check_relay(npf_call *c);    /* a bound UDP relay that went silent while in use */
 
 #endif

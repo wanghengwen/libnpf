@@ -144,11 +144,11 @@ add_library(npf_common STATIC
   src/node/call_transport.c
   src/node/path_mgr.c
   src/node/path_direct.c
+  src/node/path_udp.c
   src/node/call_reverse.c
   src/node/call_ws.c
   src/node/call_direct.c
   src/node/call_punch.c
-  src/node/call_relay.c
   src/node/media.c
   src/node/udpfwd.c
   src/tunnel/tunnel.c

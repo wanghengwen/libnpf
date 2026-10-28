@@ -1,4 +1,4 @@
-/* Binding a relay allocation (data-channel.md 9.2), a call's (call_relay.c)
+/* Binding a relay allocation (data-channel.md 9.2), a call's (path_udp.c)
  * or the node's spare (home.c): zero-cookie RELAY_BIND, the challenge with
  * our address's cookie, a RELAY_BIND echoing it; only BIND_ACKs answering
  * our last binds count (txid, ts_ms, kseq); the relay drops a kseq not above
@@ -116,7 +116,7 @@ int  relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8
  * tried; the owner stops r->t_bind when it is bound */
 void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg);
 int  call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
-/* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable (call.c) */
+/* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable (path_udp.c) */
 int  call_relay_blocked(const npf_node *n, const char *what);
 /* a datagram from one of the relay's addresses opened (plain: 2048 bytes):
  * its length; 0 from an address given up on (consumed); -1 not ours */

@@ -129,7 +129,7 @@ int test_relay(void)
                    rb, kb, npf_addr_str(&relay, ra, sizeof ra));
     CHECK(npf_json_parse(&j, js, (size_t)len, tok, 32) >= 0, "relay JSON");
     call_relay_setup(c, &j, 0);
-    CHECK(c->relay.active && !c->relay.bound, "the relay taken");
+    CHECK(call_has_relay(c) && !c->pu.r.bound, "the relay taken");
 
     /* the first bind; a challenge to a txid it never sent, and ones with its
      * txid but another ts_ms or kseq: nothing sent */
@@ -148,10 +148,10 @@ int test_relay(void)
     /* "bound" for a txid it did not send, or for none: not bound */
     ack(c, &keys, &relay, foreign, b2.ts, b2.kseq, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
     ack(c, &keys, &relay, zero, b2.ts, 0, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
-    CHECK(!c->relay.bound, "bound by a foreign BIND_ACK");
+    CHECK(!c->pu.r.bound, "bound by a foreign BIND_ACK");
     /* the answer to the echo binds */
     ack(c, &keys, &relay, b2.txid, b2.ts, b2.kseq, npf_node_time(&node), RELAY_ACK_BOUND, ck1);
-    CHECK(c->relay.bound, "not bound by its own BIND_ACK");
+    CHECK(c->pu.r.bound, "not bound by its own BIND_ACK");
 
     /* a challenge to its RELAY_DATA (no txid: the NAT gave a new port):
      * answered when newer than the last one and of about now, once */
@@ -164,7 +164,7 @@ int test_relay(void)
     ack(c, &keys, &relay, b1.txid, b1.ts, b1.kseq, npf_node_time(&node), 0, ck3);
     CHECK(next_bind(fr, &keys, 100, &b3) == 0, "an old data challenge answered");
     /* the cookie of what was refused was not taken */
-    CHECK(memcmp(c->relay.cookie, ck2, sizeof ck2) == 0, "cookie of a refused BIND_ACK taken");
+    CHECK(memcmp(c->pu.r.cookie, ck2, sizeof ck2) == 0, "cookie of a refused BIND_ACK taken");
 
     call_free(c);
     node.udp_fd = -1;

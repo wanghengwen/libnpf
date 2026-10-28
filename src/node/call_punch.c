@@ -217,8 +217,8 @@ void call_punch_sockets_back(npf_node *n)
         if (o->punch && o->punch_socks > 0)
             return;                     /* another one still holds them */
     for (o = n->calls; o; o = o->next)
-        if (o->relay_waits_ports && !o->ended && !o->relay.bound && !o->ws_mode) {
-            o->relay_waits_ports = 0;
+        if (o->pu.waits_ports && !o->ended && !o->pu.r.bound && !o->ws_mode) {
+            o->pu.waits_ports = 0;
             npf_log("call %s: the punch gave the NAT's ports back: trying the UDP relay again", o->call_id_s);
             call_relay_rebind(o);
         }
@@ -311,7 +311,7 @@ static void punch_quiet(npf_punch *p, const npf_punch_result *res, void *arg)
     char data[256];
     npf_jw w;
     (void)p;
-    if (c->t_ws_wait || c->ended || call_has_p2p(c))
+    if (c->pm.t_ws_wait || c->ended || call_has_p2p(c))
         return;
     result_begin(c, &w, data, sizeof data, c->punch_of, 0);
     npf_jw_kbool(&w, "early", 1);
@@ -486,8 +486,8 @@ static int platform_addr(const npf_call *c, struct in_addr ip, uint16_t port)
     for (i = 0; i < c->n->nprobe_ep && i < 3; i++)
         if (c->n->probe_ep[i].sin_addr.s_addr == ip.s_addr && (!port || ntohs(c->n->probe_ep[i].sin_port) == port))
             return 1;
-    for (i = 0; i < c->relay.naddr && i < 4; i++) {
-        const struct sockaddr_in *r = (const struct sockaddr_in *)&c->relay.addr[i];
+    for (i = 0; i < c->pu.r.naddr && i < 4; i++) {
+        const struct sockaddr_in *r = (const struct sockaddr_in *)&c->pu.r.addr[i];
         if (r->sin_family == AF_INET && r->sin_addr.s_addr == ip.s_addr && (!port || ntohs(r->sin_port) == port))
             return 1;
     }

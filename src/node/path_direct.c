@@ -168,11 +168,11 @@ void call_check_p2p(npf_call *c)
         if (now - c->pd.suspect < P2P_DUAL_MS)
             return;
         npf_logw("call %s: direct path lost%s", c->call_id_s,
-                 c->relay.active && c->relay.bound ? ", staying on the relay"
-                 : c->relay.active && c->relay.t_bind ? ", the UDP relay still binding" : "");
+                 call_has_relay(c) && c->pu.r.bound ? ", staying on the relay"
+                 : call_has_relay(c) && c->pu.r.t_bind ? ", the UDP relay still binding" : "");
         call_p2p_drop(c);
         anl_flush(c->anl);
-        if (c->relay.active && !c->relay.bound && !c->relay.t_bind) {
+        if (call_has_relay(c) && !c->pu.r.bound && !c->pu.r.t_bind) {
             /* the UDP relay did not bind either (binding still: it asks for
              * the WS relay itself when it gives up) */
             npf_logw("call %s: no UDP relay bound: the WS relay", c->call_id_s);
@@ -216,7 +216,7 @@ void call_p2p_drop(npf_call *c)
     c->pd.standby_check = 0;
     pm_del(&c->pm, &c->pd.p);
     npf_timer_stop(c->n->loop, &c->pd.t_check);
-    npf_timer_stop(c->n->loop, &c->t_standby);
+    npf_timer_stop(c->n->loop, &c->pu.t_standby);
     if (c->pd.owned) {
         npf_loop_del(c->n->loop, c->pd.fd);
         npf_sock_close(c->pd.fd);
@@ -231,10 +231,10 @@ void call_p2p_suspect_start(npf_call *c, const char *why)
 {
     path_direct_suspect(c, npf_mono_ms());
     path_direct_check(c);
-    npf_timer_stop(c->n->loop, &c->t_standby);
-    if (c->relay.active) {
+    npf_timer_stop(c->n->loop, &c->pu.t_standby);
+    if (call_has_relay(c)) {
         npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);
-        if (!c->relay.bound && !c->relay.t_bind) {
+        if (!c->pu.r.bound && !c->pu.r.t_bind) {
             /* it never bound (the direct path carried the session): bound
              * now, or the session had nothing left when the path went */
             npf_log("call %s: the UDP relay never bound: binding it again", c->call_id_s);
