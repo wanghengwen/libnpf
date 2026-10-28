@@ -318,6 +318,7 @@ void npf_call_info_get(const npf_call *c, npf_call_info *i)
     i->number = c->caller ? c->number : c->caller_number;     /* the other side's */
     memcpy(i->peer_pub, c->peer_pub, 32);
     i->path = npf_call_path(c);
+    i->path_code = pm_code(&c->pm);
     if (call_has_p2p(c)) {
         i->p2p_addr = c->pd.addr;
         i->has_p2p_addr = 1;
@@ -348,29 +349,9 @@ npf_call *npf_node_calls(npf_node *n) { return n->calls; }
 npf_call *npf_call_next(const npf_call *c) { return c->next; }
 uint64_t npf_call_peer(const npf_call *c) { return c->number; }
 
-const char *npf_call_path(const npf_call *c)
-{
-    if (c->direct)
-        return "direct";
-    if (call_has_ws(c))
-        return "ws relay";
-    if (call_has_p2p(c))
-        return "p2p";
-    if (call_has_relay(c))
-        return c->pu.r.bound ? "relay" : "relay (binding)";
-    return "none";
-}
-
-const char *npf_call_path_label(const npf_call *c)
-{
-    if (c->direct)
-        return "Direct";
-    if (call_has_p2p(c) && !call_has_ws(c))
-        return "P2P";
-    if (call_has_ws(c) || call_has_relay(c))
-        return "Relayed";
-    return "none";
-}
+/* the path the session sends on (path_mgr.c), named */
+const char *npf_call_path(const npf_call *c) { return pm_name(&c->pm); }
+const char *npf_call_path_label(const npf_call *c) { return pm_label(&c->pm); }
 
 int npf_call_open(npf_call *c, int fd, int passthrough, const char *host, uint16_t port)
 {

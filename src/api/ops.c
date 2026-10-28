@@ -195,19 +195,6 @@ int npf_node_get(npf_t *n, npf_node_info *out)
     return npf_api_op(n, node_get_run, out);
 }
 
-int npf_path_code(const char *path)
-{
-    if (!path)
-        return 0;
-    if (strcmp(path, "direct") == 0 || strcmp(path, "p2p") == 0)
-        return NPF_PATH_DIRECT;
-    if (strncmp(path, "relay", 5) == 0)
-        return NPF_PATH_UDP_RELAY;
-    if (strcmp(path, "ws relay") == 0)
-        return NPF_PATH_WS_RELAY;
-    return 0;
-}
-
 static int session_get_run(npf_t *n, void *arg)
 {
     pid_arg *x = arg;
@@ -224,7 +211,7 @@ static int session_get_run(npf_t *n, void *arg)
     i.peer = n->sess[k].peer && peer_of(n, n->sess[k].peer) ? n->sess[k].peer : 0;
     i.number = ci.number;
     i.outgoing = ci.caller;
-    i.path = npf_path_code(ci.path);
+    i.path = ci.path_code;
     snprintf(i.call_id, sizeof i.call_id, "%s", ci.id);
     return copy_out(x->out, &i, sizeof i) < 0 ? NPF_EINVAL : NPF_OK;
 }

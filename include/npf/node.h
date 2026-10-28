@@ -497,7 +497,8 @@ int  npf_call_state(const npf_call *c);
 uint64_t npf_call_peer(const npf_call *c);
 /* debugging: calls, AnLiu and tunnel state to stderr */
 void npf_node_dump(npf_node *n);
-/* "p2p" / "relay" / "none" */
+/* the path the session sends on: "p2p", "relay", "relay (binding)", "ws
+ * relay", "direct" (npf listen / connect HOST:PORT), "none" */
 const char *npf_call_path(const npf_call *c);
 /* the path as shown to people: P2P, Relayed (UDP or WS relay, also while it
  * is being set up), Direct (npf listen / connect HOST:PORT); npf_call_path
@@ -511,6 +512,7 @@ typedef struct npf_call_info {
     uint64_t number;                /* the other side's number: the callee's, or a calling node's; 0 for clients and direct sessions */
     uint8_t  peer_pub[32];          /* zero until the handshake */
     const char *path;               /* npf_call_path */
+    int      path_code;             /* the same as npf.h's NPF_PATH_*, 0 none */
     struct sockaddr_storage p2p_addr;
     int      has_p2p_addr;
     int64_t  up_s;                  /* seconds since established, -1 = not yet */

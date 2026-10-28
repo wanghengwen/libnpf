@@ -423,8 +423,10 @@ ANL = 3(1) | AnLiu 数据报        数据报就是 P2P、UDP 中转上同一个
 
 | 内容 | 源码入口 |
 |---|---|
-| 会话、路径切换、AnLiu 流与直连握手 | [src/node/call.c](../../src/node/call.c) |
-| WS 中转作为 AnLiu 的载体 | [src/node/call_ws.c](../../src/node/call_ws.c) |
+| 会话、AnLiu 流与直连握手 | [src/node/call.c](../../src/node/call.c)、[src/node/call_transport.c](../../src/node/call_transport.c)、[src/node/call_direct.c](../../src/node/call_direct.c) |
+| 路径对象与路径管理器（往哪发、路径名、路径切换） | [src/node/path.h](../../src/node/path.h)、[src/node/path_mgr.c](../../src/node/path_mgr.c) |
+| 直连路径、UDP 中转客户端 | [src/node/path_direct.c](../../src/node/path_direct.c)、[src/node/path_udp.c](../../src/node/path_udp.c) |
+| WS 中转作为 AnLiu 的载体 | [src/node/path_ws.c](../../src/node/path_ws.c) |
 | TCP 子链路、SOCKS5、信用窗口与 `hello` | [src/tunnel/tunnel.c](../../src/tunnel/tunnel.c) |
 | 地址策略与控制接口登记 | [src/tunnel/policy.c](../../src/tunnel/policy.c) |
 | 资源定义与目标规则 | [src/node/resources.c](../../src/node/resources.c) |

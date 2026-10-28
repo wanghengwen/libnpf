@@ -121,7 +121,6 @@ const char *npf_setup_key_taken(const npf_conf *ov);
 
 /* ops.c: the operations of npf.h's objects, shared with the command line */
 uint32_t npf_ops_flags(const npf_t *n, const npf_peer *p);  /* NPF_PERSIST, NPF_PLATFORM */
-int  npf_path_code(const char *path);                /* npf_call_path as NPF_PATH_*, 0 none */
 /* a peer's record in local.json: saved (connected at every start, with its
  * saved forwards) or not; psk_file: a direct peer's key file as given, NULL
  * its key. NPF_OK, NPF_ESAVE */

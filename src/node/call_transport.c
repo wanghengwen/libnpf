@@ -38,20 +38,11 @@ void call_dpend_free(npf_call *c)
     c->dpend_bytes = 0;
 }
 /* ---- AnLiu ---- */
+/* AnLiu's datagrams go where the path manager says (path.h) */
 static int anl_out(char *buf, int len, anl_t *w, void *user)
 {
-    npf_call *c = user;
     (void)w;
-    if (call_has_ws(c)) {                       /* the WS relay carries the session (path_ws.c) */
-        call_ws_send(c, (const uint8_t *)buf, (size_t)len);
-        return 0;
-    }
-    if (call_has_p2p(c) && !call_p2p_cut(c))
-        npf_udp_send(c->pd.fd, (const uint8_t *)buf, (size_t)len, &c->pd.addr);
-    /* the relay carries the data when there is no direct path, and as a second
-     * copy while the direct path is suspected (AnLiu drops the duplicates) */
-    if ((!call_has_p2p(c) || c->pd.suspect) && call_has_relay(c))
-        call_relay_send_data(c, (const uint8_t *)buf, (size_t)len);
+    pm_send(&((npf_call *)user)->pm, (const uint8_t *)buf, (size_t)len);
     return 0;
 }
 
@@ -836,7 +827,7 @@ int call_start_transport(npf_call *c)
      * bound, call_relay_setup), or the WS relay once paired */
     if (call_has_ws(c))
         call_ws_carrier(c);
-    else if (call_has_p2p(c) || call_has_relay(c))
+    else if (c->pm.primary)
         call_hello(c);
     anl_schedule(c);
     if (c->punch_wait_keys) {
