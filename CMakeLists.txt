@@ -145,8 +145,8 @@ add_library(npf_common STATIC
   src/node/path_mgr.c
   src/node/path_direct.c
   src/node/path_udp.c
+  src/node/path_ws.c
   src/node/call_reverse.c
-  src/node/call_ws.c
   src/node/call_direct.c
   src/node/call_punch.c
   src/node/media.c

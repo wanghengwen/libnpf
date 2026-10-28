@@ -2,8 +2,7 @@
  * it, the node's sessions as a whole (their datagrams, their ends, what the
  * library asks of them). The handshake in call_handshake.c, the transport
  * in call_transport.c, the paths in path_*.c (path.h), punching in
- * call_punch.c, the WS relay in call_ws.c (signaling.md
- * "呼叫与端到端连接", data-channel.md, security.md 9). */
+ * call_punch.c (signaling.md "呼叫与端到端连接", data-channel.md, security.md 9). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -140,7 +139,7 @@ npf_call *call_new(npf_node *n, int caller)
 static void call_timers_stop(npf_call *c)
 {
     npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->pm.t_ws_wait, &c->pd.t_check,
-                       &c->pu.t_standby, &c->t_direct, &c->pu.r.t_bind, &c->t_wsre, &c->pu.t_check};
+                       &c->pu.t_standby, &c->t_direct, &c->pu.r.t_bind, &c->pw.t_re, &c->pu.t_check};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++)
         npf_timer_stop(c->n->loop, t[i]);
@@ -299,8 +298,8 @@ void npf_call_end(npf_call *c, const char *why)
             anl_update(c->anl, (uint32_t)npf_mono_ms());
             anl_flush(c->anl);
         }
-        if (c->ws_mode && c->wsr)
-            npf_wsr_flush(c->wsr);          /* now: the relay connection goes with the call */
+        if (call_has_ws(c) && c->pw.wsr)
+            npf_wsr_flush(c->pw.wsr);          /* now: the relay connection goes with the call */
     }
     call_set_state(c, NPF_CALL_CLOSED, reason);
     call_ended(c);
@@ -353,7 +352,7 @@ const char *npf_call_path(const npf_call *c)
 {
     if (c->direct)
         return "direct";
-    if (c->ws_mode)
+    if (call_has_ws(c))
         return "ws relay";
     if (call_has_p2p(c))
         return "p2p";
@@ -366,9 +365,9 @@ const char *npf_call_path_label(const npf_call *c)
 {
     if (c->direct)
         return "Direct";
-    if (call_has_p2p(c) && !c->ws_mode)
+    if (call_has_p2p(c) && !call_has_ws(c))
         return "P2P";
-    if (c->ws_mode || call_has_relay(c))
+    if (call_has_ws(c) || call_has_relay(c))
         return "Relayed";
     return "none";
 }
@@ -728,7 +727,7 @@ void npf_node_ws_calls_udp_back(npf_node *n)
     for (c = n->calls; c; c = c->next) {
         char data[1024];
         npf_jw w;
-        if (c->ended || !c->ws_mode || c->direct)
+        if (c->ended || !call_has_ws(c) || c->direct)
             continue;
         npf_log("call %s: UDP works again: asking for the UDP relay", c->call_id_s);
         npf_jw_init(&w, data, sizeof data);
@@ -749,7 +748,7 @@ void npf_node_calls_to_ws(npf_node *n)
 {
     npf_call *c;
     for (c = n->calls; c; c = c->next)
-        if (!c->ended && !c->direct && !c->ws_mode && c->keys_ready)
+        if (!c->ended && !c->direct && !call_has_ws(c) && c->keys_ready)
             call_ask_ws_relay(c);
 }
 

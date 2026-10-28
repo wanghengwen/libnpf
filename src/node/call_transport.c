@@ -42,7 +42,7 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
 {
     npf_call *c = user;
     (void)w;
-    if (c->ws_mode) {                       /* the WS relay carries the session (call_ws.c) */
+    if (call_has_ws(c)) {                       /* the WS relay carries the session (path_ws.c) */
         call_ws_send(c, (const uint8_t *)buf, (size_t)len);
         return 0;
     }
@@ -834,7 +834,7 @@ int call_start_transport(npf_call *c)
      * the direct one, the UDP relay as soon as it is ours (not bound yet:
      * the relay forwards what our key seals from an address it has not
      * bound, call_relay_setup), or the WS relay once paired */
-    if (c->ws_mode)
+    if (call_has_ws(c))
         call_ws_carrier(c);
     else if (call_has_p2p(c) || call_has_relay(c))
         call_hello(c);

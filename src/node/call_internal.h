@@ -1,6 +1,6 @@
 /* the call (npf_call) shared by call.c (the state, dispatch, the node's
  * sessions), call_handshake.c, call_transport.c, call_punch.c,
- * call_reverse.c, call_ws.c, call_direct.c and the paths (path.h) */
+ * call_reverse.c, call_direct.c and the paths (path.h) */
 #ifndef NPF_CALL_INTERNAL_H
 #define NPF_CALL_INTERNAL_H
 
@@ -69,6 +69,7 @@ struct npf_call {
     npf_pm      pm;                 /* the session's paths (path.h) */
     path_direct pd;
     path_udp    pu;
+    path_ws     pw;
     uint64_t    auth_fail_seen;     /* AnLiu rx_auth_fail last reported (forged datagrams with our conv) */
     int64_t     auth_fail_at;       /* when */
     int         anl_srtt;           /* AnLiu's srtt at its last timer (ms, 0 none yet) */
@@ -82,10 +83,8 @@ struct npf_call {
     int         punch_round;
     int         accepted;           /* the platform's accept arrived: t_timeout counts from it */
     int         secure;             /* connect_mode secure on either side: relays only, no punching */
-    int         ws_fail_wait;       /* caller: the WS relay failed before the accept: asked about after it */
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
     int         nrearly;
-    int         ws_paired_once;     /* the WS relay worked at least once */
     npf_punch_cfg *pcfg;            /* the rounds' plan and candidates: made at the first punch_start */
     uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
     int         info_round;
@@ -116,14 +115,7 @@ struct npf_call {
         void *arg;
     } ctl[NPF_CALL_CTL_MAX];
     int         ctl_seq;
-    /* WS relay (data-channel.md 10): a carrier of the AnLiu connection */
     int         peer_closed;        /* the peer's close ended it (call_end peer) */
-    int         ws_mode;            /* AnLiu's datagrams go over the WS relay (not UDP) */
-    npf_wsr    *wsr;
-    char        ws_url[256];        /* the allocation's relay, for a connection lost after pairing */
-    uint8_t     ws_pub[32];
-    npf_timer  *t_wsflush;          /* the datagrams queued this turn of the loop go out in one write */
-    npf_timer  *t_wsre;             /* connected again after a loss */
     npf_media  *media;              /* libnpf media streams (media.h), made on first use */
     npf_udpf   *udp;                /* the UDP forwards' flows (udpfwd.h), made on first use */
     npf_timer  *t_free;             /* its free on the next turn of the loop (ended) */
@@ -223,6 +215,7 @@ int call_start_transport(npf_call *c);
 
 static inline int call_has_p2p(const npf_call *c) { return pm_has(&c->pm, PK_DIRECT); }
 static inline int call_has_relay(const npf_call *c) { return pm_has(&c->pm, PK_UDP_RELAY); }
+static inline int call_has_ws(const npf_call *c) { return pm_has(&c->pm, PK_WS_RELAY); }
 
 /* path_mgr.c: the session's paths; the decisions between them: the
  * relay's allocations and standby, the way to the WS relay (data-channel.md 9) */
@@ -253,7 +246,7 @@ void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 void call_rev_close_all(npf_call *c);
 void call_reverse_request(npf_call *c, const char *type, const npf_json *j);
 
-/* call_ws.c: the WS relay as a carrier of the AnLiu connection (data-channel.md 10) */
+/* path_ws.c: the WS relay as a carrier of the AnLiu connection (data-channel.md 10) */
 void call_ws_send(npf_call *c, const uint8_t *d, size_t len);
 void call_ws_carrier(npf_call *c);      /* paired, keys ready: AnLiu's carrier and the path up */
 void call_ws_failed(npf_call *c, const char *why);

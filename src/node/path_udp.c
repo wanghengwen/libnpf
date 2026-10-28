@@ -162,7 +162,7 @@ static void relay_bound(npf_call *c, const char *how)
     node_home_udp_ok(c->n);                 /* a spare stuck backing off: UDP works */
     c->pu.r.bound = 1;
     c->pu.waits_ports = 0;
-    if (c->pm.t_ws_wait && !c->ws_mode)     /* no WS relay needed after all */
+    if (c->pm.t_ws_wait && !call_has_ws(c))     /* no WS relay needed after all */
         npf_timer_stop(c->n->loop, &c->pm.t_ws_wait);
     relay_keepalive(c);
     npf_log("call %s: UDP relay bound%s", c->call_id_s, how);
@@ -355,7 +355,7 @@ void call_check_relay(npf_call *c)
     anl_stats st;
     int64_t now = npf_mono_ms(), quiet;
     /* bound: t_bind is its keepalive (binding is !bound with t_bind) */
-    if (!call_has_relay(c) || !c->pu.r.bound || c->ws_mode || c->direct || (call_has_p2p(c) && !c->pd.suspect)
+    if (!call_has_relay(c) || !c->pu.r.bound || call_has_ws(c) || c->direct || (call_has_p2p(c) && !c->pd.suspect)
         || !c->anl || anl_get_stats(c->anl, &st) < 0) {
         c->pu.p.busy_since = 0;
         npf_timer_stop(c->n->loop, &c->pu.t_check);

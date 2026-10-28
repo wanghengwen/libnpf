@@ -84,6 +84,8 @@ void call_paths_init(npf_call *c)
     c->pd.fd = -1;
     c->pu.p.ops = &path_udp_ops;
     c->pu.p.kind = PK_UDP_RELAY;
+    c->pw.p.ops = &path_ws_ops;
+    c->pw.p.kind = PK_WS_RELAY;
 }
 
 
@@ -143,7 +145,7 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
     if (r < 0 || j->tok[r].type != NPF_JT_OBJECT || (naddr = relay_obj_parse(j, r, mode, id, key, addr)) < 0)
         return;
     if (strcmp(mode, "ws") == 0) {
-        if (c->ws_mode && (c->wsr || c->ws_fail_wait) && memcmp(id, c->pu.r.relay_id, 8) == 0)
+        if (call_has_ws(c) && (c->pw.wsr || c->pw.fail_wait) && memcmp(id, c->pu.r.relay_id, 8) == 0)
             return;                 /* the one in use, sent again (both sides asked; the reply to the
                                      * call, then call_accepted): its sublinks stay */
         call_relay_take(c, id, key, NULL, 0);
@@ -164,7 +166,7 @@ void call_ask_ws_relay(npf_call *c)
 {
     char data[128];
     npf_timer_stop(c->n->loop, &c->pm.t_ws_wait);
-    if (c->ws_mode)                 /* on it already */
+    if (call_has_ws(c))                 /* on it already */
         return;
     npf_log("call %s: asking for the WS relay", c->call_id_s);
     snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"ws\"}", c->call_id_s);

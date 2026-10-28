@@ -53,7 +53,7 @@ void call_punch_report(npf_call *c, const char *why)
 {
     char data[4096];
     npf_jw w;
-    if (c->ended || c->ws_mode || c->direct || call_no_p2p(c) || !c->accepted)
+    if (c->ended || call_has_ws(c) || c->direct || call_no_p2p(c) || !c->accepted)
         return;
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
@@ -217,7 +217,7 @@ void call_punch_sockets_back(npf_node *n)
         if (o->punch && o->punch_socks > 0)
             return;                     /* another one still holds them */
     for (o = n->calls; o; o = o->next)
-        if (o->pu.waits_ports && !o->ended && !o->pu.r.bound && !o->ws_mode) {
+        if (o->pu.waits_ports && !o->ended && !o->pu.r.bound && !call_has_ws(o)) {
             o->pu.waits_ports = 0;
             npf_log("call %s: the punch gave the NAT's ports back: trying the UDP relay again", o->call_id_s);
             call_relay_rebind(o);
@@ -249,7 +249,7 @@ static void peer_cand(npf_call *c, const npf_json *j, int o)
 {
     char a[80];
     struct sockaddr_storage ss;
-    if (c->ended || call_has_p2p(c) || c->ws_mode || call_no_p2p(c))
+    if (c->ended || call_has_p2p(c) || call_has_ws(c) || call_no_p2p(c))
         return;
     memset(&ss, 0, sizeof ss);
     if (!npf_json_eq(j, npf_json_get(j, o, "t"), "srflx") || npf_json_get_str(j, o, "a", a, sizeof a) <= 0
@@ -547,7 +547,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
     char s[64], strat[8] = "S1";
     if (!c->caller)
         call_accept_seen(c);
-    if (call_has_p2p(c) || c->ws_mode)       /* a WS relay session cannot move to a direct path */
+    if (call_has_p2p(c) || call_has_ws(c))       /* a WS relay session cannot move to a direct path */
         return;
     if (call_no_p2p(c)) {                /* secure, or tests: the session stays on the relay */
         npf_log("call %s: punching disabled (%s)", c->call_id_s, c->secure ? "connect_mode secure" : "NPF_NO_P2P");

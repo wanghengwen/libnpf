@@ -1,4 +1,4 @@
-/* Calls: the WS relay as a carrier of the session's AnLiu connection
+/* The WS relay (path.h) as a carrier of the session's AnLiu connection
  * (data-channel.md 10). Each AnLiu datagram is one ANL message on the relay
  * connection; moving to the WS relay and back to UDP switches the
  * connection's carrier (ANL_OPT_CARRIER) and keeps everything on it: the
@@ -21,9 +21,9 @@ static void ws_flush_timer(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
     (void)loop;
-    c->t_wsflush = NULL;
-    if (c->wsr)
-        npf_wsr_flush(c->wsr);
+    c->pw.t_flush = NULL;
+    if (c->pw.wsr)
+        npf_wsr_flush(c->pw.wsr);
 }
 
 /* AnLiu's output on the WS relay: queued, written once this turn of the
@@ -32,11 +32,24 @@ static void ws_flush_timer(npf_loop *loop, void *arg)
  * again) */
 void call_ws_send(npf_call *c, const uint8_t *d, size_t len)
 {
-    if (!c->wsr || npf_wsr_pending(c->wsr) > WS_QUEUE_MAX || npf_wsr_queue(c->wsr, d, len) < 0)
+    if (!c->pw.wsr || npf_wsr_pending(c->pw.wsr) > WS_QUEUE_MAX || npf_wsr_queue(c->pw.wsr, d, len) < 0)
         return;
-    if (!c->t_wsflush)
-        c->t_wsflush = npf_timer_add(c->n->loop, 0, ws_flush_timer, c);
+    if (!c->pw.t_flush)
+        c->pw.t_flush = npf_timer_add(c->n->loop, 0, ws_flush_timer, c);
 }
+
+static void ws_send(npf_path *p, const uint8_t *dgram, size_t len)
+{
+    call_ws_send(CALL_OF(p, pw.p), dgram, len);
+}
+
+static const char *ws_name(const npf_path *p)
+{
+    (void)p;
+    return "ws relay";
+}
+
+const npf_path_ops path_ws_ops = {ws_send, ws_name};
 
 /* the WS relay carries the session now (paired, the AnLiu connection made):
  * a stream carrier (no fast retransmission, no FEC parity), set from this
@@ -46,7 +59,7 @@ void call_ws_send(npf_call *c, const uint8_t *d, size_t len)
  * model again and sends what is unacknowledged once */
 void call_ws_carrier(npf_call *c)
 {
-    if (!c->ws_mode || !c->anl || !c->wsr || !npf_wsr_paired(c->wsr) || c->ended)
+    if (!call_has_ws(c) || !c->anl || !c->pw.wsr || !npf_wsr_paired(c->pw.wsr) || c->ended)
         return;
     anl_set_option(c->anl, ANL_OPT_CARRIER, ANL_CARRIER_STREAM);
     call_path_up(c);
@@ -56,7 +69,7 @@ static void wsr_paired(npf_wsr *r, int peer_udp, void *arg)
 {
     npf_call *c = arg;
     (void)r;
-    c->ws_paired_once = 1;
+    c->pw.paired_once = 1;
     npf_log("call %s: WS relay paired%s", c->call_id_s, peer_udp ? " (the peer on a UDP allocation)" : "");
     call_ws_carrier(c);
 }
@@ -65,7 +78,7 @@ static void wsr_datagram(npf_wsr *r, const uint8_t *d, size_t len, void *arg)
 {
     npf_call *c = arg;
     (void)r;
-    if (!c->ws_mode || c->ended)
+    if (!call_has_ws(c) || c->ended)
         return;                 /* back on UDP: a late one of the old carrier */
     if (c->caller && !c->keys_ready) {
         call_relay_early_keep(c, d, len);   /* the callee's hello before the accept brought the keys */
@@ -80,12 +93,12 @@ static void ws_reconnect(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
     (void)loop;
-    c->t_wsre = NULL;
-    if (!c->ws_mode || c->wsr || c->ended)
+    c->pw.t_re = NULL;
+    if (!call_has_ws(c) || c->pw.wsr || c->ended)
         return;
     npf_log("call %s: WS relay: connecting again", c->call_id_s);
     if (ws_open(c) < 0)
-        c->t_wsre = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
+        c->pw.t_re = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
 }
 
 /* The WS relay failed. Before it ever worked: the caller asks for a relay on
@@ -98,17 +111,17 @@ void call_ws_failed(npf_call *c, const char *why)
 {
     char data[128];
     npf_log("call %s: WS relay %s", c->call_id_s, why);
-    if (c->ended || !c->ws_mode)
+    if (c->ended || !call_has_ws(c))
         return;
-    if (c->ws_paired_once) {
-        if (!c->wsr && !c->t_wsre)
-            c->t_wsre = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
+    if (c->pw.paired_once) {
+        if (!c->pw.wsr && !c->pw.t_re)
+            c->pw.t_re = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
         return;
     }
     if (c->caller && c->state == NPF_CALL_CALLING) {
         /* connected from the reply to the call: the platform takes no
          * relay_switch before the accept (call_caller_accepted asks then) */
-        c->ws_fail_wait = 1;
+        c->pw.fail_wait = 1;
         return;
     }
     if (c->caller && call_relay_ask_ok(c)) {
@@ -126,8 +139,8 @@ static void wsr_gone(npf_wsr *r, const char *why, void *arg)
         npf_log("call %s: WS relay: %s", c->call_id_s, why);
         return;
     }
-    c->wsr = NULL;              /* already freed */
-    npf_timer_stop(c->n->loop, &c->t_wsflush);
+    c->pw.wsr = NULL;              /* already freed */
+    npf_timer_stop(c->n->loop, &c->pw.t_flush);
     call_ws_failed(c, why);
 }
 
@@ -135,10 +148,10 @@ static const npf_wsr_cbs wsr_cbs = {wsr_paired, wsr_datagram, wsr_gone};
 
 static int ws_open(npf_call *c)
 {
-    if (call_relay_blocked(c->n, c->ws_url))
+    if (call_relay_blocked(c->n, c->pw.url))
         return -1;
-    c->wsr = npf_wsr_open(c->n->loop, c->ws_url, c->ws_pub, &c->n->id, c->pu.r.relay_id, &wsr_cbs, c);
-    return c->wsr ? 0 : -1;
+    c->pw.wsr = npf_wsr_open(c->n->loop, c->pw.url, c->pw.pub, &c->n->id, c->pu.r.relay_id, &wsr_cbs, c);
+    return c->pw.wsr ? 0 : -1;
 }
 
 /* the platform's WS relay allocation (relay_switch, call_relay_setup): the
@@ -164,17 +177,17 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
         npf_logw("call %s: WS relay server %lld not in the server list", c->call_id_s, (long long)sid);
         return -1;
     }
-    if (!c->ws_mode && c->anl)
+    if (!call_has_ws(c) && c->anl)
         npf_log("call %s: the session moves to the WS relay (its connections stay)", c->call_id_s);
-    c->ws_mode = 1;
-    c->ws_paired_once = 0;
+    pm_add(&c->pm, &c->pw.p);
+    c->pw.paired_once = 0;
     path_udp_off(c);
     call_relay_leave(c);
     if (call_has_p2p(c))
         call_p2p_drop(c);
     call_ws_leave_conn(c);
-    snprintf(c->ws_url, sizeof c->ws_url, "%s", url);
-    memcpy(c->ws_pub, pub, 32);
+    snprintf(c->pw.url, sizeof c->pw.url, "%s", url);
+    memcpy(c->pw.pub, pub, 32);
     if (ws_open(c) < 0)
         return -1;
     npf_log("call %s: WS relay %s", c->call_id_s, url);
@@ -184,22 +197,22 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
 /* the relay connection closed, its timers stopped (the carrier stays) */
 void call_ws_leave_conn(npf_call *c)
 {
-    npf_timer_stop(c->n->loop, &c->t_wsflush);
-    npf_timer_stop(c->n->loop, &c->t_wsre);
-    if (c->wsr)
-        npf_wsr_close(c->wsr);
-    c->wsr = NULL;
+    npf_timer_stop(c->n->loop, &c->pw.t_flush);
+    npf_timer_stop(c->n->loop, &c->pw.t_re);
+    if (c->pw.wsr)
+        npf_wsr_close(c->pw.wsr);
+    c->pw.wsr = NULL;
 }
 
 /* back to UDP (a UDP relay allocation): the AnLiu connection's carrier is a
  * datagram one again, the relay connection goes */
 void call_ws_leave(npf_call *c)
 {
-    if (!c->ws_mode)
+    if (!call_has_ws(c))
         return;
     npf_log("call %s: the session leaves the WS relay for UDP (its connections stay)", c->call_id_s);
-    c->ws_mode = 0;
-    c->ws_paired_once = 0;
+    pm_del(&c->pm, &c->pw.p);
+    c->pw.paired_once = 0;
     call_ws_leave_conn(c);
     if (c->anl)
         anl_set_option(c->anl, ANL_OPT_CARRIER, ANL_CARRIER_DGRAM);

@@ -13,6 +13,7 @@
 
 #include "npf/loop.h"
 #include "npf/siv.h"
+#include "npf/wsrelay.h"
 #include "relay_bind.h"
 
 enum { PK_DIRECT, PK_UDP_RELAY, PK_WS_RELAY, PK_N };     /* kinds, by rank: direct > UDP relay > WS relay */
@@ -64,6 +65,19 @@ typedef struct path_udp {
     int      ports_waited;          /* that wait was had (once) */
 } path_udp;
 
+/* the WS relay (path_ws.c): a connection to the relay of the allocation
+ * (its id and key: the UDP relay's binder, call_relay_take) */
+typedef struct path_ws {
+    npf_path p;
+    npf_wsr *wsr;                   /* the relay connection, NULL none (lost: connected again) */
+    char     url[256];              /* the allocation's relay, for a connection lost after pairing */
+    uint8_t  pub[32];
+    npf_timer *t_flush;             /* the datagrams queued this turn of the loop go out in one write */
+    npf_timer *t_re;                /* connected again after a loss */
+    int      paired_once;           /* it worked at least once */
+    int      fail_wait;             /* caller: it failed before the accept: asked about after it */
+} path_ws;
+
 /* The manager: the paths in use, by kind, and where pm_send sends. A WS
  * relay is exclusive (data-channel.md 3: UDP gave out); else the direct
  * path is the primary one with the UDP relay standing by, or the second one
@@ -105,6 +119,6 @@ const char *pm_name(const npf_pm *m);
 const char *pm_label(const npf_pm *m);
 int pm_code(const npf_pm *m);
 
-extern const npf_path_ops path_direct_ops, path_udp_ops;
+extern const npf_path_ops path_direct_ops, path_udp_ops, path_ws_ops;
 
 #endif
