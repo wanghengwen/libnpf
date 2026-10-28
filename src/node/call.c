@@ -87,17 +87,16 @@ void call_arm(npf_call *c, int64_t at)
     c->t_due = npf_timer_add(c->n->loop, at - npf_mono_ms(), call_timer, c);
 }
 
-static int64_t first(int64_t a, int64_t at)
-{
-    return at && at < a ? at : a;
-}
-
 int64_t call_due(const npf_call *c, int64_t now)
 {
+    const int64_t at[] = {c->limit_at, c->punch_at, c->linger_at, c->direct_at, c->pm.check_at, c->pu.bind_at,
+                          c->pw.re_at};
     int64_t d = tr_due(c, now);
-    d = first(first(first(d, c->limit_at), c->punch_at), c->linger_at);
-    d = first(first(first(d, c->direct_at), c->pm.check_at), c->pu.bind_at);
-    return first(d, c->pw.re_at);
+    size_t i;
+    for (i = 0; i < sizeof at / sizeof at[0]; i++)
+        if (at[i] && at[i] < d)
+            d = at[i];
+    return d;
 }
 
 static int due(int64_t at, int64_t now)

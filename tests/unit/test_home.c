@@ -288,7 +288,7 @@ static void test_client(void)
         memset(&rc, 0, sizeof rc);
         nid[0] = (uint8_t)~bid[0];
         CHECK(!node_home_adopt(&node, nid, &rc), "another allocation adopted");
-        CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.bound && rc.kseq == b3.kseq && !rc.t_bind
+        CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.bound && rc.kseq == b3.kseq && !node.home->t_bind
               && memcmp(rc.cookie, ck, 8) == 0 && node.home->state == 6, "the spare adopted");
         CHECK(next_bind(fr, &keys, bid, 100, &b2) == 0, "the spare taken still binds");
         /* relay_spare: the next one, bound from scratch */

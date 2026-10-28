@@ -85,40 +85,35 @@ void path_udp_off(npf_call *c)
     pm_del(&c->pm, &c->pu.p);
 }
 
-static void bind_next(npf_call *c, int64_t ms)
+/* the next bind: binding, the run's next one (RELAY_BIND_MS); bound, the
+ * binding refreshed (NAT mapping, server idle timer) while in use */
+static void bind_next(npf_call *c)
 {
-    c->pu.bind_at = npf_mono_ms() + ms;
+    c->pu.bind_at = npf_mono_ms() + (c->pu.r.bound ? RELAY_KEEPALIVE_MS : RELAY_BIND_MS);
     call_at(c, c->pu.bind_at);
 }
 
-/* a binding run (relay_bind_begin: keep, from the address in use) from now:
- * a BIND every RELAY_BIND_MS, 3 to an address, then the next */
+/* a binding run (relay_bind_begin; keep: from the address in use) from now */
 static void bind_run(npf_call *c, int keep)
 {
     relay_bind_begin(&c->pu.r, keep);
     relay_bind_send(c);
-    bind_next(c, RELAY_BIND_MS);
+    bind_next(c);
 }
 
 static void udp_gave_up(npf_call *c);
 
-/* bound: the binding refreshed (NAT mapping, server idle timer) every
- * RELAY_KEEPALIVE_MS while in use; binding: the run's next bind, or every
- * address tried */
 void path_udp_tick(npf_call *c)
 {
     c->pu.bind_at = 0;
     if (!call_has_relay(c))
         return;
-    if (c->pu.r.bound) {
-        relay_bind_send(c);
-        bind_next(c, RELAY_KEEPALIVE_MS);
-    } else if (relay_bind_step(&c->pu.r) < 0) {
-        udp_gave_up(c);
-    } else {
-        relay_bind_send(c);
-        bind_next(c, RELAY_BIND_MS);
+    if (!c->pu.r.bound && relay_bind_step(&c->pu.r) < 0) {
+        udp_gave_up(c);         /* every address tried */
+        return;
     }
+    relay_bind_send(c);
+    bind_next(c);
 }
 
 /* every address tried (bind_run): DEAD, the
@@ -214,7 +209,7 @@ static void relay_bound(npf_call *c, const char *how)
 {
     node_home_udp_ok(c->n);                 /* a spare stuck backing off: UDP works */
     c->pu.r.bound = 1;
-    bind_next(c, RELAY_KEEPALIVE_MS);
+    bind_next(c);
     pm_rt(&c->pm, &c->pu.p, npf_mono_ms());
     npf_log("call %s: UDP relay bound%s", c->call_id_s, how);
     call_path_up(c);
@@ -318,7 +313,7 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
         c->pu.r.bound = 1;
         path_udp_on(c);
         relay_bind_send(c);
-        bind_next(c, RELAY_KEEPALIVE_MS);
+        bind_next(c);
     } else if (!c->pu.r.bound) {
         /* the relay forwards the peer's data to us: it has our binding,
          * whether or not its BIND_ACK came. Measured (a Mac <-> a Linux

@@ -125,40 +125,6 @@ int relay_bind_step(relay_c *r)
     return 0;
 }
 
-static void run_timer(npf_loop *l, void *arg)
-{
-    relay_c *r = arg;
-    r->t_bind = NULL;
-    if (relay_bind_step(r) < 0) {
-        r->on_gave_up(r->arg);
-        return;
-    }
-    r->on_send(r->arg);
-    r->t_bind = npf_timer_add(l, RELAY_BIND_MS, run_timer, r);
-}
-
-static void run_start(relay_c *r, int keep, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *),
-                      void *arg)
-{
-    npf_timer_stop(l, &r->t_bind);
-    r->on_send = on_send;
-    r->on_gave_up = on_gave_up;
-    r->arg = arg;
-    relay_bind_begin(r, keep);
-    on_send(arg);
-    r->t_bind = npf_timer_add(l, RELAY_BIND_MS, run_timer, r);
-}
-
-void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
-{
-    run_start(r, 0, l, on_send, on_gave_up, arg);
-}
-
-void relay_bind_probe(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
-{
-    run_start(r, 1, l, on_send, on_gave_up, arg);
-}
-
 int relay_obj_parse(const npf_json *j, int r, char mode[8], uint8_t id[8], uint8_t key[32],
                     struct sockaddr_storage addr[4])
 {

@@ -479,8 +479,7 @@ int64_t tr_due(const npf_call *c, int64_t now)
 
 static void anl_schedule(npf_call *c)
 {
-    int64_t now = npf_mono_ms();
-    call_at(c, tr_due(c, now));
+    call_at(c, tr_due(c, npf_mono_ms()));
 }
 
 static void anl_after_input(npf_call *c);

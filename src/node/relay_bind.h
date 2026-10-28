@@ -69,7 +69,7 @@ typedef struct relay_c {
     uint64_t kseq;              /* the last bind's */
     int64_t  echo_ms;           /* when a challenge was last answered at once (mono ms) */
     int      tries;             /* binds to bi in this run after the first */
-    int      keep;              /* this run keeps the data on cur (relay_bind_probe) */
+    int      keep;              /* this run keeps the data on cur (relay_bind_begin) */
     struct {                    /* the last binds: a BIND_ACK counts once, for one of them */
         uint8_t  txid[NPF_TXID_SIZE];
         uint32_t ts;
@@ -79,9 +79,6 @@ typedef struct relay_c {
     int      nsent;
     uint64_t chal_srv;          /* srv_time_ms of the last challenge to our RELAY_DATA taken */
     int64_t  last_tx;           /* the last bind sent (mono ms) */
-    npf_timer *t_bind;
-    void   (*on_send)(void *), (*on_gave_up)(void *);   /* relay_bind_run's */
-    void    *arg;
 } relay_c;
 
 /* a RELAY_BIND_ACK body: family | port | addr | srv_time_ms | state | cookie | kseq | flags | t_s(2) | learn(1) */
@@ -115,17 +112,13 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
 /* a RELAY_BIND to the address in use, in wire (256 bytes): its length, or -1.
  * flags RELAY_F_PONG: the answer to ping_id, shorter than a bind (72..95) */
 int  relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire);
-/* binding from the first address: send(arg) now and every RELAY_BIND_MS
- * (3 to an address, then the next; the data goes along), gave_up(arg) once
- * every address was tried; the owner stops r->t_bind when it is bound */
-void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg);
-/* the same from the address in use, then the others in order (the
- * binding of a relay gone silent, architecture.md Q2): the data stays on
- * the address in use until another one answers (relay_addr_take) */
-void relay_bind_probe(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg);
-/* a run's start (keep: from the address in use, the data staying there)
- * and its step at each RELAY_BIND_MS: 0 a bind to send (to bi), -1 every
- * address tried */
+/* A binding run: a bind now (relay_bind_begin) and at each RELAY_BIND_MS
+ * (relay_bind_step: 0 a bind to send, to bi; -1 every address tried), 3
+ * to an address, then the next; its owner keeps the time. From the first
+ * address, the data going along; keep: from the address in use, then the
+ * others in order (the binding of a relay gone silent, architecture.md
+ * Q2), the data staying on the address in use until another one answers
+ * (relay_addr_take) */
 void relay_bind_begin(relay_c *r, int keep);
 int  relay_bind_step(relay_c *r);
 /* where the binds go */

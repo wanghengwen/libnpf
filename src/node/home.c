@@ -44,7 +44,7 @@ struct npf_home {
     int           backoff;
     int           opening;                  /* a home_open waits for its answer */
     int           lost;                     /* the binding was lost (no answer): the NAT measured again once it is back */
-    npf_timer    *t_dog, *t_retry;
+    npf_timer    *t_dog, *t_retry, *t_bind;
     int64_t       bound_ms, since;          /* mono, Unix s: bound first */
     uint64_t      keepalives, moved, drops, taken; /* pings answered, R changes, watchdog rebinds, calls */
     npf_udp_watch w;
@@ -151,7 +151,7 @@ static void dog_timer(npf_loop *loop, void *arg)
     dog_check(h, npf_mono_ms());
 }
 
-/* ---- binding (data-channel.md 9.2, relay_bind_run) ---- */
+/* ---- binding (data-channel.md 9.2, relay_bind_begin) ---- */
 
 static void retry_timer(npf_loop *loop, void *arg)
 {
@@ -164,20 +164,14 @@ static void retry_timer(npf_loop *loop, void *arg)
         home_open_send(h);
 }
 
-static void bind_cb(void *arg)
-{
-    bind_send(arg, 0, 0);
-}
-
 /* every address tried: again later, sooner first. Each time the platform
  * is asked whether the spare is still there (home_open resume: kept, or a
  * new one): the relay reclaims a spare it does not hear from (at most
  * 330 s), and binding the old one again never ends (measured: a node's UDP
  * dropped 91 s, its spare resumed once while still dropped, then bound in
  * vain every 180 s for over an hour; the calls' allocations bound at once) */
-static void gave_up(void *arg)
+static void gave_up(struct npf_home *h)
 {
-    struct npf_home *h = arg;
     static const int again_s[] = {5, 20, 60, 180};
     h->r.cur = h->r.bi = h->r.tries = 0;
     h->lost = 1;
@@ -190,14 +184,30 @@ static void gave_up(void *arg)
         h->backoff++;
 }
 
+/* a BIND every RELAY_BIND_MS, 3 to an address, then the next */
+static void bind_timer(npf_loop *loop, void *arg)
+{
+    struct npf_home *h = arg;
+    h->t_bind = NULL;
+    if (relay_bind_step(&h->r) < 0) {
+        gave_up(h);
+        return;
+    }
+    bind_send(h, 0, 0);
+    h->t_bind = npf_timer_add(loop, RELAY_BIND_MS, bind_timer, h);
+}
+
 /* from_lost: the watchdog's, from the address in use (it worked), then the
  * others in order (architecture.md Q2); else from the first address */
 static void bind_start(struct npf_home *h, int from_lost)
 {
     npf_timer_stop(h->n->loop, &h->t_dog);
+    npf_timer_stop(h->n->loop, &h->t_bind);
     h->state = from_lost ? H_LOST : H_BINDING;
     h->r.bound = 0;
-    (from_lost ? relay_bind_probe : relay_bind_run)(&h->r, h->n->loop, bind_cb, gave_up, h);
+    relay_bind_begin(&h->r, from_lost);
+    bind_send(h, 0, 0);
+    h->t_bind = npf_timer_add(h->n->loop, RELAY_BIND_MS, bind_timer, h);
 }
 
 /* ---- the platform ---- */
@@ -305,7 +315,7 @@ static void spare_drop(struct npf_home *h, int state)
 {
     npf_loop *l = h->n->loop;
     npf_timer_stop(l, &h->t_dog);
-    npf_timer_stop(l, &h->r.t_bind);
+    npf_timer_stop(l, &h->t_bind);
     npf_timer_stop(l, &h->t_retry);
     h->r.active = h->r.bound = 0;
     h->state = state;
@@ -403,7 +413,6 @@ int node_home_adopt(npf_node *n, const uint8_t id[8], relay_c *dst)
     if (!h || !h->r.active || memcmp(id, h->r.relay_id, 8) != 0)
         return 0;
     *dst = h->r;                            /* its binding: the cookie, kseq, the address in use */
-    dst->t_bind = NULL;                     /* (the call's stopped: call_relay_setup) */
     dst->bound = h->state == H_BOUND;
     h->taken++;
     npf_logd("home: the spare taken by a call: the next one from the platform");
@@ -473,7 +482,7 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
     learn_seen(h, a.t_s, a.learn);
     if (h->state != H_BOUND) {
         int first = !h->bound_ms;
-        npf_timer_stop(n->loop, &h->r.t_bind);
+        npf_timer_stop(n->loop, &h->t_bind);
         h->state = H_BOUND;
         h->r.bound = 1;
         h->bound_ms = now;
