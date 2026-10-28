@@ -43,6 +43,11 @@ void call_ask_ws_relay(npf_call *c)
     snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"ws\"}", c->call_id_s);
     npf_node_send(c->n, "relay_switch", 0, data);
     call_relay_asked(c);
+    /* UDP believed to work: measured again, so that when it fails the profile
+     * says so and the probe's retries see it come back (udp_back brings the
+     * session back to UDP) */
+    if (c->n->nat_valid && c->n->nat_udp && !c->n->probe && c->n->udp_fd >= 0)
+        node_nat_refresh(c->n);
 }
 
 /* may a relay_switch go out: none is waiting for its allocation, or the last
@@ -153,6 +158,8 @@ static int relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32],
     if (!spare)
         relay_bind_take(&c->relay, c->n, id, key, addr, naddr);
     c->relay_asked_ms = 0;
+    c->relay_rx_ms = npf_mono_ms();         /* a new allocation: silent from now on counts */
+    c->relay_busy_since = 0;
     npf_timer_stop(c->n->loop, &c->t_standby);
     return spare;
 }
@@ -217,6 +224,7 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
  * binding kept fresh from now on */
 static void relay_bound(npf_call *c, const char *how)
 {
+    node_home_udp_ok(c->n);                 /* a spare stuck backing off: UDP works */
     c->relay.bound = 1;
     c->relay_waits_ports = 0;
     if (c->t_ws_wait && !c->ws_mode)     /* no WS relay needed after all */
@@ -235,6 +243,7 @@ static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
     relay_ack a;
     if (!relay_bind_ack(&c->relay, c->n, plain, pl, &a))
         return;
+    c->relay_rx_ms = npf_mono_ms();
     if (a.state == RELAY_ACK_BOUND) {
         /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that confirms
          * the binding (the challenges still come: without one nothing binds) */
@@ -317,6 +326,7 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
      * the WS relay too) */
     if (call_anl_feed(c, dg, len) < 0 || c->ended)
         return;
+    c->relay_rx_ms = npf_mono_ms();
     if (!c->relay.active) {     /* the peer sends on it: take it back, keep the binding fresh */
         npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
         c->relay.active = 1;
@@ -404,4 +414,63 @@ void call_ws_wait_end(npf_call *c, int ok)
     } else if (!ok) {
         call_ask_ws_relay(c);
     }
+}
+
+/* A bound UDP relay can die under a session (the node's UDP blocked, the
+ * relay's address unreachable): its BIND every 25 s goes unanswered and
+ * nothing comes through it, while the session waits on AnLiu's retries and
+ * the idle timeout (measured: all UDP of a node dropped, 41 s on a dead relay
+ * after the direct path was lost, 90 s: transport_lost). While the session
+ * relies on it (no direct path, or one in doubt), silence for max(3 s,
+ * 2 RTO) with data in flight - or 10 s without (a session waiting for its
+ * peer's credit sends nothing; a bind is a probe of a round trip) - binds it
+ * again from its first address: an answer keeps it (the peer, not the relay,
+ * gone quiet), none gives it up as at the start (relay_gave_up: the WS
+ * relay, once the direct path's verdict is in). Checked every second while
+ * relied on: AnLiu's own timer can be many seconds away (backed off) */
+#define RELAY_SILENT_MS      3000
+#define RELAY_IDLE_SILENT_MS 10000
+#define RELAY_CHECK_MS       1000
+
+static void relay_check_timer(npf_loop *loop, void *arg)
+{
+    npf_call *c = arg;
+    (void)loop;
+    c->t_rcheck = NULL;
+    if (!c->ended)
+        call_check_relay(c);
+}
+
+void call_check_relay(npf_call *c)
+{
+    anl_stats st;
+    int64_t now = npf_mono_ms(), quiet;
+    /* bound: t_bind is its keepalive (binding is !bound with t_bind) */
+    if (!c->relay.active || !c->relay.bound || c->ws_mode || c->direct || (c->p2p && !c->p2p_suspect) || !c->anl
+        || anl_get_stats(c->anl, &st) < 0) {
+        c->relay_busy_since = 0;
+        npf_timer_stop(c->n->loop, &c->t_rcheck);
+        return;
+    }
+    if (!c->t_rcheck)
+        c->t_rcheck = npf_timer_add(c->n->loop, RELAY_CHECK_MS, relay_check_timer, c);
+    if (st.inflight == 0) {
+        c->relay_busy_since = 0;
+        quiet = RELAY_IDLE_SILENT_MS;
+        if (now - c->relay_rx_ms < quiet)
+            return;
+    } else {
+        if (!c->relay_busy_since)
+            c->relay_busy_since = now;
+        quiet = 2 * (int64_t)st.rto > RELAY_SILENT_MS ? 2 * (int64_t)st.rto : RELAY_SILENT_MS;
+        if (now - (c->relay_rx_ms > c->relay_busy_since ? c->relay_rx_ms : c->relay_busy_since) < quiet)
+            return;
+    }
+    npf_logw("call %s: the UDP relay silent for %lld ms while the session relies on it: binding it again",
+             c->call_id_s, (long long)quiet);
+    c->relay.bound = 0;
+    c->relay_busy_since = 0;
+    npf_timer_stop(c->n->loop, &c->t_rcheck);
+    npf_timer_stop(c->n->loop, &c->relay.t_bind);
+    call_relay_rebind(c);
 }

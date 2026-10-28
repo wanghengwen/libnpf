@@ -13,6 +13,9 @@ void node_home_login(npf_node *n);
 void node_home_sig_lost(npf_node *n);
 /* the network may have changed, the main socket was opened again: bind again at once (the relay learns anew) */
 void node_home_net_change(npf_node *n);
+/* UDP works (a call's allocation bound, a NAT probe answered): a spare
+ * backing off asks the platform at once (resume, or a new one) and binds */
+void node_home_udp_ok(npf_node *n);
 /* shutting down: home_close (best effort), no more keepalives */
 void node_home_close(npf_node *n);
 /* stopping: home_close if not yet, everything freed */

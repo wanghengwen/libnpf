@@ -154,7 +154,7 @@ npf_call *call_new(npf_node *n, int caller)
 static void call_timers_stop(npf_call *c)
 {
     npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck,
-                       &c->t_standby, &c->t_direct, &c->relay.t_bind, &c->t_wsre};
+                       &c->t_standby, &c->t_direct, &c->relay.t_bind, &c->t_wsre, &c->t_rcheck};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++)
         npf_timer_stop(c->n->loop, t[i]);

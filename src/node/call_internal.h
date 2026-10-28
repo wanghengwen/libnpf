@@ -97,6 +97,9 @@ struct npf_call {
     int         relay_ports_waited; /* that wait was had (once) */
     npf_timer  *t_standby;
     int64_t     relay_asked_ms;     /* relay_switch sent at (monotonic ms), waiting for a new allocation; 0 none */
+    int64_t     relay_rx_ms;        /* the UDP relay last answered (a BIND_ACK, the peer's data through it) */
+    int64_t     relay_busy_since;   /* the session relies on the UDP relay with data in flight since (ms); 0 no */
+    npf_timer  *t_rcheck;           /* call_check_relay again while the session relies on the relay */
     int         ws_fail_wait;       /* caller: the WS relay failed before the accept: asked about after it */
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
     int         nrearly;
@@ -281,5 +284,6 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
 int node_relay_data_input(npf_node *n, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);
 void call_ws_wait_end(npf_call *c, int ok);
+void call_check_relay(npf_call *c);    /* a bound UDP relay that went silent while in use (call_relay.c) */
 
 #endif

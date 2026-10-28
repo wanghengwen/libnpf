@@ -10,6 +10,7 @@
 #include "call_internal.h"
 
 #define P2P_SILENT_MS      3000      /* nat-traversal.md 10.3; at least 2 x RTO */
+#define P2P_IDLE_SILENT_MS 20000     /* nothing from the peer this long: no data, not even AnLiu's keepalive (15 s) */
 #define P2P_DUAL_MS        10000     /* suspected path: send on both paths this long */
 #define PKT_PATH_CHECK     10         /* direct path check (both directions work?) */
 #define PKT_PATH_ECHO      11
@@ -131,9 +132,15 @@ void call_check_p2p(npf_call *c)
     }
     /* silence counts from the later of the last datagram heard and the moment
      * data went in flight: after an idle spell the first new request must not
-     * look like a path that has been quiet all along */
+     * look like a path that has been quiet all along. With nothing in flight
+     * (a sender waiting for its peer's credit, an idle session) a peer that
+     * is there still sends AnLiu's keepalive every 15 s: nothing for 20 s is
+     * as suspect (measured: all of a node's UDP dropped mid-download, the
+     * sender idle on credit, noticed only by the standby's check 22 s later) */
     if (st.inflight == 0) {
         c->p2p_busy_since = 0;
+        if (now - (c->p2p_rx_ms > c->p2p_since ? c->p2p_rx_ms : c->p2p_since) >= P2P_IDLE_SILENT_MS)
+            call_p2p_suspect_start(c, "nothing from the peer on the direct path for 20 s");
         return;
     }
     if (!c->p2p_busy_since)

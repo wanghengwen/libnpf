@@ -350,6 +350,8 @@ struct npf_node {
     npf_timer    *t_udp_reopen;     /* a main socket failed: reopened on the loop */
     npf_timer    *t_nat_retry;      /* a NAT probe without an answer: again soon (nat.c) */
     int           nat_retries;
+    int           nat_again;        /* the probe heard nothing: measuring once more before udp = 0 */
+    int64_t       nat_ok_ms;        /* the last probe that was answered (mono ms) */
     /* the network watch (node.c): a suspended process (iOS, a laptop's
      * sleep) or other addresses: the connections are checked at once */
     npf_timer    *t_watch, *t_netcheck;

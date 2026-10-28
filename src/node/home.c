@@ -42,6 +42,7 @@ struct npf_home {
     int           newnet;                   /* tell the relay the network changed, until it answers */
     int           backoff;
     int           opening;                  /* a home_open waits for its answer */
+    int           lost;                     /* the binding was lost (no answer): the NAT measured again once it is back */
     npf_timer    *t_dog, *t_retry;
     int64_t       bound_ms, since;          /* mono, Unix s: bound first */
     uint64_t      keepalives, moved, drops, taken; /* pings answered, R changes, watchdog rebinds, calls */
@@ -167,14 +168,20 @@ static void bind_cb(void *arg)
     bind_send(arg, 0, 0);
 }
 
-/* every address tried: again later, sooner first */
+/* every address tried: again later, sooner first. Each time the platform
+ * is asked whether the spare is still there (home_open resume: kept, or a
+ * new one): the relay reclaims a spare it does not hear from (at most
+ * 330 s), and binding the old one again never ends (measured: a node's UDP
+ * dropped 91 s, its spare resumed once while still dropped, then bound in
+ * vain every 180 s for over an hour; the calls' allocations bound at once) */
 static void gave_up(void *arg)
 {
     struct npf_home *h = arg;
     static const int again_s[] = {5, 20, 60, 180};
     h->r.cur = h->r.tries = 0;
+    h->lost = 1;
     npf_log("home: the relay does not answer: binding again in %d s", again_s[h->backoff]);
-    if (h->state == H_LOST && h->n->online)
+    if (h->n->online)
         home_open_send(h);                  /* does the server still have it (resume)? a new one if not */
     h->state = H_BACKOFF;
     h->t_retry = npf_timer_add(h->n->loop, again_s[h->backoff] * 1000, retry_timer, h);
@@ -254,7 +261,7 @@ static void open_reply(npf_node *n, const npf_json *j, int ok, void *arg)
         if (h->r.active && npf_json_get_b64(j, d, "relay_id", id, 8) == 8 && memcmp(id, h->r.relay_id, 8) == 0) {
             npf_log("home: spare resumed (server %d)", n->server_id);
             h->server = n->server_id;
-            if (h->state == H_BACKOFF) {
+            if (h->state == H_BACKOFF && !h->lost) {   /* (after a give-up: its backoff's timer binds) */
                 npf_timer_stop(n->loop, &h->t_retry);
                 bind_start(h, 0);
             }
@@ -322,6 +329,21 @@ void node_home_login(npf_node *n)
      * would wait in H_BACKOFF for good */
     if (h->state != H_BACKOFF)
         npf_timer_stop(n->loop, &h->t_retry);
+    home_open_send(h);
+}
+
+/* A spare backing off after the relay stopped answering waits up to 180 s
+ * for its next try; once UDP is seen to work again it asks at once: the
+ * platform resumes it (still there) or opens a new one (reclaimed) */
+void node_home_udp_ok(npf_node *n)
+{
+    struct npf_home *h = n->home;
+    if (!h || !h->r.active || h->state != H_BACKOFF || !n->online || h->opening)
+        return;
+    npf_log("home: UDP works again: binding the spare at once, asking whether it is still there");
+    npf_timer_stop(n->loop, &h->t_retry);
+    h->backoff = 0;
+    bind_start(h, 0);                       /* still there: it binds; reclaimed: the reply brings a new one */
     home_open_send(h);
 }
 
@@ -462,6 +484,18 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
         } else {
             npf_log("home: spare bound again via %s (%s)", npf_addr_str(CUR(h), x, sizeof x),
                     npf_addr_str(&h->R, y, sizeof y));
+        }
+        if (h->lost) {
+            /* UDP is back after the relay stopped answering: the NAT may have
+             * mapped the socket anew meanwhile (its mappings expired), and
+             * the srflx measured before would send the peers' probes to a
+             * port no longer ours (measured: every round of the next calls
+             * failed until the process restarted) */
+            h->lost = 0;
+            if (!n->probe && n->udp_fd >= 0 && (!n->nat_ok_ms || npf_mono_ms() - n->nat_ok_ms > 10000)) {
+                npf_log("home: the relay answers again: measuring the NAT again");
+                node_nat_refresh(n);
+            }
         }
     }
     dog_arm(h, now);

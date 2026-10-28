@@ -12,6 +12,7 @@
 #include "npf/node.h"
 
 #include "node_internal.h"
+#include "home.h"
 
 static void add_cand(npf_node *n, const char *t, const struct sockaddr_storage *a)
 {
@@ -104,9 +105,10 @@ static void nat_settled(npf_node *n, int first)
         struct sockaddr_storage ss;
         memset(&ss, 0, sizeof ss);
         memcpy(&ss, &n->srflx, sizeof n->srflx);
-        npf_log("nat: udp=%d map=%s alloc=%s filter=%s srflx=%s cands=%d", n->nat_udp,
+        npf_log("nat: udp=%d map=%s alloc=%s filter=%s srflx=%s cands=%d%s", n->nat_udp,
                 npf_nat_mapping_str(n->nat.mapping), npf_nat_alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
-                n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands);
+                n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands,
+                n->test_no_udp ? " (tests: reported as udp=0, NPF_NO_UDP)" : "");
     }
     /* a network change: the calls' platforms hear the new profile and punch
      * again; the first profile: the calls made without candidates get them.
@@ -129,6 +131,7 @@ static void nat_settled(npf_node *n, int first)
 }
 
 static void nat_retry_cb(npf_loop *loop, void *arg);
+static int nat_probe_start(npf_node *n);
 
 static int in_arc(uint16_t lo, uint16_t hi, uint16_t p)
 {
@@ -171,6 +174,18 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
     int udp_back = ok && n->nat_valid && !n->nat_udp;   /* the last probe had no answer */
     int first = !n->nat_valid;
     n->probe = NULL;
+    /* No answer at all: measured once more at once before udp = 0. One
+     * round is four sends to each probe server over 2.2 s; a burst lost
+     * (a cold start: measured 1 of 13 in the field) put the node's sessions
+     * on the WS relay. A node that has UDP answers the second round as
+     * fast as the first; one without waits 2.2 s more. */
+    if (!ok && !n->nat_again) {
+        n->nat_again = 1;
+        npf_log("nat: no answer from the probe servers: measuring once more");
+        if (nat_probe_start(n) == 0)
+            return;
+    }
+    n->nat_again = 0;
     if (ok) {
         int i, last = -1;
         npf_nat_profile was = n->nat;
@@ -212,6 +227,8 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
                 n->pred_port = (uint16_t)p;
         }
         n->nat_retries = 0;
+        n->nat_ok_ms = npf_mono_ms();
+        node_home_udp_ok(n);                /* a spare stuck backing off: UDP works */
     } else {
         n->nat_udp = 0;
         memset(&n->nat, 0, sizeof n->nat);
@@ -219,11 +236,16 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
         /* no answer: perhaps passing (a carrier NAT's ports all held by a
          * punch; the phone thought it had no UDP for an hour, every session
          * on the WS relay; once after the app's restart, the network not
-         * ready yet): measured again soon, not at the next period */
-        if (n->nat_retries < 4) {
-            static const int again_s[] = {5, 20, 60, 180};
+         * ready yet): measured again soon, not at the next period; then
+         * every minute while there is none: the sessions it put on the WS
+         * relay come back (udp_back) within a minute of UDP's return (it
+         * used to stop after 3 min: a node whose UDP went for longer stayed
+         * on the WS relay until the next periodic probe) */
+        {
+            static const int again_s[] = {5, 10, 20, 30, 60};
+            int k = n->nat_retries < 5 ? n->nat_retries++ : 4;
             npf_timer_cancel(n->loop, n->t_nat_retry);
-            n->t_nat_retry = npf_timer_add(n->loop, again_s[n->nat_retries++] * 1000, nat_retry_cb, n);
+            n->t_nat_retry = npf_timer_add(n->loop, again_s[k] * 1000, nat_retry_cb, n);
         }
     }
     n->nat_quick = 0;
@@ -251,6 +273,14 @@ static void nat_retry_cb(npf_loop *loop, void *arg)
  * until the new one is there. */
 void node_nat_refresh(npf_node *n)
 {
+    n->nat_again = 0;                   /* a measurement of its own: its own second chance */
+    if (nat_probe_start(n) < 0)
+        nat_settled(n, 0);              /* no probe servers: what is known (local tests) */
+}
+
+/* a probe started (any running one replaced): 0, or -1 when none can run */
+static int nat_probe_start(npf_node *n)
+{
     npf_natprobe_cfg cfg;
     const uint8_t *pk = node_day_key(n, n->probe_keys);
     int i;
@@ -268,9 +298,9 @@ void node_nat_refresh(npf_node *n)
         cfg.alloc_sockets = n->nat_quick ? 0 : 4;  /* quick: a reopened socket, the NAT measured before */
         cfg.main_fd = n->udp_fd;
         if ((n->probe = npf_natprobe_start(n->loop, &cfg, probe_done, n)) != NULL)
-            return;
+            return 0;
     }
-    nat_settled(n, 0);              /* no probe servers: what is known (local tests) */
+    return -1;
 }
 
 /* at login: the hook waits for a first profile; with one from before it runs
