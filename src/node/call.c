@@ -41,11 +41,9 @@ static const int call_pub[] = {0, NPF_CALL_CALLING, NPF_CALL_CONNECTING, NPF_CAL
 int npf_call_state(const npf_call *c) { return call_pub[c->st]; }
 
 /* the call's transition, forward only; the hooks hear NPF_CALL_* when it
- * changes. UP, the peer's hello, ends the time limit (a caller is
- * established on its own, HALF; a callee that never answers it still ends
- * in time), and a callee tells the platform (accepted from then on, Q6):
- * the caller's hello came under the session's keys, the E2E handshake held,
- * relay_switch allocates freely from then on (security review M-2) */
+ * changes. UP (the peer's hello) ends the time limit, and a callee tells
+ * the platform: the E2E handshake held, relay_switch allocates freely from
+ * then on (Q6, security review M-2) */
 void call_set_state(npf_call *c, int st, const char *why)
 {
     int was = npf_call_state(c);
@@ -104,9 +102,7 @@ static int due(int64_t at, int64_t now)
     return at && at <= now;
 }
 
-/* the parts in order (architecture.md 4): the session, the paths, the
- * manager (each AnLiu tick, as before, and at its own time), punching, the
- * call's own; none after the call ended */
+/* the parts in order (architecture.md 4); none after the call ended */
 void call_tick(npf_call *c, int64_t now)
 {
     if (c->anl)
@@ -131,9 +127,8 @@ void call_tick(npf_call *c, int64_t now)
 }
 
 /* the platform's accept (a caller's call_accepted, a callee's first
- * punch_start): CONNECTING, the time to be established counted from now (an
- * accept late, the callee's answer slow on its way, still gets all of it);
- * a callee UP before (its call_established, Q6) is accepted already */
+ * punch_start): the time to be established counted from now (a late accept
+ * still gets all of it); a callee UP before is accepted already (Q6) */
 void call_accept(npf_call *c)
 {
     if (c->st != CS_CALLING && c->st != CS_ANSWERED)
@@ -275,9 +270,7 @@ void npf_call_end(npf_call *c, const char *why)
 
 /* CLOSED first (what the ends and the hooks call back finds the call
  * ended), then the words to the platform and the peer (how); the requests
- * waiting for replies get none, punching ends (its sockets back), the timer
- * stops (what it would start, a relay bind or switch, a path check, a retry,
- * a probe of the signaling, is no one's now), the free on the next turn */
+ * waiting get no reply, punching and the timer end, the free on the next turn */
 void call_close(npf_call *c, const char *why, int how)
 {
     char rc[24];
@@ -699,10 +692,7 @@ void npf_node_check_paths(npf_node *n, const char *why)
 
 
 /* the node's UDP changed (udp_back_ms; tests: NPF_TEST_WS_FILE): each
- * session's manager decides again (pm_decide: a session on the WS relay
- * asks for the UDP relay, its profile first, and the platform moves it when
- * both sides have UDP, the AnLiu connection and everything on it stay,
- * data-channel.md 3; with no UDP, the WS relay) */
+ * session decides again (pm_decide, data-channel.md 3) */
 void npf_node_calls_decide(npf_node *n)
 {
     npf_call *c;
