@@ -3,7 +3,9 @@
  * (no platform). Checks: sessions up on both sides; application data both
  * ways; media streams at once with their frames intact and in order; many
  * opens and closes (more than AnLiu's 64 streams: each one opened and closed for real);
- * a refused stream ends at the sender; too many at once gives NPF_EBUSY and
+ * a refused stream ends at the sender; streams refused or closed by the
+ * receiver, 100 in turn: each one's end is taken at the sender (AnLiu counts
+ * the over ones not yet released toward its 64); too many at once gives NPF_EBUSY and
  * a close makes room; a stream from the other side; stop and destroy.
  *
  * And what a review found: a command whose options are taken
@@ -42,6 +44,7 @@ typedef struct side {
     int             up, data_n;
     char            data[64];
     int             opened, closed, frames, bad, refused_closed;
+    uint32_t        last_opened;        /* the peer's last media stream taken */
     int             tag_frames[1000];
     uint32_t        media_tag[4096];     /* media number -> tag + 1 */
     uint32_t        next_fno[4096];
@@ -150,6 +153,7 @@ static int cb_media_open(void *user, uint32_t session, uint32_t media, int tag)
         return 0;
     pthread_mutex_lock(&s->mu);
     s->opened++;
+    s->last_opened = media;
     if (media < 4096) {
         s->media_tag[media] = (uint32_t)tag + 1;
         s->next_fno[media] = 0;
@@ -368,6 +372,30 @@ int main(int argc, char **argv)
     mo.tag = REFUSE_TAG;
     say("open a stream the peer refuses", npf_media_open(nb, b.session, &mo, &e) != 0);
     say("the refusal ends it at the sender", wait_for(&b, &b.refused_closed, 1, 5000));
+
+    /* over and over, refused (the receiver's AnLiu RST) or taken and closed
+     * by the receiver: the sender releases each one's AnLiu handle, which
+     * counts toward AnLiu's 64 until then; no retry on NPF_EBUSY here */
+    for (i = 0, ok = 1; ok && i < 100; i++) {
+        int took;
+        mo.tag = i % 2 ? 11 : REFUSE_TAG;
+        pthread_mutex_lock(&a.mu);
+        took = a.opened;
+        pthread_mutex_unlock(&a.mu);
+        ok = npf_media_open(nb, b.session, &mo, &e) != 0;
+        if (ok && i % 2) {
+            uint32_t m;
+            ok = wait_for(&a, &a.opened, took + 1, 5000);
+            pthread_mutex_lock(&a.mu);
+            m = a.last_opened;
+            pthread_mutex_unlock(&a.mu);
+            ok = ok && npf_media_close(na, m) == NPF_OK;
+        }
+        ok = ok && wait_for(&b, &b.refused_closed, 2 + i, 5000);
+    }
+    say("100 streams refused or closed by the receiver in turn: each ends at the sender, opens go on", ok);
+    if (!ok)
+        printf("     (stopped at %d: %d)\n", i, e);
 
     /* too many at once */
     mo.tag = 7;
