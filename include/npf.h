@@ -8,9 +8,8 @@
  *   - application data on the tunnel's control channel (reliable, ordered,
  *     ahead of the forwards' data);
  *   - audio / video streams, several at once, opened and closed at will:
- *     AnLiu's semi-reliable frame streams on the direct path and the UDP
- *     relay (frames dropped when late, key frames, FEC, delay reports),
- *     queued records on the WS relay (frames dropped when late).
+ *     AnLiu's semi-reliable frame streams on every path (direct, UDP relay,
+ *     WS relay: frames dropped when late, key frames, FEC, delay reports).
  *
  * Directories (npf_options): conf_dir is read-only for the library (the
  * configuration npf.conf and what it names: the device credential, the root
@@ -107,7 +106,6 @@ enum { NPF_FRAME_KEY = 1 };
 #define NPF_MEDIA_SEND_QUEUE (16u << 20)   /* bytes of frames from other threads waiting per instance */
 
 #define NPF_MEDIA_STREAMS_MAX 64          /* sending + receiving, across all sessions of one instance */
-#define NPF_MEDIA_WS_FRAME_MAX (2u << 20)  /* WS relay: also the per-stream queue byte limit */
 
 /* why a peer's last session ended (npf_peer_info.end_reason) */
 enum { NPF_END_LOCAL = 1,              /* ended here (removed, stopped) */
@@ -618,8 +616,7 @@ NPF_API void npf_media_opt_default_size(npf_media_opt *o, size_t size);
  * (64 streams per instance, or 30 outgoing streams per AnLiu session). Opening and closing
  * often is fine: AnLiu's streams are kept and reused (data-channel.md 14) */
 NPF_API uint32_t npf_media_open(npf_t *n, uint32_t session, const npf_media_opt *o, int *err);
-/* one frame, up to NPF_MEDIA_FRAME_MAX (WS: NPF_MEDIA_WS_FRAME_MAX;
- * any thread; copied, never blocks):
+/* one frame, up to NPF_MEDIA_FRAME_MAX (any thread; copied, never blocks):
  * NPF_OK when queued; from a callback it is sent at once and errors show */
 NPF_API int npf_media_send(npf_t *n, uint32_t media, int flags, const void *frame, size_t len);
 NPF_API int npf_media_stats_get(npf_t *n, uint32_t media, npf_media_stats *out);

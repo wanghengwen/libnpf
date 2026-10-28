@@ -444,8 +444,7 @@ uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid)
     n->med[n->nmed].session = session;
     n->med[n->nmed].call = call;
     n->med[n->nmed].lid = lid;
-    n->med[n->nmed].frame_max = strcmp(npf_call_path(call), "ws relay") == 0
-                                  ? NPF_MEDIA_WS_FRAME_MAX : NPF_MEDIA_FRAME_MAX;
+    n->med[n->nmed].frame_max = NPF_MEDIA_FRAME_MAX;
     n->nmed++;
     npf_api_unlock(n);
     return id;
