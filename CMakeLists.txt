@@ -142,6 +142,7 @@ add_library(npf_common STATIC
   src/node/call.c
   src/node/call_handshake.c
   src/node/call_transport.c
+  src/node/path_mgr.c
   src/node/call_path.c
   src/node/call_reverse.c
   src/node/call_ws.c
