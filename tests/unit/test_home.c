@@ -184,6 +184,31 @@ static void ping(npf_node *n, const npf_siv_keys *keys, const struct sockaddr_in
                                      55, out));
 }
 
+/* the platform's message m to the spare: a reply to home_open (ok, or
+ * refused) or relay_spare (event) */
+static void to_home(npf_node *n, const char *m, int ok, int event)
+{
+    npf_jtok tok[48];
+    npf_json j;
+    CHECK(npf_json_parse(&j, m, strlen(m), tok, 48) >= 0, "JSON %s", m);
+    if (event)
+        node_home_spare(n, &j, npf_json_get(&j, 0, "data"));
+    else
+        open_reply(n, &j, ok, n->home);
+}
+
+/* {"data":{"relay":...more}}: the spare id, its key, its addresses ("a","b") */
+static const char *spare_msg(const uint8_t id[8], const uint8_t key[32], const char *udp, const char *more,
+                             char *out, size_t cap)
+{
+    char rb[16], kb[48];
+    npf_b64url_encode(id, 8, rb);
+    npf_b64url_encode(key, 32, kb);
+    snprintf(out, cap, "{\"data\":{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\","
+             "\"udp\":[%s],\"spare\":true}%s}}", rb, kb, udp, more);
+    return out;
+}
+
 static void test_client(void)
 {
     static npf_node node;
@@ -217,9 +242,12 @@ static void test_client(void)
     npf_siv_derive(&keys, key, LABEL_RELAY);
     {
         struct sockaddr_storage ss;
+        char ra[64], u[80], m[512];
         memset(&ss, 0, sizeof ss);
         memcpy(&ss, &relay, sizeof relay);
-        home_take(home_new(&node), bid, key, &ss, 1);
+        snprintf(u, sizeof u, "\"%s\"", npf_addr_str(&ss, ra, sizeof ra));
+        home_new(&node);
+        to_home(&node, spare_msg(bid, key, u, "", m, sizeof m), 1, 0);
     }
     /* the first RELAY_BIND: its cookie zero, kseq from the server time (above
      * whatever the relay took before), padded to 96 at least */
@@ -235,9 +263,9 @@ static void test_client(void)
     CHECK(next_bind(fr, &keys, bid, 300, &b2) == 1 && memcmp(b2.cookie, ck, 8) == 0 && b2.kseq == b1.kseq + 1, "the challenge echoed");
     usleep(250 * 1000);
     answer(&node, &keys, &relay, &me, b1.txid, b1.ts, b1.kseq, 0, ck, 25);
-    CHECK(next_bind(fr, &keys, bid, 100, &b3) == 0 && node.home->state != 3, "a replayed challenge answered");
+    CHECK(next_bind(fr, &keys, bid, 100, &b3) == 0 && node.home->r.state != RB_BOUND, "a replayed challenge answered");
     answer(&node, &keys, &relay, &me, b2.txid, b2.ts, b2.kseq, 1, ck, 25);
-    CHECK(node.home->state == 3, "not bound by its own BIND_ACK");
+    CHECK(node.home->r.state == RB_BOUND, "not bound by its own BIND_ACK");
 
     /* a ping: answered at once, a PONG naming it, shorter than a RELAY_BIND */
     t0 = npf_node_time(&node);
@@ -268,15 +296,15 @@ static void test_client(void)
         CHECK(strstr(js, "\"relay\":\"127.0.0.1:"), "the relay it is bound via %s", js);
     }
     /* the watchdog: not before the last datagram + T + the tries + a margin; then it binds again */
-    CHECK(dog_check(node.home, npf_mono_ms() + 36000 + HOME_RETRY_MS) == 0 && node.home->state == 3,
-          "the watchdog before its deadline");
-    CHECK(dog_check(node.home, npf_mono_ms() + 36000 + HOME_RETRY_MS + 6000) == 1 && node.home->state == 4,
-          "the watchdog after its deadline");
+    home_tick(node.home, npf_mono_ms() + 36000 + HOME_RETRY_MS);
+    CHECK(node.home->r.state == RB_BOUND && !node.home->drops, "the watchdog before its deadline");
+    home_tick(node.home, npf_mono_ms() + 36000 + HOME_RETRY_MS + 6000);
+    CHECK(node.home->r.state == RB_PROBING && node.home->drops == 1, "the watchdog after its deadline");
     CHECK(next_bind(fr, &keys, bid, 300, &b3) == 1 && !(b3.flags & RELAY_F_PONG), "the RELAY_BIND of the watchdog");
     /* bound again; a call takes it: its binding moves (the kseq goes on),
      * the spare is no longer the node's until relay_spare */
     answer(&node, &keys, &relay, &me, b3.txid, b3.ts, b3.kseq, 1, ck, 36);
-    CHECK(node.home->state == 3, "bound again");
+    CHECK(node.home->r.state == RB_BOUND, "bound again");
     {
         relay_c rc;
         uint8_t nid[8], nkey[32];
@@ -288,8 +316,8 @@ static void test_client(void)
         memset(&rc, 0, sizeof rc);
         nid[0] = (uint8_t)~bid[0];
         CHECK(!node_home_adopt(&node, nid, &rc), "another allocation adopted");
-        CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.state == RB_BOUND && rc.kseq == b3.kseq && !node.home->t_bind
-              && memcmp(rc.cookie, ck, 8) == 0 && node.home->state == 6, "the spare adopted");
+        CHECK(node_home_adopt(&node, bid, &rc) == 1 && rc.state == RB_BOUND && rc.kseq == b3.kseq
+              && memcmp(rc.cookie, ck, 8) == 0 && !node.home->r.state && node.home->state == H_TAKEN, "the spare adopted");
         CHECK(next_bind(fr, &keys, bid, 100, &b2) == 0, "the spare taken still binds");
         /* relay_spare: the next one, bound from scratch */
         npf_random(nid, 8);
@@ -303,26 +331,29 @@ static void test_client(void)
                        "\"udp\":[\"%s\"],\"spare\":true},\"why\":\"taken\"}", rb, kb, npf_addr_str(&ss, ra, sizeof ra));
         CHECK(npf_json_parse(&j, ev, (size_t)len, tok, 32) >= 0, "relay_spare JSON");
         node_home_spare(&node, &j, 0);
-        CHECK(node.home->state == 2 && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
+        CHECK(node.home->r.state == RB_BINDING && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
               "the next spare binds");
         CHECK(npf_node_home_status(&node, js, sizeof js) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
               "status %s", js);
     }
     /* backing off when the node logs in again (home_open with resume): the
-     * timer stays, also when home_open is refused with the spare kept */
-    gave_up(node.home);
-    CHECK(node.home->state == H_BACKOFF && node.home->t_retry, "backing off");
+     * deadline and the timer stay, also when home_open is refused with the
+     * spare kept */
+    node.home->r.state = RB_GAVE_UP;
+    gave_up(node.home, npf_mono_ms());
     node.cfg.offline = 0;               /* a spare allowed (home_allowed) */
     node.cfg.callable = 1;
     node_home_login(&node);
-    CHECK(node.home && node.home->state == H_BACKOFF && node.home->t_retry, "no timer after a login while backing off");
+    CHECK(node.home && node.home->r.state == RB_GAVE_UP && node.home->at && node.home->t_due,
+          "no timer after a login while backing off");
     {
         npf_jtok tok[16];
         npf_json j;
         char m[] = "{\"v\":1,\"type\":\"reply\",\"status\":\"error\",\"error\":\"rate_limited\"}";
         CHECK(npf_json_parse(&j, m, strlen(m), tok, 16) == 0, "reply JSON");
         open_reply(&node, &j, 0, node.home);
-        CHECK(node.home->r.state && node.home->t_retry, "no timer after home_open refused while backing off");
+        CHECK(node.home->r.state == RB_GAVE_UP && node.home->at && node.home->t_due,
+              "no timer after home_open refused while backing off");
     }
     node.cfg.offline = 1;
     node_home_stop(&node);
@@ -334,9 +365,167 @@ static void test_client(void)
     close(fo);
 }
 
+/* ---- the spare's table (architecture.md 3.4), no socket ---- */
+
+#define TWO "\"192.0.2.1:9920\",\"192.0.2.2:9920\""
+
+/* binding at its deadlines until it is no longer: the binds after the
+ * first, the time of the last deadline */
+static int run_out(struct npf_home *h, int64_t *last)
+{
+    int k = 0;
+    while (h->r.state == RB_BINDING || h->r.state == RB_PROBING) {
+        *last = home_due(h);
+        home_tick(h, *last);
+        k++;
+    }
+    return k - 1;
+}
+
+/* Each row of the table at a fake time: the binds are not sent (no main
+ * socket), the states and deadlines are what is checked; the node is online
+ * with no signaling connection, so a home_open asked takes a request number.
+ * Every state has a deadline or waits for an event (architecture.md 4) */
+static void test_table(void)
+{
+    static npf_node node;
+    static const int again_s[] = {5, 20, 60, 180, 180};
+    npf_loop *loop = npf_loop_new();
+    npf_node_cfg cfg;
+    npf_node_hooks hooks;
+    npf_identity id;
+    struct npf_home *h;
+    relay_c rc;
+    uint8_t seed[32], sid[8], sid2[8], key[32];
+    char m[512], b[16];
+    int64_t t, due;
+    int asks, i;
+
+    memset(&cfg, 0, sizeof cfg);
+    memset(&hooks, 0, sizeof hooks);
+    cfg.offline = 1;
+    npf_random(seed, 32);
+    npf_identity_from_seed(&id, seed);
+    CHECK(loop && npf_node_init(&node, loop, &cfg, &id, &hooks, NULL) == 0, "set-up");
+    if (fails)
+        return;
+    node.udp_fd = -1;
+    node.online = 1;
+    npf_random(sid, 8);
+    npf_random(sid2, 8);
+    npf_random(key, 32);
+    h = home_new(&node);
+    /* OFF, logged in: OPENING, home_open asked; no deadline (its answer is the event) */
+    CHECK(H_STATE(h) == H_OFF && home_due(h) == INT64_MAX, "off: %d", H_STATE(h));
+    asks = node.req_seq;
+    home_open_send(h);
+    CHECK(h->state == H_OPENING && node.req_seq == asks + 1 && home_due(h) == INT64_MAX, "opening");
+    /* OPENING, the answer lost with the connection: OPENING, no deadline (the next login asks) */
+    open_reply(&node, NULL, 0, h);
+    CHECK(h->state == H_OPENING && home_due(h) == INT64_MAX, "the answer lost");
+    /* OPENING, refused: OFF, home_open again 60 s on (rate_limited), else 300 s */
+    t = npf_mono_ms();
+    to_home(&node, "{\"error\":\"rate_limited\"}", 0, 0);
+    CHECK(h->state == H_OFF && h->at >= t + 60000 && h->at < t + 61000 && home_due(h) == h->at, "refused, rate limited");
+    to_home(&node, "{\"error\":\"unavailable\"}", 0, 0);
+    CHECK(h->state == H_OFF && h->at >= t + 300000 && h->at < t + 301000, "refused");
+    /* OFF at its deadline, online: OPENING */
+    asks = node.req_seq;
+    home_tick(h, h->at - 1);
+    CHECK(h->state == H_OFF && node.req_seq == asks, "off before its time");
+    home_tick(h, h->at);
+    CHECK(h->state == H_OPENING && node.req_seq == asks + 1 && !h->at && home_due(h) == INT64_MAX, "off, again");
+    /* OPENING, a new spare: BINDING from the first address, the binder's deadline */
+    to_home(&node, spare_msg(sid, key, TWO, "", m, sizeof m), 1, 0);
+    CHECK(h->r.state == RB_BINDING && h->r.bi == 0 && home_due(h) == h->r.at && h->r.at > npf_mono_ms(), "binding");
+    /* BINDING, every address tried: BACKOFF 5, 20, 60, 180, 180 s, each
+     * time home_open asked (resume); at its deadline, BINDING again */
+    for (i = 0; i < 5; i++) {
+        asks = node.req_seq;
+        CHECK(run_out(h, &t) == 7 && h->r.state == RB_GAVE_UP && H_STATE(h) == 6, "the binds of a run (%d)", i);
+        CHECK(h->backoff == i + 1 && h->at == t + again_s[i] * 1000 && home_due(h) == h->at && node.req_seq == asks + 1,
+              "backoff %d: %lld s", i, (long long)(h->at - t) / 1000);
+        home_tick(h, h->at - 1);
+        CHECK(h->r.state == RB_GAVE_UP, "backoff before its time");
+        due = h->at;
+        home_tick(h, due);
+        CHECK(h->r.state == RB_BINDING && h->r.bi == 0 && !h->at && h->r.at == due + RELAY_BIND_MS, "backoff over");
+    }
+    run_out(h, &t);
+    /* BACKOFF, home_open's answer: still there (resume): BACKOFF, its deadline (D11) */
+    due = h->at;
+    npf_b64url_encode(sid, 8, b);
+    b[11] = 0;
+    snprintf(m, sizeof m, "{\"data\":{\"resumed\":true,\"relay_id\":\"%s\"}}", b);
+    to_home(&node, m, 1, 0);
+    CHECK(h->r.state == RB_GAVE_UP && h->at == due, "resumed while backing off");
+    /* BACKOFF, UDP works again: BINDING at once, home_open asked */
+    asks = node.req_seq;
+    node_home_udp_ok(&node);
+    CHECK(h->r.state == RB_BINDING && !h->at && node.req_seq == asks + 1 && h->backoff, "UDP works again");
+    /* BINDING, bound: BOUND; after the give-ups the NAT measured again;
+     * the watchdog at max(last sent, last heard) + T + 4.5 s + 5 s */
+    t = npf_mono_ms();
+    h->last_rx = t;
+    h->r.last_tx = t - 100;
+    h->r.cur = h->r.bi = 1;
+    spare_bound(h, t);
+    CHECK(h->r.state == RB_BOUND && !h->backoff && home_due(h) == t + 25000 + HOME_RETRY_MS + HOME_DOG_MARGIN,
+          "bound: the watchdog at %lld", (long long)(home_due(h) - t));
+    /* BOUND, a ping (heard later) or a bind (sent later): the watchdog later */
+    h->last_rx = t + 7000;
+    h->t_s = 45;
+    CHECK(home_due(h) == t + 7000 + 45000 + HOME_RETRY_MS + HOME_DOG_MARGIN, "the watchdog after a ping");
+    h->r.last_tx = t + 9000;
+    CHECK(home_due(h) == t + 9000 + 45000 + HOME_RETRY_MS + HOME_DOG_MARGIN, "the watchdog after a bind");
+    /* BOUND, the network changed: BOUND, a bind with NEWNET at once */
+    node_home_net_change(&node);
+    CHECK(h->r.state == RB_BOUND && h->newnet, "a new network");
+    /* BOUND, the watchdog's deadline: LOST, from the address in use */
+    due = home_due(h);
+    home_tick(h, due - 1);
+    CHECK(h->r.state == RB_BOUND, "the watchdog before its time");
+    home_tick(h, due);
+    CHECK(h->r.state == RB_PROBING && H_STATE(h) == 4 && h->r.bi == 1 && h->r.cur == 1 && h->drops == 1
+          && home_due(h) == due + RELAY_BIND_MS, "lost");
+    /* LOST, the network changed: LOST again from now, from the address in use */
+    node_home_net_change(&node);
+    CHECK(h->r.state == RB_PROBING && h->r.bi == 1 && h->r.tries == 0, "lost, a new network");
+    /* LOST, bound: BOUND, the NAT kept (no give-up) */
+    spare_bound(h, npf_mono_ms());
+    CHECK(h->r.state == RB_BOUND && !h->backoff, "lost, bound");
+    /* any spare, a call takes it: TAKEN, the binding with it; home_open 30 s on */
+    t = npf_mono_ms();
+    memset(&rc, 0, sizeof rc);
+    CHECK(node_home_adopt(&node, sid, &rc) == 1 && rc.state == RB_BOUND && rc.cur == 1 && !h->r.state
+          && h->state == H_TAKEN && h->at >= t + HOME_NEXT_MS && h->at < t + HOME_NEXT_MS + 1000
+          && home_due(h) == h->at, "taken");
+    /* TAKEN at its deadline, online: OPENING */
+    asks = node.req_seq;
+    home_tick(h, h->at);
+    CHECK(h->state == H_OPENING && node.req_seq == asks + 1 && home_due(h) == INT64_MAX, "taken, no relay_spare");
+    /* any: relay_spare: BINDING the new one (taken, or rotated hourly) */
+    to_home(&node, spare_msg(sid2, key, TWO, ",\"why\":\"rotated\"", m, sizeof m), 1, 1);
+    CHECK(h->r.state == RB_BINDING && memcmp(h->r.relay_id, sid2, 8) == 0, "relay_spare");
+    spare_bound(h, npf_mono_ms());
+    to_home(&node, spare_msg(sid, key, TWO, ",\"why\":\"rotated\"", m, sizeof m), 1, 1);
+    CHECK(h->r.state == RB_BINDING && memcmp(h->r.relay_id, sid, 8) == 0 && h->bound_ms == 0, "rotated");
+    /* BACKOFF, the network changed: BINDING at once */
+    run_out(h, &t);
+    node_home_net_change(&node);
+    CHECK(h->r.state == RB_BINDING && !h->at, "backing off, a new network");
+    /* any: closed: OFF, no deadline, no timer */
+    node_home_close(&node);
+    CHECK(H_STATE(h) == H_OFF && home_due(h) == INT64_MAX && !h->t_due, "closed");
+    node_home_stop(&node);
+    npf_node_stop(&node);
+    npf_loop_free(loop);
+}
+
 int test_home(void)
 {
     test_vectors();
     test_client();
+    test_table();
     return fails;
 }

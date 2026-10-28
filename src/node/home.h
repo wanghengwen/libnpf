@@ -9,8 +9,6 @@
 
 /* after welcome: home_open (a spare, or the one held resumed) when it may */
 void node_home_login(npf_node *n);
-/* the signaling connection went: the spare stays (U6) */
-void node_home_sig_lost(npf_node *n);
 /* the network may have changed, the main socket was opened again: bind again at once (the relay learns anew) */
 void node_home_net_change(npf_node *n);
 /* UDP works (a call's allocation bound, a NAT probe answered): a spare

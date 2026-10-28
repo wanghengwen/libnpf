@@ -312,8 +312,7 @@ void node_sig_close(npf_node *n)
  * calls being set up end, the next attempt is due, the application told */
 static void sig_gone(npf_node *n, const char *why, int was_online)
 {
-    node_home_sig_lost(n);              /* the spare stays (home-binding.md 9.3) */
-    node_sig_fail_pending(n);
+    node_sig_fail_pending(n);           /* (the spare stays: home-binding.md 9.3) */
     node_sig_lost(n);
     schedule_reconnect(n);
     if (was_online && n->hooks.on_offline)
