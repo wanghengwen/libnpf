@@ -130,6 +130,7 @@ int  relay_bind_up(relay_c *r, int64_t now, int ka);
 int  call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable (path_udp.c) */
 int  call_relay_blocked(const npf_node *n, const char *what);
+int  call_relay_addr_blocked(const npf_node *n, const struct sockaddr_storage *a);
 /* a datagram from one of the relay's addresses opened (plain: 2048 bytes):
  * its length; 0 from an address given up on (consumed); -1 not ours */
 int  relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct sockaddr_storage *from, uint8_t *plain);

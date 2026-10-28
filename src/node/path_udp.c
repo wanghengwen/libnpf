@@ -10,17 +10,16 @@
 #include "call_internal.h"
 #include "home.h"
 
-/* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
 int call_relay_blocked(const npf_node *n, const char *what)
 {
     const char *v = n->th.block_relay;
     return v && *what && strstr(v, what) != NULL;
 }
 
-static int addr_blocked(const npf_call *c, const struct sockaddr_storage *a)
+int call_relay_addr_blocked(const npf_node *n, const struct sockaddr_storage *a)
 {
     char s[64];
-    return c->n->th.block_relay && call_relay_blocked(c->n, npf_addr_str(a, s, sizeof s));
+    return n->th.block_relay && call_relay_blocked(n, npf_addr_str(a, s, sizeof s));
 }
 
 /* RELAY_BIND to the address being bound or kept (relay_bind.h) */
@@ -29,7 +28,7 @@ static void relay_bind_send(void *arg)
     npf_call *c = arg;
     uint8_t wire[256];
     int n = relay_bind_pack(&c->pu.r, c->n, 0, 0, wire);
-    if (n > 0 && !addr_blocked(c, RELAY_BIND_DST(&c->pu.r)))
+    if (n > 0 && !call_relay_addr_blocked(c->n, RELAY_BIND_DST(&c->pu.r)))
         npf_udp_send(c->n->udp_fd, wire, (size_t)n, RELAY_BIND_DST(&c->pu.r));
 }
 
@@ -39,7 +38,7 @@ void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
 {
     uint8_t buf[2048];
     size_t n;
-    if (addr_blocked(c, &c->pu.r.addr[c->pu.r.cur]) || !(n = relay_data_pack(&c->pu.r, dgram, len, buf)))
+    if (call_relay_addr_blocked(c->n, &c->pu.r.addr[c->pu.r.cur]) || !(n = relay_data_pack(&c->pu.r, dgram, len, buf)))
         return;
     npf_udp_send(c->n->udp_fd, buf, n, &c->pu.r.addr[c->pu.r.cur]);
 }

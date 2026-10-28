@@ -25,12 +25,9 @@
 #define HOME_TIME_WINDOW 60000      /* a ping's srv_time_ms within this of the node's server time */
 #define HOME_NEXT_MS     30000      /* taken by a call: home_open if no relay_spare came by then */
 
-/* The spare's states (architecture.md 3.4): with no spare, OFF, OPENING (the
- * answer to home_open awaited) or TAKEN (by a call: relay_spare awaited);
- * with one, its binder's (relay_bind.h): BINDING, LOST (probing from the
- * address in use: the watchdog's), BOUND, BACKOFF (given up: bound again at
- * at). Each has one deadline (home_due): the binder's next bind, the
- * watchdog, at; OPENING and OFF before a refusal wait for an event */
+/* The spare's states (architecture.md 3.4): with no spare OFF, OPENING,
+ * TAKEN; with one its binder's (binding, lost: probing, bound, backoff:
+ * given up). One deadline each (home_due) or an event awaited */
 enum { H_OFF, H_OPENING, H_TAKEN };
 static const char *const k_state[] = {"off", "opening", "taken", "binding", "lost", "bound", "backoff"};
 #define H_STATE(h) ((h)->r.state ? 2 + (h)->r.state : (h)->state)
@@ -103,10 +100,8 @@ static void bind_send(struct npf_home *h, int flags, uint32_t ping_id)
 {
     npf_node *n = h->n;
     uint8_t wire[256];
-    char a[64];
     int len;
-    if (n->udp_fd < 0 || !h->r.state
-        || (n->th.block_relay && call_relay_blocked(n, npf_addr_str(RELAY_BIND_DST(&h->r), a, sizeof a))))
+    if (n->udp_fd < 0 || !h->r.state || call_relay_addr_blocked(n, RELAY_BIND_DST(&h->r)))
         return;
     watch_sync(h);
     if (h->newnet)
