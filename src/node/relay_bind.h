@@ -60,12 +60,16 @@ typedef struct relay_c {
     npf_siv_keys keys;          /* the control packets */
     rdata_keys dkeys;           /* RELAY_DATA */
     struct sockaddr_storage addr[4];
-    int      naddr, cur;
+    int      naddr;
+    int      cur;               /* the address in use: the data goes there */
+    int      bi;                /* the address the binds go to (cur, but while a probe tries the others) */
+    int      nth, first;        /* the run: its nth address (0..naddr-1), and the one it began with */
     uint32_t seq;
     uint8_t  cookie[8];         /* the relay's cookie for our address (RELAY_BIND_ACK), echoed in RELAY_BIND */
     uint64_t kseq;              /* the last bind's */
     int64_t  echo_ms;           /* when a challenge was last answered at once (mono ms) */
-    int      tries;
+    int      tries;             /* binds to bi in this run after the first */
+    int      keep;              /* this run keeps the data on cur (relay_bind_probe) */
     struct {                    /* the last binds: a BIND_ACK counts once, for one of them */
         uint8_t  txid[NPF_TXID_SIZE];
         uint32_t ts;
@@ -112,9 +116,20 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
  * flags RELAY_F_PONG: the answer to ping_id, shorter than a bind (72..95) */
 int  relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire);
 /* binding from the first address: send(arg) now and every RELAY_BIND_MS
- * (3 to an address, then the next), gave_up(arg) once every address was
- * tried; the owner stops r->t_bind when it is bound */
+ * (3 to an address, then the next; the data goes along), gave_up(arg) once
+ * every address was tried; the owner stops r->t_bind when it is bound */
 void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg);
+/* the same from the address in use, then the others in order (the
+ * binding of a relay gone silent, architecture.md Q2): the data stays on
+ * the address in use until another one answers (relay_addr_take) */
+void relay_bind_probe(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg);
+/* a run's start (keep: from the address in use, the data staying there)
+ * and its step at each RELAY_BIND_MS: 0 a bind to send (to bi), -1 every
+ * address tried */
+void relay_bind_begin(relay_c *r, int keep);
+int  relay_bind_step(relay_c *r);
+/* where the binds go */
+#define RELAY_BIND_DST(r) (&(r)->addr[(r)->bi])
 int  call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable (path_udp.c) */
 int  call_relay_blocked(const npf_node *n, const char *what);
@@ -124,8 +139,8 @@ int  relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct so
 /* from: which of the relay's addresses (-1 none) */
 int  relay_addr_index(const relay_c *r, const struct sockaddr_storage *from);
 /* an authenticated datagram from the relay's address i: 1 to take, 0 from
- * an address given up on (consumed); a late answer of an address tried
- * earlier while binding makes it the one in use */
+ * an address given up on (consumed); while binding, the address that
+ * answers is the one in use (a late answer of one tried earlier too) */
 int  relay_addr_take(relay_c *r, int i);
 /* a RELAY_DATA from the relay to r (hint: its unmasked hint): 1 to take
  * (the datagram at RDATA_HDR), 0 consumed, -1 not ours */

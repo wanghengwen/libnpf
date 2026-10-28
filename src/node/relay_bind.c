@@ -62,7 +62,7 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
         memcpy(r->addr, addr, (size_t)naddr * sizeof addr[0]);
         r->naddr = naddr;
     }
-    r->cur = r->tries = 0;
+    r->cur = r->bi = r->tries = 0;
     memset(r->cookie, 0, sizeof r->cookie);     /* a cookie is the allocation's */
     memset(r->sent, 0, sizeof r->sent);         /* so are the binds answered */
     r->chal_srv = 0;
@@ -94,31 +94,69 @@ int relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_
     return w > 0 ? w + RELAY_HINT_SIZE : -1;
 }
 
+/* the run's nth address: the one it began with, then the others in order */
+static int run_addr(const relay_c *r, int nth)
+{
+    if (nth == 0)
+        return r->first;
+    return nth - 1 < r->first ? nth - 1 : nth;
+}
+
+void relay_bind_begin(relay_c *r, int keep)
+{
+    r->keep = keep && r->cur < r->naddr;
+    r->first = r->keep ? r->cur : 0;
+    r->nth = r->tries = 0;
+    r->bi = r->first;
+    if (!r->keep)
+        r->cur = r->bi;
+}
+
+int relay_bind_step(relay_c *r)
+{
+    if (++r->tries > 3) {               /* the first and 3 more to an address */
+        if (r->nth + 1 >= r->naddr)
+            return -1;
+        r->bi = run_addr(r, ++r->nth);
+        r->tries = 0;
+        if (!r->keep)
+            r->cur = r->bi;             /* binding from scratch: the data goes along */
+    }
+    return 0;
+}
+
 static void run_timer(npf_loop *l, void *arg)
 {
     relay_c *r = arg;
     r->t_bind = NULL;
-    if (++r->tries > 3) {               /* the first and 3 more to an address */
-        if (r->cur + 1 >= r->naddr) {
-            r->on_gave_up(r->arg);
-            return;
-        }
-        r->cur++;
-        r->tries = 0;
+    if (relay_bind_step(r) < 0) {
+        r->on_gave_up(r->arg);
+        return;
     }
     r->on_send(r->arg);
     r->t_bind = npf_timer_add(l, RELAY_BIND_MS, run_timer, r);
 }
 
-void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
+static void run_start(relay_c *r, int keep, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *),
+                      void *arg)
 {
     npf_timer_stop(l, &r->t_bind);
     r->on_send = on_send;
     r->on_gave_up = on_gave_up;
     r->arg = arg;
-    r->cur = r->tries = 0;
+    relay_bind_begin(r, keep);
     on_send(arg);
     r->t_bind = npf_timer_add(l, RELAY_BIND_MS, run_timer, r);
+}
+
+void relay_bind_run(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
+{
+    run_start(r, 0, l, on_send, on_gave_up, arg);
+}
+
+void relay_bind_probe(relay_c *r, npf_loop *l, void (*on_send)(void *), void (*on_gave_up)(void *), void *arg)
+{
+    run_start(r, 1, l, on_send, on_gave_up, arg);
 }
 
 int relay_obj_parse(const npf_json *j, int r, char mode[8], uint8_t id[8], uint8_t key[32],
@@ -164,13 +202,14 @@ int relay_addr_index(const relay_c *r, const struct sockaddr_storage *from)
 
 int relay_addr_take(relay_c *r, int i)
 {
-    /* an address tried earlier answered late (the binds moved on to the
-     * next one): the one that works is the one to use */
-    if (i != r->cur && r->active && !r->bound)
-        r->cur = i;
-    else if (i != r->cur)
-        return 0;
-    return 1;
+    /* binding: the address that answers works, the one to use (one tried
+     * earlier may answer late, the binds moved on to the next one; while a
+     * probe tries the others, the one in use may answer) */
+    if (r->active && !r->bound) {
+        r->cur = r->bi = i;
+        return 1;
+    }
+    return i == r->cur;
 }
 
 int relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct sockaddr_storage *from, uint8_t *plain)

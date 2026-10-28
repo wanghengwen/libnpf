@@ -80,8 +80,8 @@ static void watch_sync(struct npf_home *h)
         npf_udp_watch_on(n->udp_fd, &h->w);
         h->watch_fd = n->udp_fd;
     }
-    if (h->r.naddr) {
-        const struct sockaddr_in *a = (const void *)CUR(h);
+    if (h->r.naddr) {           /* the binds' address (a probe from the one in use tries the others) */
+        const struct sockaddr_in *a = (const void *)RELAY_BIND_DST(&h->r);
         h->w.relay_ip = a->sin_addr.s_addr;
         h->w.relay_port = a->sin_port;
     }
@@ -100,13 +100,13 @@ static void bind_send(struct npf_home *h, int flags, uint32_t ping_id)
     char a[64];
     int len;
     if (n->udp_fd < 0 || !h->r.active
-        || (n->th->block_relay && call_relay_blocked(n, npf_addr_str(CUR(h), a, sizeof a))))
+        || (n->th->block_relay && call_relay_blocked(n, npf_addr_str(RELAY_BIND_DST(&h->r), a, sizeof a))))
         return;
     watch_sync(h);
     if (h->newnet)
         flags |= RELAY_F_NEWNET;
     if ((len = relay_bind_pack(&h->r, n, flags, ping_id, wire)) > 0)
-        (void)npf_udp_send(n->udp_fd, wire, (size_t)len, CUR(h));
+        (void)npf_udp_send(n->udp_fd, wire, (size_t)len, RELAY_BIND_DST(&h->r));
 }
 
 /* ---- the watchdog ---- */
@@ -179,7 +179,7 @@ static void gave_up(void *arg)
 {
     struct npf_home *h = arg;
     static const int again_s[] = {5, 20, 60, 180};
-    h->r.cur = h->r.tries = 0;
+    h->r.cur = h->r.bi = h->r.tries = 0;
     h->lost = 1;
     npf_log("home: the relay does not answer: binding again in %d s", again_s[h->backoff]);
     if (h->n->online)
@@ -190,12 +190,14 @@ static void gave_up(void *arg)
         h->backoff++;
 }
 
+/* from_lost: the watchdog's, from the address in use (it worked), then the
+ * others in order (architecture.md Q2); else from the first address */
 static void bind_start(struct npf_home *h, int from_lost)
 {
     npf_timer_stop(h->n->loop, &h->t_dog);
     h->state = from_lost ? H_LOST : H_BINDING;
     h->r.bound = 0;
-    relay_bind_run(&h->r, h->n->loop, bind_cb, gave_up, h);
+    (from_lost ? relay_bind_probe : relay_bind_run)(&h->r, h->n->loop, bind_cb, gave_up, h);
 }
 
 /* ---- the platform ---- */
