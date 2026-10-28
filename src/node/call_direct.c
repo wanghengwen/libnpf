@@ -404,7 +404,7 @@ void npf_direct_close(npf_direct *d)
         next = c->next;
         if (c->direct && c->pd.fd == d->fd) {
             npf_call_end(c, "closed");      /* tells the peer; freed later with the other calls */
-            path_direct_gone(c);
+            call_p2p_drop(c);
         }
     }
     npf_loop_del(d->n->loop, d->fd);

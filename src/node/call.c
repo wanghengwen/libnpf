@@ -222,10 +222,7 @@ void call_free(npf_call *c)
     call_hs_free(c);
     free(c->pcfg);
     call_anl_drop(c);
-    if (c->pd.owned && c->pd.fd >= 0) {
-        npf_loop_del(n->loop, c->pd.fd);
-        npf_sock_close(c->pd.fd);
-    }
+    call_p2p_drop(c);
     npf_wipe(c, sizeof *c);
     free(c);
     if (!n->calls)
@@ -673,7 +670,7 @@ void npf_node_calls_lost_fd(npf_node *n, int fd, const char *reason)
     for (c = n->calls; c; c = c->next) {
         int on_it = c->pd.fd == fd && !c->pd.owned;
         if (on_it)
-            path_direct_gone(c);
+            call_p2p_drop(c);
         /* platform sessions use the IPv4 socket for the relay too */
         if (!call_over(c) && (on_it || (!c->direct && fd == n->udp_fd)))
             npf_call_end(c, reason);

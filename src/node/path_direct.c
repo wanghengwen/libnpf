@@ -57,13 +57,6 @@ void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer)
     c->pd.p.health = PH_UP;
 }
 
-/* its socket gone (not one of its own): the path too */
-void path_direct_gone(npf_call *c)
-{
-    pm_del(&c->pm, &c->pd.p);
-    c->pd.fd = -1;
-}
-
 
 /* ---- direct path check (nat-traversal.md 10.3) ----
  * Hearing the peer does not prove that it hears us (a path dead one way: a
@@ -148,7 +141,7 @@ static void direct_lost(npf_path *p)
 
 const npf_path_ops path_direct_ops = {direct_send, direct_suspect, direct_probe, direct_lost};
 
-/* the direct path given up (lost, or the session moves to the WS relay) */
+/* the direct path given up (lost, the session on the WS relay, its socket gone), its own socket closed */
 void call_p2p_drop(npf_call *c)
 {
     pm_del(&c->pm, &c->pd.p);

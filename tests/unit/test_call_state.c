@@ -321,7 +321,7 @@ static void punch_rows(npf_node *n)
     CHECK(c->punch_st == PN_LINGER && c->punch, "the linger ended early");
     call_tick(c, c->punch_at);
     CHECK(c->punch_st == PN_IDLE && !c->punch && pn_ok(c), "the linger over: %d", c->punch_st);
-    path_direct_gone(c);
+    call_p2p_drop(c);
 
     /* skip: IDLE; then the move to the WS relay from SCHEDULED */
     punch_start(c, 5, ",\"skip\":\"no_strategy\"");

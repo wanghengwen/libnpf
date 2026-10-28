@@ -250,7 +250,6 @@ void call_need(npf_call *c, int need, int64_t now);     /* PM_NEED_* to the plat
 /* path_direct.c: the direct path, its check, its loss */
 void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer);
 void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer);
-void path_direct_gone(npf_call *c);
 void path_direct_check(npf_call *c);
 int call_p2p_cut(const npf_call *c);
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len);

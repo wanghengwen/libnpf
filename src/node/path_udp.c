@@ -23,9 +23,8 @@ int call_relay_addr_blocked(const npf_node *n, const struct sockaddr_storage *a)
 }
 
 /* RELAY_BIND to the address being bound or kept (relay_bind.h) */
-static void relay_bind_send(void *arg)
+static void relay_bind_send(npf_call *c)
 {
-    npf_call *c = arg;
     uint8_t wire[256];
     int n = relay_bind_pack(&c->pu.r, c->n, 0, 0, wire);
     if (n > 0 && !call_relay_addr_blocked(c->n, RELAY_BIND_DST(&c->pu.r)))
