@@ -133,7 +133,6 @@ struct npf_call {
     int         ctl_seq;
     /* WS relay (data-channel.md 10): a carrier of the AnLiu connection */
     int         ws_mode;            /* AnLiu's datagrams go over the WS relay (not UDP) */
-    int         ws_peer_udp;        /* ... and the relay hands them to the peer's UDP allocation */
     npf_wsr    *wsr;
     char        ws_url[256];        /* the allocation's relay, for a connection lost after pairing */
     uint8_t     ws_pub[32];

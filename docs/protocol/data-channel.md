@@ -1,6 +1,6 @@
 # NPF 数据通道协议
 
-状态：草案 v0.44。更新日期：2026-10-28。变更记录见文末。
+状态：草案 v0.45。更新日期：2026-10-28。变更记录见文末。
 
 本版按 libnpf 源码 `a03a458` 核对。线格式与节点行为以本仓库实现为依据；平台分配、服务器计费等服务端规则是配套协议要求，本仓库不含对应服务端实现。当前实现与协议约定的差异在相关章节单独说明，源码索引与待完善项见第 12 节。文中的 `npf` 命令、配置文件和网页控制台描述宿主程序的集成用法，本仓库提供库，不包含这些程序的完整实现。
 
@@ -380,7 +380,7 @@ k_tag[dir]、k_mask[dir]：块 dir = ChaCha20(alloc_key, nonce = "NPF-RDATA-v2",
 | 0 | 控制 | Noise 密文：`relay_bind`（客户端发）、`relay_bound`、`relay_paired`、`relay_peer_gone`、`relay_error` | 解密并处理；客户端发来的超过 4096 字节时关闭连接 |
 | 3 | `ANL` | 一个 AnLiu 数据报（1–1200 字节） | 原样转发给另一侧，计费 |
 
-- 双方都完成 `relay_bind` 后，服务器向双方发送 `relay_paired`。另一侧在 UDP 中转上时（桥接，9.3 第 8 条），这一侧 `relay_bind` 成功后立即收到 `relay_paired{"peer": "udp"}`（另一侧还没绑定时，这一侧发的数据报在中转上暂存），节点据此用 `ANL_CARRIER_DGRAM`；
+- 双方都完成 `relay_bind` 后，服务器向双方发送 `relay_paired`。另一侧在 UDP 中转上时（桥接，9.3 第 8 条），这一侧 `relay_bind` 成功后立即收到 `relay_paired{"peer": "udp"}`（另一侧还没绑定时，这一侧发的数据报在中转上暂存）；载体照样是 `ANL_CARRIER_STREAM`：只看本侧的载体（2026-10-28 起，用户决定），中转到对方的那一段 UDP 上丢的包由 AnLiu 超时（至少 1 秒）后重发；
 - 别的类型（包括原来的 1 `START`、2 `RECORD`），或超过 1200 字节的数据报，服务器关闭这条连接：只有数据报计费，不能用别的消息带过限额；
 - 保活：WebSocket ping，每 25 秒一次。
 
@@ -544,6 +544,7 @@ body = op(1) | flow(4) [| reason(1)]
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-28 | 0.45 | 10：WS 上的一侧总是用 `ANL_CARRIER_STREAM`，只看本侧的载体，另一侧在 UDP 上（桥接）时也是（原来用 `ANL_CARRIER_DGRAM`） |
 | 2026-10-28 | 0.44 | 中转方式按侧选定（第 3 节、9.1）：没有 UDP 或连不上 UDP 中转的一侧用 WS 中转，另一侧留在 UDP 上，中转把两者桥接（9.3 第 8 条：WS 一侧在 UDP 中转上也有一个分配，经它转发、计费；10.1：`relay_paired{peer:"udp"}`，这时 WS 一侧用 `ANL_CARRIER_DGRAM`）；`relay_switch` 只移动请求的一侧，另一侧的 UDP 分配保留；任一侧在 WS 上时不打洞 |
 | 2026-10-28 | 0.43 | WS 中转也跑 AnLiu（C4）：WS 消息 `ANL`（type 3）是一个 AnLiu 数据报（≤ 1200 字节），`START`、`RECORD`、`k_ws` 与 channel 0–3 的单元去掉，不兼容（10.1、10.2）；改用 WS 中转与 `udp_back` 回到 UDP 都只换 AnLiu 的载体（`ANL_CARRIER_STREAM` / `DGRAM`），子链路、媒体与 UDP 流不断（第 3 节），`udp_back` 不再结束会话，回到 UDP 后恢复打洞；WS 连接断了重连同一分配，由 AnLiu 判定会话是否失效（10.3）；媒体与 UDP 转发在 WS 上用同样的 AnLiu 流，`MEDIA` 单元（type 5）去掉（第 5、14、15 节）；WS 上的背压也按路径算（第 6 节）；已建立而传输未就绪时新连接等待；MTU 仍为 1200（第 4 节）；UDP 与 WS 中转桥接记为后续工作 |
 | 2026-10-28 | 0.42 | 6：AnLiu 上的传输级背压上限按路径计算（4 × 瓶颈带宽 × 最小 RTT，256 KiB – 4 MiB，原来固定 1 MiB）；WS 中转仍是 1 MiB |

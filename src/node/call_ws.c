@@ -39,14 +39,16 @@ void call_ws_send(npf_call *c, const uint8_t *d, size_t len)
 }
 
 /* the WS relay carries the session now (paired, the AnLiu connection made):
- * a stream carrier (no loss: no fast retransmission, no FEC parity) unless
- * the relay hands the datagrams to the peer's UDP allocation; AnLiu starts
- * its path model again and sends what is unacknowledged once */
+ * a stream carrier (no fast retransmission, no FEC parity), set from this
+ * side's own carrier alone, also when the relay hands the datagrams on to
+ * the peer's UDP allocation (the user's choice, 2026-10-28: a loss on that
+ * leg is then resent after the timeout, at least 1 s); AnLiu starts its path
+ * model again and sends what is unacknowledged once */
 void call_ws_carrier(npf_call *c)
 {
     if (!c->ws_mode || !c->anl || !c->wsr || !npf_wsr_paired(c->wsr) || c->ended)
         return;
-    anl_set_option(c->anl, ANL_OPT_CARRIER, c->ws_peer_udp ? ANL_CARRIER_DGRAM : ANL_CARRIER_STREAM);
+    anl_set_option(c->anl, ANL_OPT_CARRIER, ANL_CARRIER_STREAM);
     call_path_up(c);
 }
 
@@ -55,7 +57,6 @@ static void wsr_paired(npf_wsr *r, int peer_udp, void *arg)
     npf_call *c = arg;
     (void)r;
     c->ws_paired_once = 1;
-    c->ws_peer_udp = peer_udp;
     npf_log("call %s: WS relay paired%s", c->call_id_s, peer_udp ? " (the peer on a UDP allocation)" : "");
     call_ws_carrier(c);
 }
@@ -166,7 +167,6 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     if (!c->ws_mode && c->anl)
         npf_log("call %s: the session moves to the WS relay (its connections stay)", c->call_id_s);
     c->ws_mode = 1;
-    c->ws_peer_udp = 0;
     c->ws_paired_once = 0;
     c->relay.active = 0;
     call_relay_leave(c);
@@ -199,7 +199,6 @@ void call_ws_leave(npf_call *c)
         return;
     npf_log("call %s: the session leaves the WS relay for UDP (its connections stay)", c->call_id_s);
     c->ws_mode = 0;
-    c->ws_peer_udp = 0;
     c->ws_paired_once = 0;
     call_ws_leave_conn(c);
     if (c->anl)
