@@ -1,8 +1,9 @@
 /* The path manager (path.h, architecture.md 2.4): which of a session's
- * paths AnLiu's datagrams go on, and the name of the one in use; then the
- * decisions between the paths a session makes today (architecture.md 3.6
- * to come): the platform's relay allocations, the relay's standby, the way
- * to the WS relay when the UDP relay cannot be reached. */
+ * paths AnLiu's datagrams go on, the name of the one in use, the paths'
+ * health by one set of rules; then the decisions between the paths a
+ * session makes today (architecture.md 3.6 to come): the platform's relay
+ * allocations, the relay's standby, the way to the WS relay when the UDP
+ * relay cannot be reached. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -11,11 +12,36 @@
 #include "call_internal.h"
 #include "home.h"
 
-/* the roles from the paths in use and their health (path.h npf_pm) */
+/* The health rules' times per kind (path.h pm_rules; nat-traversal.md
+ * 10.3, data-channel.md 3). The direct path: silent 3 s (2 RTO) with data
+ * in flight, 20 s without (the peer's AnLiu sends a keepalive every 15 s),
+ * a PATH_CHECK every 500 ms, lost 10 s after. The UDP relay: the same
+ * silences (20 s idle: the relay's 10 s was below AnLiu's keepalive and
+ * bound it again every 10-15 s, architecture.md D3); its probe is a bind,
+ * its address in use first (relay_bind_probe), its verdict every address
+ * tried. The WS relay: TCP's own retransmission with data in flight; 30 s
+ * without any frame (its ping every 25 s, the peer's keepalives) is a
+ * half-open connection: connected again, DEAD after 5 that do not pair
+ * (path_ws.c). */
+const pm_rules pm_rules_of[PK_N] = {
+    [PK_DIRECT]    = {3000, 20000, 500, 10000},
+    [PK_UDP_RELAY] = {3000, 20000, 0, 0},
+    [PK_WS_RELAY]  = {0, 30000, 0, 0},
+};
+
+static int64_t max64(int64_t a, int64_t b)
+{
+    return a > b ? a : b;
+}
+
+/* the roles from the paths in use and their health (path.h npf_pm); a
+ * direct path given up carries nothing */
 static void pm_route(npf_pm *m)
 {
     npf_path *d = m->p[PK_DIRECT], *u = m->p[PK_UDP_RELAY], *w = m->p[PK_WS_RELAY];
     int k;
+    if (d && d->health == PH_DEAD)
+        d = NULL;
     for (k = 0; k < PK_N; k++)
         if (m->p[k])
             m->p[k]->role = PR_IDLE;
@@ -50,6 +76,90 @@ void pm_health(npf_pm *m, npf_path *p, int health)
     p->health = (uint8_t)health;
     if (m->p[p->kind] == p)
         pm_route(m);
+}
+
+void pm_suspect(npf_pm *m, npf_path *p, int64_t now)
+{
+    p->suspect_at = now;
+    p->probe_at = now;
+    pm_health(m, p, PH_SUSPECT);
+}
+
+int pm_rt(npf_pm *m, npf_path *p, int64_t now)
+{
+    p->rt_ok = now;
+    if (p->health == PH_UP)
+        return 0;
+    p->busy_since = 0;
+    pm_health(m, p, PH_UP);
+    return 1;
+}
+
+void pm_dead(npf_pm *m, npf_path *p)
+{
+    pm_health(m, p, PH_DEAD);
+}
+
+int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
+{
+    int64_t due = INT64_MAX;
+    int k;
+    for (k = 0; k < PK_N; k++) {
+        npf_path *p = m->p[k];
+        const pm_rules *r = &pm_rules_of[k];
+        if (!p)
+            continue;
+        if (p->health == PH_UP) {
+            int64_t from, quiet;
+            if (!pm_relied(m, p)) {
+                p->busy_since = 0;
+                continue;
+            }
+            /* silence counts from the later of the last datagram heard and
+             * the moment data went in flight: after an idle spell the first
+             * new request must not look like a path quiet all along. With
+             * nothing in flight (a sender waiting for its peer's credit, an
+             * idle session) a peer that is there still sends AnLiu's
+             * keepalive every 15 s (measured: all of a node's UDP dropped
+             * mid-download, the sender idle on credit) */
+            if (inflight && r->t_busy) {
+                if (!p->busy_since)
+                    p->busy_since = now;
+                quiet = max64(r->t_busy, 2 * (int64_t)rto);
+                from = max64(p->last_rx, p->busy_since);
+            } else {
+                p->busy_since = 0;
+                quiet = r->t_idle;
+                from = max64(p->last_rx, p->since);
+            }
+            if (now - from < quiet) {
+                due = due < from + quiet ? due : from + quiet;
+                continue;
+            }
+            pm_suspect(m, p, now);
+            p->ops->suspect(p, quiet);
+            if (m->p[k] != p || p->health != PH_SUSPECT)
+                continue;                   /* gone, or proven already */
+        }
+        if (p->health != PH_SUSPECT)
+            continue;
+        if (r->t_verdict && now - p->suspect_at >= r->t_verdict) {
+            pm_dead(m, p);
+            p->ops->dead(p);
+            continue;
+        }
+        if (r->t_probe && now >= p->probe_at) {
+            p->probe_at = now + r->t_probe;
+            p->ops->probe(p);
+            if (m->p[k] != p || p->health != PH_SUSPECT)
+                continue;
+        }
+        if (r->t_probe && p->probe_at < due)
+            due = p->probe_at;
+        if (r->t_verdict && p->suspect_at + r->t_verdict < due)
+            due = p->suspect_at + r->t_verdict;
+    }
+    return due;
 }
 
 const char *pm_name(const npf_pm *m)
@@ -89,6 +199,40 @@ void call_paths_init(npf_call *c)
 }
 
 
+/* ---- the session's paths' health ---- */
+
+static void pm_timer(npf_loop *loop, void *arg)
+{
+    npf_call *c = arg;
+    (void)loop;
+    c->pm.t_check = NULL;
+    pm_check(c);
+}
+
+/* The health rules now (pm_tick) for a session with its AnLiu connection:
+ * from AnLiu's timer, the manager's own (at the next thing due: a probe, a
+ * verdict, a silence long enough; earlier only when it moved earlier, as
+ * AnLiu's timer, call_transport.c:anl_after_input) and the events that
+ * change a path's health. Nothing on the hot path: a datagram only writes
+ * its path's last_rx. */
+void pm_check(npf_call *c)
+{
+    anl_stats st;
+    int64_t now, due;
+    if (c->ended || !c->anl || anl_get_stats(c->anl, &st) < 0)
+        return;
+    now = npf_mono_ms();
+    if (call_has_ws(c))
+        path_ws_heard(c);
+    due = pm_tick(&c->pm, now, st.inflight, (int)st.rto);
+    if (c->ended || due == INT64_MAX || (c->pm.t_check && c->pm.check_at <= due))
+        return;
+    npf_timer_stop(c->n->loop, &c->pm.t_check);
+    c->pm.check_at = due;
+    c->pm.t_check = npf_timer_add(c->n->loop, due > now ? due - now : 0, pm_timer, c);
+}
+
+
 /* ---- the session's decisions between its paths ---- */
 
 /* the direct path up (or alive again): the UDP relay stands by for
@@ -109,18 +253,20 @@ void call_standby_done(npf_loop *loop, void *arg)
     c->pu.t_standby = NULL;
     if (!call_has_p2p(c) || !call_has_relay(c))
         return;
-    if (c->pd.suspect) {   /* not while the direct path is in doubt */
+    if (c->pd.p.health == PH_SUSPECT) {   /* not while the direct path is in doubt */
         if (!c->pd.standby_check)
             c->pu.t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
         return;
     }
-    if (c->pd.echo_ms < c->pd.p.since) {
+    if (c->pd.p.rt_ok < c->pd.p.since) {
         /* the punch proved only that the peer's datagrams reach us (a path
          * cut one way still passes it): a path check answered over the direct
-         * path first, else the session would lose the relay it still needs */
+         * path first, else the session would lose the relay it still needs
+         * (in doubt meanwhile: the data on the relay too, lost 10 s after) */
         c->pd.standby_check = 1;
-        path_direct_suspect(c, npf_mono_ms());
+        pm_suspect(&c->pm, &c->pd.p, npf_mono_ms());
         path_direct_check(c);
+        pm_check(c);
         return;
     }
     path_udp_off(c);
@@ -217,10 +363,10 @@ void call_relay_gave_up(void *arg)
          * (call_relay_setup), the usual way on from there */
         npf_log("call %s: UDP relay unreachable before the accept: binding it again then", c->call_id_s);
     } else if (call_has_p2p(c)) {
-        /* in doubt (p2p_suspect): the verdict decides (lost: the WS
-         * relay, check_p2p); no punching on the WS relay */
+        /* in doubt (SUSPECT): the verdict decides (lost: the WS relay,
+         * path_direct.c:direct_lost); no punching on the WS relay */
         npf_log("call %s: UDP relay unreachable; the direct path carries the session%s", c->call_id_s,
-                c->pd.suspect ? " while it is checked" : "");
+                c->pd.p.health == PH_SUSPECT ? " while it is checked" : "");
     } else if (!c->pu.ports_waited && call_hard_punches(c) > 0) {
         /* a hard-side punch holds hundreds of the NAT's ports: a carrier
          * NAT with a quota of them (the phone's APDM CGNAT, about 500) then

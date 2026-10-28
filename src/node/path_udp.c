@@ -1,7 +1,8 @@
 /* The UDP relay (path.h, data-channel.md 9): its sending, binding and
  * keeping the allocation, the relayed datagrams and the relay's answers,
- * its check while the session relies on it. What a session does when it
- * cannot be reached is the manager's (path_mgr.c). */
+ * its probe when the health rules find it silent while the session relies
+ * on it. What a session does when it cannot be reached is the manager's
+ * (path_mgr.c). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -20,31 +21,32 @@ int call_relay_blocked(const npf_node *n, const char *what)
     return v && *what && strstr(v, what) != NULL;
 }
 
-int call_relay_addr_blocked(const npf_call *c)
+static int addr_blocked(const npf_call *c, const struct sockaddr_storage *a)
 {
-    char a[64];
-    return c->n->th->block_relay
-           && call_relay_blocked(c->n, npf_addr_str(&c->pu.r.addr[c->pu.r.cur], a, sizeof a));
+    char s[64];
+    return c->n->th->block_relay && call_relay_blocked(c->n, npf_addr_str(a, s, sizeof s));
 }
 
-/* RELAY_BIND (relay_bind.c): the relay's cookie for our address in it
- * (zeros before the first BIND_ACK: the relay answers with a challenge
- * carrying it, and binds the address when a BIND echoes it) */
+/* RELAY_BIND (relay_bind.c) to the address being bound or kept (bi): the
+ * relay's cookie for our address in it (zeros before the first BIND_ACK:
+ * the relay answers with a challenge carrying it, and binds the address
+ * when a BIND echoes it) */
 static void relay_bind_send(void *arg)
 {
     npf_call *c = arg;
     uint8_t wire[256];
     int n = relay_bind_pack(&c->pu.r, c->n, 0, 0, wire);
-    if (n > 0 && !call_relay_addr_blocked(c))
-        npf_udp_send(c->n->udp_fd, wire, (size_t)n, &c->pu.r.addr[c->pu.r.cur]);
+    if (n > 0 && !addr_blocked(c, RELAY_BIND_DST(&c->pu.r)))
+        npf_udp_send(c->n->udp_fd, wire, (size_t)n, RELAY_BIND_DST(&c->pu.r));
 }
 
-/* RELAY_DATA (relay_data.c): a 16-byte header before the AnLiu datagram */
+/* RELAY_DATA (relay_data.c) to the address in use (cur): a 16-byte header
+ * before the AnLiu datagram */
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
 {
     uint8_t buf[2048];
     size_t n;
-    if (call_relay_addr_blocked(c) || !(n = relay_data_pack(&c->pu.r, dgram, len, buf)))
+    if (addr_blocked(c, &c->pu.r.addr[c->pu.r.cur]) || !(n = relay_data_pack(&c->pu.r, dgram, len, buf)))
         return;
     npf_udp_send(c->n->udp_fd, buf, n, &c->pu.r.addr[c->pu.r.cur]);
 }
@@ -59,13 +61,19 @@ static const char *udp_name(const npf_path *p)
     return ((const path_udp *)(const void *)p)->r.bound ? "relay" : "relay (binding)";
 }
 
-const npf_path_ops path_udp_ops = {udp_send, udp_name};
+static void udp_suspect(npf_path *p, int64_t quiet);
+
+/* its probe is a bind and its verdict the binder's (relay_bind_probe):
+ * no periodic probe, no verdict by time */
+const npf_path_ops path_udp_ops = {udp_send, udp_name, udp_suspect, NULL, NULL};
 
 /* the allocation in use from now on, or no longer (the binder's active
- * says the same: relay_addr_take reads it) */
+ * says the same: relay_addr_take reads it); UP when bound, else NEW */
 void path_udp_on(npf_call *c)
 {
     c->pu.r.active = 1;
+    c->pu.p.since = npf_mono_ms();
+    c->pu.p.health = c->pu.r.bound ? PH_UP : PH_NEW;
     pm_add(&c->pm, &c->pu.p);
 }
 
@@ -86,10 +94,45 @@ static void relay_keepalive_timer(npf_loop *loop, void *arg)
     }
 }
 
+/* every address tried (relay_bind_run, relay_bind_probe): DEAD, the
+ * session decides (path_mgr.c) */
+static void udp_gave_up(void *arg)
+{
+    npf_call *c = arg;
+    if (call_has_relay(c))
+        pm_dead(&c->pm, &c->pu.p);
+    call_relay_gave_up(c);
+}
+
 /* the UDP relay bound again from its first address (a BIND every 700 ms) */
 void call_relay_rebind(npf_call *c)
 {
-    relay_bind_run(&c->pu.r, c->n->loop, relay_bind_send, call_relay_gave_up, c);
+    if (call_has_relay(c) && !c->pu.r.bound)
+        pm_health(&c->pm, &c->pu.p, PH_NEW);
+    relay_bind_run(&c->pu.r, c->n->loop, relay_bind_send, udp_gave_up, c);
+}
+
+/* A bound UDP relay can die under a session (the node's UDP blocked, the
+ * relay's address unreachable): its BIND every 25 s goes unanswered and
+ * nothing comes through it, while the session waits on AnLiu's retries and
+ * the idle timeout (measured: all UDP of a node dropped, 41 s on a dead relay
+ * after the direct path was lost, 90 s: transport_lost). Silent while the
+ * session relies on it (the health rules, pm_tick), it is probed with a
+ * bind to the address in use first, then to the others in order, the data
+ * going on to the address in use until another one answers (before, it was
+ * bound again from its first address and the data went with the binds: a
+ * session bound through the second address sent the data of the 2.8 s to
+ * the first one, architecture.md D2). An answer keeps it (the peer, not
+ * the relay, gone quiet); none gives it up as at the start
+ * (call_relay_gave_up: the WS relay, once the direct path's verdict is in) */
+static void udp_suspect(npf_path *p, int64_t quiet)
+{
+    npf_call *c = CALL_OF(p, pu.p);
+    npf_logw("call %s: the UDP relay silent for %lld ms while the session relies on it: probing it, %s first",
+             c->call_id_s, (long long)quiet, c->pu.r.naddr > 1 ? "its address in use" : "its address");
+    c->pu.r.bound = 0;
+    npf_timer_stop(c->n->loop, &c->pu.r.t_bind);
+    relay_bind_probe(&c->pu.r, c->n->loop, relay_bind_send, udp_gave_up, c);
 }
 
 /* the binding refreshed every RELAY_KEEPALIVE_MS while the relay is in use */
@@ -165,6 +208,7 @@ static void relay_bound(npf_call *c, const char *how)
     if (c->pm.t_ws_wait && !call_has_ws(c))     /* no WS relay needed after all */
         npf_timer_stop(c->n->loop, &c->pm.t_ws_wait);
     relay_keepalive(c);
+    pm_rt(&c->pm, &c->pu.p, npf_mono_ms());
     npf_log("call %s: UDP relay bound%s", c->call_id_s, how);
     call_path_up(c);
 }
@@ -264,8 +308,8 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
     c->pu.p.last_rx = npf_mono_ms();
     if (!call_has_relay(c)) {     /* the peer sends on it: take it back, keep the binding fresh */
         npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
-        path_udp_on(c);
         c->pu.r.bound = 1;
+        path_udp_on(c);
         relay_bind_send(c);
         relay_keepalive(c);
     } else if (!c->pu.r.bound) {
@@ -323,63 +367,4 @@ int node_relay_data_input(npf_node *n, const uint8_t *buf, size_t len, const str
             return 1;
         }
     return 0;
-}
-
-/* A bound UDP relay can die under a session (the node's UDP blocked, the
- * relay's address unreachable): its BIND every 25 s goes unanswered and
- * nothing comes through it, while the session waits on AnLiu's retries and
- * the idle timeout (measured: all UDP of a node dropped, 41 s on a dead relay
- * after the direct path was lost, 90 s: transport_lost). While the session
- * relies on it (no direct path, or one in doubt), silence for max(3 s,
- * 2 RTO) with data in flight - or 10 s without (a session waiting for its
- * peer's credit sends nothing; a bind is a probe of a round trip) - binds it
- * again from its first address: an answer keeps it (the peer, not the relay,
- * gone quiet), none gives it up as at the start (call_relay_gave_up: the WS
- * relay, once the direct path's verdict is in). Checked every second while
- * relied on: AnLiu's own timer can be many seconds away (backed off) */
-#define RELAY_SILENT_MS      3000
-#define RELAY_IDLE_SILENT_MS 10000
-#define RELAY_CHECK_MS       1000
-
-static void relay_check_timer(npf_loop *loop, void *arg)
-{
-    npf_call *c = arg;
-    (void)loop;
-    c->pu.t_check = NULL;
-    if (!c->ended)
-        call_check_relay(c);
-}
-
-void call_check_relay(npf_call *c)
-{
-    anl_stats st;
-    int64_t now = npf_mono_ms(), quiet;
-    /* bound: t_bind is its keepalive (binding is !bound with t_bind) */
-    if (!call_has_relay(c) || !c->pu.r.bound || call_has_ws(c) || c->direct || (call_has_p2p(c) && !c->pd.suspect)
-        || !c->anl || anl_get_stats(c->anl, &st) < 0) {
-        c->pu.p.busy_since = 0;
-        npf_timer_stop(c->n->loop, &c->pu.t_check);
-        return;
-    }
-    if (!c->pu.t_check)
-        c->pu.t_check = npf_timer_add(c->n->loop, RELAY_CHECK_MS, relay_check_timer, c);
-    if (st.inflight == 0) {
-        c->pu.p.busy_since = 0;
-        quiet = RELAY_IDLE_SILENT_MS;
-        if (now - c->pu.p.last_rx < quiet)
-            return;
-    } else {
-        if (!c->pu.p.busy_since)
-            c->pu.p.busy_since = now;
-        quiet = 2 * (int64_t)st.rto > RELAY_SILENT_MS ? 2 * (int64_t)st.rto : RELAY_SILENT_MS;
-        if (now - (c->pu.p.last_rx > c->pu.p.busy_since ? c->pu.p.last_rx : c->pu.p.busy_since) < quiet)
-            return;
-    }
-    npf_logw("call %s: the UDP relay silent for %lld ms while the session relies on it: binding it again",
-             c->call_id_s, (long long)quiet);
-    c->pu.r.bound = 0;
-    c->pu.p.busy_since = 0;
-    npf_timer_stop(c->n->loop, &c->pu.t_check);
-    npf_timer_stop(c->n->loop, &c->pu.r.t_bind);
-    call_relay_rebind(c);
 }

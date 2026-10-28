@@ -55,8 +55,8 @@ void call_relay_leave(npf_call *c)
     c->pu.r.bound = 0;
     c->pu.waits_ports = 0;
     npf_timer_stop(l, &c->pm.t_ws_wait);
-    npf_timer_stop(l, &c->pd.t_check);
-    path_direct_suspect(c, 0);
+    if (call_has_p2p(c) && c->pd.p.health == PH_SUSPECT)
+        pm_health(&c->pm, &c->pd.p, PH_UP);
     c->pd.standby_check = 0;
     npf_timer_stop(l, &c->t_punch);
     c->punch_wait_keys = 0;
@@ -138,8 +138,8 @@ npf_call *call_new(npf_node *n, int caller)
  * no one's now */
 static void call_timers_stop(npf_call *c)
 {
-    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->pm.t_ws_wait, &c->pd.t_check,
-                       &c->pu.t_standby, &c->t_direct, &c->pu.r.t_bind, &c->pw.t_re, &c->pu.t_check};
+    npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->pm.t_ws_wait, &c->pm.t_check,
+                       &c->pu.t_standby, &c->t_direct, &c->pu.r.t_bind, &c->pw.t_re};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++)
         npf_timer_stop(c->n->loop, t[i]);
@@ -691,7 +691,7 @@ void npf_node_check_paths(npf_node *n, const char *why)
     char w[96];
     snprintf(w, sizeof w, "%s: checking the direct path", why);
     for (c = n->calls; c; c = c->next)
-        if (!c->ended && call_has_p2p(c) && !c->direct && c->anl && !c->pd.suspect)
+        if (!c->ended && call_has_p2p(c) && !c->direct && c->anl && c->pd.p.health != PH_SUSPECT)
             call_p2p_suspect_start(c, w);
 }
 

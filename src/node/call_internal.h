@@ -220,6 +220,7 @@ static inline int call_has_ws(const npf_call *c) { return pm_has(&c->pm, PK_WS_R
 /* path_mgr.c: the session's paths; the decisions between them: the
  * relay's allocations and standby, the way to the WS relay (data-channel.md 9) */
 void call_paths_init(npf_call *c);
+void pm_check(npf_call *c);             /* the paths' health rules now; the manager's timer */
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
 void pm_standby_start(npf_call *c);
 void call_standby_done(npf_loop *loop, void *arg);
@@ -233,11 +234,9 @@ void call_ws_wait_end(npf_call *c, int ok);
 void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer);
 void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer);
 void path_direct_gone(npf_call *c);
-void path_direct_suspect(npf_call *c, int64_t since);
 void path_direct_check(npf_call *c);
 int call_p2p_cut(const npf_call *c);
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len);
-void call_check_p2p(npf_call *c);
 void call_p2p_suspect_start(npf_call *c, const char *why);
 void call_p2p_drop(npf_call *c);
 void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
@@ -253,6 +252,7 @@ void call_ws_failed(npf_call *c, const char *why);
 int call_ws_setup(npf_call *c, const npf_json *j, int r);
 void call_ws_leave(npf_call *c);        /* back to UDP: the WS relay connection goes */
 void call_ws_leave_conn(npf_call *c);
+void path_ws_heard(npf_call *c);        /* the path's last_rx from the connection's last frame */
 
 /* call_direct.c: direct connections (no platform) */
 int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
@@ -273,7 +273,6 @@ int  call_relay_take(npf_call *c, const uint8_t id[8], const uint8_t key[32], co
                      int naddr);
 void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
                     int naddr);
-int  call_relay_addr_blocked(const npf_call *c);
 void call_relay_rebind(npf_call *c);
 void call_relay_early_feed(npf_call *c);
 void call_relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len);
@@ -283,6 +282,5 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
  * allocations: its hint names it, its tag verifies; 1 consumed, 0 not one */
 int node_relay_data_input(npf_node *n, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);
-void call_check_relay(npf_call *c);    /* a bound UDP relay that went silent while in use */
 
 #endif

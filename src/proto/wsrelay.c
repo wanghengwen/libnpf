@@ -187,6 +187,11 @@ int npf_wsr_paired(const npf_wsr *r)
     return r->paired;
 }
 
+int64_t npf_wsr_last_rx(const npf_wsr *r)
+{
+    return r->ws ? npf_ws_last_rx(r->ws) : 0;
+}
+
 void npf_wsr_close(npf_wsr *r)
 {
     if (!r)

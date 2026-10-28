@@ -16,6 +16,8 @@
  * TCP connection stalls (AnLiu sends them again) */
 #define WS_QUEUE_MAX     (8u << 20)
 #define WS_RECONNECT_MS  2000       /* the connection lost after pairing: the same allocation again */
+#define WS_PAIR_MS       10000      /* a connection made again pairs by then, or it failed */
+#define WS_RECONNECTS    5          /* connections made again in a row that did not pair: the relay given up */
 
 static void ws_flush_timer(npf_loop *loop, void *arg)
 {
@@ -49,7 +51,20 @@ static const char *ws_name(const npf_path *p)
     return "ws relay";
 }
 
-const npf_path_ops path_ws_ops = {ws_send, ws_name};
+static void ws_suspect(npf_path *p, int64_t quiet);
+
+/* its probe is a new connection, its verdict WS_RECONNECTS of them that did
+ * not pair (call_ws_failed) */
+const npf_path_ops path_ws_ops = {ws_send, ws_name, ws_suspect, NULL, NULL};
+
+/* the path's last_rx from the connection's frames (pm_check: not per
+ * datagram, the connection keeps the time of its last frame) */
+void path_ws_heard(npf_call *c)
+{
+    int64_t t = c->pw.wsr ? npf_wsr_last_rx(c->pw.wsr) : 0;
+    if (t > c->pw.p.last_rx)
+        c->pw.p.last_rx = t;
+}
 
 /* the WS relay carries the session now (paired, the AnLiu connection made):
  * a stream carrier (no fast retransmission, no FEC parity), set from this
@@ -68,10 +83,18 @@ void call_ws_carrier(npf_call *c)
 static void wsr_paired(npf_wsr *r, int peer_udp, void *arg)
 {
     npf_call *c = arg;
+    int64_t now = npf_mono_ms();
+    int again = c->pw.p.health == PH_SUSPECT;
     (void)r;
     c->pw.paired_once = 1;
-    npf_log("call %s: WS relay paired%s", c->call_id_s, peer_udp ? " (the peer on a UDP allocation)" : "");
+    c->pw.fails = 0;
+    npf_timer_stop(c->n->loop, &c->pw.t_re);    /* its pairing's deadline */
+    c->pw.p.since = c->pw.p.last_rx = now;
+    pm_rt(&c->pm, &c->pw.p, now);
+    npf_log("call %s: WS relay paired%s%s", c->call_id_s, again ? " again" : "",
+            peer_udp ? " (the peer on a UDP allocation)" : "");
     call_ws_carrier(c);
+    pm_check(c);                                /* its silence counted from now */
 }
 
 static void wsr_datagram(npf_wsr *r, const uint8_t *d, size_t len, void *arg)
@@ -89,35 +112,54 @@ static void wsr_datagram(npf_wsr *r, const uint8_t *d, size_t len, void *arg)
 
 static int ws_open(npf_call *c);
 
+/* a connection made again that has not paired by now: it failed */
+static void ws_pair_late(npf_loop *loop, void *arg)
+{
+    npf_call *c = arg;
+    (void)loop;
+    c->pw.t_re = NULL;
+    if (!c->pw.wsr || npf_wsr_paired(c->pw.wsr))
+        return;
+    call_ws_leave_conn(c);
+    call_ws_failed(c, "not paired again within 10 s");
+}
+
 static void ws_reconnect(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
     (void)loop;
     c->pw.t_re = NULL;
-    if (!call_has_ws(c) || c->pw.wsr || c->ended)
+    if (!call_has_ws(c) || c->pw.wsr || c->ended || c->pw.p.health == PH_DEAD)
         return;
     npf_log("call %s: WS relay: connecting again", c->call_id_s);
     if (ws_open(c) < 0)
-        c->pw.t_re = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
+        call_ws_failed(c, "cannot connect");
+    else
+        c->pw.t_re = npf_timer_add(c->n->loop, WS_PAIR_MS, ws_pair_late, c);
 }
 
-/* The WS relay failed. Before it ever worked: the caller asks for a relay on
- * its own server (the platform's servers share the work), the callee waits
- * for that. Afterwards it is a carrier lost: the session goes on (AnLiu
- * keeps its state and ends it at its idle timeout if nothing comes back),
- * the same allocation is connected again, and the platform may move the
- * session meanwhile (relay_switch). */
-void call_ws_failed(npf_call *c, const char *why)
+/* nothing from the relay for 30 s (the health rules, pm_tick; its pong
+ * every 25 s, the peer's keepalives): the TCP connection is half-open (a
+ * NAT or a firewall on the way lost it without a word, the relay
+ * restarted): closed, connected again at once. Before, the session waited
+ * on TCP's own timeout, minutes, and AnLiu ended it after 60 s */
+static void ws_suspect(npf_path *p, int64_t quiet)
+{
+    npf_call *c = CALL_OF(p, pw.p);
+    npf_logw("call %s: nothing from the WS relay for %lld s: its connection is half-open", c->call_id_s,
+             (long long)quiet / 1000);
+    c->pw.fails = 0;
+    call_ws_leave_conn(c);
+    ws_reconnect(c->n->loop, c);
+}
+
+/* the relay cannot be reached before it ever worked, or given up after:
+ * the caller asks for a relay on its own server (the platform's servers
+ * share the work: relay_switch{unreachable}, architecture.md 2.4
+ * PM_NEED_WS_ELSEWHERE), the callee waits for that */
+static void ws_elsewhere(npf_call *c)
 {
     char data[128];
-    npf_log("call %s: WS relay %s", c->call_id_s, why);
-    if (c->ended || !call_has_ws(c))
-        return;
-    if (c->pw.paired_once) {
-        if (!c->pw.wsr && !c->pw.t_re)
-            c->pw.t_re = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
-        return;
-    }
     if (c->caller && c->state == NPF_CALL_CALLING) {
         /* connected from the reply to the call: the platform takes no
          * relay_switch before the accept (call_caller_accepted asks then) */
@@ -132,6 +174,40 @@ void call_ws_failed(npf_call *c, const char *why)
     }
 }
 
+/* The WS relay failed. Before it ever worked: elsewhere (ws_elsewhere).
+ * Afterwards it is a carrier lost (SUSPECT): the session goes on (AnLiu
+ * keeps its state and ends it at its idle timeout if nothing comes back),
+ * the same allocation is connected again every 2 s, and the platform may
+ * move the session meanwhile (relay_switch); WS_RECONNECTS in a row that do
+ * not pair (architecture.md Q5): the relay is DEAD, given up, elsewhere.
+ * The requests' deadlines are the manager's (architecture.md 3.6, step 1c) */
+void call_ws_failed(npf_call *c, const char *why)
+{
+    npf_log("call %s: WS relay %s", c->call_id_s, why);
+    if (c->ended || !call_has_ws(c))
+        return;
+    if (c->pw.paired_once) {
+        if (c->pw.p.health == PH_DEAD)
+            return;
+        if (c->pw.p.health != PH_SUSPECT) {
+            pm_suspect(&c->pm, &c->pw.p, npf_mono_ms());
+        } else if (++c->pw.fails >= WS_RECONNECTS) {
+            npf_logw("call %s: WS relay: connected again %d times, never paired: giving it up", c->call_id_s,
+                     c->pw.fails);
+            pm_dead(&c->pm, &c->pw.p);
+            call_ws_leave_conn(c);
+            ws_elsewhere(c);
+            if (!c->caller)
+                npf_log("call %s: waiting for the platform to move the session (the caller asks)", c->call_id_s);
+            return;
+        }
+        if (!c->pw.wsr && !c->pw.t_re)
+            c->pw.t_re = npf_timer_add(c->n->loop, WS_RECONNECT_MS, ws_reconnect, c);
+        return;
+    }
+    ws_elsewhere(c);
+}
+
 static void wsr_gone(npf_wsr *r, const char *why, void *arg)
 {
     npf_call *c = arg;
@@ -141,6 +217,7 @@ static void wsr_gone(npf_wsr *r, const char *why, void *arg)
     }
     c->pw.wsr = NULL;              /* already freed */
     npf_timer_stop(c->n->loop, &c->pw.t_flush);
+    npf_timer_stop(c->n->loop, &c->pw.t_re);    /* its pairing's deadline */
     call_ws_failed(c, why);
 }
 
@@ -151,6 +228,7 @@ static int ws_open(npf_call *c)
     if (call_relay_blocked(c->n, c->pw.url))
         return -1;
     c->pw.wsr = npf_wsr_open(c->n->loop, c->pw.url, c->pw.pub, &c->n->id, c->pu.r.relay_id, &wsr_cbs, c);
+    c->pw.p.last_rx = npf_mono_ms();            /* its silence counts from now */
     return c->pw.wsr ? 0 : -1;
 }
 
@@ -179,6 +257,8 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     }
     if (!call_has_ws(c) && c->anl)
         npf_log("call %s: the session moves to the WS relay (its connections stay)", c->call_id_s);
+    c->pw.p.health = PH_NEW;                    /* UP once paired */
+    c->pw.fails = 0;
     pm_add(&c->pm, &c->pw.p);
     c->pw.paired_once = 0;
     path_udp_off(c);

@@ -35,7 +35,7 @@ static const char *fake_name(const npf_path *p)
     return names[p->kind];
 }
 
-static const npf_path_ops fake_ops = {fake_send, fake_name};
+static const npf_path_ops fake_ops = {fake_send, fake_name, NULL, NULL, NULL};
 
 static fake f[PK_N];
 
@@ -73,6 +73,7 @@ int test_path(void)
     for (k = 0; k < PK_N; k++) {
         f[k].p.ops = &fake_ops;
         f[k].p.kind = (uint8_t)k;
+        f[k].p.health = PH_UP;
     }
     CHECK(NPF_PATH_DIRECT == 1 + PK_DIRECT && NPF_PATH_UDP_RELAY == 1 + PK_UDP_RELAY
           && NPF_PATH_WS_RELAY == 1 + PK_WS_RELAY, "pm_code's 1 + kind is npf.h's NPF_PATH_*");

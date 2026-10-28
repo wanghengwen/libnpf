@@ -31,6 +31,9 @@ int    npf_wsr_queue(npf_wsr *r, const uint8_t *d, size_t len);
 int    npf_wsr_flush(npf_wsr *r);
 size_t npf_wsr_pending(const npf_wsr *r);
 int    npf_wsr_paired(const npf_wsr *r);
+/* the last frame from the relay, any (its pongs, the peer's datagrams;
+ * monotonic ms), 0 none yet */
+int64_t npf_wsr_last_rx(const npf_wsr *r);
 void   npf_wsr_close(npf_wsr *r);
 
 #endif

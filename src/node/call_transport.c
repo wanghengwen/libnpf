@@ -471,8 +471,7 @@ static void anl_timer(npf_loop *loop, void *arg)
     anl_drain(c);
     if (c->ended)
         return;
-    call_check_p2p(c);
-    call_check_relay(c);
+    pm_check(c);                    /* the paths' health (path_mgr.c) */
     anl_schedule(c);
 }
 

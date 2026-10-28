@@ -11,7 +11,11 @@
  *   for the next one (it went to the old punch, the new one never had it);
  * - a session moving to the WS relay ends its running punch and gives its
  *   hard-side sockets back (the punch ran on and could make the WS session
- *   "direct"). */
+ *   "direct");
+ * - a WS relay lost after it worked is connected again; after 5 connections
+ *   in a row that did not pair it is given up (DEAD) and the caller asks
+ *   for a relay elsewhere, the callee waits (architecture.md Q5; it was
+ *   connected again every 2 s for good). */
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -192,6 +196,48 @@ static void ws_leaves_punch(npf_node *n)
         close(dead);
 }
 
+/* the WS relay lost after pairing: SUSPECT, connected again; 5 that fail: DEAD */
+static void ws_gives_up(npf_node *n, int caller)
+{
+    static npf_test_hooks th;
+    const npf_test_hooks *old = n->th;
+    npf_call *c = call_new(n, caller);
+    int k;
+    CHECK(c != NULL, "call");
+    if (!c)
+        return;
+    snprintf(c->call_id_s, sizeof c->call_id_s, "ws-test-%d", caller);
+    c->state = NPF_CALL_ESTABLISHED;
+    th = *old;
+    th.block_relay = "wss://blocked.test/relay";    /* every connection fails at once */
+    n->th = &th;
+    snprintf(c->pw.url, sizeof c->pw.url, "wss://blocked.test/relay");
+    pm_add(&c->pm, &c->pw.p);
+    c->pw.paired_once = 1;
+    pm_rt(&c->pm, &c->pw.p, npf_mono_ms());
+    seen_clear();
+    call_ws_failed(c, "relay connection closed");   /* lost: in doubt, connected again in 2 s */
+    CHECK(c->pw.p.health == PH_SUSPECT && c->pw.t_re && c->pw.fails == 0, "a WS relay lost: health %d, fails %d",
+          c->pw.p.health, c->pw.fails);
+    for (k = 1; k < 5; k++) {
+        call_ws_failed(c, "cannot connect");
+        CHECK(c->pw.p.health == PH_SUSPECT && c->pw.fails == k && c->pw.t_re, "reconnect %d failed: health %d",
+              k, c->pw.p.health);
+    }
+    CHECK(!strstr(seen, "giving it up") && !strstr(seen, "relay_switch"), "given up before 5: %s", seen);
+    call_ws_failed(c, "cannot connect");
+    CHECK(c->pw.p.health == PH_DEAD && !c->pw.t_re && !c->pw.wsr, "5 failed: health %d", c->pw.p.health);
+    CHECK(strstr(seen, "never paired: giving it up") != NULL, "not given up: %s", seen);
+    CHECK(caller ? strstr(seen, "asking for one on our own server") != NULL
+                 : strstr(seen, "asking for one") == NULL && strstr(seen, "waiting for the platform") != NULL,
+          "%s: %s", caller ? "the caller did not ask elsewhere" : "the callee asked", seen);
+    seen_clear();
+    call_ws_failed(c, "cannot connect");            /* given up: nothing more */
+    CHECK(!c->pw.t_re && !strstr(seen, "asking"), "after the verdict: %s", seen);
+    n->th = old;
+    npf_call_end(c, "test");
+}
+
 int test_call(void)
 {
     static npf_node node;
@@ -219,6 +265,8 @@ int test_call(void)
     relay_asked_again(&node);
     punch_info_round(&node);
     ws_leaves_punch(&node);
+    ws_gives_up(&node, 1);
+    ws_gives_up(&node, 0);
 
     npf_log_ctx_swap(old);
     npf_node_stop(&node);
