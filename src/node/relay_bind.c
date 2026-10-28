@@ -182,9 +182,7 @@ int relay_addr_index(const relay_c *r, const struct sockaddr_storage *from)
 
 int relay_addr_take(relay_c *r, int i)
 {
-    /* not bound: the address that answers works, the one to use (one tried
-     * earlier may answer late, the binds moved on to the next one; while a
-     * probe tries the others, the one in use may answer) */
+    /* (one tried earlier may answer late; while probing, the one in use may) */
     if (r->state != RB_NONE && r->state != RB_BOUND) {
         r->cur = r->bi = i;
         return 1;

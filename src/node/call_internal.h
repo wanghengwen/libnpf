@@ -60,9 +60,8 @@ struct npf_call {
     struct dmsg **dpend_tail;
     size_t        dpend_bytes;
     npf_tunnel *tun;
-    /* the call's one timer, at the earliest of its parts' deadlines
-     * (architecture.md 4: call_due, call_tick); the deadlines (monotonic
-     * ms, 0 none): the time limit (before CS_UP), punching's (punch_st) */
+    /* the call's one timer (architecture.md 4); the deadlines (mono ms, 0
+     * none): the time limit (before CS_UP), punching's (punch_st) */
     npf_timer  *t_due;
     int64_t     due_at;             /* when t_due fires */
     int         ticking;            /* in call_tick: what it sets is scheduled after it */
@@ -145,20 +144,17 @@ typedef struct call_hs {
     size_t      dmsg1_len;
 } call_hs;
 
-/* The call's state (architecture.md 3.1), forward only. ANSWERED: a
- * callee's answer sent, the platform's accept still to show (its first
- * punch_start, or UP: its call_established, Q6); CONNECTING: accepted;
- * HALF: established on a caller's own hello, the time limit waiting for the
- * peer's; UP: both hellos; CLOSED: ended, freed on the next turn */
+/* The call's state (architecture.md 3.1), forward only: ANSWERED a callee's
+ * answer sent; CONNECTING accepted; HALF a caller established on its own
+ * hello; UP both hellos; CLOSED ended, freed on the next turn */
 enum { CS_NEW, CS_CALLING, CS_ANSWERED, CS_CONNECTING, CS_HALF, CS_UP, CS_CLOSED };
 static inline int call_over(const npf_call *c) { return c->st == CS_CLOSED; }
 static inline int call_accepted(const npf_call *c) { return c->st >= CS_CONNECTING; }
 static inline int call_up(const npf_call *c) { return c->st == CS_HALF || c->st == CS_UP; }
 
-/* Punching (architecture.md 3.2), one round at a time: NONE (none yet, one
- * let go, or the WS relay's: rounds to come), SCHEDULED (to start at punch_at), WAIT_KEYS
- * (the E2E keys to come), RUNNING, LINGER (over; its punch freed at
- * punch_at: 10 s after a success, at once after a failure), IDLE (over) */
+/* Punching (architecture.md 3.2), one round at a time: NONE rounds to come,
+ * SCHEDULED at punch_at, WAIT_KEYS, RUNNING, LINGER (over, its punch freed
+ * at punch_at), IDLE */
 enum { PN_NONE, PN_SCHEDULED, PN_WAIT_KEYS, PN_RUNNING, PN_LINGER, PN_IDLE };
 
 /* shared by call.c, call_punch.c, the paths */
@@ -184,11 +180,10 @@ typedef struct npf_key_share {
 
 
 /* call.c: the state, the end, dispatch, the node's sessions */
-/* the call's one timer (architecture.md 4): a part's deadline set to at,
- * the timer moved only when at is earlier, as the AnLiu timer was (inline:
- * each datagram asks; one that moved later or went leaves the timer early,
- * and the tick finds nothing due then); the earliest deadline (INT64_MAX
- * none); what is due done */
+/* the call's one timer (architecture.md 4): call_at a part's deadline, the
+ * timer moved only when earlier (inline: each datagram asks; one moved
+ * later leaves it early, the tick finds nothing due); call_due the
+ * earliest (INT64_MAX none); call_tick does what is due */
 void call_arm(npf_call *c, int64_t at);
 static inline void call_at(npf_call *c, int64_t at)
 {
@@ -246,8 +241,7 @@ static inline int call_has_p2p(const npf_call *c) { return pm_has(&c->pm, PK_DIR
 static inline int call_has_relay(const npf_call *c) { return pm_has(&c->pm, PK_UDP_RELAY); }
 static inline int call_has_ws(const npf_call *c) { return pm_has(&c->pm, PK_WS_RELAY); }
 
-/* path_mgr.c: the session's paths; the decisions between them, the
- * relay's allocations and standby, the requests (data-channel.md 3, 9) */
+/* path_mgr.c: the session's paths, the decisions, the allocations, the requests */
 void call_paths_init(npf_call *c);
 void pm_check(npf_call *c);             /* the health rules and the decisions now, the next at pm.check_at */
 void call_relay_setup(npf_call *c, const npf_json *j, int d);

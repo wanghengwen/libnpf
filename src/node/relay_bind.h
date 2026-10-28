@@ -52,12 +52,10 @@ int  rdata_hint(const uint8_t *w, size_t len, uint8_t hint[RDATA_HINT]);
 int  rdata_open(const rdata_keys *k, int dir, const uint8_t hint[RDATA_HINT], const uint8_t *w, size_t len,
                 uint32_t *seq);
 
-/* The binding (architecture.md 3.3): NONE; BINDING from the first address,
- * the data going along; PROBING from the address in use, then the others in
- * order, the data staying on it until another answers (a relay gone
- * silent, Q2); BOUND, the relay sends to us (a BIND_ACK "bound", or the
- * peer's data through it); GAVE_UP, every address tried. Its owner sends
- * the binds (relay_bind_pack) and keeps the one deadline, at */
+/* The binding's states (architecture.md 3.3): BINDING from the first
+ * address, the data going along; PROBING from the address in use, the data
+ * staying on it until another answers; BOUND; GAVE_UP, every address tried.
+ * Its owner sends the binds (relay_bind_pack) and keeps the deadline, at */
 enum { RB_NONE, RB_BINDING, RB_PROBING, RB_BOUND, RB_GAVE_UP };
 
 typedef struct relay_c {
@@ -119,14 +117,11 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
 /* a RELAY_BIND in wire (256 bytes): its length, or -1.
  * flags RELAY_F_PONG: the answer to ping_id, shorter than a bind (72..95) */
 int  relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire);
-/* The transitions (architecture.md 3.3). A run from now: BINDING, or
- * PROBING (probe, an address in use), a bind to send now and one each
- * RELAY_BIND_MS, 3 more to an address, then the next. The deadline at now:
- * 1 a bind to send (the run's next; BOUND, the keepalive every ka ms), -1
- * every address tried (GAVE_UP), 0 nothing due. BOUND (a BIND_ACK "bound",
- * the peer's data through it), the keepalive every ka ms (0 none: the
- * spare's relay pings): 1 when it was not. Released, or handed to a call:
- * NONE */
+/* The transitions: a run from now (BINDING, or PROBING from the address in
+ * use), a bind now and one each RELAY_BIND_MS, 4 to an address; the
+ * deadline at now: 1 a bind to send (BOUND: the keepalive every ka ms), -1
+ * GAVE_UP, 0 nothing due; BOUND, the keepalive every ka ms (0 none): 1 when
+ * it was not. Released, or handed to a call: the owner sets NONE */
 void relay_bind_begin(relay_c *r, int probe, int64_t now);
 int  relay_bind_tick(relay_c *r, int64_t now, int ka);
 int  relay_bind_up(relay_c *r, int64_t now, int ka);
@@ -141,9 +136,8 @@ int  relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct so
 /* from: which of the relay's addresses (-1 none) */
 int  relay_addr_index(const relay_c *r, const struct sockaddr_storage *from);
 /* an authenticated datagram from the relay's address i: 1 to take, 0 from
- * an address given up on (consumed); not bound (binding, probing, given
- * up), the address that answers is the one in use (a late answer of one
- * tried earlier too) */
+ * an address given up on (consumed); not bound, the address that answers
+ * is the one in use from now on */
 int  relay_addr_take(relay_c *r, int i);
 /* a RELAY_DATA from the relay to r (hint: its unmasked hint): 1 to take
  * (the datagram at RDATA_HDR), 0 consumed, -1 not ours */
