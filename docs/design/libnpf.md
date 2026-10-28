@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-文档版本：2.4。更新日期：2026-10-27。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。文档版本与库版本、`NPF_API_VERSION` 分别编号。
+文档版本：2.5。更新日期：2026-10-28。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
@@ -503,10 +503,10 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 **限制**
 
-- 一个实例全部会话合计最多同时 64 路（`NPF_MEDIA_STREAMS_MAX`），包括对方打开的；超限返回 `NPF_EBUSY`，关闭后可以再开；直连和 UDP 中转上每一方每个会话最多同时打开 30 路；
-- 单帧不超过 `NPF_MEDIA_FRAME_MAX`（4 MiB），WS 中转上不超过 `NPF_MEDIA_WS_FRAME_MAX`（2 MiB）；
+- 一个实例全部会话合计最多同时 64 路（`NPF_MEDIA_STREAMS_MAX`），包括对方打开的；超限返回 `NPF_EBUSY`，关闭后可以再开；每一方每个会话最多同时打开 30 路；
+- 单帧不超过 `NPF_MEDIA_FRAME_MAX`（4 MiB）；
 - 每个实例从其他线程排队等待的帧最多 `NPF_MEDIA_SEND_QUEUE`（16 MiB）或 4096 帧，超过返回 `NPF_EBUSY`，由应用决定丢帧还是降码率；
-- 直连与 UDP 中转上一路就是一条 AnLiu 半可靠流；WS 中转上帧在本地按流排队，迟到的丢弃，带宽估计只在积压后才有。
+- 一路就是一条 AnLiu 半可靠流，直连、UDP 中转与 WS 中转都一样（2026-10-28 起；会话换路径时流不断）。WS 中转上 AnLiu 的载体不丢包：FEC 不发校验包，丢帧只来自超龄。
 
 ## 12. 扩展：模块
 
@@ -627,4 +627,3 @@ target_link_libraries(acme-app PRIVATE npf_common)
 
 - 当前安装规则只在满足第 2 节条件的 Linux 构建中生成合并并隐藏内部符号的 `libnpf.a`。其他平台可使用共享库，或自行集成静态目标；自行静态链接时需处理与应用自带的 mbedTLS 等库的符号冲突；
 - `rcv_deadline_ms` 暂不生效：要等 AnLiu 支持修改已打开的流的接收选项；
-- WS 中转上的媒体流没有往返时延，`target_rate` 只在积压过之后才有估计值。
