@@ -34,18 +34,14 @@ static void relay_bind_send(void *arg)
 
 /* RELAY_DATA (relay_data.c) to the address in use (cur): a 16-byte header
  * before the AnLiu datagram */
-void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
+static void udp_send(npf_path *p, const uint8_t *dgram, size_t len)
 {
+    npf_call *c = CALL_OF(p, pu.p);
     uint8_t buf[2048];
     size_t n;
     if (call_relay_addr_blocked(c->n, &c->pu.r.addr[c->pu.r.cur]) || !(n = relay_data_pack(&c->pu.r, dgram, len, buf)))
         return;
     npf_udp_send(c->n->udp_fd, buf, n, &c->pu.r.addr[c->pu.r.cur]);
-}
-
-static void udp_send(npf_path *p, const uint8_t *dgram, size_t len)
-{
-    call_relay_send_data(CALL_OF(p, pu.p), dgram, len);
 }
 
 /* the allocation in use from now on (UP when bound, else NEW), or no

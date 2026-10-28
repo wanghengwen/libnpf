@@ -409,15 +409,15 @@ int test_relay_data(void)
     memset(dgram, 0x11, sizeof dgram);
     while (recv(f1, got, sizeof got, MSG_DONTWAIT) > 0)        /* the binds */
         ;
-    call_relay_send_data(c1, dgram, sizeof dgram);
-    call_relay_send_data(c1, dgram, sizeof dgram);
+    path_udp_ops.tx(&c1->pu.p, dgram, sizeof dgram);
+    path_udp_ops.tx(&c1->pu.p, dgram, sizeof dgram);
     n = recv(f1, got, sizeof got, 0);
     CHECK(n == RDATA_HDR + (ssize_t)sizeof dgram && rdata_hint(got, (size_t)n, hint) == 0 && memcmp(hint, rid1, 3) == 0
           && rdata_open(&k1, NPF_DIR_REQ, hint, got, (size_t)n, &seq) == 0 && seq == 0
           && memcmp(got + RDATA_HDR, dgram, sizeof dgram) == 0, "a RELAY_DATA to the relay");
     n = recv(f1, got, sizeof got, 0);
     CHECK(n > 0 && rdata_open(&k1, NPF_DIR_REQ, hint, got, (size_t)n, &seq) == 0 && seq == 1, "the next seq");
-    call_relay_send_data(c1, dgram, RDATA_ATAG - 1);           /* no AnLiu datagram is this short */
+    path_udp_ops.tx(&c1->pu.p, dgram, RDATA_ATAG - 1);           /* no AnLiu datagram is this short */
     CHECK(recv(f1, got, sizeof got, MSG_DONTWAIT) < 0, "a datagram shorter than its tag sent");
 
     /* from the relays: by the hint, the source and the tag (the caller has

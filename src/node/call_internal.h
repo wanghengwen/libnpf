@@ -300,6 +300,5 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
 /* a RELAY_DATA from a relay (data-channel.md 9.2) to one of the calls'
  * allocations: its hint names it, its tag verifies; 1 consumed, 0 not one */
 int node_relay_data_input(npf_node *n, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
-void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);
 
 #endif
