@@ -58,6 +58,7 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
     memcpy(r->alloc_key, key, 32);
     if (addr) {
         npf_siv_derive(&r->keys, key, LABEL_RELAY);
+        rdata_derive(&r->dkeys, key);
         memcpy(r->addr, addr, (size_t)naddr * sizeof addr[0]);
         r->naddr = naddr;
     }
@@ -152,22 +153,34 @@ int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_stora
     return 0;
 }
 
-int relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct sockaddr_storage *from, uint8_t *plain)
+int relay_addr_index(const relay_c *r, const struct sockaddr_storage *from)
 {
-    int i, pl;
-    for (i = 0; i < r->naddr && !call_same_addr(from, &r->addr[i]); i++)
-        ;
-    if (i == r->naddr || len > 2048 + NPF_SIV_TAG_SIZE)
-        return -1;
-    if ((pl = npf_siv_open(&r->keys, NPF_DIR_RESP, buf, len, plain)) < 6)
-        return -1;
+    int i;
+    for (i = 0; i < r->naddr; i++)
+        if (call_same_addr(from, &r->addr[i]))
+            return i;
+    return -1;
+}
+
+int relay_addr_take(relay_c *r, int i)
+{
     /* an address tried earlier answered late (the binds moved on to the
      * next one): the one that works is the one to use */
     if (i != r->cur && r->active && !r->bound)
         r->cur = i;
     else if (i != r->cur)
         return 0;
-    return pl;
+    return 1;
+}
+
+int relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct sockaddr_storage *from, uint8_t *plain)
+{
+    int i, pl;
+    if ((i = relay_addr_index(r, from)) < 0 || len > 2048 + NPF_SIV_TAG_SIZE)
+        return -1;
+    if ((pl = npf_siv_open(&r->keys, NPF_DIR_RESP, buf, len, plain)) < 6)
+        return -1;
+    return relay_addr_take(r, i) ? pl : 0;
 }
 
 /* A BIND_ACK counts only when it answers one of our last binds (RELAY_SENT,

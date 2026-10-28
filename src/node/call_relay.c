@@ -23,20 +23,14 @@ static void relay_bind_send(void *arg)
         npf_udp_send(c->n->udp_fd, wire, (size_t)n, &c->relay.addr[c->relay.cur]);
 }
 
-/* RELAY_DATA: hint | tag | type | flags | seq | the AnLiu datagram */
+/* RELAY_DATA (relay_data.c): a 16-byte header before the AnLiu datagram */
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len)
 {
     uint8_t buf[2048];
-    uint8_t *w = buf + RELAY_HINT_SIZE, *p = w + NPF_SIV_TAG_SIZE;
-    if (len + RELAY_DATA_OVERHEAD > sizeof buf || call_relay_addr_blocked(c))
+    size_t n;
+    if (call_relay_addr_blocked(c) || !(n = relay_data_pack(&c->relay, dgram, len, buf)))
         return;
-    memcpy(buf, c->relay.relay_id, RELAY_HINT_SIZE);
-    p[0] = PKT_RELAY_DATA;
-    p[1] = 0;
-    npf_le32(p + 2, c->relay.seq++);
-    memcpy(p + 6, dgram, len);
-    npf_siv_seal(&c->relay.keys, 0, w, len + 6);
-    npf_udp_send(c->n->udp_fd, buf, len + RELAY_DATA_OVERHEAD, &c->relay.addr[c->relay.cur]);
+    npf_udp_send(c->n->udp_fd, buf, n, &c->relay.addr[c->relay.cur]);
 }
 /* the WS relay for this call (relay_switch{mode:"ws"}); the platform moves both sides */
 void call_ask_ws_relay(npf_call *c)
@@ -307,7 +301,36 @@ void call_relay_early_feed(npf_call *c)
         relay_bound(c, " (the peer's data came through it)");
 }
 
-/* returns 1 if consumed */
+/* the peer's AnLiu datagram through the relay (its RELAY_DATA authenticated) */
+static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
+{
+    if (c->caller && !c->keys_ready && c->relay.active) {
+        relay_early_keep(c, dg, len);
+        return;
+    }
+    /* AnLiu first: a relayed datagram proves nothing until it takes it
+     * (the relay's keys are not the session's: a replay of an old one
+     * with the relay's address would bring back a relay given up, on
+     * the WS relay too) */
+    if (call_anl_feed(c, dg, len) < 0 || c->ended)
+        return;
+    if (!c->relay.active) {     /* the peer sends on it: take it back, keep the binding fresh */
+        npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
+        c->relay.active = 1;
+        c->relay.bound = 1;
+        relay_bind_send(c);
+        relay_keepalive(c);
+    } else if (!c->relay.bound) {
+        /* the relay forwards the peer's data to us: it has our binding,
+         * whether or not its BIND_ACK came. Measured (a Mac <-> a Linux
+         * node): data through the relay, no BIND_ACK in 2.1 s,
+         * "unreachable", the move to the WS relay cut the forwarded
+         * connection */
+        relay_bound(c, " (the peer's data came through it)");
+    }
+}
+
+/* a control packet (RELAY_BIND_ACK) of c's allocation: 1 if consumed */
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
     uint8_t plain[2048];
@@ -318,36 +341,40 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
      * one direction looks fine from this side) */
     if ((pl = relay_bind_open(&c->relay, buf, len, from, plain)) <= 0)
         return pl == 0;
-    if (plain[0] == PKT_RELAY_DATA) {
-        if (c->caller && !c->keys_ready && c->relay.active) {
-            relay_early_keep(c, plain + 6, (size_t)pl - 6);
-            return 1;
-        }
-        /* AnLiu first: a relayed datagram proves nothing until it takes it
-         * (the relay's keys are not the session's: a replay of an old one
-         * with the relay's address would bring back a relay given up, on
-         * the WS relay too) */
-        if (call_anl_feed(c, plain + 6, (size_t)pl - 6) < 0 || c->ended)
-            return 1;
-        if (!c->relay.active) {     /* the peer sends on it: take it back, keep the binding fresh */
-            npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
-            c->relay.active = 1;
-            c->relay.bound = 1;
-            relay_bind_send(c);
-            relay_keepalive(c);
-        } else if (!c->relay.bound) {
-            /* the relay forwards the peer's data to us: it has our binding,
-             * whether or not its BIND_ACK came. Measured (a Mac <-> a Linux
-             * node): data through the relay, no BIND_ACK in 2.1 s,
-             * "unreachable", the move to the WS relay cut the forwarded
-             * connection */
-            relay_bound(c, " (the peer's data came through it)");
-        }
-        return 1;
-    }
     if (plain[0] == PKT_RELAY_BIND_ACK)
         relay_ack_in(c, plain, (size_t)pl);
     return 1;
+}
+
+/* RELAY_DATA: the hint, unmasked without a key, names the allocation;
+ * one SipHash over the header decides (no trying every session's keys).
+ * Allocations on two relay servers may share a hint: the source address
+ * and the tag tell them apart. The last one hit first. */
+static int relay_data_try(npf_call *c, const uint8_t hint[RDATA_HINT], const uint8_t *buf, size_t len,
+                          const struct sockaddr_storage *from)
+{
+    int r;
+    if (c->ended || (r = relay_data_open(&c->relay, hint, buf, len, from)) < 0)
+        return 0;
+    if (r > 0)
+        relay_data_in(c, buf + RDATA_HDR, len - RDATA_HDR);
+    return 1;
+}
+
+int node_relay_data_input(npf_node *n, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
+{
+    uint8_t hint[RDATA_HINT];
+    npf_call *c;
+    if (rdata_hint(buf, len, hint) < 0)
+        return 0;
+    if ((c = n->relay_hit) && relay_data_try(c, hint, buf, len, from))
+        return 1;
+    for (c = n->calls; c; c = c->next)
+        if (c != n->relay_hit && relay_data_try(c, hint, buf, len, from)) {
+            n->relay_hit = c;
+            return 1;
+        }
+    return 0;
 }
 /* a round that did not go direct (failed, or none planned) while the UDP
  * relay was unreachable: the UDP relay once more, then the WS relay */

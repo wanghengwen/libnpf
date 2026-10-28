@@ -31,6 +31,7 @@ int test_creply(void);
 int test_portmap_gw(void);
 int test_callee(void);
 int test_relay(void);
+int test_relay_data(void);
 int test_peeraddr(void);
 int test_home(void);
 int test_call(void);
@@ -241,6 +242,7 @@ int main(void)
 #endif
     failures += test_callee();
     failures += test_relay();
+    failures += test_relay_data();
     failures += test_peeraddr();
     failures += test_home();
     failures += test_call();

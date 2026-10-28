@@ -19,7 +19,7 @@
 #define PKT_RELAY_BIND_ACK 8
 #define PKT_RELAY_DATA     9
 #define PKT_RELAY_PING     10        /* a spare's keepalive (home-binding.md 9.4) */
-#define RELAY_HINT_SIZE    4         /* relay_id[0..3] in the clear before every datagram to the relay */
+#define RELAY_HINT_SIZE    4         /* relay_id[0..3] in the clear before every control packet to the relay */
 #define RELAY_COOKIE_SIZE  8
 #define RELAY_BIND_BODY    21        /* cookie(8) | kseq(8) | flags(1) | ping_id(4) */
 #define RELAY_F_PONG       1         /* RELAY_BIND flags: the answer to the ping ping_id (a spare) */
@@ -30,12 +30,35 @@
 #define RELAY_SENT         8         /* the last RELAY_BINDs whose BIND_ACK is taken */
 enum { RELAY_LEARNING, RELAY_LEARNED, RELAY_UNSTABLE };   /* a spare's learning (RELAY_PING, BIND_ACK) */
 
+/* RELAY_DATA (data-channel.md 9.2, relay_data.c): a 16-byte header, the AnLiu datagram after it */
+#define LABEL_RDATA        "NPF-RDATA-v2"
+#define RDATA_HINT         3         /* relay_id[0..2], masked in the header */
+#define RDATA_HDR          16        /* tag(8) | hint(3) | tf(1) | seq(4), before the AnLiu datagram */
+#define RDATA_ATAG         12        /* the AnLiu datagram's tag, its first bytes, covered by the header's */
+#define RDATA_TF           (PKT_RELAY_DATA << 4)    /* tf: type (high 4 bits) | flags (low 4, none yet) */
+
+/* RELAY_DATA's keys: k_tag[dir], k_mask[dir] (SipHash), bytes 0..15 and 16..31 of
+ * the KDF block dir of alloc_key under LABEL_RDATA (npf_siv_derive's enc[dir]) */
+typedef struct rdata_keys {
+    uint8_t tag[2][16], mask[2][16];
+} rdata_keys;
+
+void rdata_derive(rdata_keys *k, const uint8_t alloc_key[32]);
+/* w = header(RDATA_HDR) | the datagram (dlen >= RDATA_ATAG): the header filled in for dir, hint, seq */
+void rdata_seal(const rdata_keys *k, int dir, const uint8_t hint[RDATA_HINT], uint32_t seq, uint8_t *w, size_t dlen);
+/* the hint of a RELAY_DATA, unmasked (no key needed): 0, or -1 too short to be one */
+int  rdata_hint(const uint8_t *w, size_t len, uint8_t hint[RDATA_HINT]);
+/* verify a RELAY_DATA of dir whose unmasked hint is hint: 0 and its seq, or -1 */
+int  rdata_open(const rdata_keys *k, int dir, const uint8_t hint[RDATA_HINT], const uint8_t *w, size_t len,
+                uint32_t *seq);
+
 typedef struct relay_c {
     int      active;
     int      bound;             /* the relay sends to us: a BIND_ACK "bound", or the peer's data through it */
     uint8_t  relay_id[8];
     uint8_t  alloc_key[32];
-    npf_siv_keys keys;
+    npf_siv_keys keys;          /* the control packets */
+    rdata_keys dkeys;           /* RELAY_DATA */
     struct sockaddr_storage addr[4];
     int      naddr, cur;
     uint32_t seq;
@@ -98,6 +121,19 @@ int  call_relay_blocked(const npf_node *n, const char *what);
 /* a datagram from one of the relay's addresses opened (plain: 2048 bytes):
  * its length; 0 from an address given up on (consumed); -1 not ours */
 int  relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct sockaddr_storage *from, uint8_t *plain);
+/* from: which of the relay's addresses (-1 none) */
+int  relay_addr_index(const relay_c *r, const struct sockaddr_storage *from);
+/* an authenticated datagram from the relay's address i: 1 to take, 0 from
+ * an address given up on (consumed); a late answer of an address tried
+ * earlier while binding makes it the one in use */
+int  relay_addr_take(relay_c *r, int i);
+/* a RELAY_DATA from the relay to r (hint: its unmasked hint): 1 to take
+ * (the datagram at RDATA_HDR), 0 consumed, -1 not ours */
+int  relay_data_open(relay_c *r, const uint8_t hint[RDATA_HINT], const uint8_t *buf, size_t len,
+                     const struct sockaddr_storage *from);
+/* a RELAY_DATA to the relay: dgram (len bytes) into wire (2048 bytes),
+ * its length; 0 too long or too short (RDATA_ATAG at least) */
+size_t relay_data_pack(relay_c *r, const uint8_t *dgram, size_t len, uint8_t *wire);
 /* a RELAY_BIND_ACK: 1 when it answers one of our last binds (or is a new
  * challenge to our RELAY_DATA), its cookie taken; 0 not ours */
 int  relay_bind_ack(relay_c *r, npf_node *n, const uint8_t *plain, size_t pl, relay_ack *a);

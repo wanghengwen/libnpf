@@ -77,3 +77,9 @@ add_executable(npf_cpuprobe cpuprobe.c)
 target_link_libraries(npf_cpuprobe PRIVATE npf_common Threads::Threads)
 target_include_directories(npf_cpuprobe PRIVATE ${NPF_LIB_DIR}/src/node)
 npf_target_options(npf_cpuprobe)
+
+# the node's cost per relayed datagram against the old SIV encapsulation (not a test): bin/npf_relayprobe [bytes] [rounds]
+add_executable(npf_relayprobe relayprobe.c)
+target_link_libraries(npf_relayprobe PRIVATE npf_common)
+target_include_directories(npf_relayprobe PRIVATE ${NPF_LIB_DIR}/src/node)
+npf_target_options(npf_relayprobe)

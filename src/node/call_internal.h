@@ -191,7 +191,6 @@ typedef struct call_hs {
 #define WS_WAIT_MS         15000     /* UDP relay unreachable: the first punch round's result first, at most this */
 #define RELAY_ASK_AGAIN_MS 10000     /* a relay_switch with no allocation after this long: may be asked again */
 #define PUNCH_LINGER_MS    10000
-#define RELAY_DATA_OVERHEAD (RELAY_HINT_SIZE + NPF_SIV_TAG_SIZE + 6)
 #define PUNCH_ROUNDS_MAX 10         /* the platform's counted rounds of a call (a sanity limit here) */
 #define LABEL_PATH         "NPF-PCHECK-1"       /* the direct path check (call_path.c), its keys from the session's */
 #define PATH_PKT_LEN       (NPF_SIV_TAG_SIZE + 10)
@@ -293,6 +292,9 @@ void call_relay_early_feed(npf_call *c);
 void call_relay_early_free(npf_call *c);
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
+/* a RELAY_DATA from a relay (data-channel.md 9.2) to one of the calls'
+ * allocations: its hint names it, its tag verifies; 1 consumed, 0 not one */
+int node_relay_data_input(npf_node *n, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void call_relay_send_data(npf_call *c, const uint8_t *dgram, size_t len);
 void call_ws_wait_end(npf_call *c, int ok);
 

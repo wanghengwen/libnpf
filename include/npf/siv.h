@@ -35,5 +35,7 @@ int npf_siv_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t le
 
 /* exported for the known-answer tests (ChaCha20: Monocypher's crypto_chacha20_ietf) */
 void npf_siphash128(const uint8_t key[16], const uint8_t *in, size_t len, uint8_t out[16]);
+/* SipHash-2-4 with 64-bit output (the UDP relay's RELAY_DATA header, data-channel.md 9.2) */
+uint64_t npf_siphash64(const uint8_t key[16], const uint8_t *in, size_t len);
 
 #endif

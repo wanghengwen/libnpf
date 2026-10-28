@@ -642,8 +642,13 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
         if (!c->ended && c->direct && c->caller && !c->keys_ready && fd == n->udp_fd
             && call_same_addr(from, &c->p2p_addr) && call_direct_reply(c, buf, len, from))
             return 1;
-    /* relayed: every session on one relay server comes from its address,
-     * each tried until one's keys open it; the last one first */
+    /* relayed data (data-channel.md 9.2): its hint names the allocation,
+     * no session's keys are tried */
+    if (node_relay_data_input(n, buf, len, from))
+        return 1;
+    /* the relays' control packets (RELAY_BIND_ACK; they carry no hint): the
+     * sessions on the relay they come from, each tried until one's keys
+     * open it; the last one first. A few a minute */
     if ((c = n->relay_hit) && !c->ended && call_relay_input(c, buf, len, from))
         return 1;
     for (c = n->calls; c; c = c->next)

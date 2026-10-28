@@ -174,3 +174,195 @@ int test_relay(void)
     close(fc);
     return fails;
 }
+
+/* ---- RELAY_DATA (data-channel.md 9.2) ---- */
+
+#include "vectors_go.h"
+
+static size_t unhex2(const char *hex, uint8_t *out, size_t cap)
+{
+    size_t n = 0;
+    unsigned v;
+    while (hex[0] && hex[1] && n < cap && sscanf(hex, "%2x", &v) == 1) {
+        out[n++] = (uint8_t)v;
+        hex += 2;
+    }
+    return n;
+}
+
+/* the Go relay's vectors (npfcrypto vectors_test.go): the keys of an
+ * alloc_key, a datagram each way, the hint unmasked; and SipHash-2-4-64's
+ * reference vector */
+static void rdata_vectors(void)
+{
+    static const char *pkts[2] = {V_RDATA_PKT0, V_RDATA_PKT1};
+    static const char *ktag[2] = {V_RDATA_KTAG0, V_RDATA_KTAG1}, *kmask[2] = {V_RDATA_KMASK0, V_RDATA_KMASK1};
+    static const uint32_t seqs[2] = {V_RDATA_SEQ0, V_RDATA_SEQ1};
+    static const int lens[2] = {40, RDATA_ATAG};
+    uint8_t key[32], rid[8], want[128], w[128], k16[16], m[15], hint[3];
+    rdata_keys k;
+    uint32_t seq;
+    int i, dir;
+    size_t n;
+    for (i = 0; i < 16; i++) k16[i] = (uint8_t)i;
+    for (i = 0; i < 15; i++) m[i] = (uint8_t)i;
+    CHECK(npf_siphash64(k16, m, 15) == 0xa129ca6149be45e5ULL, "SipHash-2-4-64 reference vector");
+    for (i = 0; i < 32; i++) key[i] = (uint8_t)(0x20 + i);
+    unhex2(V_RDATA_RELAY_ID, rid, 8);
+    rdata_derive(&k, key);
+    for (dir = 0; dir < 2; dir++) {
+        CHECK(unhex2(ktag[dir], want, 16) == 16 && memcmp(k.tag[dir], want, 16) == 0, "k_tag[%d]", dir);
+        CHECK(unhex2(kmask[dir], want, 16) == 16 && memcmp(k.mask[dir], want, 16) == 0, "k_mask[%d]", dir);
+        n = unhex2(pkts[dir], want, sizeof want);
+        CHECK(n == (size_t)(RDATA_HDR + lens[dir]), "vector %d length", dir);
+        for (i = 0; i < lens[dir]; i++)
+            w[RDATA_HDR + i] = (uint8_t)(0x30 + i + dir);
+        rdata_seal(&k, dir, rid, seqs[dir], w, (size_t)lens[dir]);
+        CHECK(memcmp(w, want, n) == 0, "RELAY_DATA dir %d differs from the Go relay's", dir);
+        CHECK(rdata_hint(want, n, hint) == 0 && memcmp(hint, rid, 3) == 0, "hint of dir %d", dir);
+        CHECK(rdata_open(&k, dir, hint, want, n, &seq) == 0 && seq == seqs[dir], "open dir %d", dir);
+        CHECK(rdata_open(&k, 1 - dir, hint, want, n, &seq) < 0, "opened with the other direction's keys");
+        CHECK(rdata_open(&k, dir, hint, want, n - 1, &seq) < 0, "a cut datagram opened");
+        want[RDATA_HDR + 2] ^= 1;
+        CHECK(rdata_open(&k, dir, hint, want, n, &seq) < 0, "a changed AnLiu tag opened");
+    }
+    CHECK(rdata_hint(want, RDATA_HDR + RDATA_ATAG - 1, hint) < 0, "a too short RELAY_DATA");
+}
+
+/* a RELAY_DATA from the relay (seq, a 40-byte datagram) */
+static size_t rdata_from(const rdata_keys *k, const uint8_t rid[8], uint32_t seq, uint8_t *w)
+{
+    memset(w + RDATA_HDR, 0x5a, 40);
+    rdata_seal(k, NPF_DIR_RESP, rid, seq, w, 40);
+    return RDATA_HDR + 40;
+}
+
+/* a call with the relay object of a UDP allocation at addr */
+static npf_call *relay_call(npf_node *n, npf_json *j, npf_jtok *tok, const uint8_t rid[8], const uint8_t key[32],
+                            const struct sockaddr_storage *addr)
+{
+    static char js[2][512];
+    static int k;
+    char rb[16], kb[48], ra[64];
+    char *s = js[k++ & 1];
+    npf_call *c = call_new(n, 1);
+    int len;
+    if (!c)
+        return NULL;
+    snprintf(c->call_id_s, sizeof c->call_id_s, "rdata-%d", k);
+    npf_b64url_encode(rid, 8, rb);
+    npf_b64url_encode(key, 32, kb);
+    len = snprintf(s, 512, "{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\",\"udp\":[\"%s\"]}}",
+                   rb, kb, npf_addr_str(addr, ra, sizeof ra));
+    if (npf_json_parse(j, s, (size_t)len, tok, 32) < 0)
+        return NULL;
+    call_relay_setup(c, j, 0);
+    return c;
+}
+
+/* the node's demux: a RELAY_DATA finds its call by the hint (two calls on
+ * two relays with the same 3-byte hint: the source and the tag decide),
+ * nothing else takes it; one in the SIV encapsulation of before 2026-10-28
+ * is not taken. What goes out has 16 bytes before the datagram. */
+int test_relay_data(void)
+{
+    static npf_node node;
+    npf_loop *loop = npf_loop_new();
+    npf_node_cfg cfg;
+    npf_node_hooks hooks;
+    npf_identity id;
+    struct sockaddr_storage r1, r2, me;
+    uint8_t seed[32], rid1[8], rid2[8], key1[32], key2[32], w[2048], got[2048], dgram[40], hint[3];
+    npf_jtok tok[2][32];
+    npf_json j[2];
+    rdata_keys k1, k2;
+    npf_siv_keys siv1;
+    npf_call *c1, *c2;
+    int f1, f2, fc;
+    ssize_t n;
+    uint32_t seq;
+    size_t len;
+
+    fails = 0;
+    rdata_vectors();
+    memset(&cfg, 0, sizeof cfg);
+    memset(&hooks, 0, sizeof hooks);
+    cfg.offline = 1;
+    npf_random(seed, 32);
+    npf_identity_from_seed(&id, seed);
+    f1 = udp_on_loopback(&r1);
+    f2 = udp_on_loopback(&r2);
+    fc = udp_on_loopback(&me);
+    CHECK(loop && f1 >= 0 && f2 >= 0 && fc >= 0 && npf_node_init(&node, loop, &cfg, &id, &hooks, NULL) == 0, "set-up");
+    if (fails)
+        return fails;
+    node.udp_fd = fc;
+    npf_random(rid1, 8);
+    memcpy(rid2, rid1, 3);              /* the same 3-byte hint on another relay */
+    rid2[3] = (uint8_t)~rid1[3];
+    npf_random(key1, 32);
+    npf_random(key2, 32);
+    rdata_derive(&k1, key1);
+    rdata_derive(&k2, key2);
+    npf_siv_derive(&siv1, key1, LABEL_RELAY);
+    c1 = relay_call(&node, &j[0], tok[0], rid1, key1, &r1);
+    c2 = relay_call(&node, &j[1], tok[1], rid2, key2, &r2);
+    CHECK(c1 && c2, "the calls");
+    if (fails)
+        return fails;
+
+    /* to the relay: 16 bytes more than the datagram */
+    memset(dgram, 0x11, sizeof dgram);
+    while (recv(f1, got, sizeof got, MSG_DONTWAIT) > 0)        /* the binds */
+        ;
+    call_relay_send_data(c1, dgram, sizeof dgram);
+    call_relay_send_data(c1, dgram, sizeof dgram);
+    n = recv(f1, got, sizeof got, 0);
+    CHECK(n == RDATA_HDR + (ssize_t)sizeof dgram && rdata_hint(got, (size_t)n, hint) == 0 && memcmp(hint, rid1, 3) == 0
+          && rdata_open(&k1, NPF_DIR_REQ, hint, got, (size_t)n, &seq) == 0 && seq == 0
+          && memcmp(got + RDATA_HDR, dgram, sizeof dgram) == 0, "a RELAY_DATA to the relay");
+    n = recv(f1, got, sizeof got, 0);
+    CHECK(n > 0 && rdata_open(&k1, NPF_DIR_REQ, hint, got, (size_t)n, &seq) == 0 && seq == 1, "the next seq");
+    call_relay_send_data(c1, dgram, RDATA_ATAG - 1);           /* no AnLiu datagram is this short */
+    CHECK(recv(f1, got, sizeof got, MSG_DONTWAIT) < 0, "a datagram shorter than its tag sent");
+
+    /* from the relays: by the hint, the source and the tag (the caller has
+     * no keys yet: the datagram is kept for them, relay_early_keep) */
+    len = rdata_from(&k2, rid2, 5, w);
+    CHECK(node_udp_input(&node, fc, w, len, &r2) == 1 && c2->nrearly == 1 && c1->nrearly == 0, "to the second call");
+    len = rdata_from(&k1, rid1, 5, w);
+    CHECK(node_udp_input(&node, fc, w, len, &r1) == 1 && c1->nrearly == 1 && c2->nrearly == 1, "to the first call");
+    CHECK(node_udp_input(&node, fc, w, len, &r2) == 0 && c1->nrearly == 1 && c2->nrearly == 1,
+          "a RELAY_DATA from the other relay's address taken");
+    w[RDATA_HDR + 20] ^= 1;    /* past the AnLiu tag: the node's AnLiu decides (here: kept for it) */
+    CHECK(node_relay_data_input(&node, w, len, &r1) == 1 && c1->nrearly == 2, "a same-length change");
+    w[RDATA_HDR + 1] ^= 1;     /* the AnLiu tag */
+    CHECK(node_relay_data_input(&node, w, len, &r1) == 0 && c1->nrearly == 2, "a changed AnLiu tag taken");
+    len = rdata_from(&k1, rid1, 6, w);
+    CHECK(node_relay_data_input(&node, w, len + 1, &r1) == 0 && node_relay_data_input(&node, w, len - 1, &r1) == 0
+          && c1->nrearly == 2, "a longer or shorter datagram taken");
+    w[11] ^= 0x10;              /* tf */
+    CHECK(node_relay_data_input(&node, w, len, &r1) == 0, "another type taken");
+
+    /* the SIV encapsulation of before 2026-10-28, with the allocation's key: not taken */
+    {
+        uint8_t *p = w + NPF_SIV_TAG_SIZE;
+        p[0] = PKT_RELAY_DATA;
+        p[1] = 0;
+        npf_le32(p + 2, 1);
+        memset(p + 6, 0x77, 40);
+        npf_siv_seal(&siv1, NPF_DIR_RESP, w, 46);
+        node_udp_input(&node, fc, w, NPF_SIV_TAG_SIZE + 46, &r1);
+        CHECK(c1->nrearly == 2, "a RELAY_DATA in the old format taken");
+    }
+
+    call_free(c1);
+    call_free(c2);
+    node.udp_fd = -1;
+    npf_node_stop(&node);
+    npf_loop_free(loop);
+    close(f1);
+    close(f2);
+    close(fc);
+    return fails;
+}

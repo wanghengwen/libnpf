@@ -1,6 +1,6 @@
 # 打洞模块设计
 
-状态：v1.3（2026-10-27，有绑定的 UDP 中转分配（备用分配或每呼叫分配）的一侧的 srflx / 公网 IP 由平台按中转看到的地址 R 给出，节点不再在呼叫时核对与上报映射（4.5）。v1.2 2026-10-27，简化：打洞的轮次全部由平台安排，节点只执行与报告（第 9 节）；过滤不再从轮次里学（7.8）；去掉 S5（7.7），两侧都是随机端口或端口块（APDF）时只走中转；去掉同步的打洞引擎。v1.1 2026-10-26，打洞优化：按过滤选 S1、双方 IPv6 时 IPv4 照常、S2 现测端口、S3 / S4 喷到 2000 个、S2B 立即再来、主叫难侧打洞的间隔按迹象、提前报告失败、提名不再固定等待，见 7、8、9、10.1、12.7；安全：打洞的目标地址，见 8 与 security.md 11.1。v1.0 2026-10-21，针对对称型 NAT 的改进：NAT 探测增加过滤行为的测试（4.2）；两侧都是难侧时新增策略 S4（一方的过滤是 EIF / ADF，7.5）、S2B（双方都是顺序分配，7.6）、S5（双方都是小端口块，7.7），都不满足时直接留在中转（7.1）；从前几轮观察到的行为修正后面的轮次（7.8）。v0.9 2026-10-04，中转改为 UDP 中转为主、WS 中转兜底，6.2 增加中转报文类型 7~9，6.6、10.2 相应修改，详见 [data-channel.md](../protocol/data-channel.md)；v0.8 2026-10-04，新增 PCP/NAT-PMP 端口映射与 IPv6 打洞支持，见 12.5；打洞 S1/S3 跨服务器实测见 12.4；NAT 探测见 4.4；v0.5 2026-09-29）：地址探测借鉴 STUN 的机制，但改用私有的加密报文格式，避免被识别和屏蔽；探测服务器自行实现，部署在至少两台不同 IP 的机器上；提名报文改用两端 E2E 协商的密钥（见 [security.md](security.md) 9.5）
+状态：v1.4（2026-10-28，UDP 中转的 `RELAY_DATA` 不再用 6.2 的封装：16 字节的报文头只由 SipHash 认证、AnLiu 数据报不再加密，标签 `NPF-RDATA-v2`，6.2、6.6，data-channel.md 0.41 第 9.2 节。v1.3 2026-10-27，有绑定的 UDP 中转分配（备用分配或每呼叫分配）的一侧的 srflx / 公网 IP 由平台按中转看到的地址 R 给出，节点不再在呼叫时核对与上报映射（4.5）。v1.2 2026-10-27，简化：打洞的轮次全部由平台安排，节点只执行与报告（第 9 节）；过滤不再从轮次里学（7.8）；去掉 S5（7.7），两侧都是随机端口或端口块（APDF）时只走中转；去掉同步的打洞引擎。v1.1 2026-10-26，打洞优化：按过滤选 S1、双方 IPv6 时 IPv4 照常、S2 现测端口、S3 / S4 喷到 2000 个、S2B 立即再来、主叫难侧打洞的间隔按迹象、提前报告失败、提名不再固定等待，见 7、8、9、10.1、12.7；安全：打洞的目标地址，见 8 与 security.md 11.1。v1.0 2026-10-21，针对对称型 NAT 的改进：NAT 探测增加过滤行为的测试（4.2）；两侧都是难侧时新增策略 S4（一方的过滤是 EIF / ADF，7.5）、S2B（双方都是顺序分配，7.6）、S5（双方都是小端口块，7.7），都不满足时直接留在中转（7.1）；从前几轮观察到的行为修正后面的轮次（7.8）。v0.9 2026-10-04，中转改为 UDP 中转为主、WS 中转兜底，6.2 增加中转报文类型 7~9，6.6、10.2 相应修改，详见 [data-channel.md](../protocol/data-channel.md)；v0.8 2026-10-04，新增 PCP/NAT-PMP 端口映射与 IPv6 打洞支持，见 12.5；打洞 S1/S3 跨服务器实测见 12.4；NAT 探测见 4.4；v0.5 2026-09-29）：地址探测借鉴 STUN 的机制，但改用私有的加密报文格式，避免被识别和屏蔽；探测服务器自行实现，部署在至少两台不同 IP 的机器上；提名报文改用两端 E2E 协商的密钥（见 [security.md](security.md) 9.5）
 
 **用语**：本文的"设备"泛指运行打洞模块的一端，可以是节点（NAS 设备端、控制台节点），也可以是纯客户端；一次呼叫中两端的角色称为主叫与被叫（[security.md](security.md) 8.5）。
 
@@ -236,7 +236,7 @@ P    = type(1) | flags(1) | body_len(2) | txid(12) | ts_ms(4) | body | pad
 | `ts_ms` | 发送方的毫秒时钟，用于计算 RTT，服务器用它做时间窗检查 |
 | `pad` | 随机字节 |
 
-**编码**：整数一律小端序（与 AnLiu 一致），IP 地址按网络字节序原样存放。`type` 编号：`BIND_REQ` = 1、`BIND_RESP` = 2、`PROBE` = 3、`PROBE_ACK` = 4、`NOMINATE` = 5、`NOMINATE_ACK` = 6；UDP 中转使用 `RELAY_BIND` = 7、`RELAY_BIND_ACK` = 8、`RELAY_DATA` = 9（`RELAY_DATA` 用紧凑报文头，见 [data-channel.md](../protocol/data-channel.md) 9.2）。KDF 标签（12 字节，作为派生块的 ChaCha20 nonce）：地址探测为 `NPF-PROBE-v1`，打洞探测为 `NPF-PUNCH-v1`，提名为 `NPF-NOMIN-v1`，中转（绑定与数据，用分配的 `alloc_key`）为 `NPF-RELAY-v1`；设备发往中转的报文前面另有 4 字节明文的分配提示，见 data-channel.md 9。
+**编码**：整数一律小端序（与 AnLiu 一致），IP 地址按网络字节序原样存放。`type` 编号：`BIND_REQ` = 1、`BIND_RESP` = 2、`PROBE` = 3、`PROBE_ACK` = 4、`NOMINATE` = 5、`NOMINATE_ACK` = 6；UDP 中转使用 `RELAY_BIND` = 7、`RELAY_BIND_ACK` = 8、`RELAY_DATA` = 9（`RELAY_DATA` 不用这里的封装：16 字节的报文头只由 SipHash-2-4-64 认证，AnLiu 数据报原样跟在后面，见 [data-channel.md](../protocol/data-channel.md) 9.2）。KDF 标签（12 字节，作为派生块的 ChaCha20 nonce）：地址探测为 `NPF-PROBE-v1`，打洞探测为 `NPF-PUNCH-v1`，提名为 `NPF-NOMIN-v1`，中转的控制报文（绑定、应答、ping，用分配的 `alloc_key`）为 `NPF-RELAY-v1`，中转的 `RELAY_DATA` 的 SipHash 密钥为 `NPF-RDATA-v2`；设备发往中转的控制报文前面另有 4 字节明文的分配提示，`RELAY_DATA` 带 3 字节掩码的提示，见 data-channel.md 9。
 
 **方向密钥**：沿用 AnLiu 的做法，按发送方向派生两套密钥（请求方向 / 响应方向，或打洞的主叫 / 被叫方向）。把请求原样反射回请求方会因为密钥方向不匹配而认证失败，攻击者无法用抓到的请求冒充响应。
 
@@ -299,9 +299,9 @@ id     = 设备号或 client_id（见 security.md 第 6、8 节）
 
 ### 6.6 同一 socket 上的分发
 
-同一 socket 上收到的 UDP 报文都是"12 字节 tag + 密文"，按上下文决定尝试顺序：
+同一 socket 上收到的 UDP 报文除中转的 `RELAY_DATA` 外都是"12 字节 tag + 密文"，按上下文决定尝试顺序：
 
-1. 本 socket 有发往该源地址的未完成 `BIND_REQ`：先用 `probe_key` 验证；源地址是 UDP 中转服务器：先用该中转分配的 `alloc_key` 验证（data-channel.md 9.2），成功后取出 AnLiu 数据报交给 AnLiu；
+1. 本 socket 有发往该源地址的未完成 `BIND_REQ`：先用 `probe_key` 验证；`RELAY_DATA`（data-channel.md 9.2）：去掉掩码的 3 字节提示找到源地址那台中转上的分配，SipHash 验证报文头，成功后把其后的 AnLiu 数据报交给 AnLiu；中转的控制报文用该中转分配的 `alloc_key` 验证；
 2. 打洞进行中（路径尚未移交 AnLiu）：先用 `punch_key` 验证，再用 `nominate_key`（E2E 握手完成后才有），都失败再交给 AnLiu；
 3. 路径已移交：先交给 AnLiu（`anl_peek_conv` / `anl_input`），失败再用 `punch_key` 验证（对端可能还在发迟到的探测报文）；
 4. 都失败：丢弃并计数（`rx_auth_fail`）。
