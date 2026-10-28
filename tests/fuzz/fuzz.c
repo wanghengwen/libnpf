@@ -66,7 +66,7 @@ static size_t io_backlog(void *a) { (void)a; return 0; }
 static void io_ready(void *a) { (void)a; }
 static void io_control(void *a, const npf_json *j) { (void)a; (void)j; }
 static void io_broken(void *a, const char *w) { (void)a; (void)w; }
-static const npf_tunnel_io io = {io_write, io_write, io_backlog, io_ready, io_control, io_broken, NULL, NULL, NULL};
+static const npf_tunnel_io io = {io_write, io_write, io_backlog, io_ready, io_control, io_broken, NULL, NULL, NULL, NULL};
 
 /* the caller's hello unit, so that the fuzzed input reaches the sublink code */
 static const char hello_json[] = "{\"v\":2,\"type\":\"hello\",\"data\":{\"init_window\":262144,\"max_sublinks\":128}}";

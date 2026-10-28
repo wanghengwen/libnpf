@@ -58,8 +58,8 @@ static void sub_done(void *arg, uint32_t id, const npf_sublink_stats *st)
     snprintf(done_end, sizeof done_end, "%s", st->end ? st->end : "");
 }
 
-static const npf_tunnel_io io_c = {w_ctrl, w_data, backlog, ready, NULL, broken, NULL, NULL, sub_done};
-static const npf_tunnel_io io_d = {w_ctrl, w_data, backlog, ready, NULL, broken, NULL, NULL, NULL};
+static const npf_tunnel_io io_c = {w_ctrl, w_data, backlog, ready, NULL, broken, NULL, NULL, sub_done, NULL};
+static const npf_tunnel_io io_d = {w_ctrl, w_data, backlog, ready, NULL, broken, NULL, NULL, NULL, NULL};
 
 static npf_loop *loop;
 static npf_tunnel *C;           /* the caller's tunnel, its peer played here */

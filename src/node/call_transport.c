@@ -184,6 +184,27 @@ static size_t tun_backlog(void *arg)
     return (c->stream ? (size_t)anl_stream_waitsnd(c->stream) * ANL_MTU : 0) + c->dpend_bytes;
 }
 
+/* where the forwards pause (data-channel.md 6): on AnLiu about two
+ * bandwidth-delay products of the path (BBR's bottleneck bandwidth, the
+ * minimum RTT: queueing does not inflate it), 256 KiB .. 4 MiB, 1 MiB before
+ * the first estimate. Enough to keep a long fat path full (4 MiB: ~3x the
+ * throughput of 1 MiB at 200 ms / 100 Mbit/s), no more on a slow one, where
+ * an interactive sublink would wait behind it (all sublinks share the data
+ * stream: 4 MiB at 20 Mbit/s added ~1 s). The WS relay keeps 1 MiB: its
+ * queue is TCP's, more only adds delay (tests/bench/anlws) */
+#define BACKLOG_MIN   (256 * 1024)
+#define BACKLOG_MAX   (4 * 1024 * 1024)
+static size_t tun_backlog_max(void *arg)
+{
+    npf_call *c = arg;
+    anl_stats st;
+    uint64_t v;
+    if (c->ws_mode || !c->anl || anl_get_stats(c->anl, &st) < 0 || !st.bw_estimate || !st.min_rtt)
+        return NPF_TUNNEL_BACKLOG;
+    v = 2 * (uint64_t)st.bw_estimate * st.min_rtt / 1000;
+    return v < BACKLOG_MIN ? BACKLOG_MIN : v > BACKLOG_MAX ? BACKLOG_MAX : (size_t)v;
+}
+
 /* both hellos: the peer's came (ours went before) */
 static void tun_ready(void *arg)
 {
@@ -743,7 +764,7 @@ static void tun_sublink_done(void *arg, uint32_t id, const npf_sublink_stats *st
 }
 
 static const npf_tunnel_io tun_io = {tun_write_ctrl, tun_write_data, tun_backlog, tun_ready, tun_control, tun_broken,
-                                     tun_unit, tun_target_ok, tun_sublink_done};
+                                     tun_unit, tun_target_ok, tun_sublink_done, tun_backlog_max};
 static npf_key_share *key_share(npf_node *n, const uint8_t pub[32])
 {
     npf_key_share *e, *idle = NULL, **ns;

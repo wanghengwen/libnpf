@@ -447,9 +447,9 @@ static int tag_of(const struct sockaddr_storage *a)
 int test_tunnel(void)
 {
     static const npf_tunnel_io io = {io_write_ctrl, io_write_data, io_backlog, io_ready, NULL, io_broken, NULL, NULL,
-                                     io_sublink_done};
+                                     io_sublink_done, NULL};
     static const npf_tunnel_io io_b = {io_write_ctrl, io_write_data, io_backlog, io_ready, NULL, io_broken, NULL,
-                                       io_target_ok, NULL};
+                                       io_target_ok, NULL, NULL};
     int sid;
     npf_policy pol;
     target tg;

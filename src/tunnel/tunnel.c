@@ -15,7 +15,11 @@
 #include "npf/platform.h"
 #include "tunnel_internal.h"
 
-#define BACKLOG_PAUSE  (1024 * 1024)    /* transport bytes queued before local reads pause */
+/* transport bytes queued before local reads pause (resumed at half) */
+static size_t backlog_max(const npf_tunnel *t)
+{
+    return t->io.backlog_max ? t->io.backlog_max(t->arg) : NPF_TUNNEL_BACKLOG;
+}
 
 /* ---- helpers ---- */
 
@@ -888,7 +892,7 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
                 return;
             }
             s->tx_credit -= r;
-            if (t->io.backlog(t->arg) > BACKLOG_PAUSE)
+            if (t->io.backlog(t->arg) > backlog_max(t))
                 t->paused = 1;
         } else if (r == 0) {
             npf_scratch_done(m);
@@ -931,7 +935,7 @@ void npf_tunnel_kick(npf_tunnel *t)
     if (t->dead)
         return;
     t->depth++;
-    if (!t->paused || t->io.backlog(t->arg) > BACKLOG_PAUSE / 2)
+    if (!t->paused || t->io.backlog(t->arg) > backlog_max(t) / 2)
         goto out;
     if (!t->dead) {
         t->paused = 0;

@@ -56,7 +56,7 @@ static void sub_done(void *arg, uint32_t id, const npf_sublink_stats *st)
     if (f->recurse && f->done == 1)
         f->reset_result = npf_tunnel_sub_reset(f->t, id, "local_reset");
 }
-static const npf_tunnel_io io = {write_ctrl, write_data, backlog, NULL, NULL, NULL, NULL, NULL, sub_done};
+static const npf_tunnel_io io = {write_ctrl, write_data, backlog, NULL, NULL, NULL, NULL, NULL, sub_done, NULL};
 
 static void setup(fixture *f, npf_loop *loop)
 {

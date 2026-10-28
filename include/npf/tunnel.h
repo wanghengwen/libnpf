@@ -145,7 +145,12 @@ typedef struct npf_tunnel_io {
     /* a sublink opened here (npf_tunnel_open*) ended (npf_sublink_stats);
      * optional */
     void   (*sublink_done)(void *arg, uint32_t id, const struct npf_sublink_stats *st);
+    /* the backlog (above) at which local reads pause, resumed at half;
+     * optional, NULL: NPF_TUNNEL_BACKLOG (data-channel.md 6) */
+    size_t (*backlog_max)(void *arg);
 } npf_tunnel_io;
+
+#define NPF_TUNNEL_BACKLOG  (1024 * 1024)
 
 npf_tunnel *npf_tunnel_new(npf_loop *loop, int caller, const npf_tunnel_io *io, void *arg, npf_policy *policy);
 /* resets every sublink (local sockets get RST) and frees */
