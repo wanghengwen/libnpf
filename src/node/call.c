@@ -300,6 +300,11 @@ void npf_call_end(npf_call *c, const char *why)
         return;
     c->ended = 1;
     reason = reason_code(why, rc);
+    /* the platform first: the side that ends is the one its record names
+     * (the close below reaches the peer over the WS relay at once, and the
+     * peer's own call_end might come first otherwise) */
+    if (!c->direct)
+        npf_node_call_end(c->n, c->call_id_s, reason);
     if (c->tun && npf_tunnel_is_ready(c->tun)) {
         char m[96];
         int len = snprintf(m, sizeof m, "{\"v\":1,\"type\":\"close\",\"data\":{\"reason\":\"%s\"}}", reason);
@@ -311,8 +316,6 @@ void npf_call_end(npf_call *c, const char *why)
         if (c->ws_mode && c->wsr)
             npf_wsr_flush(c->wsr);          /* now: the relay connection goes with the call */
     }
-    if (!c->direct)
-        npf_node_call_end(c->n, c->call_id_s, reason);
     call_set_state(c, NPF_CALL_CLOSED, reason);
     call_ended(c);
 }
