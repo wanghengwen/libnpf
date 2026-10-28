@@ -243,7 +243,15 @@ void pm_check(npf_call *c)
 {
     anl_stats st;
     int64_t now, due;
-    if (c->ended || !c->anl || anl_get_stats(c->anl, &st) < 0)
+    int k, busy = 0;
+    if (c->ended || !c->anl)
+        return;
+    /* AnLiu's stats only for a path whose rules look at the data in
+     * flight (the WS relay's do not) */
+    for (k = 0; k < PK_N; k++)
+        busy |= c->pm.p[k] && c->pm.p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(&c->pm, c->pm.p[k]);
+    memset(&st, 0, sizeof st);
+    if (busy && anl_get_stats(c->anl, &st) < 0)
         return;
     now = npf_mono_ms();
     if (call_has_ws(c))
