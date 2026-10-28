@@ -469,10 +469,6 @@ static void anl_schedule(npf_call *c)
     call_at(c, tr_due(c, npf_mono_ms()));
 }
 
-static void anl_after_input(npf_call *c);
-
-/* one datagram for this call's connection; 0 when it was authentic */
-
 static void conv_link(npf_call *c)
 {
     npf_call **slot = &c->n->conv_tab[CONV_SLOT(c->conv)];
@@ -516,6 +512,8 @@ static void auth_fail_check(npf_call *c)
     c->auth_fail_at = now;
 }
 
+/* one datagram for this call's connection; 0 when it was authentic. The
+ * timer moves only when AnLiu wants to be called sooner (call_at) */
 int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len)
 {
     int r;
@@ -525,18 +523,12 @@ int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len)
     r = anl_input(c->anl, (const char *)buf, (int)len);
     if (r < 0)
         return r;
-    anl_after_input(c);
-    return 0;
-}
-
-/* after a datagram: the timer moved only when AnLiu wants to be called
- * sooner than it fires (call_at; it was made again for every datagram) */
-static void anl_after_input(npf_call *c)
-{
     anl_drain(c);
     if (!call_over(c))
         anl_schedule(c);
+    return 0;
 }
+
 /* ---- libnpf media streams (media.h) ---- */
 
 static void m_kick(void *arg)

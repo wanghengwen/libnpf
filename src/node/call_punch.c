@@ -207,22 +207,16 @@ void call_port_pressure(npf_node *n, const char *what)
     n->port_pressure = now;
 }
 
-/* the punch goes (a new round, the move to the WS relay, the call's end):
- * a running hard-side one gives its sockets back */
-static void punch_end(npf_call *c)
-{
-    npf_punch_free(c->punch);
-    c->punch = NULL;
-    socks_back(c);
-}
-
 /* punching's one transition (architecture.md 3.2): the state and its
  * deadline (SCHEDULED, LINGER); a punch only in RUNNING and LINGER, of the
  * last round planned: a peer's port or candidate goes to its own round */
 void call_punch_to(npf_call *c, int st, int64_t at)
 {
-    if (st != PN_RUNNING && st != PN_LINGER)
-        punch_end(c);
+    if (st != PN_RUNNING && st != PN_LINGER) {
+        npf_punch_free(c->punch);
+        c->punch = NULL;
+        socks_back(c);              /* a running hard-side one's sockets */
+    }
     c->punch_st = st;
     c->punch_at = at;
     if (at)
