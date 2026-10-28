@@ -173,51 +173,36 @@ static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
 /* The caller binds its relay before it has the session's keys (the accept
  * brings them): the callee's first datagrams may come through the relay
  * first. A few wait here for the keys instead of an AnLiu retransmission. */
-#define RELAY_EARLY_MAX 8
-
 typedef struct relay_early {
-    struct relay_early *next;
-    size_t              len;
-    uint8_t             d[];
+    size_t  len;
+    uint8_t d[];
 } relay_early;
 
 void call_relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len)
 {
-    relay_early *e, **pp;
-    if (c->nrearly >= RELAY_EARLY_MAX || !(e = malloc(sizeof *e + len)))
+    relay_early *e;
+    if (c->nrearly >= (int)(sizeof c->rearly / sizeof c->rearly[0]) || !(e = malloc(sizeof *e + len)))
         return;
-    e->next = NULL;
     e->len = len;
     memcpy(e->d, dgram, len);
-    for (pp = &c->rearly; *pp; pp = &(*pp)->next)
-        ;
-    *pp = e;
-    c->nrearly++;
+    c->rearly[c->nrearly++] = e;
 }
 
 void call_relay_early_free(npf_call *c)
 {
-    while (c->rearly) {
-        relay_early *e = c->rearly;
-        c->rearly = e->next;
-        free(e);
-    }
-    c->nrearly = 0;
+    while (c->nrearly > 0)
+        free(c->rearly[--c->nrearly]);
 }
 
-/* the keys are there: what came early goes to AnLiu */
+/* the keys are there: what came early goes to AnLiu, in order */
 void call_relay_early_feed(npf_call *c)
 {
-    relay_early *e = c->rearly;
-    int fed = 0;
-    c->rearly = NULL;
+    int fed = 0, i, k = c->nrearly;
     c->nrearly = 0;
-    while (e) {
-        relay_early *next = e->next;
-        if (!call_over(c) && c->anl && call_anl_feed(c, e->d, e->len) == 0)
+    for (i = 0; i < k; i++) {
+        if (!call_over(c) && c->anl && call_anl_feed(c, c->rearly[i]->d, c->rearly[i]->len) == 0)
             fed++;
-        free(e);
-        e = next;
+        free(c->rearly[i]);
     }
     if (fed && !call_over(c))
         npf_log("call %s: %d datagram%s from the peer came through the relay before the accept", c->call_id_s, fed,

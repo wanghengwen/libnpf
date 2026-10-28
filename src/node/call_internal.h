@@ -83,7 +83,7 @@ struct npf_call {
     int64_t     up_ms;              /* established at (monotonic ms), 0 = not yet */
     uint64_t    tx_bytes, rx_bytes; /* tunnel bytes (sublink frames) */
     int         secure;             /* connect_mode secure on either side: relays only, no punching */
-    struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
+    struct relay_early *rearly[8];  /* caller: the peer's relayed datagrams before the keys (path_udp.c) */
     int         nrearly;
     npf_punch_cfg *pcfg;            /* the rounds' plan and candidates: made at the first punch_start */
     struct sockaddr_storage tcand;  /* the peer's new srflx (its punch_info "cand"): in this round and the next */
