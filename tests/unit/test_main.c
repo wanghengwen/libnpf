@@ -34,6 +34,7 @@ int test_relay_data(void);
 int test_peeraddr(void);
 int test_home(void);
 int test_call(void);
+int test_path(void);
 int node_wake_delay(int ms);        /* node_signal.c */
 
 #define CHECK(cond, ...) do { \
@@ -244,6 +245,7 @@ int main(void)
     failures += test_peeraddr();
     failures += test_home();
     failures += test_call();
+    failures += test_path();
     failures += test_punch();
     {   /* the periodic wake of signaling on demand: sig_wake_ms +-20 %, drawn
          * each time (instances asleep together drift apart) */

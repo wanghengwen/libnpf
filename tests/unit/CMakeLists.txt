@@ -21,6 +21,7 @@ add_executable(npf_unit_tests
   test_peeraddr.c
   test_home.c
   test_call.c
+  test_path.c
 )
 if(NPF_PORTMAP)
   target_sources(npf_unit_tests PRIVATE test_portmap.c)
