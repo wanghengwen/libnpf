@@ -304,7 +304,7 @@ void npf_call_end(npf_call *c, const char *why)
      * (the close below reaches the peer over the WS relay at once, and the
      * peer's own call_end might come first otherwise) */
     if (!c->direct)
-        npf_node_call_end(c->n, c->call_id_s, reason);
+        npf_node_call_end(c->n, c->call_id_s, reason, c->peer_closed);
     if (c->tun && npf_tunnel_is_ready(c->tun)) {
         char m[96];
         int len = snprintf(m, sizeof m, "{\"v\":1,\"type\":\"close\",\"data\":{\"reason\":\"%s\"}}", reason);

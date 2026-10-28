@@ -138,15 +138,15 @@ static void ends_flush(npf_node *n)
         npf_end_report *e = &n->ends[i];
         if (e->state != 1)
             continue;
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"reason\":\"%s\",\"ago_ms\":%lld}", e->call_id, e->reason,
-                 (long long)(npf_mono_ms() - e->at_ms));
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"reason\":\"%s\",\"ago_ms\":%lld%s}", e->call_id, e->reason,
+                 (long long)(npf_mono_ms() - e->at_ms), e->peer ? ",\"peer\":true" : "");
         if (npf_node_request(n, "call_end", data, end_reply, e) < 0)
             return;                     /* no request slot: on the next answer */
         e->state = 2;
     }
 }
 
-void npf_node_call_end(npf_node *n, const char *call_id, const char *reason)
+void npf_node_call_end(npf_node *n, const char *call_id, const char *reason, int peer)
 {
     npf_end_report *e = NULL;
     int i;
@@ -160,6 +160,7 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason)
         return;
     snprintf(e->call_id, sizeof e->call_id, "%s", call_id);
     snprintf(e->reason, sizeof e->reason, "%s", reason);
+    e->peer = peer;
     e->at_ms = npf_mono_ms();
     e->state = 1;
     if (!n->online)

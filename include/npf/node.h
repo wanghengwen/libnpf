@@ -213,6 +213,7 @@ typedef struct npf_end_report {
     char    reason[24];
     int64_t at_ms;                      /* monotonic: when the session ended */
     int     state;                      /* 0 free, 1 to send, 2 sent */
+    int     peer;                       /* ended because the peer closed it (its close came first) */
 } npf_end_report;
 
 struct npf_node {
@@ -589,7 +590,9 @@ void npf_node_cancel_requests(npf_node *n, void *arg);
 /* Report the end of a call to the platform (call_end, signaling.md): a
  * request kept until the platform answers; while signaling is down it waits
  * for the next login and then says how long ago the session ended. */
-void npf_node_call_end(npf_node *n, const char *call_id, const char *reason);
+/* peer: the session ends because the peer closed it (the record names the
+ * peer as the side that ended it, whichever call_end the platform hears first) */
+void npf_node_call_end(npf_node *n, const char *call_id, const char *reason, int peer);
 
 /* server time in ms (wall clock corrected by welcome.time) */
 int64_t npf_node_time(const npf_node *n);

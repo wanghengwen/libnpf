@@ -261,6 +261,7 @@ static void tun_control(void *arg, const npf_json *j)
         char r[32] = "closed";
         npf_json_get_str(j, npf_json_get(j, 0, "data"), "reason", r, sizeof r);
         npf_log("call %s: peer closed the session (%s)", c->call_id_s, r);
+        c->peer_closed = 1;             /* the record names the peer (call_end peer) */
         npf_call_end(c, r);
         return;
     }

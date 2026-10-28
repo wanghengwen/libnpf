@@ -136,6 +136,7 @@ struct npf_call {
     } ctl[NPF_CALL_CTL_MAX];
     int         ctl_seq;
     /* WS relay (data-channel.md 10): a carrier of the AnLiu connection */
+    int         peer_closed;        /* the peer's close ended it (call_end peer) */
     int         ws_mode;            /* AnLiu's datagrams go over the WS relay (not UDP) */
     npf_wsr    *wsr;
     char        ws_url[256];        /* the allocation's relay, for a connection lost after pairing */
