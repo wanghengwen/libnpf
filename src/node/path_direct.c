@@ -110,7 +110,8 @@ int call_path_input(npf_call *c, const uint8_t *buf, size_t len)
         return 0;
     if (plain[0] == PKT_PATH_CHECK)
         path_send(c, PKT_PATH_ECHO, npf_rd64(plain + 2));
-    else if (plain[0] == PKT_PATH_ECHO && c->pd.p.health == PH_SUSPECT && npf_rd64(plain + 2) == c->pd.nonce)
+    else if (plain[0] == PKT_PATH_ECHO && (c->pd.p.health == PH_SUSPECT || c->pd.p.probe_until)
+             && npf_rd64(plain + 2) == c->pd.nonce)
         direct_alive(c);
     return 1;
 }
@@ -129,16 +130,19 @@ static void direct_probe(npf_path *p)
     path_send(c, PKT_PATH_CHECK, c->pd.nonce);
 }
 
-/* an echo of this doubt's checks: a round trip over the path, it is UP */
+/* an echo of these checks (a doubt's, the standby's): a round trip over
+ * the path, it is UP */
 static void direct_alive(npf_call *c)
 {
-    if (!pm_rt(&c->pm, &c->pd.p, npf_mono_ms()))
-        return;
+    int up = pm_rt(&c->pm, &c->pd.p, npf_mono_ms());
     if (c->pd.standby_check) {         /* both ways: now the relay may go */
         c->pd.standby_check = 0;
+        npf_timer_stop(c->n->loop, &c->pu.t_standby);
         call_standby_done(c->n->loop, c);
         return;
     }
+    if (!up)
+        return;
     npf_log("call %s: direct path alive again (checked both ways)", c->call_id_s);
     pm_standby_start(c);
 }
@@ -200,6 +204,7 @@ void call_p2p_drop(npf_call *c)
 static void direct_doubt(npf_call *c, const char *why)
 {
     path_direct_check(c);
+    c->pd.standby_check = 0;            /* the doubt's checks instead; the standby again once it is over */
     npf_timer_stop(c->n->loop, &c->pu.t_standby);
     if (call_has_relay(c)) {
         npf_log("call %s: %s, sending on the relay too", c->call_id_s, why);

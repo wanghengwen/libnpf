@@ -82,12 +82,21 @@ void pm_suspect(npf_pm *m, npf_path *p, int64_t now)
 {
     p->suspect_at = now;
     p->probe_at = now;
+    p->probe_until = 0;
     pm_health(m, p, PH_SUSPECT);
+}
+
+void pm_probe(npf_pm *m, npf_path *p, int64_t now, int64_t window)
+{
+    (void)m;
+    p->probe_at = now;
+    p->probe_until = now + window;
 }
 
 int pm_rt(npf_pm *m, npf_path *p, int64_t now)
 {
     p->rt_ok = now;
+    p->probe_until = 0;
     if (p->health == PH_UP)
         return 0;
     p->busy_since = 0;
@@ -109,6 +118,21 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
         const pm_rules *r = &pm_rules_of[k];
         if (!p)
             continue;
+        if (p->health == PH_UP && p->probe_until) {
+            /* probed with no doubt (pm_probe): until a round trip or the window's end */
+            if (now >= p->probe_until || !r->t_probe) {
+                p->probe_until = 0;
+            } else {
+                if (now >= p->probe_at) {
+                    p->probe_at = now + r->t_probe;
+                    p->ops->probe(p);
+                    if (m->p[k] != p || p->health != PH_UP)
+                        continue;
+                }
+                due = due < p->probe_at ? due : p->probe_at;
+                due = due < p->probe_until ? due : p->probe_until;
+            }
+        }
         if (p->health == PH_UP) {
             int64_t from, quiet;
             if (!pm_relied(m, p)) {
@@ -243,6 +267,8 @@ void pm_standby_start(npf_call *c)
         c->pu.t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
 }
 
+#define STANDBY_CHECK_MS 10000      /* the direct path's check before the relay goes: its echo within this */
+
 /* the direct path held for 30 s: stop using the relay; the caller tells the
  * platform to free both allocations (data-channel.md 3) */
 void call_standby_done(npf_loop *loop, void *arg)
@@ -261,12 +287,23 @@ void call_standby_done(npf_loop *loop, void *arg)
     if (c->pd.p.rt_ok < c->pd.p.since) {
         /* the punch proved only that the peer's datagrams reach us (a path
          * cut one way still passes it): a path check answered over the direct
-         * path first, else the session would lose the relay it still needs
-         * (in doubt meanwhile: the data on the relay too, lost 10 s after) */
-        c->pd.standby_check = 1;
-        pm_suspect(&c->pm, &c->pd.p, npf_mono_ms());
-        path_direct_check(c);
-        pm_check(c);
+         * path first, else the session would lose the relay it still needs.
+         * A probe, not a doubt (it was: the data on both paths meanwhile and,
+         * with no echo in 10 s, the direct path given up): no echo, the relay
+         * stands by on and the check comes again; a path dead one way goes
+         * silent in the peer's direction and the health rules find it */
+        if (!c->pd.standby_check) {
+            c->pd.standby_check = 1;
+            path_direct_check(c);
+            pm_probe(&c->pm, &c->pd.p, npf_mono_ms(), STANDBY_CHECK_MS);
+            pm_check(c);
+            c->pu.t_standby = npf_timer_add(c->n->loop, STANDBY_CHECK_MS, call_standby_done, c);
+            return;
+        }
+        c->pd.standby_check = 0;
+        npf_log("call %s: no echo over the direct path in %d s: the relay stands by %d s more", c->call_id_s,
+                STANDBY_CHECK_MS / 1000, RELAY_STANDBY_MS / 1000);
+        c->pu.t_standby = npf_timer_add(c->n->loop, RELAY_STANDBY_MS, call_standby_done, c);
         return;
     }
     path_udp_off(c);

@@ -226,8 +226,8 @@ static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
     if (a.state == RELAY_ACK_BOUND) {
         /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that confirms
          * the binding (the challenges still come: without one nothing binds) */
-        if (!c->pu.r.bound && !c->n->th->drop_bind_ack)
-            relay_bound(c, "");
+        if (!c->pu.r.bound && !c->n->th->drop_bind_ack && call_has_relay(c))
+            relay_bound(c, "");     /* (a late one after the relay went, the standby's or the move to WS: no) */
         return;
     }
     if (call_has_relay(c) && relay_bind_echo_due(&c->pu.r))

@@ -4,7 +4,8 @@
  * probes while in doubt, a round trip bringing a path back, the verdict;
  * which paths the rules apply to (relied on: the primary one, the second
  * while the primary is in doubt; not one standing by, not a direct
- * connection's fixed one, not one not proven yet). */
+ * connection's fixed one, not one not proven yet); a probe with no doubt
+ * (the hot standby's check). */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -222,6 +223,30 @@ static void relied(void)
     CHECK(d->suspects == 0 && u->suspects == 0 && f[PK_WS_RELAY].suspects == 0, "checked beside the WS relay");
 }
 
+/* probed with no doubt (the standby's check, pm_probe): the direct path's
+ * checks every 500 ms for the window, nothing else (the relay stands by, no
+ * verdict); a round trip ends them */
+static void probed(void)
+{
+    fake *d = &f[PK_DIRECT], *u = &f[PK_UDP_RELAY];
+    int64_t t;
+    start(D | U, 0);
+    d->p.last_rx = 1000000;
+    pm_probe(&m, &d->p, 1000, 10000);
+    CHECK(pm_tick(&m, 1000, 0, 200) == 1500 && d->probes == 1, "the first check (%d)", d->probes);
+    for (t = 1500; t < 11000; t += 500)
+        pm_tick(&m, t, 0, 200);
+    CHECK(d->probes == 20 && d->p.health == PH_UP && u->p.role == PR_STANDBY && !m.second && d->suspects == 0,
+          "probed: %d checks, health %d, relay role %d", d->probes, d->p.health, u->p.role);
+    pm_tick(&m, 11000, 0, 200);
+    CHECK(d->probes == 20 && d->p.probe_until == 0 && d->deads == 0, "checks after the window (%d)", d->probes);
+    pm_probe(&m, &d->p, 20000, 10000);
+    pm_tick(&m, 20000, 0, 200);
+    CHECK(pm_rt(&m, &d->p, 20100) == 0 && d->p.probe_until == 0 && d->p.rt_ok == 20100, "the echo");
+    pm_tick(&m, 21000, 0, 200);
+    CHECK(d->probes == 21, "checks after the echo (%d)", d->probes);
+}
+
 int test_path_health(void)
 {
     int k;
@@ -234,5 +259,6 @@ int test_path_health(void)
         back(k);
     }
     relied();
+    probed();
     return fails;
 }

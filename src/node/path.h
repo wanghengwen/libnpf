@@ -49,7 +49,8 @@ struct npf_path {
     int64_t  busy_since;            /* the session relies on it with data in flight since (ms); 0 no */
     int64_t  rt_ok;                 /* the last round trip proven (an echo, a BIND_ACK, the pairing; ms) */
     int64_t  suspect_at;            /* SUSPECT since (ms) */
-    int64_t  probe_at;              /* SUSPECT: the next probe (kinds whose rules probe on a period) */
+    int64_t  probe_at;              /* SUSPECT, or probed while UP: the next probe (kinds whose rules probe on a period) */
+    int64_t  probe_until;           /* UP, probed (pm_probe) until then; 0 not */
 };
 
 /* The health rules, one set for every kind (architecture.md 2.4), the times
@@ -135,6 +136,9 @@ void pm_health(npf_pm *m, npf_path *p, int health);
  * check), its probes due from now; a round trip proven: 1 when it brought
  * the path UP (it was not); the path's own verdict */
 void pm_suspect(npf_pm *m, npf_path *p, int64_t now);
+/* probed while UP (no doubt: nothing else changes) for window ms from now:
+ * a round trip asked for, pm_rt ends it (the standby's check) */
+void pm_probe(npf_pm *m, npf_path *p, int64_t now, int64_t window);
 int  pm_rt(npf_pm *m, npf_path *p, int64_t now);
 void pm_dead(npf_pm *m, npf_path *p);
 /* the rules applied at now, the session's data in flight and RTO given
