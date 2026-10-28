@@ -105,6 +105,7 @@ static void relay_asked_again(npf_node *n)
         return;
     snprintf(c->call_id_s, sizeof c->call_id_s, "ask-test");
     c->state = NPF_CALL_CONNECTING;
+    c->ws_mode = 1;                     /* the session on the WS relay */
     seen_clear();
     call_ws_failed(c, "test");          /* the WS relay never worked: a relay on our own server */
     call_ws_failed(c, "test");          /* again at once: still waiting for the first */

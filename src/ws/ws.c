@@ -768,6 +768,22 @@ int npf_ws_send2(npf_ws *ws, const void *head, size_t hlen, const void *data, si
     return 0;
 }
 
+int npf_ws_queue2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len)
+{
+    return ws->state != ST_OPEN || send_frame2(ws, 2, head, hlen, data, len) ? -1 : 0;
+}
+
+int npf_ws_flush(npf_ws *ws)
+{
+    if (ws->state != ST_OPEN)
+        return -1;
+    if (flush_out(ws) < 0) {
+        update_interest(ws);        /* the failure reported from the loop */
+        return -1;
+    }
+    return 0;
+}
+
 int npf_ws_ping(npf_ws *ws)
 {
     if (ws->state != ST_OPEN || send_frame(ws, 9, NULL, 0))

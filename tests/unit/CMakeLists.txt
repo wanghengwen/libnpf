@@ -12,7 +12,6 @@ add_executable(npf_unit_tests
   test_resolve.c
   test_dns.c
   test_punch.c
-  test_media.c
   test_anlsec.c
   test_sys.c
   test_text.c

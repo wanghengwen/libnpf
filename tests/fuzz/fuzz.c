@@ -5,7 +5,7 @@
  *   npf_fuzz TARGET [ITERATIONS] [SEED]      mutate built-in seeds, run under ASan + UBSan
  *   npf_fuzz TARGET -f FILE...               replay inputs (crash reproducers)
  *
- * TARGET: json | tunnel | noise | cert | pkt | dns | media | http | ws | all. With a clang that has
+ * TARGET: json | tunnel | noise | cert | pkt | dns | http | ws | all. With a clang that has
  * libFuzzer, -DNPF_LIBFUZZER builds the same targets as LLVMFuzzerTestOneInput
  * entry points (one target per binary, selected with -DNPF_FUZZ_TARGET=name). */
 #define _GNU_SOURCE
@@ -24,7 +24,6 @@
 #include "npf/noise.h"
 #include "npf/siv.h"
 #include "npf/tunnel.h"
-#include "media.h"
 
 #define MAX_IN 4096
 
@@ -184,40 +183,6 @@ static void fuzz_dns(const uint8_t *d, size_t n)
     npf_dns_txt_answers(d, n, count_txt, &total);
 }
 
-/* media streams, receiving side on the WS relay: units and records,
- * each as kind(1) | len(1) | body (kind even: a MEDIA unit, odd: a record) */
-static int m_unit(void *a, const uint8_t *b, size_t n) { (void)a; (void)b; (void)n; return 0; }
-static void m_backlog(void *a, size_t *p, uint64_t *t) { (void)a; *p = 0; *t = 0; }
-static void m_kick(void *a) { (void)a; }
-static int m_open(void *a, uint32_t id, int tag) { (void)a; (void)id; return tag != 3; }
-static void m_frame(void *a, uint32_t id, const uint8_t *b, size_t n, uint32_t f, int fl, uint32_t l)
-{
-    (void)a; (void)id; (void)b; (void)n; (void)f; (void)fl; (void)l;
-}
-static void m_closed(void *a, uint32_t id) { (void)a; (void)id; }
-static int m_ended(void *a) { (void)a; return 0; }
-static const npf_media_io m_io = {m_unit, m_unit, m_backlog, m_kick, m_open, m_frame, m_closed, m_ended};
-
-static void fuzz_media(const uint8_t *d, size_t n)
-{
-    npf_media *m;
-    size_t off = 0;
-    if (!g_loop)
-        g_loop = npf_loop_new();
-    m = npf_media_new(g_loop, NULL, 1, &m_io, NULL);
-    while (off + 2 <= n) {
-        size_t len = d[off + 1];
-        if (off + 2 + len > n)
-            len = n - off - 2;
-        if (d[off] & 1)
-            npf_media_ws_input(m, d + off + 2, len);
-        else
-            npf_media_unit_input(m, d + off + 2, len);
-        off += 2 + len;
-    }
-    npf_media_free(m);
-}
-
 typedef void (*target_fn)(const uint8_t *, size_t);
 
 void npf_fuzz_http(const uint8_t *data, size_t len);
@@ -238,7 +203,6 @@ static const struct {
     {"cert", fuzz_cert, "{\"serial\":1,\"servers\":[{\"id\":1,\"ws\":[\"wss://a/s\"],\"dh_pub\":\"AAAA\"}]}"},
     {"pkt", fuzz_pkt, NULL},
     {"dns", fuzz_dns, NULL},
-    {"media", fuzz_media, NULL},
 };
 
 /* ---- driver ---- */
@@ -305,7 +269,7 @@ int main(int argc, char **argv)
     long iters = 20000, it;
     size_t t, first = 0, last = sizeof targets / sizeof targets[0];
     if (argc < 2) {
-        fprintf(stderr, "usage: npf_fuzz json|tunnel|noise|cert|pkt|dns|media|http|ws|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
+        fprintf(stderr, "usage: npf_fuzz json|tunnel|noise|cert|pkt|dns|http|ws|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
         return 2;
     }
     if (strcmp(argv[1], "all") != 0) {

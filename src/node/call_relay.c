@@ -37,7 +37,7 @@ void call_ask_ws_relay(npf_call *c)
 {
     char data[128];
     npf_timer_stop(c->n->loop, &c->t_ws_wait);
-    if (c->ws_mode)                 /* on it already: asking again reset its sublinks */
+    if (c->ws_mode)                 /* on it already */
         return;
     npf_log("call %s: asking for the WS relay", c->call_id_s);
     snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"ws\"}", c->call_id_s);
@@ -95,7 +95,7 @@ static void relay_gave_up(void *arg)
         npf_log("call %s: UDP relay unreachable before the accept: binding it again then", c->call_id_s);
     } else if (c->p2p) {
         /* in doubt (p2p_suspect): the verdict decides (lost: the WS
-         * relay, check_p2p); a WS relay session cannot go direct again */
+         * relay, check_p2p); no punching on the WS relay */
         npf_log("call %s: UDP relay unreachable; the direct path carries the session%s", c->call_id_s,
                 c->p2p_suspect ? " while it is checked" : "");
     } else if (!c->relay_ports_waited && call_hard_punches(c) > 0) {
@@ -112,8 +112,8 @@ static void relay_gave_up(void *arg)
         if (!c->t_ws_wait)
             c->t_ws_wait = npf_timer_add(c->n->loop, WS_WAIT_MS, ws_wait_done, c);
     } else if (!c->punched && !call_no_p2p(c)) {
-        /* a WS relay session cannot move to a direct path later (the
-         * transport is replaced): let the first punch round decide.
+        /* a WS relay session gets no punching rounds (they come back
+         * only with UDP): let the first punch round decide.
          * Measured: a Linux node's UDP relay unreachable 2 s before the
          * punch plan arrived, the direct path up 6 s later, the session
          * stuck on the WS relay at 14 KB/s */
@@ -179,7 +179,10 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
     }
     if (strcmp(mode, "udp") != 0 || !naddr)
         return;
-    if (c->relay.active && !c->ws_mode && memcmp(id, c->relay.relay_id, 8) == 0
+    /* from the WS relay back to UDP (udp_back): the same AnLiu connection,
+     * a datagram carrier again; punching rounds come again too */
+    call_ws_leave(c);
+    if (c->relay.active && memcmp(id, c->relay.relay_id, 8) == 0
         && npf_ct_eq(key, c->relay.alloc_key, 32) == 0) {
         /* the one in use, sent again (the reply to the call, then
          * call_accepted; both sides asked for it): bound or being bound, it
@@ -256,7 +259,7 @@ typedef struct relay_early {
     uint8_t             d[];
 } relay_early;
 
-static void relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len)
+void call_relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len)
 {
     relay_early *e, **pp;
     if (c->nrearly >= RELAY_EARLY_MAX || !(e = malloc(sizeof *e + len)))
@@ -305,7 +308,7 @@ void call_relay_early_feed(npf_call *c)
 static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
 {
     if (c->caller && !c->keys_ready && c->relay.active) {
-        relay_early_keep(c, dg, len);
+        call_relay_early_keep(c, dg, len);
         return;
     }
     /* AnLiu first: a relayed datagram proves nothing until it takes it
@@ -392,7 +395,7 @@ void call_ws_wait_end(npf_call *c, int ok)
         return;
     }
     if (!ok && !c->relay_retried && !c->relay.bound && !c->relay.t_bind) {
-        /* once more first: a WS relay session cannot punch again later, and
+        /* once more first: a WS relay session gets no punching rounds, and
          * the UDP relay may have been lost to a passing storm (the phone at a
          * start, five punches at once: its binds went unanswered for 5 s) */
         npf_log("call %s: trying the UDP relay once more before the WS relay", c->call_id_s);

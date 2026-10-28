@@ -1,13 +1,8 @@
-/* Media streams of a session (libnpf npf_media_*; data-channel.md 14).
- *
- *   - On AnLiu (direct path, UDP relay): each media stream is an AnLiu
- *     semi-reliable stream of its own, opened and closed with it (AnLiu's
- *     close tells the peer); frames go as they are, the frame numbers and
- *     loss counts are AnLiu's.
- *   - On the WS relay: records of channel 2 with a small header (the streams
- *     share one byte stream), opened and closed with MEDIA units, queued here
- *     so that a send never blocks; frames older than max_age are dropped,
- *     the forwards' data yields to the media. */
+/* Media streams of a session (libnpf npf_media_*; data-channel.md 14): each
+ * media stream is an AnLiu semi-reliable stream of its own, on whichever
+ * carrier the connection runs (UDP or the WS relay), opened and closed with it
+ * (AnLiu's close tells the peer); frames go as they are, the frame numbers and
+ * loss counts are AnLiu's. */
 #ifndef NPF_MEDIA_H
 #define NPF_MEDIA_H
 
@@ -39,12 +34,6 @@
 typedef struct npf_media npf_media;
 
 typedef struct npf_media_io {
-    /* a MEDIA unit to the peer (the tunnel's control channel); 0 or -1 */
-    int    (*unit)(void *arg, const uint8_t *buf, size_t len);
-    /* WS relay: one record of channel 2; 0 or -1 */
-    int    (*ws_write)(void *arg, const uint8_t *buf, size_t len);
-    /* WS relay: bytes written and not yet on the wire; all bytes handed to it */
-    void   (*ws_backlog)(void *arg, size_t *pending, uint64_t *total);
     /* AnLiu: frames were queued, flush soon */
     void   (*kick)(void *arg);
     /* the peer opened a stream: 1 takes it */
@@ -57,7 +46,7 @@ typedef struct npf_media_io {
     int    (*ended)(void *arg);
 } npf_media_io;
 
-/* anl NULL: the WS relay; odd: this side's ids are odd (the callee) */
+/* odd: this side's ids are odd (the callee) */
 npf_media *npf_media_new(npf_loop *loop, anl_t *anl, int odd, const npf_media_io *io, void *arg);
 /* the session ended: everything goes without callbacks */
 void npf_media_free(npf_media *m);
@@ -72,11 +61,6 @@ int  npf_media_is_stream(const npf_media *m, anl_stream_t *s);
 /* s is readable: its frames to the application, or its end. -1 when a
  * callback ended the session (stop reading) */
 int  npf_media_drain(npf_media *m, anl_stream_t *s);
-/* a MEDIA unit / a WS record of channel 2 from the peer */
-void npf_media_unit_input(npf_media *m, const uint8_t *buf, size_t len);
-void npf_media_ws_input(npf_media *m, const uint8_t *buf, size_t len);
-/* WS relay: frames waiting here (the forwards' data yields while there are any) */
-size_t npf_media_ws_queued(const npf_media *m);
 int  npf_media_count(const npf_media *m);
 
 /* the application's side; errors NPF_CALL_E* */

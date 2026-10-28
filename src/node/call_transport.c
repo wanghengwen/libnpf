@@ -1,6 +1,6 @@
 /* Calls: the data transport of a session. The AnLiu connection (its
- * callbacks, timer and drain, the conv table), the WS relay's record mux,
- * the tunnel's callbacks (npf_tunnel_io) and the control messages in it,
+ * callbacks, timer and drain, the conv table, its carriers: UDP or the WS
+ * relay), the tunnel's callbacks (npf_tunnel_io) and the control messages in it,
  * the media and UDP forward adapters, the caller key shares and the tunnel
  * made for a session (data-channel.md, security.md 9.5). */
 #define _GNU_SOURCE
@@ -41,6 +41,10 @@ static int anl_out(char *buf, int len, anl_t *w, void *user)
 {
     npf_call *c = user;
     (void)w;
+    if (c->ws_mode) {                       /* the WS relay carries the session (call_ws.c) */
+        call_ws_send(c, (const uint8_t *)buf, (size_t)len);
+        return 0;
+    }
     if (c->p2p && !call_p2p_cut(c))
         npf_udp_send(c->p2p_fd, (const uint8_t *)buf, (size_t)len, &c->p2p_addr);
     /* the relay carries the data when there is no direct path, and as a second
@@ -86,33 +90,6 @@ static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user
 }
 
 
-/* WS relay: both channels in one byte stream of records,
- * unit = channel(1) | len(2) | content (data-channel.md 10.2) */
-static int ws_mux(npf_call *c, int ch, const uint8_t *buf, size_t len)
-{
-    if (!c->ws_tx_ready || len > 65535)
-        return -1;
-    if (c->ws_out_len + 3 + len > c->ws_out_cap) {
-        size_t cap = c->ws_out_cap ? c->ws_out_cap : 16384;
-        uint8_t *q;
-        while (cap < c->ws_out_len + 3 + len)
-            cap *= 2;
-        q = realloc(c->ws_out, cap);
-        if (!q)
-            return -1;
-        c->ws_out = q;
-        c->ws_out_cap = cap;
-    }
-    c->ws_out[c->ws_out_len] = (uint8_t)ch;
-    npf_le16(c->ws_out + c->ws_out_len + 1, (uint16_t)len);
-    memcpy(c->ws_out + c->ws_out_len + 3, buf, len);
-    c->ws_out_len += 3 + len;
-    c->ws_out_total += 3 + len;
-    if (!c->t_wsflush)
-        c->t_wsflush = npf_timer_add(c->n->loop, 0, call_ws_flush_timer, c);
-    return 0;
-}
-
 static void anl_kick(npf_call *c)
 {
     if (!c->flush_pending) {
@@ -127,8 +104,6 @@ static int tun_write_ctrl(void *arg, const uint8_t *buf, size_t len)
 {
     npf_call *c = arg;
     c->tx_bytes += len;
-    if (c->ws_mode)
-        return ws_mux(c, 0, buf, len);
     if (!c->anl || anl_stream_send(anl_default_stream(c->anl), (const char *)buf, (int)len) < 0)
         return -1;
     anl_kick(c);
@@ -142,8 +117,6 @@ static int tun_write_data(void *arg, const uint8_t *msg, size_t len)
 {
     npf_call *c = arg;
     c->tx_bytes += len;
-    if (c->ws_mode)
-        return ws_mux(c, 1, msg, len);
     if (!c->stream && !c->caller && c->anl) {
         dmsg *m = malloc(sizeof *m + len);
         if (!m)
@@ -164,23 +137,9 @@ static int tun_write_data(void *arg, const uint8_t *msg, size_t len)
     return 0;
 }
 
-/* bytes on their way over the WS relay: not sealed yet, and in its queue */
-static size_t ws_queued(const npf_call *c)
-{
-    return c->ws_out_len + (c->wsr ? npf_wsr_pending(c->wsr) : 0);
-}
-
 static size_t tun_backlog(void *arg)
 {
     npf_call *c = arg;
-    if (c->ws_mode) {
-        size_t b = ws_queued(c);
-        /* media streams open: the forwards keep 1/8 of the usual backlog and
-         * wait while frames do (data-channel.md 14) */
-        if (npf_media_count(c->media))
-            b = (b + npf_media_ws_queued(c->media)) * 8;
-        return b;
-    }
     return (c->stream ? (size_t)anl_stream_waitsnd(c->stream) * ANL_MTU : 0) + c->dpend_bytes;
 }
 
@@ -194,7 +153,9 @@ static size_t tun_backlog(void *arg)
  * 200 ms / 100 Mbit/s) and of 1 MiB elsewhere, and an interactive sublink
  * behind a bulk one waits less than with 1 MiB except on long slow paths
  * (all sublinks share the data stream; tests/bench/anlws/npf-backlog.sh).
- * The WS relay keeps 1 MiB: its queue is TCP's, more only adds delay */
+ * The same on the WS relay (AnLiu over TCP there): the backlog counts what
+ * is in flight, so a fixed 1 MiB held a 40 ms path to ~10 MB/s (the old
+ * record layer counted only what was not yet in TCP's queue) */
 #define BACKLOG_MIN   (256 * 1024)
 #define BACKLOG_MAX   (4 * 1024 * 1024)
 static size_t tun_backlog_max(void *arg)
@@ -202,7 +163,7 @@ static size_t tun_backlog_max(void *arg)
     npf_call *c = arg;
     anl_stats st;
     uint64_t v;
-    if (c->ws_mode || !c->anl || anl_get_stats(c->anl, &st) < 0 || !st.bw_estimate || !st.min_rtt)
+    if (!c->anl || anl_get_stats(c->anl, &st) < 0 || !st.bw_estimate || !st.min_rtt)
         return NPF_TUNNEL_BACKLOG;
     v = 4 * (uint64_t)st.bw_estimate * st.min_rtt / 1000;
     return v < BACKLOG_MIN ? BACKLOG_MIN : v > BACKLOG_MAX ? BACKLOG_MAX : (size_t)v;
@@ -299,7 +260,6 @@ static void tun_control(void *arg, const npf_json *j)
             if (c->tun)
                 npf_tunnel_rev_del(c->tun, (uint32_t)id);
             npf_udpf_rev_del(c->udp, (uint32_t)id);
-            call_crev_del(c, (uint32_t)id);
         }
         return;
     }
@@ -597,29 +557,7 @@ static void anl_after_input(npf_call *c)
     }
     anl_schedule(c);
 }
-/* the same callbacks serve the AnLiu and the WS relay transport: tun_write
- * and tun_backlog look at c->ws_mode */
 /* ---- libnpf media streams (media.h) ---- */
-
-static int m_unit(void *arg, const uint8_t *buf, size_t len)
-{
-    npf_call *c = arg;
-    return c->tun ? npf_tunnel_unit_send(c->tun, NPF_CU_MEDIA, buf, len) : -1;
-}
-
-static int m_ws_write(void *arg, const uint8_t *buf, size_t len)
-{
-    npf_call *c = arg;
-    c->tx_bytes += len;
-    return ws_mux(c, 2, buf, len);
-}
-
-static void m_ws_backlog(void *arg, size_t *pending, uint64_t *total)
-{
-    npf_call *c = arg;
-    *pending = ws_queued(c);
-    *total = c->ws_out_total;
-}
 
 static void m_kick(void *arg)
 {
@@ -652,13 +590,13 @@ static int m_ended(void *arg)
     return ((npf_call *)arg)->ended;
 }
 
-static const npf_media_io media_io = {m_unit, m_ws_write, m_ws_backlog, m_kick, m_open, m_frame, m_closed, m_ended};
+static const npf_media_io media_io = {m_kick, m_open, m_frame, m_closed, m_ended};
 
-/* the session's media streams, made on first use on its transport */
+/* the session's media streams, made on first use */
 npf_media *call_media_of(npf_call *c)
 {
-    if (!c->media && !c->ended && c->tun && (c->ws_mode || c->anl))
-        c->media = npf_media_new(c->n->loop, c->ws_mode ? NULL : c->anl, !c->caller, &media_io, c);
+    if (!c->media && !c->ended && c->tun && c->anl)
+        c->media = npf_media_new(c->n->loop, c->anl, !c->caller, &media_io, c);
     return c->media;
 }
 
@@ -670,34 +608,20 @@ static int u_unit(void *arg, const uint8_t *buf, size_t len)
     return c->tun ? npf_tunnel_unit_send(c->tun, NPF_CU_UDP, buf, len) : -1;
 }
 
-static int u_ws_write(void *arg, const uint8_t *buf, size_t len)
-{
-    npf_call *c = arg;
-    c->tx_bytes += len;
-    return ws_mux(c, 3, buf, len);
-}
-
-static size_t u_ws_backlog(void *arg)
-{
-    return ws_queued(arg);
-}
-
 /* a hosted client (a public mapping) has no UDP flows (data-channel.md 15) */
 static int u_allowed(void *arg)
 {
     return !((npf_call *)arg)->hosted_grant;
 }
 
-static const npf_udpf_io udp_io = {u_unit, u_ws_write, u_ws_backlog, m_kick, u_allowed};
+static const npf_udpf_io udp_io = {u_unit, m_kick, u_allowed};
 
 npf_udpf *call_udp_of(npf_call *c)
 {
-    if (!c->udp && !c->ended && c->tun && (c->ws_mode || c->anl)) {
-        c->udp = npf_udpf_new(c->n->loop, c->ws_mode ? NULL : c->anl, c->caller, call_policy(c), &udp_io, c);
-        if (c->udp) {
+    if (!c->udp && !c->ended && c->tun && c->anl) {
+        c->udp = npf_udpf_new(c->n->loop, c->anl, c->caller, call_policy(c), &udp_io, c);
+        if (c->udp)
             npf_udpf_set_shared(c->udp, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
-            call_crev_restore(c, NULL, c->udp);
-        }
     }
     return c->udp;
 }
@@ -711,13 +635,8 @@ static void tun_unit(void *arg, int type, const uint8_t *buf, size_t len)
             npf_udpf_unit_input(u, buf, len);
         return;
     }
-    if (type == NPF_CU_APP && c->n->hooks.on_app_data) {
+    if (type == NPF_CU_APP && c->n->hooks.on_app_data)
         c->n->hooks.on_app_data(c->n, c, buf, len, c->n->hook_arg);
-    } else if (type == NPF_CU_MEDIA) {
-        npf_media *m = call_media_of(c);
-        if (m)
-            npf_media_unit_input(m, buf, len);
-    }
 }
 
 /* grant_update{grant}: a hosted client's new target list (signaling.md
@@ -811,7 +730,7 @@ void call_key_shares_free(npf_node *n)
     }
 }
 
-/* the session's tunnel (call_start_transport, ws_reset), NULL: no memory;
+/* the session's tunnel (call_start_transport), NULL: no memory;
  * a callee's counts in the node's limits and its caller key's */
 npf_tunnel *call_tunnel_new(npf_call *c)
 {
@@ -827,7 +746,6 @@ npf_tunnel *call_tunnel_new(npf_call *c)
     npf_tunnel_set_shared(t, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
     if (c->caller && c->auth != AUTH_PAKE)
         npf_tunnel_open_early(t);           /* a first pairing waits for the callee's hello (call_hello) */
-    call_crev_restore(c, t, NULL);          /* a new tunnel of the session: its -R mappings go on */
     return t;
 }
 
@@ -852,15 +770,6 @@ int call_start_transport(npf_call *c)
         c->conv = 1;
     c->keys_ready = 1;
     call_hs_free(c);                        /* nothing of the handshake is needed from here on */
-    if (c->ws_mode) {   /* the tunnel starts with the START exchange */
-        if (c->ws_has_pending && c->wsr) {      /* the START came on this relay connection */
-            c->ws_has_pending = 0;
-            call_wsr_start(c->wsr, c->ws_pending_salt, c);
-        } else if (c->caller && c->wsr && npf_wsr_paired(c->wsr)) {
-            call_wsr_paired(c->wsr, c);
-        }
-        return 0;
-    }
     anl_config_default(&cfg, c->caller ? ANL_ROLE_CLIENT : ANL_ROLE_SERVER);
     npf_kdf(psk, c->k12, 64, "npf anliu psk v1", 16);
     memcpy(cfg.psk, psk, 32);
@@ -902,10 +811,12 @@ int call_start_transport(npf_call *c)
             return -1;
     }
     /* hello waits for a path (sent into nothing it would sit out an RTO):
-     * the direct one, or the UDP relay as soon as it is ours (not bound yet:
+     * the direct one, the UDP relay as soon as it is ours (not bound yet:
      * the relay forwards what our key seals from an address it has not
-     * bound, call_relay_setup) */
-    if (c->p2p || c->relay.active)
+     * bound, call_relay_setup), or the WS relay once paired */
+    if (c->ws_mode)
+        call_ws_carrier(c);
+    else if (c->p2p || c->relay.active)
         call_hello(c);
     anl_schedule(c);
     if (c->punch_wait_keys) {

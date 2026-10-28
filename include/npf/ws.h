@@ -31,6 +31,9 @@ npf_ws *npf_ws_connect(npf_loop *loop, const char *url, const npf_ws_cbs *cbs, v
 int  npf_ws_send(npf_ws *ws, const void *data, size_t len, int binary);
 /* one message of head and then data (a type byte before a record: no copy to join them) */
 int  npf_ws_send2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len, int binary);
+/* the same binary message queued only: many go out in one write at npf_ws_flush */
+int  npf_ws_queue2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len);
+int  npf_ws_flush(npf_ws *ws);
 int  npf_ws_ping(npf_ws *ws);
 /* bytes queued but not yet written to the socket */
 size_t npf_ws_pending(const npf_ws *ws);

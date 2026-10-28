@@ -19,7 +19,6 @@
 #define F_LID         2             /* callee: the -R listener's id follows */
 #define BUF_MAX       (NPF_UDP_PAYLOAD_MAX + HDR + 1 + 255 + 2 + 4)
 #define UDP_WND       512           /* AnLiu receive window of the stream (segments; media.h's for media) */
-#define WS_BACKLOG    (256 * 1024)  /* WS relay: datagrams dropped above this */
 #define TICK_MS       5000
 #define PEND_MAX      4             /* datagrams kept while the target's name is resolved */
 #define CLOSED_RING   32            /* the peer's flows closed lately (a late frame does not open them again) */
@@ -335,7 +334,7 @@ static void stream_opts(npf_udpf *u, anl_stream_opt *opt)
 {
     anl_stats st;
     int age = NPF_UDP_MAX_AGE_MS;
-    if (u->anl && anl_get_stats(u->anl, &st) == 0 && st.srtt > 0)
+    if (anl_get_stats(u->anl, &st) == 0 && st.srtt > 0)
         age = (int)st.srtt * 2 + 100;
     if (age > NPF_UDP_MAX_AGE_HI)
         age = NPF_UDP_MAX_AGE_HI;
@@ -352,7 +351,7 @@ static anl_stream_t *stream(npf_udpf *u)
 {
     anl_stream_opt opt;
     int e = 0;
-    if (u->s || !u->caller || !u->anl)
+    if (u->s || !u->caller)
         return u->s;
     anl_stream_opt_default(&opt, ANL_SEMI);
     opt.tag = NPF_TAG_UDP;
@@ -397,7 +396,7 @@ static int frame_out(npf_udpf *u, uflow *f, const uint8_t *p, size_t len)
     }
     memcpy(u->out + n, p, len);
     n += len;
-    if (u->anl) {
+    {
         anl_stream_t *s = stream(u);
         int r = s ? anl_stream_send_frame(s, 0, (const char *)u->out, (int)n, NULL) : -1;
         u->io.kick(u->arg);
@@ -405,9 +404,6 @@ static int frame_out(npf_udpf *u, uflow *f, const uint8_t *p, size_t len)
             u->st.dropped++;
             return -1;
         }
-    } else if (u->io.ws_backlog(u->arg) > WS_BACKLOG || u->io.ws_write(u->arg, u->out, n) < 0) {
-        u->st.dropped++;                    /* UDP: dropped rather than queued behind the backlog */
-        return -1;
     }
     u->st.dgrams_out++;
     u->st.bytes_out += len;
@@ -600,7 +596,7 @@ static const urev *rev_find(const npf_udpf *u, uint32_t lid)
 
 /* ---- frames in ---- */
 
-static void frame_in(npf_udpf *u, const uint8_t *p, size_t n)
+void npf_udpf_frame_in(npf_udpf *u, const uint8_t *p, size_t n)
 {
     char host[256];
     uint16_t port = 0;
@@ -716,16 +712,11 @@ void npf_udpf_drain(npf_udpf *u, anl_stream_t *s)
             return;
         r = anl_stream_recv_frame(s, (char *)buf, sz + 1, &fi);
         if (r >= 0)
-            frame_in(u, buf, (size_t)r);
+            npf_udpf_frame_in(u, buf, (size_t)r);
         npf_scratch_done(buf);
         if (r < 0)
             return;
     }
-}
-
-void npf_udpf_ws_input(npf_udpf *u, const uint8_t *buf, size_t len)
-{
-    frame_in(u, buf, len);
 }
 
 void npf_udpf_unit_input(npf_udpf *u, const uint8_t *b, size_t len)

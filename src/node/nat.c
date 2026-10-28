@@ -230,7 +230,8 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
     n->nat_valid = 1;
     nat_settled(n, first);
     /* the sessions made meanwhile went to the WS relay (udp false: no UDP
-     * relay, no punching) and would stay there: they start again */
+     * relay, no punching) and would stay there: they ask for UDP again
+     * (their AnLiu connection moves, nothing ends) */
     if (udp_back)
         npf_node_ws_calls_udp_back(n);
 }

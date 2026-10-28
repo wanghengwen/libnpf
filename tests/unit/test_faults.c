@@ -26,11 +26,12 @@ static void relay_gone(npf_wsr *r, const char *why, void *arg)
     (void)r; (void)why; (void)arg;
     gone++;
 }
-static int paired;
-static void relay_paired(npf_wsr *r, void *arg)
+static int paired, paired_udp;
+static void relay_paired(npf_wsr *r, int peer_udp, void *arg)
 {
     (void)r; (void)arg;
     paired++;
+    paired_udp = peer_udp;
 }
 /* a control message from the relay, sealed with the relay's cipher state */
 static void ctl_in(npf_wsr *r, npf_noise_cs *relay_tx, const char *json)
@@ -100,7 +101,10 @@ int main(void)
         ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_bound\",\"data\":{}}");
         CHECK(r->bound && !paired);
         ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_paired\",\"data\":{}}");
-        CHECK(paired == 1 && r->paired && !gone);
+        CHECK(paired == 1 && r->paired && !gone && !paired_udp);
+        /* the peer on a UDP allocation (the relay bridges): told */
+        ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_paired\",\"data\":{\"peer\":\"udp\"}}");
+        CHECK(paired == 2 && paired_udp);
         ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_error\",\"data\":{\"error\":\"forbidden\"}}");
         CHECK(gone == 1);                   /* closed and freed (wsr_down) */
         npf_loop_once(loop, 0);

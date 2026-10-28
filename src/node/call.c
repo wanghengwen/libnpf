@@ -150,11 +150,11 @@ npf_call *call_new(npf_node *n, int caller)
 
 /* an ended call does nothing more: what its timers would start (a punch, a
  * relay bind or switch, a path check, a retry, a probe of the signaling) is
- * no one's now. Not t_wsflush: it sends the close over the WS relay */
+ * no one's now */
 static void call_timers_stop(npf_call *c)
 {
     npf_timer **t[] = {&c->t_anl, &c->t_timeout, &c->t_punch, &c->t_ws_wait, &c->t_pcheck,
-                       &c->t_standby, &c->t_direct, &c->relay.t_bind};
+                       &c->t_standby, &c->t_direct, &c->relay.t_bind, &c->t_wsre};
     size_t i;
     for (i = 0; i < sizeof t / sizeof t[0]; i++)
         npf_timer_stop(c->n->loop, t[i]);
@@ -211,13 +211,8 @@ void call_free(npf_call *c)
         n->relay_hit = NULL;
     call_timers_stop(c);
     npf_timer_stop(n->loop, &c->t_linger);
-    npf_timer_stop(n->loop, &c->t_wsflush);
     npf_timer_stop(n->loop, &c->t_free);    /* freed now (the node stops): not again */
-    if (c->wsr) npf_wsr_close(c->wsr);
-    c->wsr = NULL;
-    free(c->ws_out);
-    free(c->ws_in);
-    c->ws_out = c->ws_in = NULL;
+    call_ws_leave_conn(c);
     if (c->punch) {
         npf_punch_free(c->punch);
         c->punch = NULL;
@@ -234,7 +229,6 @@ void call_free(npf_call *c)
     free(c->targets);
     call_hs_free(c);
     free(c->pcfg);
-    free(c->crev);
     call_anl_drop(c);
     if (c->p2p_owned && c->p2p_fd >= 0) {
         npf_loop_del(n->loop, c->p2p_fd);
@@ -314,6 +308,8 @@ void npf_call_end(npf_call *c, const char *why)
             anl_update(c->anl, (uint32_t)npf_mono_ms());
             anl_flush(c->anl);
         }
+        if (c->ws_mode && c->wsr)
+            npf_wsr_flush(c->wsr);          /* now: the relay connection goes with the call */
     }
     if (!c->direct)
         npf_node_call_end(c->n, c->call_id_s, reason);
@@ -733,17 +729,41 @@ void npf_node_check_paths(npf_node *n, const char *why)
 }
 
 
+/* UDP works again (a NAT probe answered after one did not): a session on
+ * the WS relay asks for the UDP relay, with this side's profile first; the
+ * platform moves it when both sides have UDP (relay_switch), the AnLiu
+ * connection and everything on it stay (data-channel.md 3) */
 void npf_node_ws_calls_udp_back(npf_node *n)
 {
     npf_call *c;
     if (n->test_no_udp)
         return;
     for (c = n->calls; c; c = c->next) {
-        if (c->ended || !c->caller || !c->ws_mode || c->secure)
+        char data[1024];
+        npf_jw w;
+        if (c->ended || !c->ws_mode || c->direct)
             continue;
-        npf_log("call %s: UDP works again: leaving the WS relay (the session starts again)", c->call_id_s);
-        npf_call_end(c, "udp_back");
+        npf_log("call %s: UDP works again: asking for the UDP relay", c->call_id_s);
+        npf_jw_init(&w, data, sizeof data);
+        npf_jw_obj(&w);
+        npf_jw_kstr(&w, "call_id", c->call_id_s);
+        npf_jw_kstr(&w, "why", "udp_back");
+        npf_node_write_nat(n, &w);
+        npf_jw_end(&w);
+        if (npf_jw_finish(&w) > 0)
+            npf_node_send(n, "punch_update", 0, data);
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"mode\":\"udp\"}", c->call_id_s);
+        npf_node_send(n, "relay_switch", 0, data);
+        call_relay_asked(c);
     }
+}
+
+void npf_node_calls_to_ws(npf_node *n)
+{
+    npf_call *c;
+    for (c = n->calls; c; c = c->next)
+        if (!c->ended && !c->direct && !c->ws_mode && c->keys_ready)
+            call_ask_ws_relay(c);
 }
 
 void node_calls_free(npf_node *n)

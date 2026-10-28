@@ -1,6 +1,6 @@
 /* WS relay connection (data-channel.md 10.1): WebSocket + Noise_XK
  * (prologue "npf-relay-v1"), relay_bind, then type-prefixed binary messages:
- * 0 control (Noise ciphertext of JSON), 1 START (salt), 2 RECORD. */
+ * 0 control (Noise ciphertext of JSON), 3 ANL (an AnLiu datagram). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,22 +97,24 @@ static void on_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         char plain[1024], type[24] = "";
         npf_jtok tok[32];
         npf_json j;
-        int n;
+        int n, peer_udp = 0;
         if (len - 1 > sizeof plain + 16 || (n = npf_noise_decrypt(&r->rx, NULL, 0, data + 1, len - 1, (uint8_t *)plain)) < 0) {
             wsr_down(r, "control decrypt failed");
             return;
         }
         /* the message's type, not a word found anywhere in it (an error's
          * text naming another type); the text wiped before anything runs */
-        if (npf_json_parse(&j, plain, (size_t)n, tok, 32) == 0 && j.tok[0].type == NPF_JT_OBJECT)
+        if (npf_json_parse(&j, plain, (size_t)n, tok, 32) == 0 && j.tok[0].type == NPF_JT_OBJECT) {
             npf_json_get_str(&j, 0, "type", type, sizeof type);
+            peer_udp = npf_json_eq(&j, npf_json_get(&j, npf_json_get(&j, 0, "data"), "peer"), "udp");
+        }
         npf_wipe(plain, sizeof plain);
         if (strcmp(type, "relay_bound") == 0) {
             r->bound = 1;
         } else if (strcmp(type, "relay_paired") == 0) {
             r->paired = 1;
             if (r->cbs.paired)
-                r->cbs.paired(r, r->arg);
+                r->cbs.paired(r, peer_udp, r->arg);
         } else if (strcmp(type, "relay_peer_gone") == 0) {
             npf_wsr_cbs cbs = r->cbs;
             r->paired = 0;
@@ -123,23 +125,11 @@ static void on_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         }
         return;
     }
-    case NPF_WSR_START:
-        if (len == 17 && r->cbs.start)
-            r->cbs.start(r, data + 1, r->arg);
-        return;
-    case NPF_WSR_RECORD:
-        if (r->cbs.record)
-            r->cbs.record(r, data + 1, len - 1, r->arg);
+    case NPF_WSR_ANL:
+        if (r->paired && r->cbs.datagram)
+            r->cbs.datagram(r, data + 1, len - 1, r->arg);
         return;
     }
-}
-
-static void on_drain(npf_ws *ws, void *arg)
-{
-    npf_wsr *r = arg;
-    (void)ws;
-    if (r->cbs.drained)
-        r->cbs.drained(r, r->arg);
 }
 
 static void on_close(npf_ws *ws, int code, const char *why, void *arg)
@@ -154,7 +144,7 @@ static void on_close(npf_ws *ws, int code, const char *why, void *arg)
 npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t server_pub[32], const npf_identity *id,
                       const uint8_t relay_id[8], const npf_wsr_cbs *cbs, void *arg)
 {
-    static const npf_ws_cbs wcb = {on_open, on_msg, on_close, on_drain};
+    static const npf_ws_cbs wcb = {on_open, on_msg, on_close, NULL};
     npf_wsr *r = calloc(1, sizeof *r);
     if (!r)
         return NULL;
@@ -174,12 +164,17 @@ npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t server_pub[
     return r;
 }
 
-int npf_wsr_send(npf_wsr *r, int type, const uint8_t *p, size_t len)
+int npf_wsr_queue(npf_wsr *r, const uint8_t *d, size_t len)
 {
-    uint8_t t = (uint8_t)type;
+    static const uint8_t t = NPF_WSR_ANL;
     if (!r->ws || !r->paired)
         return -1;
-    return npf_ws_send2(r->ws, &t, 1, p, len, 1);
+    return npf_ws_queue2(r->ws, &t, 1, d, len);
+}
+
+int npf_wsr_flush(npf_wsr *r)
+{
+    return r->ws ? npf_ws_flush(r->ws) : -1;
 }
 
 size_t npf_wsr_pending(const npf_wsr *r)

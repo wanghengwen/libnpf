@@ -375,6 +375,17 @@ static void watch_cb(npf_loop *loop, void *arg)
             dup2(z, n->udp_fd);
             close(z);
         }
+        /* tests: NPF_TEST_WS_FILE=FILE: while FILE exists the node has no
+         * UDP (its profile says so, its sessions move to the WS relay); when
+         * it goes, UDP works again (the sessions go back, udp_back) */
+        if ((f = n->test_ws_file) != NULL && (z = access(f, F_OK) == 0) != n->test_no_udp) {
+            n->test_no_udp = z;
+            npf_logw("test: UDP %s", z ? "gone" : "back");
+            if (z)
+                npf_node_calls_to_ws(n);
+            else
+                npf_node_ws_calls_udp_back(n);
+        }
     }
 #endif
     /* a failed socket may never wake the loop (epoll forgets a descriptor

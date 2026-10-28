@@ -23,7 +23,6 @@ int test_log(void);
 int test_resolve(void);
 int test_dns(void);
 int test_punch(void);
-int test_media(void);
 int test_anlsec(void);
 int test_sys(void);
 int test_text(void);
@@ -232,7 +231,6 @@ int main(void)
     failures += test_log();
     failures += test_resolve();
     failures += test_dns();
-    failures += test_media();
     failures += test_anlsec();
     failures += test_sys();
     failures += test_text();

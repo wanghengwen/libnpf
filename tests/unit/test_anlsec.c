@@ -115,9 +115,6 @@ static int accept_media(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *us
     return npf_media_accept(g_media, s, opt);
 }
 
-static int m_unit(void *a, const uint8_t *b, size_t l) { (void)a; (void)b; (void)l; return 0; }
-static int m_ws(void *a, const uint8_t *b, size_t l) { (void)a; (void)b; (void)l; return 0; }
-static void m_backlog(void *a, size_t *p, uint64_t *t) { (void)a; *p = 0; *t = 0; }
 static void m_kick(void *a) { (void)a; }
 static int m_open(void *a, uint32_t id, int tag) { (void)a; (void)id; (void)tag; return 1; }
 static void m_frame(void *a, uint32_t id, const uint8_t *b, size_t l, uint32_t f, int fl, uint32_t lo)
@@ -126,7 +123,7 @@ static void m_frame(void *a, uint32_t id, const uint8_t *b, size_t l, uint32_t f
 }
 static void m_closed(void *a, uint32_t id) { (void)a; (void)id; }
 static int m_ended(void *a) { (void)a; return 0; }
-static const npf_media_io mio = {m_unit, m_ws, m_backlog, m_kick, m_open, m_frame, m_closed, m_ended};
+static const npf_media_io mio = {m_kick, m_open, m_frame, m_closed, m_ended};
 
 /* a semi-reliable media stream from the client with this receive window;
  * after a while: 1 the server took it, 0 it was refused */

@@ -703,7 +703,6 @@ static int handle_unit(npf_tunnel *t, int type, const uint8_t *p, size_t n)
     case NPF_CU_RESET:
         return n == 5 ? handle_frame(t, npf_rd32(p), FR_RESET, p + 4, 1) : -1;
     case NPF_CU_APP:
-    case NPF_CU_MEDIA:
     case NPF_CU_UDP:
         if (t->io.unit)
             t->io.unit(t->arg, type, p, n);
@@ -1065,7 +1064,7 @@ int npf_tunnel_control(npf_tunnel *t, const char *json, size_t len)
 
 int npf_tunnel_unit_send(npf_tunnel *t, int type, const void *buf, size_t len)
 {
-    if (!npf_tunnel_is_ready(t) || (type != NPF_CU_APP && type != NPF_CU_MEDIA && type != NPF_CU_UDP))
+    if (!npf_tunnel_is_ready(t) || (type != NPF_CU_APP && type != NPF_CU_UDP))
         return -1;
     return send_ctrl(t, type, buf, len);
 }

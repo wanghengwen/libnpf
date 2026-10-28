@@ -324,6 +324,7 @@ struct npf_node {
     const char   *test_block_relay; /* NPF_TEST_BLOCK_RELAY (call.c), read once: not at each relayed datagram */
     const char   *test_udp_fail;    /* NPF_TEST_UDP_FAIL (node_network.c), read once: not every watch tick */
     int           test_no_udp;      /* NPF_NO_UDP: no UDP at all (sessions on the WS relay, no spare) */
+    const char   *test_ws_file;     /* NPF_TEST_WS_FILE: no UDP while this file exists (node_network.c) */
     struct npf_call *relay_hit;     /* the call the last relayed datagram was for: tried first */
     int           test_cut_port;
     int           udp6_fd;          /* IPv6 main socket (S0, host6 candidates), -1 when the host has no IPv6 */
@@ -461,6 +462,8 @@ void npf_node_reverse_recheck(npf_node *n);
 /* UDP works again after a NAT probe without an answer: the calls this side
  * made on the WS relay end, their peers reconnect over UDP (call.c) */
 void npf_node_ws_calls_udp_back(npf_node *n);
+/* tests (NPF_TEST_WS_FILE): UDP is gone, every session asks for the WS relay */
+void npf_node_calls_to_ws(npf_node *n);
 /* the network the UDP sockets go out on changed (an app: a VPN came or went):
  * both are opened again, as when they fail (their calls end and reconnect).
  * 0: they reopen (now, or with the retry already waiting), and the network

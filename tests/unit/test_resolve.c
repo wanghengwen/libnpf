@@ -177,7 +177,7 @@ int test_resolve(void)
         memset(&uio, 0, sizeof uio);
         uio.unit = unit_sink;
         l = npf_loop_new();
-        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL);     /* callee, on the WS relay */
+        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL);     /* callee, frames put in by hand */
         HOLD(1);
         g_units = 0;
         for (i = 0; i < 10; i++) {
@@ -188,7 +188,7 @@ int test_resolve(void)
             memcpy(fr + 6, name, tl);
             npf_le16(fr + 6 + tl, 53);
             fr[8 + tl] = 'x';
-            npf_udpf_ws_input(u, fr, 9 + tl);
+            npf_udpf_frame_in(u, fr, 9 + tl);
         }
         CHECK(npf_resolve_active_peer() == 2, "one session's UDP flows hold 2 lookups (%d)", npf_resolve_active_peer());
         CHECK(g_units == 8, "the other 8 flows refused at once (%d)", g_units);
@@ -223,7 +223,7 @@ int test_resolve(void)
             memcpy(fr + 6, tgt, tl);
             npf_le16(fr + 6 + tl, 9);
             fr[8 + tl] = 'x';
-            npf_udpf_ws_input(u, fr, 9 + tl);
+            npf_udpf_frame_in(u, fr, 9 + tl);
         }
         CHECK(key_sh.subs == 2 && node_sh.subs == 2, "two sockets counted (key %d, node %d)", key_sh.subs, node_sh.subs);
         CHECK(g_units == 1, "the third flow refused over the key's share (%d)", g_units);

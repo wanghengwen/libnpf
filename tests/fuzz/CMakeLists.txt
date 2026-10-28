@@ -13,7 +13,6 @@ add_test(NAME npf_fuzz_noise COMMAND npf_fuzz noise 3000 1)
 add_test(NAME npf_fuzz_cert COMMAND npf_fuzz cert 20000 1)
 add_test(NAME npf_fuzz_pkt COMMAND npf_fuzz pkt 20000 1)
 add_test(NAME npf_fuzz_dns COMMAND npf_fuzz dns 50000 1)
-add_test(NAME npf_fuzz_media COMMAND npf_fuzz media 50000 1)
 
 add_test(NAME npf_fuzz_http COMMAND npf_fuzz http 20000 1)
 add_test(NAME npf_fuzz_ws COMMAND npf_fuzz ws 20000 1)

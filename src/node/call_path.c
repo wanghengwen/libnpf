@@ -115,15 +115,7 @@ void call_check_p2p(npf_call *c)
         npf_logw("call %s: direct path lost%s", c->call_id_s,
                  c->relay.active && c->relay.bound ? ", staying on the relay"
                  : c->relay.active && c->relay.t_bind ? ", the UDP relay still binding" : "");
-        c->p2p_suspect = 0;
-        c->standby_check = 0;
-        c->p2p = 0;
-        if (c->p2p_owned) {
-            npf_loop_del(c->n->loop, c->p2p_fd);
-            npf_sock_close(c->p2p_fd);
-            c->p2p_owned = 0;
-        }
-        c->p2p_fd = -1;
+        call_p2p_drop(c);
         anl_flush(c->anl);
         if (c->relay.active && !c->relay.bound && !c->relay.t_bind) {
             /* the UDP relay did not bind either (binding still: it asks for
@@ -154,6 +146,22 @@ void call_check_p2p(npf_call *c)
         snprintf(why, sizeof why, "direct path silent for %lld ms", (long long)quiet);
         call_p2p_suspect_start(c, why);
     }
+}
+
+/* the direct path given up (lost, or the session moves to the WS relay) */
+void call_p2p_drop(npf_call *c)
+{
+    c->p2p_suspect = 0;
+    c->standby_check = 0;
+    c->p2p = 0;
+    npf_timer_stop(c->n->loop, &c->t_pcheck);
+    npf_timer_stop(c->n->loop, &c->t_standby);
+    if (c->p2p_owned) {
+        npf_loop_del(c->n->loop, c->p2p_fd);
+        npf_sock_close(c->p2p_fd);
+        c->p2p_owned = 0;
+    }
+    c->p2p_fd = -1;
 }
 
 /* the direct path is in doubt: checked both ways (PATH_CHECK), the data on

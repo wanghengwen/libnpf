@@ -101,8 +101,6 @@ struct npf_call {
     struct relay_early *rearly;     /* caller: the peer's relayed datagrams before the keys (call_relay_input) */
     int         nrearly;
     int         ws_paired_once;     /* the WS relay worked at least once */
-    int         ws_round;           /* caller: a round began on this relay connection (one each: a
-                                       repeated relay_paired starts none) */
     npf_punch_cfg *pcfg;            /* the rounds' plan and candidates: made at the first punch_start */
     uint16_t    info_port;          /* S2B: the peer's punch_info come before the punch started */
     int         info_round;
@@ -115,9 +113,6 @@ struct npf_call {
     struct npf_policy *policy;      /* callee: target policy of this session's sublinks */
     int         dtries;             /* direct initiator: message 1 sent this many times */
     int         direct_tries;       /* direct initiator: message 2 attempts read (64 at most) */
-    struct call_crev *crev;         /* caller: the reverse mappings in use (NPF_MAX_REVERSE, malloc'd at the first),
-                                     * registered again in a new tunnel / UDP forwarding (the move to the WS relay) */
-    int         ncrev;
     npf_timer  *t_direct;
     struct npf_key_share *kshare;   /* callee: its caller key's share of the node's tunnel limits */
     uint64_t    grant_account;      /* callee: the account of the grant that admitted the caller */
@@ -136,24 +131,16 @@ struct npf_call {
         void *arg;
     } ctl[NPF_CALL_CTL_MAX];
     int         ctl_seq;
-    /* WS relay transport (data-channel.md 10) */
-    int         ws_mode;
+    /* WS relay (data-channel.md 10): a carrier of the AnLiu connection */
+    int         ws_mode;            /* AnLiu's datagrams go over the WS relay (not UDP) */
+    int         ws_peer_udp;        /* ... and the relay hands them to the peer's UDP allocation */
     npf_wsr    *wsr;
-    uint8_t     ws_ktx[32], ws_krx[32];
-    uint64_t    ws_ctr_tx, ws_ctr_rx;
-    int         ws_tx_ready, ws_rx_ready;
-    uint8_t     ws_salts[8][16];    /* the peer's salts seen in this session: no replays */
-    uint8_t     ws_pending_salt[16];/* callee: START that arrived before the handshake finished */
-    int         ws_has_pending;
-    int         ws_nsalts;
-    uint8_t    *ws_out;             /* tunnel bytes waiting to be sealed into records */
-    uint8_t    *ws_in;              /* received record bytes: channel units not yet complete */
-    size_t      ws_in_len, ws_in_cap;
-    size_t      ws_out_len, ws_out_cap;
-    uint64_t    ws_out_total;       /* all bytes ever put into ws_out (the media's rate estimate) */
+    char        ws_url[256];        /* the allocation's relay, for a connection lost after pairing */
+    uint8_t     ws_pub[32];
+    npf_timer  *t_wsflush;          /* the datagrams queued this turn of the loop go out in one write */
+    npf_timer  *t_wsre;             /* connected again after a loss */
     npf_media  *media;              /* libnpf media streams (media.h), made on first use */
     npf_udpf   *udp;                /* the UDP forwards' flows (udpfwd.h), made on first use */
-    npf_timer  *t_wsflush;
     npf_timer  *t_free;             /* its free on the next turn of the loop (ended) */
     /* callee: reverse-mapping listeners (data-channel.md 7.1), each made
      * when the caller asks for it */
@@ -227,11 +214,6 @@ void call_hs_free(npf_call *c);         /* the handshake's state wiped and freed
 /* the data transport (tunnel, UDP forwarding, media) off the call and freed;
  * then the AnLiu connection */
 void call_data_free(npf_call *c);
-/* caller: a reverse mapping in use / gone (call_reverse.c), and every one
- * registered again in the tunnel or the UDP forwarding just made */
-void call_crev_add(npf_call *c, uint32_t lid, const char *host, uint16_t port, int udp);
-void call_crev_del(npf_call *c, uint32_t lid);
-void call_crev_restore(npf_call *c, npf_tunnel *t, npf_udpf *u);
 void call_anl_drop(npf_call *c);
 
 /* call_handshake.c: the caller's call, the callee's answer, the keys */
@@ -241,7 +223,7 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d);
 void call_handle_incoming(npf_node *n, const npf_json *j, int d);
 void call_handle_handshake(npf_call *c, const npf_json *j, int d);
 
-/* call_transport.c: AnLiu, the WS mux, the tunnel's callbacks, media and UDP adapters */
+/* call_transport.c: AnLiu and its carriers, the tunnel's callbacks, media and UDP adapters */
 int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len);
 void call_path_up(npf_call *c);
 void call_hello(npf_call *c);         /* our hello, the session has a path (a caller established with it) */
@@ -260,6 +242,7 @@ int call_p2p_cut(const npf_call *c);
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len);
 void call_check_p2p(npf_call *c);
 void call_p2p_suspect_start(npf_call *c, const char *why);
+void call_p2p_drop(npf_call *c);
 void call_standby_done(npf_loop *loop, void *arg);
 void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 
@@ -267,12 +250,13 @@ void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 void call_rev_close_all(npf_call *c);
 void call_reverse_request(npf_call *c, const char *type, const npf_json *j);
 
-/* call_ws.c: the WS relay transport (data-channel.md 10.2) */
-void call_ws_flush_timer(npf_loop *loop, void *arg);
-void call_wsr_paired(npf_wsr *r, void *arg);
-void call_wsr_start(npf_wsr *r, const uint8_t salt[16], void *arg);
+/* call_ws.c: the WS relay as a carrier of the AnLiu connection (data-channel.md 10) */
+void call_ws_send(npf_call *c, const uint8_t *d, size_t len);
+void call_ws_carrier(npf_call *c);      /* paired, keys ready: AnLiu's carrier and the path up */
 void call_ws_failed(npf_call *c, const char *why);
 int call_ws_setup(npf_call *c, const npf_json *j, int r);
+void call_ws_leave(npf_call *c);        /* back to UDP: the WS relay connection goes */
+void call_ws_leave_conn(npf_call *c);
 
 /* call_direct.c: direct connections (no platform) */
 int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
@@ -289,6 +273,7 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
 void call_ask_ws_relay(npf_call *c);
 void call_relay_rebind(npf_call *c);
 void call_relay_early_feed(npf_call *c);
+void call_relay_early_keep(npf_call *c, const uint8_t *dgram, size_t len);
 void call_relay_early_free(npf_call *c);
 void call_relay_setup(npf_call *c, const npf_json *j, int d);
 int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);

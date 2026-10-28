@@ -16,7 +16,7 @@
  *
  * Every sublink opened by the caller is a SOCKS5 session served by the callee
  * (CONNECT only); the callee checks each target against its policy. The
- * transport (AnLiu tunnel stream or WS relay records) is abstract. */
+ * transport (the AnLiu streams) is abstract. */
 #ifndef NPF_TUNNEL_H
 #define NPF_TUNNEL_H
 
@@ -27,7 +27,8 @@
 #include "npf/json.h"
 #include "npf/loop.h"
 
-enum { NPF_CU_JSON = 1, NPF_CU_WINDOW = 2, NPF_CU_RESET = 3, NPF_CU_APP = 4, NPF_CU_MEDIA = 5, NPF_CU_UDP = 6 };
+/* 5 was MEDIA (the WS relay's media streams before AnLiu ran there): skipped as unknown */
+enum { NPF_CU_JSON = 1, NPF_CU_WINDOW = 2, NPF_CU_RESET = 3, NPF_CU_APP = 4, NPF_CU_UDP = 6 };
 enum { NPF_RST_LOCAL = 1, NPF_RST_PROTOCOL = 2, NPF_RST_LIMIT = 3, NPF_RST_TIMEOUT = 4, NPF_RST_TRANSPORT = 5 };
 
 #define NPF_CU_HDR        3         /* control unit header */
@@ -137,7 +138,7 @@ typedef struct npf_tunnel_io {
     void   (*ready)(void *arg);                                   /* hellos exchanged */
     void   (*control)(void *arg, const npf_json *j);              /* other control messages */
     void   (*broken)(void *arg, const char *why);                 /* protocol violation */
-    /* an APP, MEDIA or UDP unit (type NPF_CU_APP / NPF_CU_MEDIA / NPF_CU_UDP); optional */
+    /* an APP or UDP unit (type NPF_CU_APP / NPF_CU_UDP); optional */
     void   (*unit)(void *arg, int type, const uint8_t *buf, size_t len);
     /* a CONNECT target as the caller wrote it (an address or a name), before
      * the policy: 0 refuses it (REP = 02); optional (security.md 8.4) */
