@@ -330,12 +330,11 @@ void npf_udpf_get_stats(const npf_udpf *u, npf_udpf_stats *out)
  * datagrams were lost; with this, 498 of 500 came back. No FEC: adaptive
  * FEC on that path (a free plan's 128 kbps relay) made the delays grow to
  * 2 s and most datagrams expire. Tests: NPF_TEST_UDP_MAX_AGE_MS */
-static void stream_opts(npf_udpf *u, anl_stream_opt *opt)
+static void stream_opts(npf_udpf *u, anl_stream_opt *opt, int srtt)
 {
-    anl_stats st;
     int age = NPF_UDP_MAX_AGE_MS;
-    if (anl_get_stats(u->anl, &st) == 0 && st.srtt > 0)
-        age = (int)st.srtt * 2 + 100;
+    if (srtt > 0)
+        age = srtt * 2 + 100;
     if (age > NPF_UDP_MAX_AGE_HI)
         age = NPF_UDP_MAX_AGE_HI;
     if (age < NPF_UDP_MAX_AGE_MS)
@@ -350,13 +349,14 @@ static void stream_opts(npf_udpf *u, anl_stream_opt *opt)
 static anl_stream_t *stream(npf_udpf *u)
 {
     anl_stream_opt opt;
+    anl_stats st;
     int e = 0;
     if (u->s || !u->caller)
         return u->s;
     anl_stream_opt_default(&opt, ANL_SEMI);
     opt.tag = NPF_TAG_UDP;
     opt.rcv_wnd = UDP_WND;
-    stream_opts(u, &opt);
+    stream_opts(u, &opt, anl_get_stats(u->anl, &st) == 0 ? (int)st.srtt : 0);
     if (!(u->s = anl_stream_open(u->anl, &opt, &e))) {
         npf_logw("udp: no AnLiu stream for the UDP forwards (%d)", e);
     } else {
@@ -674,11 +674,11 @@ void npf_udpf_frame_in(npf_udpf *u, const uint8_t *p, size_t n)
     }
 }
 
-int npf_udpf_accept(npf_udpf *u, anl_stream_t *s, anl_stream_opt *opt)
+int npf_udpf_accept(npf_udpf *u, anl_stream_t *s, anl_stream_opt *opt, int srtt)
 {
     if (u->caller || u->s || opt->mode != ANL_SEMI || opt->rcv_wnd > UDP_WND)
         return -1;
-    stream_opts(u, opt);                    /* this side's sending: as the caller's */
+    stream_opts(u, opt, srtt);              /* this side's sending: as the caller's */
     u->s = s;
     return 0;
 }

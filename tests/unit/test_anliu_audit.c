@@ -201,7 +201,7 @@ static int receive_limits(void)
     s = anl_stream_open(w, &opt, &err);
     CHECK(s);
     u = npf_udpf_new(NULL, w, 0, NULL, &uio, NULL);
-    CHECK(u && npf_udpf_accept(u, s, &opt) == 0);
+    CHECK(u && npf_udpf_accept(u, s, &opt, 0) == 0);
     CHECK(queue_frame(s, 65536) == 0);
     npf_udpf_drain(u, s);
     npf_udpf_get_stats(u, &stats);

@@ -9,13 +9,20 @@
  *   - rcv_wnd: a peer's media stream asking for a larger receive window
  *     than NPF's (NPF_ANL_MEDIA_WND) is refused (the opener sees the stream
  *     over), one within it is taken; past NPF_MEDIA_OUT_MAX streams opened
- *     by the peer the next is refused. */
+ *     by the peer the next is refused;
+ *   - over handles: AnLiu counts the handles of streams that are over (the
+ *     peer closed or refused them) toward its 64 until anl_stream_close.
+ *     NPF's media and UDP forward streams, opened here and refused by the
+ *     peer, or the peer's and closed by it, 100 of each in turn on one
+ *     connection: every open goes through and none is held after the
+ *     drain (anl_stats streams_held). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "media.h"
 #include "npf/loop.h"
+#include "udpfwd.h"
 
 static int fails;
 
@@ -218,11 +225,156 @@ static void test_rcv_wnd(void)
     npf_loop_free(loop);
 }
 
+/* the server's UDP forwards (udpfwd.c), the callee's */
+static npf_udpf *g_udp;
+static anl_stream_t *g_udp_s;               /* the last UDP stream the server was offered */
+static int g_peer_refuses;                  /* the client's accept refuses the server's streams */
+
+static int accept_npf(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user)
+{
+    (void)w;
+    (void)user;
+    if (anl_stream_tag(s) == NPF_TAG_UDP) {
+        g_udp_s = s;
+        return npf_udpf_accept(g_udp, s, opt, 0);
+    }
+    return npf_media_accept(g_media, s, opt);
+}
+
+static int accept_client(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user)
+{
+    (void)w, (void)s, (void)opt, (void)user;
+    return g_peer_refuses ? -1 : 0;
+}
+
+static int u_unit(void *a, const uint8_t *b, size_t l) { (void)a; (void)b; (void)l; return 0; }
+static int u_allowed(void *a) { (void)a; return 1; }
+static const npf_udpf_io uio = {u_unit, m_kick, u_allowed};
+
+/* what the session does after its input (call_transport.c anl_drain): the
+ * peer's new media streams, then each readable stream to its owner */
+static void npf_drain(anl_t *s)
+{
+    anl_stream_t *rd[64];
+    int n, i;
+    npf_media_poll(g_media);
+    n = anl_readable(s, rd, 64);
+    for (i = 0; i < n && i < 64; i++)
+        if (npf_udpf_is_stream(g_udp, rd[i]))
+            npf_udpf_drain(g_udp, rd[i]);
+        else if (npf_media_is_stream(g_media, rd[i]))
+            npf_media_drain(g_media, rd[i]);
+}
+
+static uint32_t held(anl_t *w)
+{
+    anl_stats st;
+    return anl_get_stats(w, &st) == 0 ? st.streams_held : 99;
+}
+
+static void test_held(void)
+{
+    const uint32_t conv = 0x99;
+    const int rounds = 100;
+    npf_loop *loop = npf_loop_new();
+    anl_t *c = end(ANL_ROLE_CLIENT, conv, 0x44, out_server), *s = end(ANL_ROLE_SERVER, conv, 0x44, out_client);
+    npf_call_media_opt mo;
+    anl_stream_opt opt;
+    uint32_t most = 0;
+    int k, ok, err = 0;
+    CHECK(loop && c && s, "setup");
+    if (!loop || !c || !s)
+        return;
+    g_media = npf_media_new(loop, s, 1, &mio, NULL);
+    g_udp = npf_udpf_new(loop, s, 0, NULL, &uio, NULL);
+    anl_set_accept(s, accept_npf);
+    anl_set_accept(c, accept_client);
+
+    /* media streams opened here, refused by the peer (its RST) */
+    g_peer_refuses = 1;
+    memset(&mo, 0, sizeof mo);
+    mo.tag = 7;
+    mo.max_age_ms = -1;
+    mo.fec = -1;
+    for (k = 0, ok = 0; k < rounds; k++) {
+        if (npf_media_open_stream(g_media, &mo, &err) == 0)
+            break;
+        pump(c, s);
+        npf_drain(s);
+        ok += npf_media_count(g_media) == 0;
+        if (held(s) > most)
+            most = held(s);
+    }
+    CHECK(k == rounds && ok == rounds, "media streams refused by the peer: %d of %d opened, %d ended (%d)", k, rounds,
+          ok, err);
+    g_peer_refuses = 0;
+
+    /* the peer's media streams, taken here and closed by the peer */
+    for (k = 0, ok = 0; k < rounds; k++) {
+        anl_stream_t *st;
+        anl_stream_opt_default(&opt, ANL_SEMI);
+        opt.tag = NPF_TAG_MEDIA + 3;
+        opt.rcv_wnd = NPF_ANL_MEDIA_WND;
+        if (!(st = anl_stream_open(c, &opt, &err)))
+            break;
+        anl_stream_send_frame(st, 1, "key frame", 9, NULL);
+        pump(c, s);
+        npf_drain(s);
+        ok += npf_media_count(g_media) == 1;
+        anl_stream_close(st);
+        pump(c, s);
+        npf_drain(s);
+        ok -= npf_media_count(g_media) != 0;
+        if (held(s) > most)
+            most = held(s);
+    }
+    CHECK(k == rounds && ok == rounds, "the peer's media streams closed by it: %d of %d opened, %d taken and ended", k,
+          rounds, ok);
+
+    /* the caller's UDP forward stream, taken here and closed by the caller */
+    for (k = 0, ok = 0; k < rounds; k++) {
+        anl_stream_t *st;
+        anl_stream_opt_default(&opt, ANL_SEMI);
+        opt.tag = NPF_TAG_UDP;
+        opt.rcv_wnd = 512;
+        if (!(st = anl_stream_open(c, &opt, &err)))
+            break;
+        anl_stream_send_frame(st, 0, "x", 1, NULL);
+        g_udp_s = NULL;
+        pump(c, s);
+        ok += npf_udpf_is_stream(g_udp, g_udp_s);       /* taken: no stream of the last one left */
+        anl_stream_close(st);
+        pump(c, s);
+        npf_drain(s);
+        ok -= npf_udpf_is_stream(g_udp, g_udp_s);
+        if (held(s) > most)
+            most = held(s);
+    }
+    CHECK(k == rounds && ok == rounds, "UDP forward streams closed by the caller: %d of %d opened, %d taken and ended", k,
+          rounds, ok);
+    {
+        anl_stats st;
+        anl_get_stats(s, &st);
+        CHECK(most == 0 && st.streams <= 2, "over handles left after the drain: at most %u (now %u, streams %u)", most,
+              st.streams_held, st.streams);
+    }
+    npf_udpf_free(g_udp);
+    g_udp = NULL;
+    npf_media_free(g_media);
+    g_media = NULL;
+    q_clear(&to_server);
+    q_clear(&to_client);
+    anl_release(c);
+    anl_release(s);
+    npf_loop_free(loop);
+}
+
 int test_anlsec(void)
 {
     fails = 0;
     test_conv();
     test_rcv_wnd();
+    test_held();
     printf("anlsec: %s\n", fails ? "FAIL" : "ok");
     return fails;
 }
