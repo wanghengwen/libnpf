@@ -269,7 +269,6 @@ void call_rev_close_all(npf_call *c);
 void call_reverse_request(npf_call *c, const char *type, const npf_json *j);
 
 /* path_ws.c: the WS relay as a carrier of the AnLiu connection (data-channel.md 10) */
-void call_ws_send(npf_call *c, const uint8_t *d, size_t len);
 void call_ws_carrier(npf_call *c);      /* paired, keys ready: AnLiu's carrier and the path up */
 void call_ws_failed(npf_call *c, const char *why);
 int call_ws_setup(npf_call *c, const npf_json *j, int r);

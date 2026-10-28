@@ -1,10 +1,7 @@
 /* A session's paths (architecture.md 2.3, 2.4): the direct path
- * (path_direct.c), the UDP relay (path_udp.c) and the WS relay (path_ws.c),
- * each an npf_path, and the path manager (path_mgr.c), the one place that
- * says where AnLiu's datagrams go (pm_send), names the path in use
- * (npf_call_path), keeps the paths' health by one set of rules (pm_tick,
- * pm_rules_of) and decides between them: what to wait for, what to ask the
- * platform for (pm_decide, architecture.md 3.6). */
+ * (path_direct.c), the UDP relay (path_udp.c), the WS relay (path_ws.c), and
+ * the manager (path_mgr.c): where AnLiu's datagrams go (pm_send), the name
+ * of the path in use, the health rules (pm_tick), the decisions (pm_decide). */
 #ifndef NPF_PATH_H
 #define NPF_PATH_H
 
@@ -25,45 +22,36 @@ enum { PR_IDLE, PR_PRIMARY, PR_SECOND, PR_STANDBY };     /* the role the manager
 
 typedef struct npf_path npf_path;
 
+/* tx: one AnLiu datagram, the hot path: no allocation, no lookup (Windows'
+ * headers make send a macro). The health rules' events (pm_tick), the path
+ * SUSPECT or DEAD already: silent for quiet ms while relied on (busy_since
+ * set: with data in flight), a probe due, the verdict's time up; NULL for a
+ * kind whose rules have no such time (pm_rules) */
 typedef struct npf_path_ops {
-    /* one AnLiu datagram on the path; the hot path: no allocation, no lookup
-     * (tx: Windows' headers make send a macro) */
-    void        (*tx)(npf_path *p, const uint8_t *dgram, size_t len);
-    /* its precise name for status and logs (npf_call_path) */
-    const char *(*name)(const npf_path *p);
-    /* the health rules' events (pm_tick), the path SUSPECT or DEAD already:
-     * silent for quiet ms while relied on (busy_since set: with data in
-     * flight), its probing begins; a probe due (kinds whose rules probe on a
-     * period); the verdict's time is up (kinds whose rules give one by time) */
-    void        (*suspect)(npf_path *p, int64_t quiet);
-    void        (*probe)(npf_path *p);
-    void        (*dead)(npf_path *p);
+    void (*tx)(npf_path *p, const uint8_t *dgram, size_t len);
+    void (*suspect)(npf_path *p, int64_t quiet);
+    void (*probe)(npf_path *p);
+    void (*dead)(npf_path *p);
 } npf_path_ops;
 
-struct npf_path {
+struct npf_path {                   /* the times: monotonic ms */
     const npf_path_ops *ops;
     uint8_t  kind, health, role;
-    int64_t  since;                 /* up since (monotonic ms) */
-    int64_t  last_rx;               /* the peer last heard on it (monotonic ms; the UDP relay: its answers too;
-                                     * the WS relay: any frame, npf_wsr_last_rx) */
-    int64_t  busy_since;            /* the session relies on it with data in flight since (ms); 0 no */
-    int64_t  rt_ok;                 /* the last round trip proven (an echo, a BIND_ACK, the pairing; ms) */
-    int64_t  suspect_at;            /* SUSPECT since (ms) */
-    int64_t  probe_at;              /* SUSPECT, or probed while UP: the next probe (kinds whose rules probe on a period) */
+    int64_t  since;                 /* up since */
+    int64_t  last_rx;               /* the peer last heard on it (the UDP relay: its answers too; the WS relay: any frame) */
+    int64_t  busy_since;            /* relied on with data in flight since; 0 no */
+    int64_t  rt_ok;                 /* the last round trip proven (an echo, a BIND_ACK, the pairing) */
+    int64_t  suspect_at;            /* SUSPECT since */
+    int64_t  probe_at;              /* the next probe: SUSPECT, or probed while UP */
     int64_t  probe_until;           /* UP, probed (pm_probe) until then; 0 not */
 };
 
-/* The health rules, one set for every kind (architecture.md 2.4), the times
- * (ms) per kind (pm_rules_of). A path relied on (the primary one, or the
- * second while the primary is in doubt; not a direct connection's fixed
- * one) and UP goes SUSPECT when silent: with data in flight, for
- * max(t_busy, 2 RTO) since the later of its last datagram and the data
- * going in flight; with none, for t_idle since the later of its last
- * datagram and its start. SUSPECT, it is probed every t_probe; a round
- * trip proven (pm_rt) brings it UP; t_verdict after the suspicion it is
- * DEAD. A zero: no such rule by time (t_busy: the idle rule with data in
- * flight too; t_probe, t_verdict: the path probes and decides on its own,
- * pm_dead) */
+/* The health rules (architecture.md 2.4), their times per kind (ms,
+ * pm_rules_of): UP and relied on (pm_relied), a path goes SUSPECT when
+ * silent for max(t_busy, 2 RTO) with data in flight, for t_idle without;
+ * SUSPECT, it is probed every t_probe, a round trip (pm_rt) brings it UP,
+ * t_verdict after it is DEAD. 0: no such rule (t_busy: t_idle with data in
+ * flight too; t_probe, t_verdict: the path probes and decides on its own) */
 typedef struct pm_rules {
     int t_busy, t_idle, t_probe, t_verdict;
 } pm_rules;
@@ -81,16 +69,14 @@ typedef struct path_direct {
     uint64_t nonce;                 /* of the checks in flight (a new one each time it is in doubt) */
 } path_direct;
 
-/* the UDP relay (path_udp.c); p.last_rx: the relay last answered (a
- * BIND_ACK, the peer's data through it) */
+/* the UDP relay (path_udp.c): its health is its binder's state (relay_bind.h):
+ * NEW binding, UP bound, SUSPECT probing, DEAD given up */
 typedef struct path_udp {
     npf_path p;
-    relay_c  r;                     /* the binder (relay_bind.h): the allocation, its state and next bind;
-                                     * BOUND: UP (NEW binding, SUSPECT probing, DEAD given up) */
+    relay_c  r;
 } path_udp;
 
-/* the WS relay (path_ws.c): a connection to the relay of the allocation;
- * p.since: the allocation came */
+/* the WS relay (path_ws.c): a connection to the allocation's relay; p.since: the allocation came */
 typedef struct path_ws {
     npf_path p;
     npf_wsr *wsr;                   /* the relay connection, NULL none (lost: connected again) */
@@ -102,37 +88,29 @@ typedef struct path_ws {
     int      fails;                 /* connections made again in a row that did not pair (5: DEAD) */
 } path_ws;
 
-/* The manager: the paths in use, by kind, and where pm_send sends. A WS
- * relay is exclusive (data-channel.md 3: UDP gave out); else the direct
- * path is the primary one with the UDP relay standing by, or the second one
- * while the direct path is in doubt (each datagram on both, AnLiu drops the
- * duplicates); else the UDP relay, bound or not (the relay forwards what our
- * key seals from an address it has not bound yet) */
+/* The manager (architecture.md 2.4): the paths in use by kind and where
+ * pm_send sends: the WS relay alone; else the direct path, the UDP relay
+ * standing by, or second (each datagram on both) while the direct path is
+ * in doubt; else the UDP relay, bound or not */
 typedef struct npf_pm {
     npf_path *p[PK_N];              /* NULL: none of that kind */
     npf_path *primary, *second;     /* pm_route's choice */
-    int       fixed;                /* a direct connection's (no platform): a fixed direct path, no health rules */
-    int64_t   check_at;             /* the rules and the decisions again (pm_check) */
-    /* the decisions (pm_decide): the UDP relay unreachable, this loss of it
-     * has had the waits and the retry in tried (PM_IN_PORTS, PM_IN_PUNCH,
-     * PM_T_RETRY); wait: what act_at is the end of (a wait: PM_IN_PORTS,
-     * PM_IN_PUNCH; the standby: PM_W_STANDBY, its probe PM_W_PROBE); on the
-     * WS relay, UDP is tried again at act_at (udp_again after it came) */
+    int       fixed;                /* a direct connection's fixed direct path: no health rules */
+    int64_t   check_at;             /* pm_check again */
+    /* pm_decide's: the steps this loss of the UDP relay has had (PM_IN_PORTS,
+     * PM_IN_PUNCH, PM_T_RETRY), the wait act_at ends (PM_IN_PORTS,
+     * PM_IN_PUNCH, PM_W_STANDBY, PM_W_PROBE; on the WS relay: UDP tried
+     * again), UDP tried again this long after the WS relay came */
     unsigned  tried, wait;
     int64_t   act_at, udp_again;
-    /* what the call asked the platform for (call_need): no allocation yet,
-     * sent asks times, again at ask_at */
-    int       need, asks;
-    int64_t   ask_at;
+    int       need, asks;           /* call_need: asked of the platform, how many times, */
+    int64_t   ask_at;               /* ... again then */
 } npf_pm;
 
-/* pm_decide's inputs: the caller; the platform takes no relay_switch yet
- * (before the accept); established; a punching round may still bring a
- * direct path; a hard-side punch holds the NAT's ports; UDP works (the NAT
- * probe), and came back since the WS relay did; tests: no UDP at all. Its
- * answer: what the session needs of the platform (PM_NEED_*, 2.4), or what
- * to do now (wait, bind the UDP relay again, probe the direct path, stand
- * by on, drop the lost direct path) */
+/* pm_decide (architecture.md 3.6): its inputs (the caller; before the
+ * accept; established; a punching round may still come; a hard-side punch
+ * holds the NAT's ports; UDP works; UDP came back since the WS relay did;
+ * tests: no UDP), its answer: what to ask the platform for, or to do now */
 enum { PM_IN_CALLER = 1, PM_IN_HOLD = 2, PM_IN_UP = 4, PM_IN_PUNCH = 8, PM_IN_PORTS = 16, PM_IN_UDP = 32,
        PM_IN_UDP_BACK = 64, PM_IN_NOUDP = 128, PM_T_RETRY = 256, PM_W_STANDBY = 512, PM_W_PROBE = 1024 };
 enum { PM_NONE, PM_NEED_UDP, PM_NEED_WS, PM_NEED_WS_ELSEWHERE, PM_NEED_UDP_BACK, PM_NEED_PATH_LOST, PM_NEED_RELEASE,
@@ -143,25 +121,20 @@ enum { PM_NONE, PM_NEED_UDP, PM_NEED_WS, PM_NEED_WS_ELSEWHERE, PM_NEED_UDP_BACK,
 #define PM_PROBE_MS     10000       /* ... once the direct path's check had an echo within this */
 int pm_decide(npf_pm *m, unsigned in, int64_t now);
 
-/* a path in use from now on (once of each kind), or no longer; its health:
- * each changes the choice */
+/* a path in use from now on (one of each kind), or no longer, its health: each changes the roles */
 void pm_add(npf_pm *m, npf_path *p);
 void pm_del(npf_pm *m, npf_path *p);
 void pm_health(npf_pm *m, npf_path *p, int health);
 
 /* the health rules' transitions: SUSPECT from now (the rules, or a reason
- * of the path's own: a connection lost, a network change, the standby's
- * check), its probes due from now; a round trip proven: 1 when it brought
- * the path UP (it was not); the path's own verdict */
+ * of the path's own); probed while UP for window ms (no doubt: the
+ * standby's check); a round trip proven: 1 when it brought the path UP;
+ * the path's own verdict. pm_tick: the rules at now, the next time
+ * anything is due (INT64_MAX none) */
 void pm_suspect(npf_pm *m, npf_path *p, int64_t now);
-/* probed while UP (no doubt: nothing else changes) for window ms from now:
- * a round trip asked for, pm_rt ends it (the standby's check) */
-void pm_probe(npf_pm *m, npf_path *p, int64_t now, int64_t window);
+void pm_probe(npf_path *p, int64_t now, int64_t window);
 int  pm_rt(npf_pm *m, npf_path *p, int64_t now);
 void pm_dead(npf_pm *m, npf_path *p);
-/* the rules applied at now, the session's data in flight and RTO given
- * (the path's ops told of what they find): the next time anything is due,
- * INT64_MAX nothing */
 int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto);
 
 static inline int pm_has(const npf_pm *m, int kind)
@@ -183,9 +156,9 @@ static inline void pm_send(const npf_pm *m, const uint8_t *dgram, size_t len)
         m->second->ops->tx(m->second, dgram, len);
 }
 
-/* the path in use: precisely ("p2p", "relay (binding)", "ws relay", "direct",
- * "none"), as people see it ("P2P", "Relayed", "Direct", "none"), as npf.h's
- * NPF_PATH_* (0 none) */
+/* the path in use: precisely ("p2p", "relay", "relay (binding)", "ws
+ * relay", "direct", "none"), as people see it ("P2P", "Relayed", "Direct",
+ * "none"), as npf.h's NPF_PATH_* (0 none) */
 const char *pm_name(const npf_pm *m);
 const char *pm_label(const npf_pm *m);
 int pm_code(const npf_pm *m);

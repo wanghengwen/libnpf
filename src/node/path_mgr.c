@@ -1,9 +1,6 @@
-/* The path manager (path.h, architecture.md 2.4, 3.6): which of a session's
- * paths AnLiu's datagrams go on, the name of the one in use, the paths'
- * health by one set of rules, the decisions between them (what to wait for,
- * what the session needs of the platform: pm_decide), and the session's
- * side of them: the platform's relay allocations, the relay's standby, the
- * requests and their deadlines (call_need). */
+/* The path manager (path.h, architecture.md 2.4, 3.6), and the session's
+ * side of its decisions: the platform's relay allocations, the requests and
+ * their deadlines (call_need). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -12,17 +9,12 @@
 #include "call_internal.h"
 #include "home.h"
 
-/* The health rules' times per kind (path.h pm_rules; nat-traversal.md
- * 10.3, data-channel.md 3). The direct path: silent 3 s (2 RTO) with data
- * in flight, 20 s without (the peer's AnLiu sends a keepalive every 15 s),
- * a PATH_CHECK every 500 ms, lost 10 s after. The UDP relay: the same
- * silences (20 s idle: the relay's 10 s was below AnLiu's keepalive and
- * bound it again every 10-15 s, architecture.md D3); its probe is a bind,
- * its address in use first (path_udp.c:bind_run), its verdict every address
- * tried. The WS relay: TCP's own retransmission with data in flight; 30 s
- * without any frame (its ping every 25 s, the peer's keepalives) is a
- * half-open connection: connected again, DEAD after 5 that do not pair
- * (path_ws.c). */
+/* nat-traversal.md 10.3, data-channel.md 3: the direct path silent 3 s
+ * busy, 20 s idle (AnLiu's keepalive is 15 s), checked every 500 ms, lost
+ * 10 s after; the UDP relay the same silences, its probe a bind, its
+ * verdict every address tried (path_udp.c); the WS relay TCP's own
+ * retransmission busy, 30 s without a frame (its ping is 25 s) half-open,
+ * its verdict 5 reconnects that do not pair (path_ws.c) */
 const pm_rules pm_rules_of[PK_N] = {
     [PK_DIRECT]    = {3000, 20000, 500, 10000},
     [PK_UDP_RELAY] = {3000, 20000, 0, 0},
@@ -32,6 +24,11 @@ const pm_rules pm_rules_of[PK_N] = {
 static int64_t max64(int64_t a, int64_t b)
 {
     return a > b ? a : b;
+}
+
+static int64_t min64(int64_t a, int64_t b)
+{
+    return a < b ? a : b;
 }
 
 /* the roles from the paths in use and their health (path.h npf_pm); a
@@ -86,9 +83,8 @@ void pm_suspect(npf_pm *m, npf_path *p, int64_t now)
     pm_health(m, p, PH_SUSPECT);
 }
 
-void pm_probe(npf_pm *m, npf_path *p, int64_t now, int64_t window)
+void pm_probe(npf_path *p, int64_t now, int64_t window)
 {
-    (void)m;
     p->probe_at = now;
     p->probe_until = now + window;
 }
@@ -129,8 +125,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
                     if (m->p[k] != p || p->health != PH_UP)
                         continue;
                 }
-                due = due < p->probe_at ? due : p->probe_at;
-                due = due < p->probe_until ? due : p->probe_until;
+                due = min64(due, min64(p->probe_at, p->probe_until));
             }
         }
         if (p->health == PH_UP) {
@@ -140,12 +135,10 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
                 continue;
             }
             /* silence counts from the later of the last datagram heard and
-             * the moment data went in flight: after an idle spell the first
-             * new request must not look like a path quiet all along. With
-             * nothing in flight (a sender waiting for its peer's credit, an
-             * idle session) a peer that is there still sends AnLiu's
-             * keepalive every 15 s (measured: all of a node's UDP dropped
-             * mid-download, the sender idle on credit) */
+             * the moment data went in flight (after an idle spell the first
+             * new request must not look like a path quiet all along); with
+             * none in flight, from its start: a peer that is there still
+             * sends AnLiu's keepalive every 15 s */
             if (inflight && r->t_busy) {
                 if (!p->busy_since)
                     p->busy_since = now;
@@ -157,7 +150,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
                 from = max64(p->last_rx, p->since);
             }
             if (now - from < quiet) {
-                due = due < from + quiet ? due : from + quiet;
+                due = min64(due, from + quiet);
                 continue;
             }
             pm_suspect(m, p, now);
@@ -178,10 +171,10 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             if (m->p[k] != p || p->health != PH_SUSPECT)
                 continue;
         }
-        if (r->t_probe && p->probe_at < due)
-            due = p->probe_at;
-        if (r->t_verdict && p->suspect_at + r->t_verdict < due)
-            due = p->suspect_at + r->t_verdict;
+        if (r->t_probe)
+            due = min64(due, p->probe_at);
+        if (r->t_verdict)
+            due = min64(due, p->suspect_at + r->t_verdict);
     }
     return due;
 }
@@ -193,19 +186,9 @@ static int pm_wait(npf_pm *m, unsigned wait, int64_t at, int r)
     return r;
 }
 
-/* What the session needs (path.h), by architecture.md 3.6, from its paths'
- * health and the inputs; each decision once, at the event or the time
- * (act_at) that makes it. The WS relay given up: one elsewhere (the caller
- * asks); UDP working: the UDP relay when UDP came back or udp_again after
- * (Q4), straight back when that does not bind. No UDP relay: one while the
- * direct path is in doubt, once asked until it comes. The direct path up:
- * the relay stands by PM_STANDBY_MS, then goes once a round trip over the
- * direct path is proven (a punch proves one way only: a probe first). It
- * lost: dropped, path_lost unless the UDP relay is dead too. The UDP relay
- * dead (every address tried): beside a doubt, bound once more; alone, after
- * the accept: the ports a hard-side punch holds, then the round under way
- * awaited (PM_WAIT_MS at most), bound once more, the WS relay; each loss
- * afresh (Q7: once a call before), a bind under way awaited first (D4) */
+/* What the session needs (architecture.md 3.6: the table and 1c's notes)
+ * from its paths' health and the inputs; each decision once, at the event
+ * or the time (act_at) that makes it */
 int pm_decide(npf_pm *m, unsigned in, int64_t now)
 {
     npf_path *d = m->p[PK_DIRECT], *u = m->p[PK_UDP_RELAY], *w = m->p[PK_WS_RELAY];
@@ -239,7 +222,7 @@ int pm_decide(npf_pm *m, unsigned in, int64_t now)
             return PM_NONE;
         if (m->wait == PM_W_PROBE)
             return pm_wait(m, PM_W_STANDBY, now + PM_STANDBY_MS, PM_STANDBY_ON);
-        pm_probe(m, d, now, PM_PROBE_MS);
+        pm_probe(d, now, PM_PROBE_MS);
         return pm_wait(m, PM_W_PROBE, now + PM_PROBE_MS, PM_PROBE);
     }
     if (u->health != PH_DEAD || in & PM_IN_HOLD || (d && m->tried & PM_T_RETRY))
@@ -265,9 +248,13 @@ int pm_decide(npf_pm *m, unsigned in, int64_t now)
 
 const char *pm_name(const npf_pm *m)
 {
+    static const char *const name[PK_N] = {"p2p", "relay", "ws relay"};
+    const npf_path *p = m->primary;
     if (m->fixed)
         return "direct";
-    return m->primary ? m->primary->ops->name(m->primary) : "none";
+    if (!p)
+        return "none";
+    return p->kind == PK_UDP_RELAY && p->health != PH_UP ? "relay (binding)" : name[p->kind];
 }
 
 const char *pm_label(const npf_pm *m)
@@ -303,13 +290,10 @@ void call_paths_init(npf_call *c)
 
 /* ---- the session's paths' health ---- */
 
-/* The health rules now (pm_tick) for a session with its AnLiu connection,
- * then the decisions (pm_decide, call_need): from the call's tick (each
- * one while it has an AnLiu connection, else at check_at: the next thing
- * due, a probe, a verdict, a silence long enough, a wait's end, a
- * request's deadline) and the events that change a path's health or an
- * input. Nothing on the hot path: a datagram only writes its path's
- * last_rx. */
+/* The health rules (pm_tick) for a session with its AnLiu connection,
+ * then the decisions (pm_decide, call_need): each AnLiu tick, at check_at
+ * (the next thing due), and at the events that change a path's health or
+ * an input. Not on the hot path: a datagram only writes its path's last_rx */
 void pm_check(npf_call *c)
 {
     static const char *const act[] = {
@@ -326,8 +310,7 @@ void pm_check(npf_call *c)
     unsigned in;
     if (call_over(c))
         return;
-    /* AnLiu's stats only for a path whose rules look at the data in
-     * flight (the WS relay's do not) */
+    /* AnLiu's stats only for a path whose rules look at the data in flight */
     for (k = 0; k < PK_N; k++)
         busy |= m->p[k] && m->p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(m, m->p[k]);
     memset(&st, 0, sizeof st);
@@ -399,11 +382,10 @@ void call_relay_setup(npf_call *c, const npf_json *j, int d)
 }
 
 /* What the session needs of the platform (architecture.md 2.4), each time
- * the manager says so (pm_decide): its message, sent again 10 s later, 30 s
- * after and every 30 s on while it holds with no allocation (the platform
- * drops some without a word: asked once, a session stayed without a relay),
- * within the switch quota (a burst of 6, then one in 30 s: signaling.md
- * "中转方式的选择"); path_lost and the release once */
+ * pm_decide says so: its message, again 10 s later, 30 s after and every
+ * 30 s on while no allocation comes (the platform drops some without a
+ * word), within the switch quota (signaling.md "中转方式的选择");
+ * path_lost and the release once */
 void call_need(npf_call *c, int need, int64_t now)
 {
     static const char *const what[] = {"", "a UDP relay", "the WS relay", "one on our own server", "the UDP relay"};

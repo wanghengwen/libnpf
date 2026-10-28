@@ -29,13 +29,7 @@ static void fake_send(npf_path *p, const uint8_t *dgram, size_t len)
     f->bytes += len;
 }
 
-static const char *fake_name(const npf_path *p)
-{
-    static const char *const names[PK_N] = {"p2p", "relay", "ws relay"};
-    return names[p->kind];
-}
-
-static const npf_path_ops fake_ops = {fake_send, fake_name, NULL, NULL, NULL};
+static const npf_path_ops fake_ops = {fake_send, NULL, NULL, NULL};
 
 static fake f[PK_N];
 
@@ -87,6 +81,12 @@ int test_path(void)
     CHECK(send1(&m) == U && f[PK_UDP_RELAY].p.role == PR_PRIMARY, "the UDP relay alone");
     CHECK(strcmp(pm_name(&m), "relay") == 0 && strcmp(pm_label(&m), "Relayed") == 0
           && pm_code(&m) == NPF_PATH_UDP_RELAY, "the UDP relay's name");
+    for (k = PH_NEW; k <= PH_DEAD; k++) {      /* not bound (binding, probing, given up): its health says so */
+        pm_health(&m, &f[PK_UDP_RELAY].p, k);
+        CHECK(strcmp(pm_name(&m), k == PH_UP ? "relay" : "relay (binding)") == 0 && pm_code(&m) == NPF_PATH_UDP_RELAY,
+              "the UDP relay's name, health %d: %s", k, pm_name(&m));
+    }
+    pm_health(&m, &f[PK_UDP_RELAY].p, PH_UP);
 
     /* a direct path comes: it carries the session, the relay stands by */
     pm_add(&m, &f[PK_DIRECT].p);

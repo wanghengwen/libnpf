@@ -34,12 +34,6 @@ static void fake_tx(npf_path *p, const uint8_t *d, size_t len)
     (void)p, (void)d, (void)len;
 }
 
-static const char *fake_name(const npf_path *p)
-{
-    (void)p;
-    return "fake";
-}
-
 static void fake_suspect(npf_path *p, int64_t quiet)
 {
     fake *x = (fake *)(void *)p;
@@ -58,7 +52,7 @@ static void fake_dead(npf_path *p)
     ((fake *)(void *)p)->deads++;
 }
 
-static const npf_path_ops fake_ops = {fake_tx, fake_name, fake_suspect, fake_probe, fake_dead};
+static const npf_path_ops fake_ops = {fake_tx, fake_suspect, fake_probe, fake_dead};
 
 /* every path new and gone, the manager empty; the kinds given UP from t0 */
 static void start(int kinds, int64_t t0)
@@ -232,7 +226,7 @@ static void probed(void)
     int64_t t;
     start(D | U, 0);
     d->p.last_rx = 1000000;
-    pm_probe(&m, &d->p, 1000, 10000);
+    pm_probe(&d->p, 1000, 10000);
     CHECK(pm_tick(&m, 1000, 0, 200) == 1500 && d->probes == 1, "the first check (%d)", d->probes);
     for (t = 1500; t < 11000; t += 500)
         pm_tick(&m, t, 0, 200);
@@ -240,7 +234,7 @@ static void probed(void)
           "probed: %d checks, health %d, relay role %d", d->probes, d->p.health, u->p.role);
     pm_tick(&m, 11000, 0, 200);
     CHECK(d->probes == 20 && d->p.probe_until == 0 && d->deads == 0, "checks after the window (%d)", d->probes);
-    pm_probe(&m, &d->p, 20000, 10000);
+    pm_probe(&d->p, 20000, 10000);
     pm_tick(&m, 20000, 0, 200);
     CHECK(pm_rt(&m, &d->p, 20100) == 0 && d->p.probe_until == 0 && d->p.rt_ok == 20100, "the echo");
     pm_tick(&m, 21000, 0, 200);

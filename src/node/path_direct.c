@@ -31,18 +31,6 @@ static void direct_send(npf_path *p, const uint8_t *dgram, size_t len)
         npf_udp_send(c->pd.fd, dgram, len, &c->pd.addr);
 }
 
-static const char *direct_name(const npf_path *p)
-{
-    (void)p;
-    return "p2p";
-}
-
-static void direct_suspect(npf_path *p, int64_t quiet);
-static void direct_probe(npf_path *p);
-static void direct_lost(npf_path *p);
-
-const npf_path_ops path_direct_ops = {direct_send, direct_name, direct_suspect, direct_probe, direct_lost};
-
 /* a punch's path (punch_done): fd the main socket, or an S3 one handed over */
 void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
 {
@@ -77,16 +65,13 @@ void path_direct_gone(npf_call *c)
 }
 
 
-/* ---- direct path check ----
- * Hearing the peer on the direct path does not prove that it hears us: with
- * a path that died one way (a firewall, a cut in a test) the peer's
- * datagrams still arrive while ours are lost, and the path was taken back
- * and the session lost (mesh.sh, 2026-10-06). While the path is suspect,
- * PATH_CHECK{nonce} goes out on it every 500 ms; the peer answers each on
- * the direct path with PATH_ECHO{nonce}. Only a matching echo, a round
- * trip over the path, brings it back. The packets are SIV-sealed with a
- * key of the session and the sender's direction: nobody else can make one,
- * and a reflected check is no echo. */
+/* ---- direct path check (nat-traversal.md 10.3) ----
+ * Hearing the peer does not prove that it hears us (a path dead one way: a
+ * firewall, a cut in a test). In doubt, PATH_CHECK{nonce} goes out every
+ * 500 ms, the peer answers each with PATH_ECHO{nonce}: only a matching
+ * echo, a round trip, brings the path back. SIV-sealed with a key of the
+ * session and the sender's direction: nobody else can make one, and a
+ * reflected check is no echo. */
 static void path_send(npf_call *c, int type, uint64_t nonce)
 {
     uint8_t buf[PATH_PKT_LEN], *p = buf + NPF_SIV_TAG_SIZE;
@@ -99,9 +84,6 @@ static void path_send(npf_call *c, int type, uint64_t nonce)
     npf_udp_send(c->pd.fd, buf, sizeof buf, &c->pd.addr);
 }
 
-static void direct_alive(npf_call *c);
-static void direct_doubt(npf_call *c, const char *why);
-
 /* 1 when the datagram was a path check or echo of this call */
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len)
 {
@@ -111,14 +93,17 @@ int call_path_input(npf_call *c, const uint8_t *buf, size_t len)
     if (plain[0] == PKT_PATH_CHECK)
         path_send(c, PKT_PATH_ECHO, npf_rd64(plain + 2));
     else if (plain[0] == PKT_PATH_ECHO && (c->pd.p.health == PH_SUSPECT || c->pd.p.probe_until)
-             && npf_rd64(plain + 2) == c->pd.nonce)
-        direct_alive(c);
+             && npf_rd64(plain + 2) == c->pd.nonce) {
+        /* an echo of these checks (a doubt's, the standby's): UP; the relay
+         * standing by may go (pm_decide) */
+        if (pm_rt(&c->pm, &c->pd.p, npf_mono_ms()))
+            npf_log("call %s: direct path alive again (checked both ways)", c->call_id_s);
+        pm_check(c);
+    }
     return 1;
 }
 
-/* the check both ways from now on while in doubt, every 500 ms
- * (pm_rules_of; pm_tick sends them): a new nonce, only an echo of these
- * counts */
+/* the checks from now on (pm_tick sends them): a new nonce, only an echo of these counts */
 void path_direct_check(npf_call *c)
 {
     npf_random(&c->pd.nonce, sizeof c->pd.nonce);
@@ -130,21 +115,17 @@ static void direct_probe(npf_path *p)
     path_send(c, PKT_PATH_CHECK, c->pd.nonce);
 }
 
-/* an echo of these checks (a doubt's, the standby's): a round trip over
- * the path, it is UP; the relay standing by may go (pm_decide) */
-static void direct_alive(npf_call *c)
+/* in doubt (SUSPECT): checked both ways, the data on the relay too
+ * meanwhile (asked for when it was released: pm_decide) */
+static void direct_doubt(npf_call *c, const char *why)
 {
-    if (pm_rt(&c->pm, &c->pd.p, npf_mono_ms()))
-        npf_log("call %s: direct path alive again (checked both ways)", c->call_id_s);
-    pm_check(c);
+    path_direct_check(c);
+    npf_log("call %s: %s%s", c->call_id_s, why, call_has_relay(c) ? ", sending on the relay too" : "");
+    anl_flush(c->anl);
 }
 
-/* nat-traversal.md 10.3. A long queue on a loaded uplink can hold packets for
- * seconds, so silence alone does not prove the direct path dead: with
- * unacknowledged data and nothing heard for max(3 s, 2 RTO) (the health
- * rules, pm_tick), send on both paths (the manager asks for a relay if it
- * was released, binds one that never bound: pm_decide); give the direct
- * path up only if it stays silent for another 10 s (direct_lost). */
+/* silent (a loaded uplink's queue can hold packets for seconds: silence
+ * alone is no verdict, nat-traversal.md 10.3) */
 static void direct_suspect(npf_path *p, int64_t quiet)
 {
     npf_call *c = CALL_OF(p, pd.p);
@@ -156,9 +137,7 @@ static void direct_suspect(npf_path *p, int64_t quiet)
     direct_doubt(c, why);
 }
 
-/* in doubt 10 s, no echo: the direct path lost (pm_decide drops it; the
- * platform plans the next round at once: with no relay to fall back on, an
- * anonymous caller's session ends at AnLiu's idle timeout) */
+/* in doubt 10 s, no echo: lost (pm_decide drops it) */
 static void direct_lost(npf_path *p)
 {
     npf_call *c = CALL_OF(p, pd.p);
@@ -166,6 +145,8 @@ static void direct_lost(npf_path *p)
              call_has_relay(c) && c->pu.r.state == RB_BOUND ? ", staying on the relay"
              : call_has_relay(c) && c->pu.r.at ? ", the UDP relay still binding" : "");
 }
+
+const npf_path_ops path_direct_ops = {direct_send, direct_suspect, direct_probe, direct_lost};
 
 /* the direct path given up (lost, or the session moves to the WS relay) */
 void call_p2p_drop(npf_call *c)
@@ -177,16 +158,6 @@ void call_p2p_drop(npf_call *c)
         c->pd.owned = 0;
     }
     c->pd.fd = -1;
-}
-
-/* the direct path is in doubt (SUSPECT): checked both ways (PATH_CHECK),
- * the data on the relay too meanwhile (asked for when it was released, the
- * manager's: pm_decide) */
-static void direct_doubt(npf_call *c, const char *why)
-{
-    path_direct_check(c);
-    npf_log("call %s: %s%s", c->call_id_s, why, call_has_relay(c) ? ", sending on the relay too" : "");
-    anl_flush(c->anl);
 }
 
 /* in doubt for a reason of the node's (a network change): as when silent */

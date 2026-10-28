@@ -1,8 +1,6 @@
-/* The UDP relay (path.h, data-channel.md 9): its sending, binding and
- * keeping the allocation, the relayed datagrams and the relay's answers,
- * its probe when the health rules find it silent while the session relies
- * on it. What a session does when it cannot be reached is the manager's
- * (path_mgr.c). */
+/* The UDP relay (path.h, data-channel.md 9): sending, binding and keeping
+ * the allocation, the relayed datagrams and the relay's answers, its probe.
+ * What a session does when it cannot be reached is the manager's. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -11,8 +9,6 @@
 
 #include "call_internal.h"
 #include "home.h"
-
-/* ---- UDP relay client (data-channel.md 9) ---- */
 
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable */
 int call_relay_blocked(const npf_node *n, const char *what)
@@ -27,10 +23,7 @@ static int addr_blocked(const npf_call *c, const struct sockaddr_storage *a)
     return c->n->th.block_relay && call_relay_blocked(c->n, npf_addr_str(a, s, sizeof s));
 }
 
-/* RELAY_BIND (relay_bind.c) to the address being bound or kept (bi): the
- * relay's cookie for our address in it (zeros before the first BIND_ACK:
- * the relay answers with a challenge carrying it, and binds the address
- * when a BIND echoes it) */
+/* RELAY_BIND to the address being bound or kept (relay_bind.h) */
 static void relay_bind_send(void *arg)
 {
     npf_call *c = arg;
@@ -56,17 +49,6 @@ static void udp_send(npf_path *p, const uint8_t *dgram, size_t len)
     call_relay_send_data(CALL_OF(p, pu.p), dgram, len);
 }
 
-static const char *udp_name(const npf_path *p)
-{
-    return ((const path_udp *)(const void *)p)->r.state == RB_BOUND ? "relay" : "relay (binding)";
-}
-
-static void udp_suspect(npf_path *p, int64_t quiet);
-
-/* its probe is a bind and its verdict the binder's (bind_run):
- * no periodic probe, no verdict by time */
-const npf_path_ops path_udp_ops = {udp_send, udp_name, udp_suspect, NULL, NULL};
-
 /* the allocation in use from now on (UP when bound, else NEW), or no
  * longer, its binding stopped (NONE) */
 void path_udp_on(npf_call *c)
@@ -91,11 +73,9 @@ static void bind_run(npf_call *c, int probe)
     call_at(c, c->pu.r.at);
 }
 
-/* the binder's deadline: the run's next bind; bound, the binding refreshed
- * (NAT mapping, server idle timer) while in use; every address tried: DEAD,
- * the manager decides (pm_decide). Bound from the reply to the call, before
- * the callee accepted: the platform takes no relay_switch yet, and the
- * accept brings the same allocation, bound again from its first address */
+/* the binder's deadline: the run's next bind, or the keepalive; every
+ * address tried: DEAD, pm_decide's (before the accept: the accept brings
+ * the same allocation, bound again then) */
 void path_udp_tick(npf_call *c)
 {
     int r = relay_bind_tick(&c->pu.r, npf_mono_ms(), RELAY_KEEPALIVE_MS);
@@ -116,19 +96,10 @@ void call_relay_rebind(npf_call *c)
     bind_run(c, 0);
 }
 
-/* A bound UDP relay can die under a session (the node's UDP blocked, the
- * relay's address unreachable): its BIND every 25 s goes unanswered and
- * nothing comes through it, while the session waits on AnLiu's retries and
- * the idle timeout (measured: all UDP of a node dropped, 41 s on a dead relay
- * after the direct path was lost, 90 s: transport_lost). Silent while the
- * session relies on it (the health rules, pm_tick), it is probed with a
- * bind to the address in use first, then to the others in order, the data
- * going on to the address in use until another one answers (before, it was
- * bound again from its first address and the data went with the binds: a
- * session bound through the second address sent the data of the 2.8 s to
- * the first one, architecture.md D2). An answer keeps it (the peer, not
- * the relay, gone quiet); none gives it up as at the start
- * (pm_decide: the WS relay, once the direct path's verdict is in) */
+/* silent while relied on (the node's UDP blocked, the relay's address
+ * unreachable): probed with binds from the address in use, the data staying
+ * on it until another one answers (architecture.md 3.3, Q2); an answer
+ * keeps it, none gives it up (pm_decide) */
 static void udp_suspect(npf_path *p, int64_t quiet)
 {
     npf_call *c = CALL_OF(p, pu.p);
@@ -136,6 +107,9 @@ static void udp_suspect(npf_path *p, int64_t quiet)
              c->call_id_s, (long long)quiet, c->pu.r.naddr > 1 ? "its address in use" : "its address");
     bind_run(c, 1);
 }
+
+/* its probe is a bind and its verdict the binder's: none by time */
+const npf_path_ops path_udp_ops = {udp_send, udp_suspect, NULL, NULL};
 
 /* the relay works (a BIND_ACK, or the peer's data through it): bound, the
  * binding kept fresh from now on */
@@ -149,9 +123,7 @@ static void relay_bound(npf_call *c, const char *how)
     call_path_up(c);
 }
 
-/* the platform's UDP relay allocation (call_relay_setup); one that is no use
- * leaves the relay in use as it is (it used to take its id and key at once,
- * then bind the old addresses with them) */
+/* the platform's UDP relay allocation (call_relay_setup) */
 void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], const struct sockaddr_storage *addr,
                     int naddr)
 {
@@ -167,8 +139,7 @@ void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], con
     }
     c->pu.p.last_rx = npf_mono_ms();         /* a new allocation: silent from now on counts */
     c->pu.p.busy_since = 0;
-    /* the node's spare (home-binding.md v0.5, 7), bound already from the
-     * main socket or being bound; the platform sends another */
+    /* the node's spare (home-binding.md 7), bound or being bound already */
     if (!(spare = node_home_adopt(c->n, id, &c->pu.r)))
         relay_bind_take(&c->pu.r, c->n, id, key, addr, naddr);
     path_udp_on(c);
@@ -185,10 +156,8 @@ void path_udp_setup(npf_call *c, const uint8_t id[8], const uint8_t key[32], con
     call_path_up(c);
 }
 
-/* RELAY_BIND_ACK of ours (relay_bind_ack): the cookie kept for the next
- * binds; a challenge (the address is not ours on the relay yet, or no
- * longer: a new NAT port) is answered at once with a BIND echoing it, 200 ms
- * apart at most */
+/* RELAY_BIND_ACK of ours (relay_bind_ack): a challenge (the address not
+ * ours on the relay yet, or no longer: a new NAT port) is answered at once */
 static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
 {
     relay_ack a;
@@ -207,11 +176,9 @@ static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
         relay_bind_send(c);
 }
 
-/* The caller binds its relay from the reply to the call, before it has the
- * session's keys (call_accepted brings them): the callee's first datagrams
- * (its AnLiu hello as soon as its own side is bound) may come through the
- * relay before the accept does. A few wait here for the keys instead of an
- * AnLiu retransmission. */
+/* The caller binds its relay before it has the session's keys (the accept
+ * brings them): the callee's first datagrams may come through the relay
+ * first. A few wait here for the keys instead of an AnLiu retransmission. */
 #define RELAY_EARLY_MAX 8
 
 typedef struct relay_early {
@@ -272,10 +239,8 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
         call_relay_early_keep(c, dg, len);
         return;
     }
-    /* AnLiu first: a relayed datagram proves nothing until it takes it
-     * (the relay's keys are not the session's: a replay of an old one
-     * with the relay's address would bring back a relay given up, on
-     * the WS relay too) */
+    /* AnLiu first: a relayed datagram proves nothing until it takes it (a
+     * replay with the relay's address would bring back a relay given up) */
     if (call_anl_feed(c, dg, len) < 0 || call_over(c))
         return;
     c->pu.p.last_rx = npf_mono_ms();
@@ -287,10 +252,7 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
         call_at(c, c->pu.r.at);
     } else if (c->pu.r.state != RB_BOUND) {
         /* the relay forwards the peer's data to us: it has our binding,
-         * whether or not its BIND_ACK came. Measured (a Mac <-> a Linux
-         * node): data through the relay, no BIND_ACK in 2.1 s,
-         * "unreachable", the move to the WS relay cut the forwarded
-         * connection */
+         * whether or not its BIND_ACK came */
         relay_bound(c, " (the peer's data came through it)");
     }
 }
@@ -300,10 +262,8 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
 {
     uint8_t plain[2048];
     int pl;
-    /* a relay released here may still be in use by the peer: only the
-     * caller releases the allocations on the server, and the peer may have
-     * given up the direct path just after our standby ended (a path dead in
-     * one direction looks fine from this side) */
+    /* (a relay released here may still be the peer's: only the caller
+     * releases the allocations on the server) */
     if ((pl = relay_bind_open(&c->pu.r, buf, len, from, plain)) <= 0)
         return pl == 0;
     if (plain[0] == PKT_RELAY_BIND_ACK)
@@ -311,10 +271,9 @@ int call_relay_input(npf_call *c, const uint8_t *buf, size_t len, const struct s
     return 1;
 }
 
-/* RELAY_DATA: the hint, unmasked without a key, names the allocation;
- * one SipHash over the header decides (no trying every session's keys).
- * Allocations on two relay servers may share a hint: the source address
- * and the tag tell them apart. The last one hit first. */
+/* RELAY_DATA (data-channel.md 9.2): the hint names the allocation, one
+ * SipHash over the header decides; two relay servers' allocations sharing
+ * a hint: the source address and the tag tell them apart. The last one hit first */
 static int relay_data_try(npf_call *c, const uint8_t hint[RDATA_HINT], const uint8_t *buf, size_t len,
                           const struct sockaddr_storage *from)
 {
