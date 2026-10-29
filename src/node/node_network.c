@@ -174,6 +174,7 @@ void node_udp_close_idle(npf_node *n)
 #define WATCH_TICK_MS    2000
 #define WATCH_LATE_MS    10000          /* a tick this late: the process was suspended */
 #define NETCHECK_MS      8000           /* the signaling must answer a check's ping this soon */
+#define NETCHECK_UDP_MS  3000           /* ... over UDP */
 #define UDP_REOPEN_RETRY_MS 5000
 
 /* a digest of the interfaces' addresses: IPv4, and the /64 prefix of global
@@ -318,12 +319,16 @@ static void node_net_check(npf_node *n, const char *why)
         udp_failed(n, fd, npf_sock_strerror());
         return;                             /* the reopen checks again */
     }
+    n->udp_bad = 0;                         /* UDP signaling may work here (signaling-udp.md 5.3) */
     if (!n->cfg.offline && !n->dormant) {
         if (n->sig && n->online) {
+            /* UDP: the server learns the new address from the ping; the
+             * session is likely gone when it does not answer in 3 s */
+            int udp = npf_sig_via(n->sig)[0] == 'u';
             n->netcheck_ms = npf_mono_ms();
             npf_sig_ping(n->sig);
             npf_timer_cancel(n->loop, n->t_netcheck);
-            n->t_netcheck = npf_timer_add(n->loop, NETCHECK_MS, netcheck_cb, n);
+            n->t_netcheck = npf_timer_add(n->loop, udp ? NETCHECK_UDP_MS : NETCHECK_MS, netcheck_cb, n);
             if (n->udp_fd >= 0) {           /* the mapping (perhaps a new NAT) */
                 n->nat_quick = n->nat_udp && n->nat.allocation != NPF_ALLOC_UNKNOWN;
                 node_nat_refresh(n);
@@ -366,9 +371,16 @@ static void watch_cb(npf_loop *loop, void *arg)
             n->th.no_udp = z;
             npf_logw("test: UDP %s", z ? "gone" : "back");
             npf_node_report_nat(n);         /* as a probe's new profile would */
-            if (!z)
+            if (!z) {
                 n->udp_back_ms = npf_mono_ms();
+                n->udp_bad = 0;
+            }
             npf_node_calls_decide(n);
+            if (z && n->sig && n->online && npf_sig_via(n->sig)[0] == 'u') {
+                /* signaling on UDP: on the WebSocket within 1-2 s (signaling-udp.md 11.4) */
+                node_sig_abort(n, "test: no UDP");
+                node_reconnect_now(n);
+            }
         }
     }
 #endif

@@ -36,7 +36,13 @@ static void key_table(void)
         n++;
         CHECK(k->def && (k->type == NPF_K_STR || npf_key_check(k, k->def, e2, sizeof e2) == 0), "%s: its default", k->name);
     }
-    CHECK(n == 41, "%d keys", n);
+    CHECK(n == 42, "%d keys", n);
+#ifdef NPF_SIG_UDP
+    CHECK(npf_key_check(npf_key_find("sig_udp"), "auto", err, sizeof err) == 0, "sig_udp auto");
+#else
+    CHECK(npf_key_check(npf_key_find("sig_udp"), "auto", err, sizeof err) < 0, "sig_udp only off");
+#endif
+    CHECK(npf_key_check(npf_key_find("sig_udp"), "off", err, sizeof err) == 0, "sig_udp off");
     CHECK(!npf_key_find("control") && !npf_key_find("log") && !npf_key_find("keep_awake") && !npf_key_find("hosted_ports"),
           "none of the program's (its module's: architecture.md 7)");
     CHECK(npf_key_check(npf_key_find("max_calls"), "4097", err, sizeof err) < 0

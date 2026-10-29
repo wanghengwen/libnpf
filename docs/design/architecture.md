@@ -720,6 +720,7 @@ TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 | `NPF_TEST_UPGRADE_RETRY_MS` | 数 | 必须升级时的重连间隔 | `node_signal.c:schedule_reconnect` | upgrade、upgradeinstall |
 | `NPF_TEST_UDP_IDLE_MS` | 数 | UDP 流的空闲时间 | `call_transport.c`（传给 `npf_udpf_new`） | udp |
 | `NPF_TEST_UDP_AGAIN_MS` | 数 | 只因中转不通而在 WS 上、UDP 仍可用时多久试回 UDP（Q4） | `path_mgr.c` | natlab |
+| `NPF_TEST_SIG_UDP_AGAIN_MS` | 数 | 信令在 WebSocket 上时多久（空闲时）试回 UDP 信令（signaling-udp.md 5.3，平时 10 分钟 ± 20 %） | `node_signal.c` | `test_sigudp.c` |
 
 **去掉的**：`NPF_TEST_PACE`、`NPF_TEST_UDP_MAX_AGE_MS`（诊断用，没有测试用；`udpfwd.c` 里只为后者存在的 `max_age_ms` 一起去掉），`NPF_TEST_ONLY_HOST6`（总是和 `NPF_TEST_HOST6` 一起用，并入）。npf 的模块与程序自己的开关（`NPF_TEST_IDLE_MS`、`NPF_TEST_QUOTA_AGAIN_MS`、`NPF_TEST_UPGRADE_WATCH_MS`、`NPF_TEST_FILES_MS`、`NPF_TEST_CALLER_CHECK`）不在这张表里：库不认程序的键（第 7 节）。另有配置键 `test_one_host`（安全设计 11.1）：它是配置而不是环境变量，留在配置里。
 

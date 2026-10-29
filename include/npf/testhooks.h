@@ -32,7 +32,8 @@
     N(sources_after_ms, "NPF_TEST_SOURCES_AFTER_MS") /* outside channels asked this long unreachable (sources.c) */ \
     N(upgrade_retry_ms, "NPF_TEST_UPGRADE_RETRY_MS") /* reconnecting while an upgrade is required (node_signal.c) */ \
     N(udp_idle_ms,      "NPF_TEST_UDP_IDLE_MS")      /* a UDP flow's idle time (call_transport.c) */ \
-    N(udp_again_ms,     "NPF_TEST_UDP_AGAIN_MS")     /* on the WS relay, UDP working: UDP again after (path_mgr.c) */
+    N(udp_again_ms,     "NPF_TEST_UDP_AGAIN_MS")     /* on the WS relay, UDP working: UDP again after (path_mgr.c) */ \
+    N(sig_udp_again_ms, "NPF_TEST_SIG_UDP_AGAIN_MS") /* signaling on the WebSocket: UDP tried again after (node_signal.c) */
 
 typedef struct npf_test_hooks {
 #define TH_N(f, name) int64_t f;

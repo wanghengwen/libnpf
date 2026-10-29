@@ -53,6 +53,11 @@ const npf_key npf_keys[] = {
     I("udp_port", U, 0, 65535, "0"), B("portmap", U, "1"), E("connect_mode", L | U, "p2p", "p2p|secure"),
     I("max_calls", L | U, 0, 4096, "0"), I("punch_lead_ms", L | U, -1, 5000, "-1"), I("punch_sockets", L | U, 0, 4096, "0"),
     E("home_bind", 0, "auto", "auto|off"), B("test_one_host", F, "0"),
+#ifdef NPF_SIG_UDP                      /* signaling over UDP first (signaling-udp.md 5.3) */
+    E("sig_udp", 0, "auto", "auto|off"),
+#else
+    E("sig_udp", 0, "off", "off"),      /* built without it */
+#endif
     /* sessions; the log (its values in the order of NPF_LOG_*) */
     B("hosted_trust", L | U, "1"), I("peer_idle", L | U, 0, 86400, "0"),
     E("log_level", L, "info", "trace|debug|info|warn|error"), S("node", F | M), S("resource", F | M),

@@ -22,7 +22,7 @@ int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, in
     m_list *l = malloc(sizeof *l);
     npf_json j;
     char err[96];
-    int i, n = -1;
+    int i, k, n = -1;
     if (tok && l && npf_json_parse(&j, json, len, tok, NPF_JSON_MAX_TOKENS) == 0) {
         if (npf_msg_parse(&m_list_d, &j, 0, l, err, sizeof err) < 0)
             npf_logw("server list: refused (%s)", err);
@@ -38,6 +38,9 @@ int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, in
         e->weight = (int)s->weight;
         memcpy(e->ws, s->ws, sizeof e->ws);
         e->nws = s->nws;
+        for (k = 0; k < s->nudp; k++)          /* IPv4 (F_V4): a sockaddr_in each */
+            memcpy(&e->udp[k], &s->udp[k], sizeof e->udp[k]);
+        e->nudp = s->nudp;
         memcpy(e->dh_pub, s->dh_pub, 32);
     }
     if (n >= 0) {

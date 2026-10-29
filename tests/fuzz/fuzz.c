@@ -1,11 +1,11 @@
 /* Mutation fuzzer for the parsers that face the network: JSON, sublink frames
  * and control messages, Noise handshake messages (responder side), certificates,
- * grants, server lists, SIV / probe packets.
+ * grants, server lists, SIV / probe packets, the UDP signaling session (fuzz_sigudp.c).
  *
  *   npf_fuzz TARGET [ITERATIONS] [SEED]      mutate built-in seeds, run under ASan + UBSan
  *   npf_fuzz TARGET -f FILE...               replay inputs (crash reproducers)
  *
- * TARGET: json | msg | control | tunnel | noise | cert | pkt | dns | http | ws | all. With a clang that has
+ * TARGET: json | msg | control | tunnel | noise | cert | pkt | dns | http | ws | sigudp | all. With a clang that has
  * libFuzzer, -DNPF_LIBFUZZER builds the same targets as LLVMFuzzerTestOneInput
  * entry points (one target per binary, selected with -DNPF_FUZZ_TARGET=name). */
 #define _GNU_SOURCE
@@ -299,6 +299,7 @@ typedef void (*target_fn)(const uint8_t *, size_t);
 
 void npf_fuzz_http(const uint8_t *data, size_t len);
 void npf_fuzz_ws(const uint8_t *data, size_t len);
+void npf_fuzz_sigudp(const uint8_t *data, size_t len);     /* fuzz_sigudp.c */
 
 static const struct {
     const char *name;
@@ -331,6 +332,8 @@ static const struct {
     {"cert", fuzz_cert, "{\"serial\":1,\"servers\":[{\"id\":1,\"ws\":[\"wss://a/s\"],\"dh_pub\":\"AAAA\"}]}"},
     {"pkt", fuzz_pkt, NULL},
     {"dns", fuzz_dns, NULL},
+    /* an established session given a message in two segments, out of order, then a ping */
+    {"sigudp", npf_fuzz_sigudp, "2\x01\x04\x21" "12}" "\x01\x06\x04{\"a\":" "\x01\x01\x41"},
 };
 
 /* ---- driver ---- */
@@ -399,7 +402,7 @@ int main(int argc, char **argv)
     size_t t, first = 0, last = sizeof targets / sizeof targets[0];
     npf_log_set_level(NPF_LOG_ERROR);       /* a refused server list is a warning */
     if (argc < 2) {
-        fprintf(stderr, "usage: npf_fuzz json|msg|control|tunnel|noise|cert|pkt|dns|http|ws|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
+        fprintf(stderr, "usage: npf_fuzz json|msg|control|tunnel|noise|cert|pkt|dns|http|ws|sigudp|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
         return 2;
     }
     if (strcmp(argv[1], "all") != 0) {

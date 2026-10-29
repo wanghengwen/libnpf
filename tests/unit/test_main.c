@@ -18,7 +18,7 @@ int test_crypto(void), test_json(void), test_msg(void), test_tunnel(void), test_
     test_local(void), test_direct(void), test_loop(void), test_log(void), test_resolve(void), test_dns(void),
     test_punch(void), test_anlsec(void), test_sys(void), test_text(void), test_creply(void), test_portmap_gw(void),
     test_callee(void), test_relay(void), test_relay_data(void), test_peeraddr(void), test_home(void), test_call(void),
-    test_call_state(void), test_path(void), test_path_health(void), test_path_decide(void), test_peers(void);
+    test_call_state(void), test_path(void), test_path_health(void), test_path_decide(void), test_peers(void), test_sigudp(void);
 int node_wake_delay(int ms);        /* node_signal.c */
 
 /* the same known answers as AnLiu test.c (the construction must stay identical) */
@@ -236,7 +236,7 @@ static const struct {
 #endif
     {"callee", test_callee}, {"relay", test_relay}, {"relay_data", test_relay_data}, {"peeraddr", test_peeraddr},
     {"home", test_home}, {"call", test_call}, {"call_state", test_call_state}, {"path", test_path},
-    {"path_health", test_path_health}, {"path_decide", test_path_decide}, {"peers", test_peers}, {"punch", test_punch},
+    {"path_health", test_path_health}, {"path_decide", test_path_decide}, {"peers", test_peers}, {"sigudp", test_sigudp}, {"punch", test_punch},
 };
 
 int main(int argc, char **argv)

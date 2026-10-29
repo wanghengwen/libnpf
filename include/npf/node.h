@@ -40,6 +40,8 @@ typedef struct npf_server_entry {
     int      prio, weight;
     char     ws[2][256];
     int      nws;
+    struct sockaddr_in udp[2];  /* signaling over UDP (signaling-udp.md 3.6), nudp of them */
+    int      nudp;
     uint8_t  dh_pub[32];
     int      fails;
     int64_t  degraded_until;    /* monotonic ms; 3 failures deprioritise it for an hour */
@@ -201,6 +203,8 @@ typedef struct npf_node_cfg {
     int         udp_public;
     /* home_bind = off: no spare allocation on the server's relay (home-binding.md 17.1) */
     int         home_off;
+    /* sig_udp = off: signaling over WebSocket only (signaling-udp.md 5.3) */
+    int         sig_udp_off;
 } npf_node_cfg;
 
 /* a call_end report not answered yet (npf_node_call_end) */
@@ -263,6 +267,19 @@ struct npf_node {
     npf_sig      *sig;
     npf_sig      *race;             /* a second access point tried at the same time (security.md 7.5) */
     int           race_server;      /* its index into servers */
+    /* UDP signaling (signaling-udp.md 5.3): sig on UDP first, race the
+     * WebSocket a second later (t_race, race_url); on the WebSocket, every
+     * 10 min when idle (t_move) sig_move logs in over UDP and takes over, the
+     * replaced connection kept as sig_old until the server closes it */
+    npf_timer    *t_race, *t_move, *t_old;
+    int           race_url;
+    npf_sig      *sig_move, *sig_old;
+    npf_sig      *msg_sig;          /* the connection the message being handled came on */
+    int           udp_bad;          /* UDP did not answer and the WebSocket logged in: WebSocket only */
+    int           udp_silent;       /* this attempt's UDP had no answer (or the server was busy) */
+    int           moving;           /* the welcome being handled is sig_move's */
+    int64_t       sig_open_ms;      /* monotonic: the attempt began */
+    npf_sig_cookie sig_cookie;      /* the server's, for the next attempts */
     int           online;           /* logged in (welcome received) */
     int           host_full;        /* this connection's login sends the host's JSON (host_required) */
     /* counters for status */
@@ -564,6 +581,10 @@ void npf_node_start(npf_node *n);
 /* cfg.sig_idle_ms: connects again now if the connection was closed for want
  * of use (why: for the log). 1 when it connects, 0 when it was not closed. */
 int  npf_node_wake(npf_node *n, const char *why);
+/* UDP signaling for the status (signaling-udp.md 10.1): "ok", "no_answer"
+ * (it did not answer, the WebSocket is used), "off" (not for this program,
+ * build or server) */
+const char *npf_node_udp_sig(const npf_node *n);
 /* cfg.udp_on_demand: opens the main sockets now. 0, or -1 (logged). */
 int  npf_node_udp_open(npf_node *n);
 /* May a session start now? 1 yes (also when it has to go without UDP); 0:

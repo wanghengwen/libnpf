@@ -200,6 +200,14 @@ if(NPF_PORTMAP)
   target_sources(npf_common PRIVATE src/ice/portmap.c src/node/nodemap.c)
   target_compile_definitions(npf_common PUBLIC NPF_PORTMAP)
 endif()
+# signaling over UDP first, WebSocket as the fallback (src/proto/sigudp.c,
+# signaling-udp.md). Off: WebSocket only, sig_udp can only be off (the
+# hosted servers and the phone apps: their build scripts turn it off)
+option(NPF_SIG_UDP "Signaling over UDP (WebSocket the fallback)" ON)
+if(NPF_SIG_UDP)
+  target_sources(npf_common PRIVATE src/proto/sigudp.c)
+  target_compile_definitions(npf_common PUBLIC NPF_SIG_UDP)
+endif()
 # the synchronous NAT probe and bind query (npf_natprobe_run,
 # npf_bind_query): only the debugging tools use them (npf-natprobe,
 # npf-punch), a node runs the event-driven ones. Off: not in the library (a

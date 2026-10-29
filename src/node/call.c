@@ -483,11 +483,22 @@ void node_sig_lost(npf_node *n)
     }
 }
 
+int node_calls_setting_up(const npf_node *n)
+{
+    const npf_call *c;
+    for (c = n->calls; c; c = c->next)
+        if (!call_up(c) && !call_over(c))
+            return 1;
+    return 0;
+}
+
 int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
     npf_call *c;
     uint32_t conv;
     int matched = 0;
+    if (node_sig_udp_input(n, fd, buf, len, from))
+        return 1;                   /* the signaling server's (by its address, signaling-udp.md 3.1) */
     if (n->probe && npf_natprobe_input(n->probe, fd, buf, len, from))
         return 1;                   /* a probe server's answer to the running NAT probe */
     /* AnLiu first, the bulk of the traffic: the datagram names its connection

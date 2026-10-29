@@ -62,6 +62,11 @@ int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
     }
     cfg->doh_servers = npf_conf_get(conf, "doh_servers", NULL);
     cfg->home_off = npf_conf_int(conf, "home_bind") == 1;     /* auto|off (home-binding.md 17.1) */
+#ifdef NPF_SIG_UDP
+    cfg->sig_udp_off = npf_conf_int(conf, "sig_udp") == 1;    /* auto|off (signaling-udp.md 5.3) */
+#else
+    cfg->sig_udp_off = 1;
+#endif
     return 0;
 }
 
