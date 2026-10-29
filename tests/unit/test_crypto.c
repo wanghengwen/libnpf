@@ -95,6 +95,28 @@ static void test_b64(void)
     CHECK(npf_b64url_decode("-_8BAgM", 7, out, 4) < 0, "b64 capacity");
 }
 
+/* SHA-1 (FIPS 180 vectors: empty, one block, padding into a second block)
+ * and RFC 6455's Sec-WebSocket-Accept example */
+static void test_sha1(void)
+{
+    static const char *const v[][2] = {
+        {"", "da39a3ee5e6b4b0d3255bfef95601890afd80709"},
+        {"abc", "a9993e364706816aba3e25717850c26c9cd0d89d"},
+        {"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "84983e441c3bd26ebaae4aa1f95129e5e54670f1"},
+    };
+    const char *kg = "dGhlIHNhbXBsZSBub25jZQ==258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    uint8_t d[20];
+    char acc[32];
+    size_t i;
+    for (i = 0; i < sizeof v / sizeof v[0]; i++) {
+        npf_sha1(d, v[i][0], strlen(v[i][0]));
+        CHECK(eqhex(d, 20, v[i][1]), "sha1 of a %zu-byte message", strlen(v[i][0]));
+    }
+    npf_sha1(d, kg, strlen(kg));
+    npf_b64std_encode(d, 20, acc);
+    CHECK(strcmp(acc, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") == 0, "RFC 6455 Sec-WebSocket-Accept: %s", acc);
+}
+
 /* run a handshake between two local states, compare messages with Go */
 static void noise_case(const char *name, int pattern, const uint8_t *pro, size_t plen, int pre_rs,
                        const uint8_t *psk, const char *const *msgs, int nmsg,
@@ -308,6 +330,7 @@ int test_crypto(void)
     test_identity();
     test_aead_rfc8439();
     test_b64();
+    test_sha1();
     test_noise();
     test_cert();
     test_grant();

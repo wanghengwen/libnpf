@@ -76,46 +76,6 @@ static void buf_free(buf *b)
     memset(b, 0, sizeof *b);
 }
 
-/* SHA-1, only for Sec-WebSocket-Accept */
-static uint32_t rol(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
-
-static void sha1(const uint8_t *msg, size_t len, uint8_t out[20])
-{
-    uint32_t h[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
-    uint8_t blk[64];
-    size_t total = ((len + 8) / 64 + 1) * 64, off;
-    int i;
-    for (off = 0; off < total; off += 64) {
-        uint32_t w[80], a, b, c, d, e;
-        for (i = 0; i < 64; i++) {
-            size_t k = off + (size_t)i;
-            if (k < len) blk[i] = msg[k];
-            else if (k == len) blk[i] = 0x80;
-            else if (k >= total - 8) blk[i] = (uint8_t)(((uint64_t)len * 8) >> (8 * (total - 1 - k)));
-            else blk[i] = 0;
-        }
-        for (i = 0; i < 16; i++)
-            w[i] = ((uint32_t)blk[4 * i] << 24) | ((uint32_t)blk[4 * i + 1] << 16) | ((uint32_t)blk[4 * i + 2] << 8) | blk[4 * i + 3];
-        for (i = 16; i < 80; i++)
-            w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-        a = h[0]; b = h[1]; c = h[2]; d = h[3]; e = h[4];
-        for (i = 0; i < 80; i++) {
-            uint32_t f, k, tmp;
-            if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
-            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
-            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
-            else { f = b ^ c ^ d; k = 0xCA62C1D6; }
-            tmp = rol(a, 5) + f + e + k + w[i];
-            e = d; d = c; c = rol(b, 30); b = a; a = tmp;
-        }
-        h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
-    }
-    for (i = 0; i < 5; i++) {
-        out[4 * i] = (uint8_t)(h[i] >> 24); out[4 * i + 1] = (uint8_t)(h[i] >> 16);
-        out[4 * i + 2] = (uint8_t)(h[i] >> 8); out[4 * i + 3] = (uint8_t)h[i];
-    }
-}
-
 /* ---- I/O ---- */
 
 /* Resolution and connect timers can fail outside on_io too. Hold the
@@ -269,7 +229,7 @@ static int parse_upgrade(npf_ws *ws)
     if (strncmp(line, "HTTP/1.1 101", 12) != 0)
         return -1;
     snprintf(kg, sizeof kg, "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws->key);
-    sha1((const uint8_t *)kg, strlen(kg), digest);
+    npf_sha1(digest, kg, strlen(kg));
     npf_b64std_encode(digest, 20, expect);
     acc = find_nocase(line, "\r\nSec-WebSocket-Accept:");
     if (!acc)
