@@ -103,6 +103,7 @@ add_library(npf_common STATIC
   src/platform/sys.c
   ${_npf_sys_src}
   src/platform/loop.c
+  src/platform/loop_child.c
   src/platform/log.c
   src/platform/out.c
   src/platform/text.c

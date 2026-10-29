@@ -1,6 +1,7 @@
 /* Event loop: epoll on Linux, kqueue on macOS, iOS and the BSDs, WSAPoll on
  * Windows; timers in a binary min-heap. A shared runtime's host loop runs
- * its children's sockets and timers with its own (in its one queue). */
+ * its children's sockets and timers with its own (in its one queue); the
+ * children's side, attaching and ending, is loop_child.c. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -10,12 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/lock.h"
-#include "npf/log.h"
-#include "npf/loop.h"
 #include "npf/out.h"
 #include "npf/platform.h"
-#include "npf/sys.h"
+
+#include "loop_int.h"
 
 /* a callback that holds the loop SLOW_CB_MS or more is logged, with its
  * address and npf_loop_new's (the offset between them names it: nm, addr2line):
@@ -30,14 +29,7 @@
                      (unsigned long)fn_, (unsigned long)(uintptr_t)npf_loop_new);                   \
     } while (0)
 
-/* The sockets: a queue (NPF_EVQ) everywhere but Windows, epoll on Linux
- * (2.6.27 and later: epoll_create1, eventfd flags), kqueue on macOS, iOS and
- * the BSDs: a wake-up costs what is ready, not what is watched (a node with a
- * thousand sublinks). WSAPoll on Windows, which has neither (IOCP is another
- * model). The wake: an eventfd on Linux, a loopback UDP socket elsewhere
- * (send: safe in a signal handler). */
 #if defined(__linux__)
-#define NPF_EVQ 1
 #define NPF_EVQ_EPOLL 1
 #define NPF_EVENTFD 1
 #include <sys/epoll.h>
@@ -46,93 +38,11 @@
 #elif defined(_WIN32)
 #include <mmsystem.h>
 #else
-#define NPF_EVQ 1
 #include <fcntl.h>
 #include <sys/event.h>
 #include <sys/time.h>
 #include <unistd.h>
 #endif
-
-/* a socket in a runtime host's queue: the event's pointer; dead once
- * removed (an event of the same batch may still name it), freed after it */
-typedef struct ep_reg {
-    npf_loop *l;
-    int       fd, dead;
-    unsigned  kev;              /* kqueue: the filters registered (NPF_EV_READ / NPF_EV_WRITE) */
-    struct ep_reg *next;
-} ep_reg;
-
-typedef struct handler {
-    npf_io_fn fn;
-    void     *arg;
-    int       active;
-    int       fd;
-    unsigned  events;
-    unsigned  gen;              /* its registration (npf_loop_add): a pfd entry taken from another is stale */
-    ep_reg   *reg;              /* in the host's queue (NPF_EVQ) */
-} handler;
-
-struct npf_timer {
-    int64_t    due;
-    uint64_t   seq;             /* equal due: in the order added */
-    npf_timer_fn fn;
-    void      *arg;
-    int        idx;             /* in the heap; -1 while firing */
-};
-
-typedef struct posted {
-    void (*fn)(npf_loop *l, void *arg);
-    void (*drop)(void *arg);        /* the loop is freed before fn ran: release arg */
-    void *arg;
-    struct posted *next;
-} posted;
-
-#define FREE_HOOKS 4
-
-struct npf_loop {
-    handler   *h;               /* the nh entries (idx: fd -> entry) */
-    int        nh;
-    size_t     cap;
-    int        hfree;           /* no free entry in h below this one */
-    npf_timer **heap;           /* timers: min-heap by (due, seq) */
-    int        nheap;
-    size_t     capheap;
-    uint64_t   tseq;
-    int64_t    now;
-    volatile int stop;
-    volatile int woken;
-    void     (*wake_fn)(npf_loop *l, void *arg);
-    void      *wake_arg;
-    int        wake_fd;         /* Linux: eventfd; elsewhere: loopback UDP socket */
-    npf_mutex  post_mu;         /* guards the posted list (other threads append) */
-    posted    *post_head, *post_tail;
-    struct { void (*fn)(npf_loop *l, void *arg); void *arg; } free_hook[FREE_HOOKS];
-    int        nfree_hook;
-    unsigned   gen;
-    int       *idx;             /* fd -> index into h, plus one; open addressing */
-    int        idx_cap;         /* power of two */
-    int        idx_tomb;        /* deleted slots still occupying the table */
-    /* a shared runtime (loop.h): the host's children, or a child's host */
-    npf_loop **kids;
-    int        nkids;
-    size_t     capkids;
-    npf_loop  *host;
-    npf_child_fns cf;
-    void      *carg;
-    npf_log_ctx *logctx;
-    int        ending;          /* child: stopped, end() steps under way */
-    int64_t    end_due;
-    int        attached;        /* child: run by the host now */
-#ifdef NPF_EVQ
-    int        epfd;            /* its queue: its sockets and its children's; -1: a child */
-    ep_reg    *grave;           /* host: removed registrations, freed after the batch */
-#else
-    WSAPOLLFD *pfd;
-    unsigned  *pgen;            /* pfd entry -> the registration it was taken from */
-    int       *own;             /* pfd entry -> its loop's child (-1: the host's own) */
-    size_t     npfd;            /* pfd, pgen and own have room for this many */
-#endif
-};
 
 #ifdef NPF_EVQ
 /* ---- the queue: epoll or kqueue behind one set of calls ---- */
@@ -294,7 +204,7 @@ static void ep_del(npf_loop *l, handler *h)
 }
 
 /* a child's sockets into its host's queue (attached) or out of it */
-static void ep_all(npf_loop *l, int add)
+void loop_ep_all(npf_loop *l, int add)
 {
     int i;
     for (i = 0; i < l->nh; i++)
@@ -318,21 +228,15 @@ static void free_grave(npf_loop *l)
 #define ep_add(l, h) 0
 #define ep_mod(l, h) ((void)0)
 #define ep_del(l, h) ((void)0)
-#define ep_all(l, add) ((void)0)
 #define free_grave(l) ((void)0)
 #endif
 
-/* the log context a loop's work runs in: a runtime child's, its instance's
- * (npf_loop_set_logctx); a loop without one keeps the thread's (a
- * standalone instance's thread set it itself: its level, hook and ring).
- * Returns what to put back */
-static npf_log_ctx *ctx_enter(const npf_loop *c)
-{
-    npf_log_ctx *prev = npf_log_ctx_swap(c->logctx);
-    if (!c->logctx)
-        npf_log_ctx_swap(prev);         /* none of its own: the thread's stays */
-    return prev;
-}
+typedef struct posted {
+    void (*fn)(npf_loop *l, void *arg);
+    void (*drop)(void *arg);        /* the loop is freed before fn ran: release arg */
+    void *arg;
+    struct posted *next;
+} posted;
 
 #define POSTED_BATCH 256            /* then sockets and timers get their turn */
 
@@ -364,7 +268,7 @@ static void run_posted(npf_loop *l)
     }
 }
 
-static void run_wake_hook(npf_loop *l)
+void loop_run_woken(npf_loop *l)
 {
     /* other threads and signal handlers set it: an atomic exchange */
     if (__atomic_exchange_n(&l->woken, 0, __ATOMIC_ACQ_REL)) {
@@ -482,7 +386,7 @@ static void heap_remove(npf_loop *l, npf_timer *t)
     heap_down(l, last->idx);
 }
 
-static void fire_timers(npf_loop *l)
+void loop_fire_timers(npf_loop *l)
 {
     /* a callback may add or cancel timers; one it adds (even due at once:
      * one that arms itself again with 0 ms) waits for the next turn, after
@@ -595,53 +499,6 @@ void npf_loop_free(npf_loop *l)
     free(l->idx);
     free(l->kids);
     free(l);
-}
-
-npf_loop *npf_loop_new_child(npf_loop *host)
-{
-    npf_loop *l = calloc(1, sizeof *l);
-    if (!l)
-        return NULL;
-    l->host = host;
-    l->wake_fd = -1;
-#ifdef NPF_EVQ
-    l->epfd = -1;
-#endif
-    npf_mutex_init(&l->post_mu);
-    l->now = npf_mono_ms();
-    return l;
-}
-
-void npf_loop_set_logctx(npf_loop *l, npf_log_ctx *ctx)
-{
-    l->logctx = ctx;
-}
-
-static void attach_run(npf_loop *h, void *arg)
-{
-    npf_loop *c = arg;
-    npf_log_ctx *prev;
-    if (npf_grow(&h->kids, &h->capkids, (size_t)h->nkids + 1, sizeof *h->kids, 16) < 0) {
-        c->cf.done(c, c->carg);         /* the child cannot run: it ends at once */
-        return;
-    }
-    h->kids[h->nkids++] = c;
-    c->attached = 1;
-    ep_all(c, 1);
-    c->now = npf_mono_ms();
-    prev = ctx_enter(c);
-    c->cf.start(c, c->carg);
-    npf_log_ctx_swap(prev);
-    npf_loop_wake(c);                   /* what was posted to it before */
-}
-
-int npf_loop_attach(npf_loop *c, const npf_child_fns *fns, void *arg)
-{
-    if (!c->host)
-        return -1;
-    c->cf = *fns;
-    c->carg = arg;
-    return npf_loop_post(c->host, attach_run, c);
 }
 
 /* fd -> handler index: open addressing on the fd value (sockets are small
@@ -804,7 +661,7 @@ static void dispatch(npf_loop *l, npf_loop *c, handler *h, unsigned ev)
 {
     npf_log_ctx *prev;
     c->now = l->now;
-    prev = ctx_enter(c);
+    prev = loop_ctx_enter(c);
     TIMED(h->fn, h->fn(c, h->fd, ev, h->arg));
     npf_log_ctx_swap(prev);
 }
@@ -887,67 +744,18 @@ static void wait_io(npf_loop *l, int wait)
 }
 #endif
 
-static int64_t child_due(npf_loop *c)
-{
-    int64_t d = c->nheap > 0 ? c->heap[0]->due : INT64_MAX;
-    if (__atomic_load_n(&c->woken, __ATOMIC_ACQUIRE) || (__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE) && !c->ending))
-        return 0;
-    if (c->ending && c->end_due < d)
-        d = c->end_due;
-    return d;
-}
-
-/* each child: a few loads unless it has work */
-static void run_kids(npf_loop *l)
-{
-    int k;
-    for (k = 0; k < l->nkids; k++) {
-        npf_loop *c = l->kids[k];
-        int woken = __atomic_load_n(&c->woken, __ATOMIC_ACQUIRE);
-        int timers = c->nheap > 0 && c->heap[0]->due <= l->now;
-        int stop = __atomic_load_n(&c->stop, __ATOMIC_ACQUIRE);
-        npf_log_ctx *prev;
-        if (!woken && !timers && !stop)
-            continue;
-        c->now = l->now;
-        prev = ctx_enter(c);
-        if (woken)
-            run_wake_hook(c);
-        if (timers)
-            fire_timers(c);
-        if (stop && !c->ending) {
-            c->ending = 1;
-            c->end_due = l->now;
-        }
-        if (c->ending && c->end_due <= npf_mono_ms()) {
-            int ms = c->cf.end(c, c->carg);
-            if (ms < 0) {
-                npf_log_ctx_swap(prev);
-                ep_all(c, 0);           /* its sockets out of the queue: they may be closed and reused */
-                c->attached = 0;
-                l->kids[k] = l->kids[--l->nkids];
-                k--;
-                c->cf.done(c, c->carg);     /* the last use of c here */
-                continue;
-            }
-            c->end_due = npf_mono_ms() + ms;
-        }
-        npf_log_ctx_swap(prev);
-    }
-}
-
 void npf_loop_once(npf_loop *l, int max_ms)
 {
     int k, wait;
     l->now = npf_mono_ms();
     wait = wait_until(max_ms, l->nheap > 0 ? l->heap[0]->due : INT64_MAX, l->now);
     for (k = 0; k < l->nkids; k++)
-        wait = wait_until(wait, child_due(l->kids[k]), l->now);
+        wait = wait_until(wait, loop_child_due(l->kids[k]), l->now);
     wait_io(l, wait);
     l->now = npf_mono_ms();
-    run_wake_hook(l);                   /* attaches among them */
-    fire_timers(l);
-    run_kids(l);
+    loop_run_woken(l);              /* attaches among them */
+    loop_fire_timers(l);
+    loop_run_kids(l);
     free_grave(l);                      /* no event of this batch names them any more */
 }
 
@@ -1011,7 +819,7 @@ void npf_timer_cancel(npf_loop *l, npf_timer *t)
 void npf_loop_run(npf_loop *l)
 {
     while (!__atomic_load_n(&l->stop, __ATOMIC_ACQUIRE)) {
-        run_wake_hook(l);           /* a signal that arrived during a callback */
+        loop_run_woken(l);          /* a signal that arrived during a callback */
         npf_loop_once(l, -1);
     }
 }
