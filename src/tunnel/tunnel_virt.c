@@ -53,7 +53,7 @@ static void vend_close(sublink *s)
         s->local_eof = 1;
         if (!s->fin_first)
             s->fin_first = 1;
-        tunnel_send_frame(t, s->id, FR_FIN, NULL, 0);
+        tunnel_send_fin(t, s->id);
     }
     s->shut_wr = 1;                     /* no local end to shut down */
     s->gone = 1;

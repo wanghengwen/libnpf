@@ -121,6 +121,30 @@ void tunnel_rate_take(sublink *s, int up, size_t n)
     }
 }
 
+/* the group's place (a free one taken, its buckets full), its rate the
+ * mapping's current one; NULL when NPF_RATE_GROUPS are in use. Rate 0:
+ * counted (npf_tunnel_group_count), not limited */
+rgroup *tunnel_rate_group(npf_tunnel *t, uint32_t group, uint32_t rate)
+{
+    rgroup *g = NULL;
+    int i;
+    for (i = 0; i < t->nrg && (!g || g->id != group); i++)
+        if (t->rg[i].id == group || (!g && !t->rg[i].id))
+            g = &t->rg[i];                  /* its own, else the first a closed group left */
+    if (!g) {
+        if (t->nrg == NPF_RATE_GROUPS)
+            return NULL;
+        g = &t->rg[t->nrg++];
+    }
+    if (g->id != group) {
+        g->id = group;
+        g->up = g->down = rate;
+        g->at_ms = npf_mono_ms();
+    }
+    g->rate = rate;
+    return g;
+}
+
 int npf_tunnel_group_count(const npf_tunnel *t, uint32_t group)
 {
     int i, n = 0;
