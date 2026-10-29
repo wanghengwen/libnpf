@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "npf/noise.h"
+#include "npf/platform.h"
 #include "npf/sig.h"
 #include "npf/ws.h"
 
@@ -14,6 +15,7 @@ struct npf_sig {
     npf_noise_hs hs;
     npf_noise_cs tx, rx;
     uint8_t      hash[64];
+    int64_t      last_tx;               /* monotonic ms of our last message or ping, 0 = none */
     int          ready;
 };
 
@@ -134,12 +136,22 @@ int npf_sig_send(npf_sig *s, const char *json, size_t len)
     if (n >= 0)
         r = npf_ws_send(s->ws, out, (size_t)n, 1);
     free(out);
+    if (r == 0)
+        s->last_tx = npf_mono_ms();
     return r;
 }
 
 int npf_sig_ping(npf_sig *s)
 {
-    return s->ws ? npf_ws_ping(s->ws) : -1;
+    int r = s->ws ? npf_ws_ping(s->ws) : -1;
+    if (r == 0)
+        s->last_tx = npf_mono_ms();
+    return r;
+}
+
+int64_t npf_sig_last_tx(const npf_sig *s)
+{
+    return s->last_tx;
 }
 
 int64_t npf_sig_last_rx(const npf_sig *s)
