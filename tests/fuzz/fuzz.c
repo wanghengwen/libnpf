@@ -61,6 +61,26 @@ static void fuzz_json(const uint8_t *d, size_t n)
         }
     }
     npf_json_eq(&j, npf_json_get(&j, 0, "status"), "ok");
+    {   /* our own JSON takes all a message may be; each string written back reads the same */
+        npf_json big;
+        if (npf_json_parse_big(&big, s, n) < 0 || big.ntok != j.ntok)
+            abort();
+        npf_json_free(&big);
+        for (t = 0; t < j.ntok; t++) {
+            npf_out o = {0};
+            npf_jtok one[1];
+            npf_json w;
+            char back[300];
+            int l = j.tok[t].type == NPF_JT_STRING ? npf_json_str(&j, t, buf, sizeof buf) : -1;
+            if (l < 0)
+                continue;
+            npf_out_json_str(&o, buf, (size_t)l);
+            if (o.failed || npf_json_parse(&w, o.p, o.len, one, 1) < 0 || npf_json_str(&w, 0, back, sizeof back) != l
+                || memcmp(buf, back, (size_t)l) != 0 || (l < 256 && !npf_json_eq(&j, t, back)))
+                abort();
+            npf_out_free(&o);
+        }
+    }
 }
 
 /* what a parse leaves, whatever the input: strings terminated within their

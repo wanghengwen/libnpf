@@ -570,7 +570,7 @@ static void status(npf_t *n, npf_out *o)                   /* 状态 JSON 里的
 {
     acme *a = npf_mod_state(n, &acme_module);
     npf_out_jkey(o, "acme");                                /* 逗号由 npf_out 自己写 */
-    npf_out_jobj(o);                                        /* npf/out.h：jobj / jarr / jend、k* 成员 */
+    npf_out_jobj(o);                                        /* npf/json.h：jobj / jarr / jend、k* 成员 */
     npf_out_kint(o, "hellos", a->hellos);
     npf_out_jend(o);
 }
@@ -624,7 +624,7 @@ target_link_libraries(acme-app PRIVATE npf_common)
 - 一种新的转发：在 `create` 钩子里用 `npf_peers_add_kind` 登记一个 `npf_fwd_kind`（大写字母，以及解析、检查、建立、撤销的回调），用 `npf_peer_forward_add_kind` 加到对端上，库像本地转发一样保存、重试、随对端删除；`npf_peers_fwd_call` 给出这条转发所在的会话；
 - 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`），库原样保留；
 - 状态 JSON 里模块的字段和库的字段在同一个对象里，模块应使用带自己前缀的键名，避免与库现有或以后的字段重名；
-- 库里写 JSON 只有 `npf_out`（`include/npf/out.h`）：`npf_out_jobj` / `jarr` / `jend` 开合容器，`npf_out_kstr` / `kint` / `kbool` / `kb64` 写成员、`jstr` / `jint` 等写数组项，逗号与转义（键也转义）由它负责；模块发给平台的消息（`npf_node_send`、`npf_node_request` 的 `data`）也这样写，`w.failed` 为真时不发，用完 `npf_out_free`。`max` 限定总长（库的信封是 `NPF_JSON_MAX_SIZE`），`secret` 让含口令的文字在增长与释放时擦除；
+- JSON 的读与写都在 `include/npf/json.h`（`src/proto/json.c`）：读是严格的 token 式解析（`npf_json_parse`，自己的大 JSON 如 local.json、状态用 `npf_json_parse_big`，token 在堆上），写在 `npf_out`（`include/npf/out.h`，通用的可增长文字缓冲）上：`npf_out_jobj` / `jarr` / `jend` 开合容器，`npf_out_kstr` / `kint` / `kbool` / `kb64` 写成员、`jstr` / `jint` 等写数组项，逗号与转义（键也转义）由它负责；模块发给平台的消息（`npf_node_send`、`npf_node_request` 的 `data`）也这样写，`w.failed` 为真时不发，用完 `npf_out_free`。`max` 限定总长（库的信封是 `NPF_JSON_MAX_SIZE`），`secret` 让含口令的文字在增长与释放时擦除；
 - `tests/api/test_module.c` 是一个完整的例子：注册（重复、冲突、上限）、命令、配置键的检查、即时生效与只能来自 npf.conf 的键、`conf_set`、状态字段、销毁、创建失败时的清理，以及注册之前创建的实例。
 
 ## 13. 日志与排查

@@ -76,13 +76,12 @@ static int array(const npf_field *f, const npf_json *j, int t, uint8_t *base, ch
 /* the value at token t into its place: 0, or -1 (err says why) */
 static int value(const npf_field *f, const npf_json *j, int t, uint8_t *base, char *err, size_t cap)
 {
-    const npf_jtok *k = &j->tok[t];
     uint8_t *p = base + f->off;
     int64_t v;
     int l;
     switch (f->type) {
     case NPF_F_STR:
-        if (k->type != NPF_JT_STRING || (l = npf_json_str(j, t, (char *)p, f->size)) < 0)
+        if ((l = npf_json_str(j, t, (char *)p, f->size)) < 0)
             return bad(err, cap, f->key, "not a string, or too long");
         if (!l && (f->flags & NPF_F_REQ))
             return bad(err, cap, f->key, "empty");
@@ -101,8 +100,7 @@ static int value(const npf_field *f, const npf_json *j, int t, uint8_t *base, ch
     case NPF_F_BOOL:
         return npf_json_bool(j, t, (int *)(void *)p) < 0 ? bad(err, cap, f->key, "not true or false") : 0;
     case NPF_F_B64:
-        if (k->type != NPF_JT_STRING || k->escaped
-            || (l = npf_b64url_decode(j->s + k->start, k->end - k->start, p, f->size)) < f->min || l < 1)
+        if ((l = npf_json_b64(j, t, p, f->size)) < f->min || l < 1)
             return bad(err, cap, f->key, "not base64url of the length wanted");
         if (f->aux)
             set_int(base, f->aux, l);
@@ -126,7 +124,7 @@ static int value(const npf_field *f, const npf_json *j, int t, uint8_t *base, ch
     case NPF_F_ARR:
         return array(f, j, t, base, err, cap);
     case NPF_F_TOK:
-        if (f->min && k->type != f->min)
+        if (f->min && j->tok[t].type != f->min)
             return bad(err, cap, f->key, "of another JSON type");
         set_int(base, f->off, t);
         return 0;
@@ -134,17 +132,12 @@ static int value(const npf_field *f, const npf_json *j, int t, uint8_t *base, ch
     return bad(err, cap, f->key, "no such type");
 }
 
-/* the field of the key at token t (NULL: unknown) */
+/* the field of the key at token t, -1 unknown */
 static int find(const npf_msgdesc *d, const npf_json *j, int t)
 {
-    const npf_jtok *k = &j->tok[t];
-    char buf[64];
     int i;
-    if (k->escaped && npf_json_str(j, t, buf, sizeof buf) < 0)
-        return -1;
     for (i = 0; i < d->nf; i++)
-        if (k->escaped ? strcmp(buf, d->f[i].key) == 0
-                       : k->end - k->start == strlen(d->f[i].key) && memcmp(j->s + k->start, d->f[i].key, k->end - k->start) == 0)
+        if (npf_json_eq(j, t, d->f[i].key))
             return i;
     return -1;
 }

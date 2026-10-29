@@ -24,7 +24,6 @@
 #include "npf/local.h"
 #include "npf/log.h"
 #include "npf/node.h"
-#include "npf/out.h"
 #include "npf/peers.h"
 #include "npf/platform.h"
 
@@ -161,7 +160,7 @@ typedef struct npf_module {
     const npf_mod_cmd *cmds;
 
     /* the status: members of its own in the JSON object, written with
-     * npf_out_kstr, npf_out_jkey and the rest (npf/out.h: the commas come by
+     * npf_out_kstr, npf_out_jkey and the rest (npf/json.h: the commas come by
      * themselves); names with the module's prefix */
     void (*status_json)(npf_t *n, npf_out *o);
 

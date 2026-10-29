@@ -18,7 +18,6 @@
 #include "npf/json.h"
 #include "npf/loop.h"
 #include "npf/natprobe.h"
-#include "npf/out.h"
 #include "npf/portmap.h"
 #include "npf/sig.h"
 #include "npf/testhooks.h"
