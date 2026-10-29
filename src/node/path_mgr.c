@@ -277,6 +277,16 @@ void call_paths_init(npf_call *c)
     c->pm.heard_at = -1;
 }
 
+/* a punching round to wait for (architecture.md 3.6): one scheduled,
+ * waiting for the keys or running, or one planned and let go (busy, the
+ * peer's stop: the platform sends it again). Not before the first
+ * punch_start: none may come (a pairing that never checks out, the
+ * platform not planning), and the session waited 15 s for nothing */
+static int call_punch_coming(const npf_call *c)
+{
+    return !call_no_p2p(c) && c->punch_st < PN_LINGER && (c->punch_st != PN_NONE || c->punch_round > 0);
+}
+
 /* ---- the session's paths' health ---- */
 
 /* The health rules (pm_tick) for a session with its AnLiu connection,
@@ -311,7 +321,7 @@ void pm_check(npf_call *c)
         due = pm_tick(m, now, st.inflight, (int)st.rto);
     }
     in = (c->caller ? PM_IN_CALLER : 0) | (c->caller && c->st == CS_CALLING ? PM_IN_HOLD : 0)
-         | (call_up(c) ? PM_IN_UP : 0) | (!call_no_p2p(c) && c->punch_st < PN_LINGER ? PM_IN_PUNCH : 0)
+         | (call_up(c) ? PM_IN_UP : 0) | (call_punch_coming(c) ? PM_IN_PUNCH : 0)
          | (n->nat_valid && n->nat_udp && !n->th.no_udp ? PM_IN_UDP : 0)
          | (n->udp_back_ms > c->pw.p.since ? PM_IN_UDP_BACK : 0) | (n->th.no_udp && c->keys_ready ? PM_IN_NOUDP : 0)
          | (call_has_relay(c) && c->pu.p.health == PH_DEAD && call_hard_punches(n, c) > 0 ? PM_IN_PORTS : 0);
