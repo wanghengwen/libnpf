@@ -173,7 +173,7 @@ int main(int argc, char **argv)
     npf_direct_genpsk(k); npf_direct_psk(k, NULL, psk);
     snprintf(spec, sizeof spec, "127.0.0.1:%d", 20000 + (int)npf_rand_range(0, 20000));
     dl = npf_direct_listen(&L.node, spec, psk, &pol);
-    npf_direct_resolve(spec, &to);
+    npf_addr_parse(spec, &to);
     tag = 2;
     base = live[0];
     printf("callee baseline (node + listener): %ld bytes in %ld blocks\n", base, blocks[0]);

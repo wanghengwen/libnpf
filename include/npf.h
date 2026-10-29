@@ -143,8 +143,8 @@ typedef struct npf_callbacks {
      *   "resources" {session, resources}: the peer's published list;
      *   "stopped" {}: the run has ended; the last event;
      *   and the events of the program's modules (npf/module.h).
-     * From "peer_done" and "forward" the peer must not be removed
-     * (npf_peer_remove): remove it later (a timer, another thread). */
+     * Any of them may remove the peer (npf_peer_remove), "peer_done" and
+     * "forward" of that peer too: nothing more comes of it. */
     void (*event)(void *user, const char *name, const char *json);
     /* A session came up (up 1, info {"peer", "path", "direction",
      * "call_id"}) or ended (up 0, info {"why"}). Its media streams end
@@ -368,8 +368,7 @@ NPF_API void npf_peer_opt_init_size(npf_peer_opt *o, size_t size);
  * build), NPF_EBUSY (NPF_PEERS_SAVED_MAX). */
 NPF_API int npf_peer_create(npf_t *n, const npf_peer_opt *o, uint32_t *peer, char *err, size_t errcap);
 /* Ends its session and removes its forwards; a persisted one leaves
- * local.json. NPF_EREADONLY: an NPF_PLATFORM peer. Not from the "peer_done"
- * or "forward" event of that peer. */
+ * local.json. NPF_EREADONLY: an NPF_PLATFORM peer. From any callback too. */
 NPF_API int npf_peer_remove(npf_t *n, uint32_t peer);
 /* by target ("318204776", "host:9000") or name */
 NPF_API int npf_peer_find(npf_t *n, const char *target_or_name, uint32_t *peer);

@@ -75,14 +75,14 @@ static void rules(void)
 
     /* signaling.md's punch_start: the values, the defaults of those absent */
     CHECK(parse(&m_punch_start_d, "{\"call_id\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"round\":2,\"punch_id\":\"AQIDBAUGBwg\","
-                "\"punch_key\":\"q7NcAXdtz5mHUsjvYH0h9Ur3K4YQqsvT8h4mlj_5Ecc\",\"role\":\"controlling\",\"strategy\":\"S3\","
+                "\"punch_key\":\"q7NcAXdtz5mHUsjvYH0h9Ur3K4YQqsvT8h4mlj_5Ecc\",\"strategy\":\"S3\","
                 "\"side\":\"easy\",\"peer\":{\"cand\":[{\"t\":\"srflx\",\"a\":\"198.51.100.7:51234\"},{\"t\":\"host6\","
                 "\"a\":\"[2001:db8::7]:9\"},{\"t\":\"x\",\"a\":\"nope\"}],\"pub_ip\":\"198.51.100.7\"},"
-                "\"range\":[20480,22527],\"m_total\":1024,\"pps\":200,\"delta\":1,\"start_at\":1791100000300}",
+                "\"range\":[20480,22527],\"m_total\":1024,\"pps\":200,\"peer_delta\":1,\"start_at\":1791100000300}",
                 &ps, err, sizeof err) == 0, "punch_start: %s", err);
     CHECK(ps.round == 2 && ps.punch_id_len == 8 && ps.punch_id[0] == 1 && ps.punch_key_len == 32
           && strcmp(ps.strategy, "S3") == 0 && ps.peer.ncand == 2 && ps.peer.cand[1].a.ss_family == AF_INET6
-          && strcmp(ps.peer.pub_ip, "198.51.100.7") == 0 && ps.nrange == 2 && ps.range[1] == 22527 && ps.delta == 1
+          && strcmp(ps.peer.pub_ip, "198.51.100.7") == 0 && ps.nrange == 2 && ps.range[1] == 22527 && ps.peer_delta == 1
           && ps.start_at == 1791100000300LL, "punch_start's values");
     CHECK(ps.timeout_ms == 8000 && ps.window == 32 && ps.passes == 4 && ps.n_sockets == 0 && ps.peer_n == 0
           && !ps.skip[0], "punch_start's defaults");
@@ -258,7 +258,7 @@ static void doc_ranges(void)
         }
     }
     fclose(f);
-    CHECK(seen == 9, "signaling.md: %d of punch_start's nine optional values", seen);
+    CHECK(seen == 8, "signaling.md: %d of punch_start's eight optional values", seen);
 }
 
 int test_msg(void)

@@ -93,8 +93,14 @@ npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, con
     size_t pl = 8 + npf_rand_range(0, 64);
     int len;
     char a[64];
-    npf_call *c = direct_call(n, 1, n->udp_fd, to);
-    if (!c)
+    int fd = to->ss_family == AF_INET6 ? n->udp6_fd : n->udp_fd;
+    npf_call *c;
+    if (fd < 0) {
+        npf_logw("direct: no %s socket for %s", to->ss_family == AF_INET6 ? "IPv6" : "IPv4",
+                 npf_addr_str(to, a, sizeof a));
+        return NULL;
+    }
+    if (!(c = direct_call(n, 1, fd, to)))
         return NULL;
     if (npf_noise_init(&c->hs->noise, NPF_NOISE_NNPSK0, 1, DIRECT_PROLOGUE, strlen(DIRECT_PROLOGUE), NULL, NULL, psk) < 0) {
         call_free(c);
@@ -288,28 +294,6 @@ static void direct_io(npf_loop *loop, int fd, unsigned ev, void *arg)
     }
 }
 
-int npf_direct_resolve(const char *spec, struct sockaddr_storage *out)
-{
-    char host[256];
-    const char *colon = strrchr(spec, ':');
-    struct addrinfo hints, *res;
-    int r;
-    if (!colon || (size_t)(colon - spec) >= sizeof host)
-        return -1;
-    memcpy(host, spec, (size_t)(colon - spec));
-    host[colon - spec] = 0;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;             /* the node's sockets are IPv4 */
-    hints.ai_socktype = SOCK_DGRAM;
-    if (getaddrinfo(host[0] ? host : "0.0.0.0", colon + 1, &hints, &res) != 0)
-        return -1;
-    memset(out, 0, sizeof *out);
-    memcpy(out, res->ai_addr, res->ai_addrlen);
-    r = ((struct sockaddr_in *)out)->sin_port ? 0 : -1;
-    freeaddrinfo(res);
-    return r;
-}
-
 int npf_direct_psk(const char *key, const char *file, uint8_t psk[32])
 {
     char *s = NULL;
@@ -354,20 +338,21 @@ npf_direct *npf_direct_listen(npf_node *n, const char *spec, const uint8_t psk[3
     struct sockaddr_storage a;
     char buf[300];
     npf_direct *d;
-    int fd, sz = 4 << 20;
-    /* "port" alone means all interfaces */
-    if (!strchr(spec, ':'))
-        snprintf(buf, sizeof buf, "0.0.0.0:%s", spec);
-    else
-        snprintf(buf, sizeof buf, "%s", spec);
-    if (npf_direct_resolve(buf, &a) < 0)
+    int fd, sz = 4 << 20, one = 1;
+    /* "port" alone means every IPv4 address; an address, not a name */
+    snprintf(buf, sizeof buf, strchr(spec, ':') ? "%s" : "0.0.0.0:%s", spec);
+    if (npf_addr_parse(buf, &a) < 0 || !npf_addr_port(&a)) {
+        npf_logw("direct: listen on [ADDR:]PORT, an IPv4 or [IPv6] address (not %s)", spec);
         return NULL;
-    fd = npf_socket(AF_INET, SOCK_DGRAM, 0, 0);
+    }
+    fd = npf_socket(a.ss_family, SOCK_DGRAM, 0, 0);
     if (fd < 0)
         return NULL;
-    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof sz);
-    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof sz);
-    if (bind(fd, (struct sockaddr *)&a, sizeof(struct sockaddr_in)) < 0) {
+    if (a.ss_family == AF_INET6)
+        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&one, sizeof one);
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char *)&sz, sizeof sz);
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const char *)&sz, sizeof sz);
+    if (bind(fd, (struct sockaddr *)&a, npf_addr_len(&a)) < 0) {
         npf_sock_close(fd);
         return NULL;
     }

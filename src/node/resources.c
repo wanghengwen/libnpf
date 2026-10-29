@@ -243,9 +243,10 @@ void npf_res_json(npf_out *o, const npf_res *r, int n)
 
 int npf_res_rules(npf_policy *p, const npf_res *r, int n)
 {
+    npf_policy q = *p;                      /* made apart (what "lan" stands for kept): p whole or untouched */
     char host[64], spec[96];
     int i, k, port = 0;
-    npf_policy_clear(p);
+    npf_policy_clear(&q);
     for (i = 0; i < n; i++) {
         const char *t = r[i].target;
         if ((k = type_of(&r[i])) < 0)
@@ -257,14 +258,15 @@ int npf_res_rules(npf_policy *p, const npf_res *r, int n)
             return -1;
         if (npf_res_is_service(&r[i]) && strcmp(host, "localhost") == 0) {
             snprintf(spec, sizeof spec, "127.0.0.1:%d", port);
-            if (k_types[k].add(p, spec) < 0)
+            if (k_types[k].add(&q, spec) < 0)
                 return -1;
             snprintf(spec, sizeof spec, "[::1]:%d", port);
             t = spec;
         }
-        if (k_types[k].add(p, t) < 0)
+        if (k_types[k].add(&q, t) < 0)
             return -1;
     }
+    *p = q;
     return 0;
 }
 

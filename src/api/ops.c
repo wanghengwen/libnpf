@@ -129,10 +129,11 @@ static int lfwd_of(const npf_peer *p, int i, npf_lfwd *lf)
 
 int npf_ops_record(npf_t *n, npf_peer *p, int save, const char *psk_file)
 {
-    npf_ldev *d = npf_local_dev(&n->lc, npf_peer_name(p), save);
+    npf_ldev *d;
     int i;
-    if (no_saved_objects(n))
-        return NPF_OK;                      /* the application keeps its own */
+    if (no_saved_objects(n) || (save && npf_peers_by_id(n->peers, npf_peer_id(p)) != p))
+        return NPF_OK;                      /* the application keeps its own; removed in a callback meanwhile */
+    d = npf_local_dev(&n->lc, npf_peer_name(p), save);
     if (!d)
         return save ? NPF_EBUSY : NPF_OK;
     d->save = save;

@@ -140,6 +140,15 @@ int test_policy(void)
         CHECK(!allowed4(&p, "1.1.1.1", 80) && !p.lan, "nothing else");
         CHECK(npf_res_rules(&p, r, 4) == 0 && allowed4(&p, "1.1.1.1", 80), "with the exit");
         CHECK(npf_res_rules(&p, r, 0) == 0 && !allowed4(&p, "127.0.0.1", 8080), "none: nothing");
+        {   /* one that does not fit: nothing of the list, the policy as it was */
+            npf_res bad[2];
+            CHECK(npf_res_rules(&p, r, 1) == 0, "a service");
+            bad[0] = r[2];
+            bad[1] = r[0];
+            snprintf(bad[1].type, sizeof bad[1].type, "bogus");
+            CHECK(npf_res_rules(&p, bad, 2) < 0 && allowed4(&p, "127.0.0.1", 8080) && !allowed4(&p, "192.168.50.9", 445),
+                  "a list that does not fit: -1, the policy unchanged (not half of the new list)");
+        }
         {   /* reverse: the ports a caller may have this node listen on (-R) */
             npf_res rv[2];
             CHECK(!npf_policy_reverse_ok(&p, 8000, 0) && !npf_policy_reverse_ok(NULL, 8000, 0), "no reverse resource: -R refused");

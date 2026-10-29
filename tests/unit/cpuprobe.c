@@ -105,7 +105,7 @@ int main(int argc, char **argv)
     npf_direct_genpsk(k); npf_direct_psk(k, NULL, psk);
     snprintf(spec, sizeof spec, "127.0.0.1:%d", 20000 + (int)npf_rand_range(0, 20000));
     dl = npf_direct_listen(&L.node, spec, psk, &pol);
-    npf_direct_resolve(spec, &to);
+    npf_addr_parse(spec, &to);
     /* the sink */
     sink_fd = socket(AF_INET, SOCK_STREAM, 0);
     memset(&sa, 0, sizeof sa); sa.sin_family = AF_INET; sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

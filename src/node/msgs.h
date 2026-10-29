@@ -115,7 +115,7 @@ NODE_MSG(m_peer, M_PEER)
     F_STR(T, strategy, 8, 0) F_STR(T, side, 8, 0) F_B64(T, punch_id, 8, 0, 8) F_B64(T, punch_key, 32, F_SECRET, 32) \
     F_OBJ(T, peer, m_peer, 0) F_ARR(T, range, m_port, 2, 0) F_INT(T, m_total, 0, 0, 4000, 1024) \
     F_INT(T, pps, 0, 1, 1000, 200) F_INT(T, n_sockets, 0, 0, 256, 0) F_INT(T, timeout_ms, 0, 1000, 600000, 8000) \
-    F_INT(T, delta, 0, -64, 64, 0) F_INT(T, peer_delta, 0, -64, 64, 0) F_INT(T, window, 0, 1, 128, 32) \
+    F_INT(T, peer_delta, 0, -64, 64, 0) F_INT(T, window, 0, 1, 128, 32) \
     F_INT(T, passes, 0, 1, 8, 4) F_INT(T, peer_n, 0, 1, 256, 0) F_INT(T, start_at, 0, 0, F_TIME_MAX, -1)
 NODE_MSG(m_punch_start, M_PUNCH_START)
 #define M_PUNCH_INFO(T) F_B64X(T, call_id, 16, 0) F_INT(T, round, F_REQ, 0, 1000, 0) F_INT(T, port, 0, 1024, 65535, 0) \

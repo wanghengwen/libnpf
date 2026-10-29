@@ -222,7 +222,7 @@ static void fwd_changed(pfwd *f)
 {
     npf_peers *ps = f->p->ps;
     int st = fwd_state_of(f);
-    if (st == f->told_state && f->lport == f->told_port && f->why_code == f->told_why)
+    if (f->p->removed || (st == f->told_state && f->lport == f->told_port && f->why_code == f->told_why))
         return;
     f->told_state = st;
     f->told_port = f->lport;
@@ -434,7 +434,7 @@ void peers_listeners_close(npf_peer *p)
 void peers_forwards_start(npf_peer *p)
 {
     int i;
-    for (i = 0; i < p->nfwd; i++)
+    for (i = 0; i < p->nfwd && !p->removed; i++)    /* (removed in a forward event) */
         fwd_start(p->fwds[i]);
     p->listening = 1;
 }
@@ -443,7 +443,7 @@ void peers_forwards_start(npf_peer *p)
 void peers_forwards_session_gone(npf_peer *p)
 {
     int i;
-    for (i = 0; i < p->nfwd; i++) {
+    for (i = 0; i < p->nfwd && !p->removed; i++) {
         pfwd *f = p->fwds[i];
         if (f->reverse) {
             npf_timer_stop(p->ps->n->loop, &f->t_retry);
@@ -493,6 +493,10 @@ static int fwd_put(npf_peer *p, pfwd *tmp, int perm, uint64_t ext, char *err, si
     pfwd *f = NULL;
     int i;
     char o = tmp->opt;
+    if (p->removed) {
+        snprintf(err, errcap, "%s: removed", p->name);
+        return -3;
+    }
     for (i = 0; i < p->nfwd; i++)
         if (p->fwds[i]->used && fwd_same(p->fwds[i], tmp)) {
             snprintf(err, errcap, "%s: forward #%d is that one already (%s)", p->name, p->fwds[i]->id, p->fwds[i]->spec);

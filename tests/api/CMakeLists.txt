@@ -21,6 +21,11 @@ if(NPF_BUILD_LIB AND NOT WIN32)
     target_link_libraries(npf_objects_test PRIVATE npf_shared Threads::Threads)
     npf_target_options(npf_objects_test)
     add_test(NAME objects COMMAND npf_objects_test)
+    # peers: a direct one at an IPv6 address, removed from their own callbacks
+    add_executable(npf_peers_test test_peers.c)
+    target_link_libraries(npf_peers_test PRIVATE npf_shared Threads::Threads)
+    npf_target_options(npf_peers_test)
+    add_test(NAME peers COMMAND npf_peers_test)
   endif()
   # the contracts: the initialisers' sizes, changes that cannot be saved
   add_executable(npf_contract_test test_contract.c)

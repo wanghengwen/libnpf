@@ -416,16 +416,15 @@ enum { NPF_AUTH_IK = 1, NPF_AUTH_PAKE, NPF_AUTH_GRANT, NPF_AUTH_DIRECT };
 /* ---- direct connections (no platform): Noise_NNpsk0 over UDP with a
  * 32-byte pre-shared key, then the same tunnel as a call ---- */
 typedef struct npf_direct npf_direct;
-/* Listens on "[addr:]port" (IPv4; port alone: every address); psk is copied
- * and wiped at close. policy: the target policy of its sessions (kept, not
- * owned). NULL on failure. */
+/* Listens on "ADDR:PORT" or "[IPv6]:PORT" (an address; PORT alone: every
+ * IPv4 address); psk is copied and wiped at close. policy: the target
+ * policy of its sessions (kept, not owned). NULL on failure. */
 npf_direct *npf_direct_listen(npf_node *n, const char *spec, const uint8_t psk[32], struct npf_policy *policy);
 /* Ends its sessions and closes it; NULL is ignored. */
 void        npf_direct_close(npf_direct *d);
-/* Connects to a listener; the call reports its states like any other. NULL on failure. */
+/* Connects to a listener from the node's main socket of to's family; the
+ * call reports its states like any other. NULL on failure (no such socket). */
 npf_call   *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, const uint8_t psk[32]);
-/* "HOST:PORT" to an IPv4 address; blocks on the name lookup. 0, -1. */
-int         npf_direct_resolve(const char *spec, struct sockaddr_storage *out);
 /* The pre-shared key from key (Base64url of 32 bytes) or, key NULL, from file;
  * on POSIX a file open to group or others is refused. 0, or -1 (logged). */
 int         npf_direct_psk(const char *key, const char *file, uint8_t psk[32]);

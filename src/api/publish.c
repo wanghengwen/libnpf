@@ -198,10 +198,9 @@ static int pub_set(npf_t *n, npf_res *r, int m, char *err, size_t errcap)
     npf_out_free(&t);
     n->res = r;
     n->nres = m;
-    if (npf_pub_apply(n) < 0) {
+    if (npf_pub_apply(n) < 0) {             /* the policies unchanged: the list stays as it was */
         n->res = old;
         n->nres = nold;
-        npf_pub_apply(n);                   /* what it was: it fitted */
         free(r);
         snprintf(err, errcap, "too many targets for the policy table");
         return NPF_EFAIL;

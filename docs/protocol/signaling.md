@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.60。更新日期：2026-10-29。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.61。更新日期：2026-10-29。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -717,11 +717,11 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
   "call_id": "...", "round": 1,
   "punch_id": "<8 字节，PROBE 中的 session_id>",
   "punch_key": "...",
-  "role": "controlling", "strategy": "S3", "side": "easy",
+  "strategy": "S3", "side": "easy",
   "peer": {"cand": [...], "pub_ip": "198.51.100.7"},
   "range": [20480, 22527], "m_total": 1024, "pps": 200,
   "n_sockets": 0,
-  "delta": 1, "peer_delta": 2, "window": 32, "passes": 4,
+  "peer_delta": 2, "window": 32, "passes": 4,
   "timeout_ms": 8000, "start_at": 1791100000300
 }}
 ```
@@ -730,14 +730,13 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 |---|---|
 | `round` | 本次呼叫的第几轮打洞，接受 1–1000，必须大于本端已经记录的轮次 |
 | `punch_id`、`punch_key` | 每轮新生成，Base64url 解码后分别为 8、32 字节（nat-traversal.md 6.5） |
-| `role` | 主叫为 `controlling`，被叫为 `controlled`；当前节点按会话角色确定，不读取此字段 |
 | `strategy` | 平台可标记 `S0`（IPv6）、`S1`、`S2`、`S3`、`S4`、`S2B`（S5 已去掉，2026-10-27）。节点把 `S2` / `S3` / `S4` 映射到 S3 执行器，`S2B` / `S5` 单独处理，其余按 S1 执行；IPv6 通过候选参与探测 |
 | `side` | `easy` / `hard`，只对 S2、S3、S4 有意义；S4 的 `easy` 是喷包的一方（它自己也是难侧），`hard` 是开新 socket 接收的一方 |
 | `peer.cand` | 对方的候选（含平台按画像算出的 `pred`） |
 | `peer.pub_ip` | S3 易侧（以及 S4 喷包方、S2B）喷包的目标 IP；只在对方的 `pub_ip` 已验证（是平台"见到"它的 IP，见"公共字段"）时给出，否则为空字符串：这一轮只有 S1，日志记一行，呼叫记录里这一侧的 `nat.unverified` 为 `true`。节点不喷环回、组播、广播、平台端点之类的地址（安全设计 11.1） |
 | `range`、`m_total`、`pps` | S3 / S4 喷包一方的喷包范围、总数、速率；`range` 为空表示整个端口空间，`range[0] > range[1]` 表示跨过 65535 |
 | `n_sockets` | S3 / S4 开新 socket 的一方新建的 socket 数 |
-| `delta`、`peer_delta`、`window`、`passes` | S2B：本方与对方 NAT 的分配步长，每遍的探测数与遍数；S2 易侧的 `peer_delta`：难侧 NAT 的步长 |
+| `peer_delta`、`window`、`passes` | S2B：对方 NAT 的分配步长，每遍的探测数与遍数；S2 易侧的 `peer_delta`：难侧 NAT 的步长。打洞的角色（控制方与受控方）由会话角色定：主叫控制 |
 | `peer_n` | S2 易侧（2026-10-26）：难侧新开的 socket 数。S2 的难侧在开始时从第一个新 socket 向 E1 发 `BIND_REQ` 测出它现在的映射端口 q0，经 `punch_info{port}` 告诉易侧（与 S2B 相同）；易侧在此之前按 `range`（预测的端口，没有时全部端口）喷，收到后依次喷 q0 + k·δ（k = 1…3·`peer_n`，再 0…−`peer_n`），然后喷全部端口直到 `m_total` |
 | `timeout_ms` | 这一轮的时长。S3、S2、S4（2026-10-26）按喷包时长给：150 ms 先导 + `m_total` / `pps` + 1.5 秒（2000 个、每秒 200 个时 11.65 秒）；S1 8 秒，但对方什么也没来时节点 3 秒后（加入新候选后再等 2 秒）先报告失败（`punch_result` 的 `early`），这一轮照旧跑满；S2B 12 秒，双方端口都知道、4 遍发完 2.2 秒后仍什么也没收到时同样先报告 |
 | `start_at` | 开始发包的时刻（服务器时间，节点接受 0–2^50）。平台取"当前时间 + 两侧单向时延的较大值 + 150 ms 余量"；单向时延取实测往返时延的一半：平台每 30 秒（登录后 1 秒先测一次）向每条连接发 WebSocket ping，服务器之间同样测量，主叫在另一台服务器上时还要加上 SA 测得的主叫往返时延（`call` 帧的 `caller_rtt_ms`）与 SA–SB 的往返时延；未知时按 150 ms 计。S3 难侧比易侧早 100 ms 开始。**S1（含 S0）没有 `start_at`**（2026-10-26）：双方收到即开始，就像 ICE 收到应答就开始检查；只有一方的 `nat` 带 `lead`（主机防火墙要求它先发）时 S1 才带 `start_at`、照旧同步。S3、S4、S2、S2B 一直同步开始 |
@@ -751,7 +750,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `n_sockets` | 0–256 | 0 |
 | `peer_n` | 1–256（只用于 `strategy = S2` 的易侧） | 0 |
 | `timeout_ms` | 1000–600000 | 8000 |
-| `delta`、`peer_delta` | -64–64 | 0 |
+| `peer_delta` | -64–64 | 0 |
 | `window` | 1–128 | 32 |
 | `passes` | 1–8 | 4 |
 
@@ -1039,6 +1038,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-29 | 0.61 | `punch_start` 去掉没有人读的 `delta`（本方 NAT 的步长：S2B 的一方只用对方的 `peer_delta`）和 `role`（节点按会话角色定，主叫控制）；节点、平台一起部署 |
 | 2026-10-29 | 0.59 | WS 中转上 UDP 恢复（`udp_back`）只发一条 `relay_switch{call_id, mode: "udp", nat}`，平台先记下其中的画像再切换；`punch_update` 不再有 `why: "udp_back"`（节点、平台一起部署） |
 | 2026-10-29 | 0.60 | 中转分配 `relay` 的 `ws` 只是 URL（去掉 `server_id`：WS 中转不再做 Noise 握手，用 `alloc_key` 绑定，data-channel.md 0.54）；服务器之间的 `relay_alloc` 不再带 `callee_key`（multi-server.md） |
 | 2026-10-29 | 0.58 | 签名服务器列表的内容也按描述表检查：没有一台可用服务器（缺 `id`、`dh_pub` 不是 32 字节、没有非空的 `ws`）的列表整个不用并记一行警告；必需的数组不能为空；`grant_update` 送来与当前相同的目标列表时只记下 `issued`（不再每次重新分配、记日志）。消息格式不变 |

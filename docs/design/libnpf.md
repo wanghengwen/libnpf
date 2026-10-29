@@ -472,7 +472,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 **规则**
 
-- 回调在实例线程中串行执行，由库在产生事件的工作里直接调用，不排队。`peer_done` 和 `forward` 在库处理这个对端的过程中送达：回调里不能删除它（`npf_peer_remove`），要删除放到之后（定时器或另一个线程）；
+- 回调在实例线程中串行执行，由库在产生事件的工作里直接调用，不排队。任何回调里都可以删除对端（`npf_peer_remove`），包括这个对端自己的 `peer_done` 和 `forward`：对端在下一轮才释放，库里还在处理它的代码看到它已删除就停下，之后不再有它的事件；
 - `forward`、`peer_done` 的 `peer` 是对端的目标名（编号或 `HOST:PORT`），`npf_peer_find` 得到 ID，`npf_peer_get` 读出 `ctx`。事件里不带 `ctx`；
 - 对端的其他状态变化（连接中、退避等待）、对端或转发被删除、单条连接被对端拒绝都没有事件：需要时用 `npf_peer_get`（`state`、`needs`、`retry_in_ms`）和 `npf_forward_get`（`refused`）查询；
 - 新建转发时它的 `forward` 事件（`"up": false`）在 `npf_start` 之前就会送达；会话回调只在运行中出现。`session` 的建立先于这个会话的 `data` 和媒体回调；

@@ -65,7 +65,8 @@ struct npf_peer {
     char       label[33];           /* the name people gave it (local.json), "" none */
     uint64_t   number;              /* platform peer */
     int        direct;
-    struct sockaddr_storage to;     /* direct peer */
+    struct sockaddr_storage to;     /* direct peer: its address; family 0: a name, looked up per session */
+    struct npf_resolve *rs;         /* that lookup, while it runs (waiting too) */
     uint8_t    psk[32];
     char       password[128];       /* first pairing; wiped once paired */
     pfwd      *fwds[NPF_PEER_MAX_FWD];  /* 0 .. nfwd-1 allocated; a slot is never moved */
@@ -76,7 +77,7 @@ struct npf_peer {
     npf_timer *t_retry;
     char      *resources;           /* what it published, as last heard (resources.h): a JSON array */
     npf_call  *call;
-    int        waiting;             /* a grant_get is outstanding (for a session to start) */
+    int        waiting;             /* a grant_get or a direct peer's lookup is outstanding (for a session to start) */
     int        renewing;            /* one for the session's grant (a hosted client's): apart, so
                                        that a session ending meanwhile starts again */
     int        call_pinned;         /* the session was started on the pinned key (IK) */

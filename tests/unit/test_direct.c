@@ -156,7 +156,7 @@ int test_direct(void)
         return fails;
 
     /* right key: a session on both sides */
-    CHECK(npf_direct_resolve(spec, &to) == 0, "resolve");
+    CHECK(npf_addr_parse(spec, &to) == 0, "resolve");
     ca = npf_direct_connect(&A.node, &to, psk);
     CHECK(ca != NULL, "connect");
     LOOP_UNTIL(loop, A.established >= 1, 3000);
@@ -184,6 +184,37 @@ int test_direct(void)
     npf_loop_once(loop, 10);
 
     test_tunnel_move(loop, &to, psk, &L);
+
+    /* IPv6: a listener on [::1], a session from the initiator's IPv6 main
+     * socket (offline nodes have one too); a name or port 0 is no listen
+     * address; without an IPv6 socket no connect */
+    {
+        npf_direct *d6;
+        struct sockaddr_storage to6;
+        npf_call *c6 = NULL;
+        int a0 = A.established, l0 = L.established, fd6 = A.node.udp6_fd;
+        CHECK(npf_direct_listen(&L.node, "localhost:20000", psk, &pol) == NULL
+              && npf_direct_listen(&L.node, "127.0.0.1:0", psk, &pol) == NULL, "a name or port 0: no listener");
+        snprintf(spec, sizeof spec, "[::1]:%d", port);
+        d6 = npf_direct_listen(&L.node, spec, psk, &pol);
+        if (!d6 || fd6 < 0) {
+            printf("  note: no IPv6 loopback here: the IPv6 direct session not tried\n");
+        } else {
+            CHECK(npf_addr_parse(spec, &to6) == 0 && (c6 = npf_direct_connect(&A.node, &to6, psk)) != NULL,
+                  "connect to %s", spec);
+            LOOP_UNTIL(loop, A.established > a0 && L.established > l0, 3000);
+            CHECK(A.established == a0 + 1 && L.established == l0 + 1, "an IPv6 direct session (A %d, L %d)",
+                  A.established - a0, L.established - l0);
+            CHECK(c6 && c6->pd.fd == fd6, "from A's IPv6 main socket");
+            if (c6)
+                npf_call_end(c6, "closed");
+            npf_loop_once(loop, 10);
+            A.node.udp6_fd = -1;
+            CHECK(npf_direct_connect(&A.node, &to6, psk) == NULL, "no IPv6 socket: no connect");
+            A.node.udp6_fd = fd6;
+        }
+        npf_direct_close(d6);
+    }
 
     /* a grant call refused before anything starts: no grant, an empty or too
      * long one, a chain that does not verify (no roots here) */

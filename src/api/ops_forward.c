@@ -62,6 +62,8 @@ static int fwd_create_run(npf_t *n, void *arg)
     i = npf_peer_forward_add_parts(p, &fn, persist, 0, x->err, x->errcap);
     if (i < 0)
         return i == -1 ? NPF_EINVAL : i == -2 ? NPF_EBUSY : NPF_EFAIL;
+    if (peer_of(n, x->id) != p)
+        return NPF_ENOENT;                  /* its forward event removed the peer */
     /* what is known at once: the port here taken, the address not ours */
     if (npf_peer_forward_state(p, i, &st) == 0 && st.state == NPF_FWD_FAILED
         && (st.why_code == NPF_FWD_WHY_PORT_IN_USE || st.why_code == NPF_FWD_WHY_BIND)) {

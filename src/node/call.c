@@ -524,7 +524,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
      * datagram would else be tried as one (a Noise read is a DH: 16 idle
      * sessions' keepalives cost one each while a 17th connected) */
     for (c = n->calls; c; c = c->next)
-        if (!call_over(c) && c->direct && c->caller && !c->keys_ready && fd == n->udp_fd
+        if (!call_over(c) && c->direct && c->caller && !c->keys_ready && fd == c->pd.fd
             && npf_addr_eq(from, &c->pd.addr) && call_direct_reply(c, buf, len, from))
             return 1;
     /* relayed data (data-channel.md 9.2): its hint names the allocation,

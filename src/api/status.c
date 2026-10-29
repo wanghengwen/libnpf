@@ -272,6 +272,8 @@ void npf_status_out(npf_t *c, npf_out *o)
     }
     npf_out_kbool(o, "online", n->online);
     npf_out_kint(o, "server", n->online ? n->server_id : 0);
+    if (n->cfg.offline)
+        npf_out_kbool(o, "direct_only", 1);     /* no server configured (NPF_ROLE_DIRECT): never online */
     /* no server reached for so long (0: online, or no attempt failed yet), and why */
     npf_out_kint(o, "unreachable_s", !n->online && n->unreachable_since ? (npf_mono_ms() - n->unreachable_since) / 1000 : 0);
     npf_out_kstr(o, "server_error", !n->online ? nul_if_empty(n->sig_error) : NULL);

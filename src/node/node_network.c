@@ -79,9 +79,10 @@ int node_udp_open(npf_node *n)
 {
     if ((n->udp_fd = udp_open(n, AF_INET, (uint16_t)n->cfg.udp_port, &n->udp_port)) < 0)
         return -1;
-    /* the IPv6 main socket (nat-traversal.md 7.1 S0): the IPv4 port when it
-     * is free; none when the host has no IPv6 (not an error) */
-    if (!n->cfg.offline && (n->udp6_fd = udp_open(n, AF_INET6, n->udp_port, &n->udp6_port)) < 0)
+    /* the IPv6 main socket (nat-traversal.md 7.1 S0; direct peers at IPv6
+     * addresses): the IPv4 port when it is free; none when the host has no
+     * IPv6 (not an error) */
+    if ((n->udp6_fd = udp_open(n, AF_INET6, n->udp_port, &n->udp6_port)) < 0)
         n->udp6_fd = udp_open(n, AF_INET6, 0, &n->udp6_port);
     return 0;
 }

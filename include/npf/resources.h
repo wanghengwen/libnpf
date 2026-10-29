@@ -61,8 +61,8 @@ int  npf_res_check(const npf_res *r, char *err, size_t errcap);
 int  npf_res_parse(const npf_json *j, int arr, npf_res *out, int max, char *err, size_t errcap);
 /* Writes n resources as a JSON array (fixed ones with "fixed": true). */
 void npf_res_json(npf_out *o, const npf_res *r, int n);
-/* Clears p, then allows what the resources cover; localhost stands for
- * 127.0.0.1 and ::1. 0, or -1 when one does not fit (p then holds a part). */
+/* Makes p allow what the resources cover, and nothing else; localhost
+ * stands for 127.0.0.1 and ::1. 0, or -1 when one does not fit (p unchanged). */
 int  npf_res_rules(npf_policy *p, const npf_res *r, int n);
 /* A list checked and written again in the form local.json and the
  * "resources" event keep: malloc'd JSON text (free), NULL when not a valid list. */
