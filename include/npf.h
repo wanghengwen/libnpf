@@ -1,50 +1,46 @@
-/* libnpf: NAS P2P networking (the public interface).
+/* libnpf's public API: the one header of the installed library, for
+ * applications and device firmware (docs/design/libnpf.md).
  *
- * One npf_t is one identity on the NPF platform: a node (a NAS device with
- * its vendor credential, or an enrolled console node) that others call, a
- * client that calls them, or both. It keeps the signaling connection,
- * punches direct paths (relays when it cannot), and carries per session:
- *   - port forwards (-L / -D / -R, SOCKS5) in the tunnel's data channel;
- *   - application data on the tunnel's control channel (reliable, ordered,
- *     ahead of the forwards' data);
- *   - audio / video streams, several at once, opened and closed at will:
- *     AnLiu's semi-reliable frame streams on every path (direct, UDP relay,
- *     WS relay: frames dropped when late, key frames, FEC, delay reports).
+ * An npf_t is one identity on the NPF platform: a node others call (a
+ * device with its vendor credential, or an enrolled console node), a client
+ * that calls nodes, or both. It keeps the signaling connection, makes direct
+ * paths to peers (relays when it cannot), and carries in each session port
+ * forwards, application data and media streams.
  *
- * Directories (npf_options): conf_dir is read-only for the library (the
- * configuration npf.conf and what it names: the device credential, the root
- * keys, the built-in server list); data_dir is where it keeps what changes
- * (identity, number, pairing state, pinned peer keys, account certificate,
- * the saved server list, and local.json: settings, peers, port forwards and
- * resources saved at run time; its settings override npf.conf's).
+ * Directories (npf_options): the library only reads conf_dir (npf.conf and
+ * the files it names). It writes data_dir: the identity, the number, the
+ * pairing state, pinned peer keys, the account certificate, the saved
+ * server list, and local.json (settings, peers, forwards and resources saved
+ * at run time; its settings override npf.conf's).
  *
- * Lifecycle and threads (one instance):
- *   npf_create -> [calls] -> npf_start | npf_run -> [calls] -> npf_stop
- *   -> (the run ends: event "stopped"; npf_run returns) -> npf_destroy.
- *   - npf_start runs the instance on a thread of its own, npf_run on the
- *     caller's until the run ends; either one once, never after npf_stop.
- *   - Every other function may be called from any thread at any time until
- *     npf_destroy. While it runs, calls execute on its thread (the caller
- *     waits; npf_media_send only queues); otherwise on the caller's thread,
- *     one call at a time per instance. After the run: NPF_ESTATE.
- *   - npf_destroy: from any thread but the instance's own (not from its
- *     callbacks); it stops the run and waits for it (also for an npf_run on
- *     another thread) and for calls in progress, then frees. No call on
- *     the instance may start after it.
- *   - Instances are independent: each its own thread, log and state; one
- *     process may have several.
- *   - A shared runtime (npf_runtime_new, npf_options.runtime): npf_start
- *     puts the instance on one of the runtime's threads, which runs many
- *     instances, each on the same thread until it ends (npf_run: NPF_ESTATE).
- *     Its callbacks must not block, nor wait for an instance on another
- *     runtime thread; npf_destroy of an instance is refused from any
- *     callback on its thread. npf_runtime_free after the last npf_destroy.
+ * Lifecycle: npf_create, then npf_start or npf_run (once, never after
+ * npf_stop), npf_stop, and npf_destroy. The run ends with the event
+ * "stopped"; npf_run returns then.
+ *
+ * Threads:
+ *   - Any function may be called from any thread until npf_destroy. While
+ *     the instance runs, a call executes on its thread and the caller waits
+ *     (npf_media_send only queues). Before the run, a call executes on the
+ *     caller's thread, one at a time per instance. After the run, calls
+ *     return NPF_ESTATE (functions returning text: NULL).
+ *   - npf_destroy may be called from any thread except the instance's own:
+ *     from its callbacks it is refused (an error is logged, nothing freed).
+ *     It stops the run, waits for it and for calls in progress, and frees.
+ *     No call on the instance may start after it.
+ *   - Instances are independent (thread, log, state); a process may have
+ *     several.
+ *   - A shared runtime (npf_runtime_new, npf_options.runtime) runs many
+ *     instances on a few threads; each instance stays on one thread. Its
+ *     callbacks must not block, nor wait for an instance on another runtime
+ *     thread. npf_destroy is refused from any callback on that thread.
+ *     npf_run is not available (NPF_ESTATE).
+ *
  * Peers, forwards, sessions and media streams are numbers (0 = none), never
- * reused while the npf_t lives: a stale number only gives NPF_ENOENT.
+ * reused while the npf_t lives: a stale number gives NPF_ENOENT.
  *
- * Memory: JSON and text returned by a function belong to the caller, freed
- * with npf_free (NULL: the instance does not run any more, or no memory).
- * What callbacks get is lent for the call only. */
+ * Memory: text returned by a function is the caller's, freed with npf_free;
+ * NULL means the run has ended or no memory. What a callback gets is lent
+ * for the call only. */
 #ifndef NPF_H
 #define NPF_H
 
@@ -76,17 +72,17 @@ typedef struct npf_runtime npf_runtime;
 enum {
     NPF_OK = 0,
     NPF_EINVAL = -1,        /* bad argument */
-    NPF_ENOENT = -2,        /* no such session / stream / peer */
-    NPF_ESTATE = -3,        /* not now: not started, not online, the session not up */
-    NPF_EUNAVAIL = -4,      /* not available here */
-    NPF_ETOOBIG = -5,
+    NPF_ENOENT = -2,        /* no such peer, forward, resource, session or stream */
+    NPF_ESTATE = -3,        /* not now: not started, not online, no number, the session not up, the run ended */
+    NPF_EUNAVAIL = -4,      /* not available here: this build, role or npf_options.flags */
+    NPF_ETOOBIG = -5,       /* the output buffer or the input is too large */
     NPF_ENOMEM = -6,
-    NPF_EFAIL = -7,         /* other: the message in err */
-    NPF_EBUSY = -8,         /* a limit reached: media streams, forwards, resources, ... */
-    NPF_ESAVE = -9,         /* done, but local.json could not be written: it is with the next change
-                               saved (npf_save), a restart before that loses it; the message in err */
-    NPF_EEXIST = -10,       /* already there: a peer with this target, a name taken */
-    NPF_EREADONLY = -11     /* from npf.conf (or the platform's): not changed at run time */
+    NPF_EFAIL = -7,         /* other failure: the message in err */
+    NPF_EBUSY = -8,         /* a limit is reached (media streams, forwards, resources, a queue) */
+    NPF_ESAVE = -9,         /* done and in effect, but its file in data_dir could not be written; a
+                               restart before a later write loses it (local.json: npf_save) */
+    NPF_EEXIST = -10,       /* already there: a peer with this target, or the name is taken */
+    NPF_EREADONLY = -11     /* set by npf.conf or the platform: not changed at run time */
 };
 
 /* limits (NPF_EBUSY when reached) */
@@ -103,7 +99,7 @@ enum { NPF_ROLE_NODE = 0, NPF_ROLE_CLIENT = 1, NPF_ROLE_DIRECT = 2 };
 enum { NPF_LEVEL_TRACE = 0, NPF_LEVEL_DEBUG, NPF_LEVEL_INFO, NPF_LEVEL_WARN, NPF_LEVEL_ERROR };
 enum { NPF_FRAME_KEY = 1 };
 #define NPF_MEDIA_FRAME_MAX (4u << 20)     /* bytes per frame */
-#define NPF_MEDIA_SEND_QUEUE (16u << 20)   /* bytes of frames from other threads waiting per instance */
+#define NPF_MEDIA_SEND_QUEUE (16u << 20)   /* bytes of frames queued from other threads, per instance */
 
 #define NPF_MEDIA_STREAMS_MAX 64          /* sending + receiving, across all sessions of one instance */
 
@@ -122,96 +118,102 @@ typedef struct npf_frame_info {
     uint32_t lost_before;       /* frames lost since the last one delivered */
 } npf_frame_info;
 
-/* Callbacks run on the instance's thread, one at a time. What they get
- * (JSON, text, frames, npf_frame_info) is lent for the call only: copy what
- * is kept. A callback may call any function of the same instance except
- * npf_destroy, and must not block it for long. */
+/* Callbacks run on the instance's thread, one at a time. Their arguments
+ * are lent for the call only: copy what is kept. A callback may call any
+ * function of its instance except npf_destroy, and must return soon. Every
+ * callback is optional. */
 typedef struct npf_callbacks {
-    size_t size;                /* sizeof(npf_callbacks) of the application's build (npf_callbacks_init) */
+    size_t size;                /* set by npf_callbacks_init */
     void *user;
-    /* a log line ("date time level message"), level NPF_LEVEL_*; without
-     * this callback lines go to stderr */
+    /* A log line ("date time level message"), level NPF_LEVEL_*. Without
+     * this callback lines go to stderr. */
     void (*log)(void *user, int level, const char *line);
-    /* events, details in JSON: "online" {server, account_id}, "offline" {why}, "enrolled"
-     * {number}, "enroll_failed" {error, reason, retry_in} (one key per model:
-     * the platform refused the enrolment; reason: docs/protocol/signaling.md,
-     * enroll; tried again in about retry_in seconds), "account" {account_id
-     * or null}, "peer_done" {peer, why}, "forward" {peer, spec, up, why},
-     * "network" {why} (the process was suspended or the addresses changed:
-     * libnpf checks its connections and mends them by itself),
-     * "stopped" {} (the run has ended: npf_stop, or the stop command),
-     * "platform" {type, data} (an event the platform sent, data as it came:
-     * docs/protocol/signaling.md), "resources" {session, resources} (the
-     * peer's published list); and those of the program's modules
-     * (npf/module.h). "peer_done" and "forward" come from inside the
-     * library's work on that peer: removing the peer there (npf_peer_remove)
-     * is not allowed, do it later (a timer, another thread) */
+    /* An event, details in JSON:
+     *   "online" {server, account_id}; "offline" {why};
+     *   "enrolled" {number}; "enroll_failed" {error, reason, retry_in}: the
+     *     platform refused a model credential's enrolment (reason:
+     *     signaling.md, enroll); tried again in about retry_in seconds;
+     *   "account" {account_id or null}: an account session began or ended;
+     *   "peer_done" {peer, why}: a peer gave up (npf_peer_info.state
+     *     NPF_PEER_ENDED); "forward" {peer, spec, up, why}; peer is the
+     *     peer's target text;
+     *   "network" {why}: the process was suspended or the addresses changed;
+     *     the library checks and mends its connections itself;
+     *   "platform" {type, data}: an event the platform sent, data as it came;
+     *   "resources" {session, resources}: the peer's published list;
+     *   "stopped" {}: the run has ended; the last event;
+     *   and the events of the program's modules (npf/module.h).
+     * From "peer_done" and "forward" the peer must not be removed
+     * (npf_peer_remove): remove it later (a timer, another thread). */
     void (*event)(void *user, const char *name, const char *json);
-    /* a session came up (up 1; info: {"peer", "path", "direction", "call_id"})
-     * or ended (up 0, info: {"why"}); its media streams end with it */
+    /* A session came up (up 1, info {"peer", "path", "direction",
+     * "call_id"}) or ended (up 0, info {"why"}). Its media streams end
+     * first, each with media_closed. */
     void (*session)(void *user, uint32_t session, int up, const char *info);
-    /* application data from the peer of a session (npf_session_send) */
+    /* application data from the session's peer (npf_session_send there) */
     void (*data)(void *user, uint32_t session, const void *buf, size_t len);
-    /* the peer opened a media stream with tag (npf_media_opt.tag): return 1
-     * to take it (frames arrive through media_frame), 0 to refuse */
+    /* The peer opened stream media with its tag (npf_media_opt.tag). Return
+     * 1 to take it (frames come to media_frame), 0 to refuse. Without this
+     * callback every stream is refused. */
     int  (*media_open)(void *user, uint32_t session, uint32_t media, int tag);
     void (*media_frame)(void *user, uint32_t media, const void *buf, size_t len, const npf_frame_info *fi);
+    /* a stream ended: the peer closed it or its session ended (not after npf_media_close) */
     void (*media_closed)(void *user, uint32_t media);
 } npf_callbacks;
 
-/* Starting without a configuration file: the parameters as fields (each is
- * the npf.conf key of the same meaning, docs/design/libnpf.md); the keys
- * without a field go in npf_options.overrides. Keys are bytes. */
+/* The configuration as fields, instead of npf.conf (npf_options.setup).
+ * Each field is the npf.conf key of the same meaning (docs/design/libnpf.md);
+ * other keys go in npf_options.overrides. NULL / 0 is the default. Keys are
+ * raw bytes. Everything is copied by npf_create. */
 typedef struct npf_setup {
-    size_t         size;
+    size_t         size;               /* set by npf_setup_init */
     /* the platform (every role but NPF_ROLE_DIRECT) */
     const uint8_t (*roots)[32];        /* its root public keys, 1..NPF_ROOTS_MAX */
     int            nroots;
-    const void    *serverlist;         /* the signed server list shipped with the program, as bytes ... */
+    const void    *serverlist;         /* the signed server list shipped with the program, as bytes, */
     size_t         serverlist_len;
-    const char    *serverlist_file;    /* ... or as a file; one of the two */
-    const char    *serverlist_saved;   /* where the lists the platform sends are kept; NULL:
+    const char    *serverlist_file;    /* or as a file: one of the two */
+    const char    *serverlist_saved;   /* where lists the platform sends are kept; NULL:
                                           data_dir/serverlist-saved.bin; "": not kept */
-    const char    *server_url;         /* tests: this one server instead of the list ... */
-    const uint8_t *server_pub;         /* ... with its 32-byte key */
+    const char    *server_url;         /* tests: this one server instead of the list, */
+    const uint8_t *server_pub;         /* with its 32-byte key */
     const char    *doh_servers;        /* tests: "IP:PORT=HOST,..." instead of the public DoH services */
-    /* the identity of a device (NPF_ROLE_NODE); neither: a console node or a client */
-    const char    *cred;               /* "NPFD1...." one credential per device ... */
-    const char    *password;           /* ... with its default pairing password */
-    const char    *model_cred;         /* "NPFV2...." one credential per model: enrols at the first start */
-    const char    *serial;             /* model_cred: the device's serial; NULL: the smallest MAC address */
-    const char    *hw_info;            /* model_cred: "v1|v2|v3"; NULL: read here */
+    /* a device's identity (NPF_ROLE_NODE); neither: a console node or a client */
+    const char    *cred;               /* "NPFD1...": the credential of one device, */
+    const char    *password;           /* with its default pairing password */
+    const char    *model_cred;         /* "NPFV2...": a model's credential; the device enrols at its first start */
+    const char    *serial;             /* model_cred: the device's serial; NULL: its smallest MAC address */
+    const char    *hw_info;            /* model_cred: "v1|v2|v3"; NULL: read from the system */
     const char    *model;              /* the product, for the platform's statistics; NULL: "NAS" / "console" */
     /* direct connections (NPF_ROLE_DIRECT, or a node that also listens) */
     const char    *direct_host;        /* listen here for direct peers; NULL: every address */
     uint16_t       direct_port;        /* 0: no direct listener */
     const uint8_t *direct_psk;         /* 32 bytes, with direct_port */
-    /* the network: 0 / NULL is the default */
-    int            udp_port;           /* the main UDP port, 0 any */
+    /* the network */
+    int            udp_port;           /* the main UDP port; 0: any */
     int            no_portmap;         /* 1: no PCP / NAT-PMP mapping on the router */
     int            relays_only;        /* 1: connect_mode secure */
-    int            max_calls;          /* sessions accepted at once, 0: 32 */
-    int            punch_lead_ms;      /* -1 automatic (the default) */
-    int            punch_sockets;      /* 0 automatic */
+    int            max_calls;          /* sessions accepted at once; 0: 32 */
+    int            punch_lead_ms;      /* -1: automatic (the default) */
+    int            punch_sockets;      /* 0: automatic */
     int            no_host_report;     /* 1: report_host = 0 */
     int            no_hosted_trust;    /* 1: hosted_trust = 0 */
-    int            peer_idle_s;        /* the default idle time of NPF_CONNECT_ON_DEMAND peers; 0: 300 */
+    int            peer_idle_s;        /* idle time of NPF_CONNECT_ON_DEMAND peers without their own; 0: 300 */
 } npf_setup;
 
-enum { NPF_OPT_NO_SAVED_SETTINGS = 1,  /* local.json's settings are not applied (nor saved) */
-       NPF_OPT_NO_SAVED_OBJECTS = 2,   /* its peers, forwards and resources are not brought back (nor saved) */
-       NPF_OPT_NO_LOG_RING = 4 };      /* no recent lines for npf_log_json (16 KB an instance: for an
-                                          application with a log callback and many instances) */
+enum { NPF_OPT_NO_SAVED_SETTINGS = 1,  /* local.json's settings are neither applied nor saved */
+       NPF_OPT_NO_SAVED_OBJECTS = 2,   /* its peers, forwards and resources are neither brought back nor saved */
+       NPF_OPT_NO_LOG_RING = 4 };      /* no recent lines for npf_log_json (saves 16 KB per instance) */
 
-/* ABI: structures only grow at the end. What the application gives starts
- * with its size (the _init macros set it and the defaults); what the
- * library fills in is sized by the macro that passes the caller's sizeof
- * (npf_peer_get, npf_resource_list, ...): the library reads and writes
- * what both builds know, the defaults or zeros for the rest. */
+/* ABI: structures only grow at the end. A structure the application passes
+ * starts with its size, set by its _init macro with the defaults. A
+ * structure the library fills is sized by the macro that passes the
+ * caller's sizeof (npf_peer_get, npf_resource_list, ...). The library uses
+ * what both builds know: the defaults or zeros for the rest. */
 typedef struct npf_options {
-    size_t      size;           /* sizeof(npf_options) of the application's build (npf_options_init) */
-    const char *conf_dir;       /* read-only for the library */
-    const char *data_dir;       /* writable; NULL: conf_dir */
+    size_t      size;           /* set by npf_options_init */
+    const char *conf_dir;       /* read only */
+    const char *data_dir;       /* written; NULL: conf_dir */
     const char *conf_file;      /* NULL: "npf.conf" in conf_dir (an absolute path also works) */
     /* settings on top of the configuration, "key = value" lines (tests,
      * command-line options); local.json's settings still override them */
@@ -219,27 +221,26 @@ typedef struct npf_options {
     int         role;           /* NPF_ROLE_NODE: long running (callable with a number, saved peers,
                                    router port mapping); NPF_ROLE_CLIENT: one-off tasks (account,
                                    devices, a session in the foreground); NPF_ROLE_DIRECT: no platform */
-    int         log_level;      /* -1: the configuration's log_level */
-    const npf_callbacks *cb;    /* NULL: none; copied by npf_create */
-    /* the program, told to the platform at login (its records, the other
-     * side of a session): a name of 1..32 of a-z 0-9 . _ - and a version
-     * of up to 32 printable characters; NULL: "libnpf" and the library's
-     * version */
+    int         log_level;      /* NPF_LEVEL_*; -1: the configuration's log_level */
+    const npf_callbacks *cb;    /* NULL: none; copied by npf_create (cb->user is kept as given) */
+    /* The program, told to the platform at login and to the other side of a
+     * session: a name of 1..32 of a-z 0-9 . _ - and a version of 1..32
+     * printable ASCII characters. NULL: "libnpf" and the library's version. */
     const char *app_name;
     const char *app_ver;
-    /* a shared runtime to run on (see Lifecycle); NULL: a thread of its own */
+    /* a shared runtime to run on; NULL: a thread of the instance's own. It
+     * must outlive the instance. */
     npf_runtime *runtime;
-    /* NULL: conf_dir / conf_file; given: no configuration file is read,
-     * conf_dir and conf_file must be NULL, data_dir is needed */
+    /* NULL: read conf_dir / conf_file. Given: no configuration file is
+     * read; conf_dir and conf_file must be NULL and data_dir set. */
     const npf_setup *setup;
     int          flags;         /* NPF_OPT_* */
 } npf_options;
 
 NPF_API const char *npf_version(void);
 NPF_API int         npf_api_version(void);
-/* the defaults, for size bytes (the application's sizeof: the macros give
- * it), so a library with larger structures never writes past them; the
- * same for every _init */
+/* The defaults, written for size bytes (the application's sizeof: use the
+ * macros), so a newer library never writes past an older structure. */
 NPF_API void        npf_options_init_size(npf_options *o, size_t size);
 NPF_API void        npf_callbacks_init_size(npf_callbacks *cb, size_t size);
 NPF_API void        npf_setup_init_size(npf_setup *s, size_t size);
@@ -247,70 +248,83 @@ NPF_API void        npf_setup_init_size(npf_setup *s, size_t size);
 #define npf_callbacks_init(cb) npf_callbacks_init_size((cb), sizeof *(cb))
 #define npf_setup_init(s)      npf_setup_init_size((s), sizeof *(s))
 
-/* Reads the configuration and the identity (makes data_dir and an identity
- * when there is none). NPF_OK, or an error with the message in err. */
+/* Makes an instance: reads the configuration and the identity (making
+ * data_dir and an identity when there are none), opens the UDP socket and,
+ * except for NPF_ROLE_CLIENT, brings back the peers local.json saved.
+ * NPF_OK with *out set; else *out is NULL and the message is in err. */
 NPF_API int  npf_create(const npf_options *o, npf_t **out, char *err, size_t errcap);
-NPF_API int  npf_start(npf_t *n);           /* on a thread of its own; NPF_ESTATE: started or stopped before */
-NPF_API int  npf_run(npf_t *n);             /* on this thread, until the run ends */
-NPF_API void npf_stop(npf_t *n);            /* any thread; sessions end; returns at once */
-NPF_API void npf_destroy(npf_t *n);         /* stops, waits, frees (see Lifecycle) */
+/* Runs the instance on a thread of its own (or its runtime's) and returns.
+ * NPF_ESTATE: started or stopped before. */
+NPF_API int  npf_start(npf_t *n);
+/* Runs the instance on the calling thread until the run ends. NPF_ESTATE:
+ * started or stopped before, or on a shared runtime. */
+NPF_API int  npf_run(npf_t *n);
+/* Ends the run: the sessions end, then "stopped". Returns at once. */
+NPF_API void npf_stop(npf_t *n);
+NPF_API void npf_destroy(npf_t *n);         /* see Threads above; NULL is ignored */
 NPF_API void npf_free(void *p);
 
-/* a shared runtime of threads threads (<= 0: one per CPU); NULL: no memory
- * or no thread. npf_runtime_free: NPF_ESTATE while an instance created on it
- * is not destroyed yet, else it stops the threads and frees */
+/* A shared runtime of threads threads (<= 0: one per CPU); NULL: no memory
+ * or no thread. npf_runtime_free stops its threads and frees it; NPF_ESTATE
+ * while an instance created on it is not destroyed yet. */
 NPF_API npf_runtime *npf_runtime_new(int threads);
 NPF_API int          npf_runtime_free(npf_runtime *rt);
 
 /* ---- state ---- */
 
-/* identity, server, NAT, peers with their forwards, sessions */
+/* identity, server, NAT, peers with their forwards, sessions, the modules' members */
 NPF_API char *npf_status_json(npf_t *n);
-/* the settings in effect (secrets hidden) */
+/* the settings that can change at run time, with their values in effect */
 NPF_API char *npf_config_json(npf_t *n);
-/* the last lines of the log, up to max bytes */
+/* {"lines": the last lines of the log}, up to max bytes (<= 0 or more than
+ * 16384: 16384); empty with NPF_OPT_NO_LOG_RING */
 NPF_API char *npf_log_json(npf_t *n, int max);
-/* a setting in effect ("" when unset); NPF_ENOENT: not a configuration key,
- * NPF_ETOOBIG: out too small. Secrets read "(hidden)" */
+/* A setting in effect, "" when unset; secrets read "(hidden)". NPF_ENOENT:
+ * not a configuration key; NPF_ETOOBIG: out is too small. */
 NPF_API int   npf_config_get(npf_t *n, const char *key, char *out, size_t cap);
-/* save: also into local.json (data_dir). NPF_OK: in effect now; 1: saved,
- * in effect at the next start (a start-up setting) */
+/* Sets a setting; save also writes it to local.json. NPF_OK: in effect now.
+ * 1: a start-up setting, in effect at the next start if saved. NPF_EINVAL
+ * (unknown key, bad value, or only allowed in npf.conf), NPF_EUNAVAIL (save
+ * with NPF_OPT_NO_SAVED_SETTINGS), NPF_ESAVE; the message in err. */
 NPF_API int   npf_config_set(npf_t *n, const char *key, const char *value, int save, char *err, size_t errcap);
 
-/* local.json again (what NPF_ESAVE left): NPF_OK, or NPF_ESAVE with nothing lost */
+/* Writes local.json if a change is waiting (after NPF_ESAVE). NPF_OK, or
+ * NPF_ESAVE again with nothing lost. */
 NPF_API int   npf_save(npf_t *n);
 
 /* ---- objects: peers, forwards, resources ----
- * Lists: count is always the number there is; with too small an array the
- * first cap are filled and NPF_ETOOBIG returned. Creating: NPF_OK /
- * NPF_ESAVE (made; not saved yet) give the new one, NPF_EEXIST the one there
- * is (what was given is ignored), other errors 0 and nothing made. */
+ * Lists: *count is always the number there is; with too small an array the
+ * first cap are filled and NPF_ETOOBIG returned. Creating: NPF_OK and
+ * NPF_ESAVE give the new number in *out; any other result gives 0 and makes
+ * nothing, except NPF_EEXIST for a peer with the same target, which gives
+ * that peer's number (the options given are ignored). With
+ * NPF_OPT_NO_SAVED_OBJECTS, NPF_PERSIST is NPF_EUNAVAIL. */
 
 enum { NPF_TARGET_NUMBER = 1,          /* a node on the platform, by its number */
        NPF_TARGET_DIRECT = 2 };        /* HOST:PORT with a pre-shared key, no platform */
-enum { NPF_CONNECT_KEEP = 0,           /* connected, again after a drop (backoff) */
+enum { NPF_CONNECT_KEEP = 0,           /* connected, again after a drop (with backoff) */
        NPF_CONNECT_ONCE = 1,           /* one session: NPF_PEER_ENDED when it ends */
        NPF_CONNECT_ON_DEMAND = 2 };    /* a session when a forward is used, ended when idle */
 enum { NPF_PERSIST = 1,                /* saved in local.json, back at the next start */
-       NPF_FIXED = 2,                  /* info only: a resource of npf.conf */
-       NPF_PLATFORM = 4 };             /* info only: a peer opened for port mappings saved on the platform
-                                          (a hosted client's), or one of those forwards */
+       NPF_FIXED = 2,                  /* info only: a resource from npf.conf */
+       NPF_PLATFORM = 4 };             /* info only: a peer the library opened for port mappings saved
+                                          on the platform (a hosted client's), or one of its forwards */
 
 typedef struct npf_peer_opt {
-    size_t         size;
+    size_t         size;               /* set by npf_peer_opt_init */
     int            target;             /* NPF_TARGET_* */
     uint64_t       number;             /* NPF_TARGET_NUMBER */
     const char    *host;               /* NPF_TARGET_DIRECT: an address or name, IPv6 without brackets */
     uint16_t       port;
     const uint8_t *psk;                /* NPF_TARGET_DIRECT: 32 bytes */
-    const char    *password;           /* the device's pairing password the first time; NULL: a pinned
-                                          key or the account's grant */
-    int            connect;            /* NPF_CONNECT_*; NPF_CONNECT_ONCE with NPF_PERSIST: NPF_EINVAL */
-    int            idle_ms;            /* NPF_CONNECT_ON_DEMAND: ends this long after the last connection;
-                                          0: the instance's peer_idle */
+    const char    *password;           /* the device's pairing password, the first time; NULL: a pinned
+                                          key or the account's grant lets it in */
+    int            connect;            /* NPF_CONNECT_*; ON_DEMAND needs NPF_PERSIST, ONCE excludes it */
+    int            idle_ms;            /* NPF_CONNECT_ON_DEMAND: the session ends this long after the
+                                          last connection; 0: the instance's peer_idle */
     int            flags;              /* NPF_PERSIST */
-    const char    *name;               /* a name for it, NULL none */
-    const char    *nick;               /* what to show people, NULL none */
+    const char    *name;               /* a name for it, unique among the peers; NULL: none */
+    const char    *nick;               /* what people see; NULL: none */
     void          *ctx;                /* the application's, given back by npf_peer_get */
 } npf_peer_opt;
 
@@ -318,10 +332,10 @@ enum { NPF_PEER_IDLE = 0,              /* on demand, no session now */
        NPF_PEER_WAITING,               /* waiting for the platform (not logged in yet) */
        NPF_PEER_CONNECTING,
        NPF_PEER_CONNECTED,
-       NPF_PEER_RETRY,                 /* retry_in_ms from now */
-       NPF_PEER_ENDED };               /* given up: NPF_CONNECT_ONCE ended, or a need below (met: tried
-                                          again by itself); it stays until removed */
-enum { NPF_NEED_PASSWORD = 1,          /* not paired: the user gives its password */
+       NPF_PEER_RETRY,                 /* tried again in retry_in_ms */
+       NPF_PEER_ENDED };               /* given up: NPF_CONNECT_ONCE ended, or a need below (tried
+                                          again by itself once it is met); it stays until removed */
+enum { NPF_NEED_PASSWORD = 1,          /* not paired: the user gives the device's password */
        NPF_NEED_PASSWORD_WRONG = 2,    /* the device refused the last one */
        NPF_NEED_PAIRING_LOST = 4,      /* the device forgot the pairing (reset): a password again */
        NPF_NEED_ACCOUNT = 8 };         /* let in through the account: log in again */
@@ -333,55 +347,63 @@ typedef struct npf_peer_info {
     uint16_t port;
     char     name[NPF_NAME_MAX + 1], nick[NPF_NICK_MAX + 1];
     int      connect;
-    int      flags;                    /* NPF_PERSIST (meant to be saved), NPF_PLATFORM */
-    int      saved;                    /* NPF_PERSIST and its record in local.json up to date */
+    int      flags;                    /* NPF_PERSIST, NPF_PLATFORM */
+    int      saved;                    /* NPF_PERSIST and its record in local.json is up to date */
     int      state;                    /* NPF_PEER_* */
     int      needs;                    /* NPF_NEED_* */
     int      retry_in_ms;
-    int      end_reason;               /* the last session's: NPF_END_*, 0 none yet */
+    int      end_reason;               /* the last session's NPF_END_*; 0: none yet */
     char     why[64];                  /* the same, or why it waits, for people */
-    uint32_t session;                  /* the session up now, 0 none */
+    uint32_t session;                  /* the session up now; 0: none */
     int      nforwards;
-    void    *ctx;                      /* the application's (NPF_PEER_OPT_CTX) */
+    void    *ctx;
 } npf_peer_info;
 
 NPF_API void npf_peer_opt_init_size(npf_peer_opt *o, size_t size);
 #define npf_peer_opt_init(o) npf_peer_opt_init_size((o), sizeof *(o))
 
+/* Adds a peer and starts connecting when running. NPF_EINVAL (bad options,
+ * with the message in err), NPF_EEXIST (the target or the name is taken),
+ * NPF_EUNAVAIL (no platform with NPF_ROLE_DIRECT, or no peers in this
+ * build), NPF_EBUSY (NPF_PEERS_SAVED_MAX). */
 NPF_API int npf_peer_create(npf_t *n, const npf_peer_opt *o, uint32_t *peer, char *err, size_t errcap);
-/* its session ends, its forwards go; a persisted one leaves local.json */
+/* Ends its session and removes its forwards; a persisted one leaves
+ * local.json. NPF_EREADONLY: an NPF_PLATFORM peer. Not from the "peer_done"
+ * or "forward" event of that peer. */
 NPF_API int npf_peer_remove(npf_t *n, uint32_t peer);
 /* by target ("318204776", "host:9000") or name */
 NPF_API int npf_peer_find(npf_t *n, const char *target_or_name, uint32_t *peer);
 NPF_API int npf_peer_list(npf_t *n, uint32_t *peers, size_t cap, size_t *count);
 NPF_API int npf_peer_get_size(npf_t *n, uint32_t peer, npf_peer_info *out, size_t size);
 #define npf_peer_get(n, peer, out) npf_peer_get_size((n), (peer), (out), sizeof *(out))
-/* NPF_CONNECT_ON_DEMAND: the session now; NPF_PEER_ENDED: one more try */
+/* Tries now: starts an idle on-demand peer's session, retries a peer
+ * waiting for its retry, tries an ended one again. NPF_ESTATE: not running;
+ * NPF_EREADONLY: an NPF_PLATFORM peer. */
 NPF_API int npf_peer_connect_now(npf_t *n, uint32_t peer);
 
-/* A peer's settings, one at a time (npf_peer_setopt). int options: an int,
- * len sizeof(int); strings: NUL-terminated, len 0, "" removes; CTX: the
- * pointer itself as val, len 0. A wrong len or value, a string too long or
- * an unknown option: NPF_EINVAL, the peer unchanged. A persisted peer is
- * saved after the change (NPF_ESAVE: in effect, not written yet). On an
+/* Changes one setting of a peer. Int options: val points to an int, len
+ * sizeof(int). Strings: NUL-terminated, len 0; "" removes. CTX: the pointer
+ * itself as val, len 0. A wrong len or value, a string too long or an
+ * unknown option: NPF_EINVAL, the peer unchanged. A persisted peer is saved
+ * after the change (NPF_ESAVE: in effect, not written yet). On an
  * NPF_PLATFORM peer CONNECT, IDLE_MS and PERSIST are NPF_EREADONLY,
  * PASSWORD NPF_EINVAL. */
-enum { NPF_PEER_OPT_CONNECT = 1,       /* NPF_CONNECT_*: KEEP connects now when it has no session;
-                                          ON_DEMAND needs NPF_PERSIST and no remote forward, the
-                                          session goes on and the idle time runs from now; ONCE
-                                          ends it with its session (at once without one), not for a
-                                          persisted peer */
+enum { NPF_PEER_OPT_CONNECT = 1,       /* NPF_CONNECT_*. KEEP connects now if there is no session.
+                                          ON_DEMAND needs NPF_PERSIST and no remote forward; the
+                                          session goes on and the idle time runs from now. ONCE ends
+                                          the peer with its session (at once without one); not for
+                                          a persisted peer. */
        NPF_PEER_OPT_IDLE_MS,           /* on demand: ms without a connection before the session
-                                          ends, 0 the instance's peer_idle (kept for later when it
-                                          is not on demand now) */
-       NPF_PEER_OPT_PERSIST,           /* 1: saved now with its forwards (not ONCE); 0: not brought
-                                          back at the next start, its saved forwards leave
-                                          local.json, its pinned key and names stay (not ON_DEMAND) */
-       NPF_PEER_OPT_NAME,              /* a name (NPF_NAME_MAX), unique among the peers */
-       NPF_PEER_OPT_NICK,              /* what people see (NPF_NICK_MAX) */
-       NPF_PEER_OPT_CTX,               /* the application's, in npf_peer_get from now on (also NULL) */
-       NPF_PEER_OPT_PASSWORD };        /* not paired yet, or the password was refused: tried at
-                                          once, not kept (NPF_PASSWORD_MAX) */
+                                          ends, 0..86400000; 0: the instance's peer_idle. Kept for
+                                          later when the peer is not on demand. */
+       NPF_PEER_OPT_PERSIST,           /* 1: saved now with its forwards (not ONCE). 0: not brought
+                                          back at the next start, its forwards leave local.json, its
+                                          pinned key and names stay (not ON_DEMAND). */
+       NPF_PEER_OPT_NAME,              /* NPF_NAME_MAX; NPF_EEXIST: another peer's */
+       NPF_PEER_OPT_NICK,              /* NPF_NICK_MAX */
+       NPF_PEER_OPT_CTX,
+       NPF_PEER_OPT_PASSWORD };        /* a platform peer not paired yet, or whose password was
+                                          refused: tried at once, not kept (NPF_PASSWORD_MAX) */
 NPF_API int npf_peer_setopt(npf_t *n, uint32_t peer, int opt, const void *val, size_t len);
 
 enum { NPF_FWD_LOCAL = 1,              /* -L: a port here to a target on the peer's side */
@@ -391,22 +413,22 @@ enum { NPF_PROTO_TCP = 0, NPF_PROTO_UDP = 1 };
 
 typedef struct npf_endpoint {
     const char *host;                  /* IPv6 without brackets; listen: NULL is 127.0.0.1 */
-    uint16_t    port;                  /* listen: 0 picked (here by the system, -R by the peer) */
+    uint16_t    port;                  /* listen: 0 is picked (here by the system, for -R by the peer) */
 } npf_endpoint;
 
 typedef struct npf_forward_opt {
-    size_t       size;
+    size_t       size;                 /* set by npf_forward_opt_init */
     int          kind;                 /* NPF_FWD_* */
-    int          proto;                /* NPF_PROTO_* (UDP: LOCAL and REMOTE) */
-    npf_endpoint listen;
+    int          proto;                /* NPF_PROTO_*; UDP: LOCAL and REMOTE only */
+    npf_endpoint listen;               /* -R: an IP address of the peer or "*"; NULL: 127.0.0.1 */
     npf_endpoint target;               /* NPF_FWD_SOCKS: none */
-    int          flags;                /* NPF_PERSIST: with the peer (it must be NPF_PERSIST too) */
+    int          flags;                /* NPF_PERSIST: saved with its peer, which must be NPF_PERSIST */
     void        *ctx;
 } npf_forward_opt;
 
 enum { NPF_FWD_WAITING = 0,            /* for the session (-R: for the peer to listen) */
-       NPF_FWD_UP,                     /* the listener works (here, or on the peer for -R) */
-       NPF_FWD_FAILED };               /* the rule as a whole: why_code; tried again with backoff
+       NPF_FWD_UP,                     /* listening (here, or on the peer for -R) */
+       NPF_FWD_FAILED };               /* why_code says why; tried again with backoff
                                           (NPF_FWD_WHY_FORBIDDEN: with the next session only) */
 enum { NPF_FWD_WHY_NONE = 0,
        NPF_FWD_WHY_PORT_IN_USE,        /* the port here is taken */
@@ -421,45 +443,51 @@ typedef struct npf_forward_info {
     int      kind, proto;
     int      flags, saved;             /* as for peers */
     char     listen_host[64];
-    uint16_t listen_port;              /* the port in use (also when 0 was asked); 0 not yet */
+    uint16_t listen_port;              /* the port in use (also when 0 was asked); 0: not yet */
     char     target_host[256];
     uint16_t target_port;
     int      state;                    /* NPF_FWD_* */
     int      why_code;                 /* NPF_FWD_FAILED: NPF_FWD_WHY_* */
     char     why[64];
     int      conns;                    /* connections open now */
-    uint32_t refused;                  /* connections the peer refused (its resources), so far */
-    char     refused_why[64];          /* the last one's target */
-    void    *ctx;                      /* the application's (NPF_FWD_OPT_CTX) */
+    uint32_t refused;                  /* connections the peer refused so far (its resources) */
+    char     refused_why[64];          /* the last refused one's target */
+    void    *ctx;
 } npf_forward_info;
 
 NPF_API void npf_forward_opt_init_size(npf_forward_opt *o, size_t size);
 #define npf_forward_opt_init(o) npf_forward_opt_init_size((o), sizeof *(o))
 
+/* Adds a forward to a peer. NPF_EFAIL: the port here is taken or the
+ * address cannot be bound (nothing is kept); NPF_EBUSY:
+ * NPF_PEER_FORWARDS_MAX; NPF_EREADONLY: an NPF_PLATFORM peer; NPF_EINVAL:
+ * bad options (also -R on an on-demand peer). The message is in err. */
 NPF_API int npf_forward_create(npf_t *n, uint32_t peer, const npf_forward_opt *o, uint32_t *fwd, char *err,
                                size_t errcap);
+/* NPF_EREADONLY: a forward of an NPF_PLATFORM peer or of a module */
 NPF_API int npf_forward_remove(npf_t *n, uint32_t fwd);
 /* peer 0: every peer's */
 NPF_API int npf_forward_list(npf_t *n, uint32_t peer, uint32_t *fwds, size_t cap, size_t *count);
 NPF_API int npf_forward_get_size(npf_t *n, uint32_t fwd, npf_forward_info *out, size_t size);
 #define npf_forward_get(n, fwd, out) npf_forward_get_size((n), (fwd), (out), sizeof *(out))
-/* a forward's settings, as npf_peer_setopt: NPF_FWD_OPT_CTX the pointer as val, len 0 */
+/* as npf_peer_setopt; NPF_FWD_OPT_CTX: the pointer as val, len 0 */
 enum { NPF_FWD_OPT_CTX = 1 };
 NPF_API int npf_forward_setopt(npf_t *n, uint32_t fwd, int opt, const void *val, size_t len);
 
 enum { NPF_RES_TCP = 1, NPF_RES_UDP, NPF_RES_NET, NPF_RES_SOCKS, NPF_RES_REVERSE };
 
+/* a resource this node publishes: what its callers may reach through it */
 typedef struct npf_resource {
-    size_t       size;
+    size_t       size;                 /* set by npf_resource_init */
     int          type;                 /* NPF_RES_* */
     const char  *name;                 /* unique, up to 64 bytes of UTF-8 */
-    const char  *svc;                  /* tcp / udp: "http", "https", "rdp", "ssh" ...; NULL none */
+    const char  *svc;                  /* tcp / udp: "http", "https", "rdp", "ssh" ...; NULL: none */
     npf_endpoint service;              /* tcp / udp: an IP address (no brackets) or localhost, and port */
     const char  *rule;                 /* net / socks: "lan", "*", ADDR[/PREFIX][:PORT[-PORT]];
                                           udp without a service host: "*" or ADDR[/PREFIX][:PORT[-PORT]];
                                           reverse: [lan:]"*", PORT or PORT-PORT; up to 63 bytes */
-    const char  *path;                 /* a web page: the page to open, NULL "/" */
-    const char  *desc;                 /* NULL none, up to 256 bytes */
+    const char  *path;                 /* a web page: the page to open; NULL: "/" */
+    const char  *desc;                 /* up to 256 bytes; NULL: none */
     int          flags;                /* NPF_PERSIST */
 } npf_resource;
 
@@ -474,21 +502,25 @@ typedef struct npf_resource_info {
 
 NPF_API void npf_resource_init_size(npf_resource *r, size_t size);
 #define npf_resource_init(r) npf_resource_init_size((r), sizeof *(r))
-/* added, or the one of that name replaced (as given: a persisted one
- * replaced by one without NPF_PERSIST leaves local.json) */
+/* Adds a resource, or replaces the one of that name as given (a persisted
+ * one replaced by one without NPF_PERSIST leaves local.json). NPF_EINVAL
+ * (the message in err), NPF_EBUSY (NPF_RESOURCES_MAX), NPF_EREADONLY (one
+ * from npf.conf). */
 NPF_API int npf_resource_put(npf_t *n, const npf_resource *r, char *err, size_t errcap);
+/* NPF_ENOENT: none of that name; NPF_EREADONLY: one from npf.conf */
 NPF_API int npf_resource_remove(npf_t *n, const char *name);
-/* this node's (peer 0), or what that peer published as last heard */
+/* peer 0: this node's; else what that peer published, as last heard */
 NPF_API int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *out, size_t size, size_t cap,
                                    size_t *count);
 #define npf_resource_list(n, peer, out, cap, count) \
     npf_resource_list_size((n), (peer), (out), sizeof *(out), (cap), (count))
 
-/* ---- a device's pairing and owner ---- */
+/* ---- a device's pairing and owner ----
+ * Only for a node with a number: else NPF_ESTATE. NPF_ESAVE: the pairing
+ * state in data_dir could not be written. */
 
-/* the pairing password (NPF_ESTATE: no number yet) */
 NPF_API int npf_pairing_password_get(npf_t *n, char *out, size_t cap);
-/* 8 .. NPF_PASSWORD_MAX bytes */
+/* 8 .. NPF_PASSWORD_MAX bytes, else NPF_EINVAL */
 NPF_API int npf_pairing_password_set(npf_t *n, const char *password, char *err, size_t errcap);
 typedef struct npf_pairing {
     uint8_t key[32];                   /* the caller's public key */
@@ -496,9 +528,10 @@ typedef struct npf_pairing {
 } npf_pairing;
 NPF_API int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t size, size_t cap, size_t *count);
 #define npf_pairing_list(n, out, cap, count) npf_pairing_list_size((n), (out), sizeof *(out), (cap), (count))
-/* key NULL: all of them */
+/* key NULL: all of them; NPF_ENOENT: that key is not paired */
 NPF_API int npf_pairing_remove(npf_t *n, const uint8_t key[32]);
-/* the owner account forgotten here, the platform told at the next login; the pairings stay */
+/* Forgets the owner account here; the platform is told at the next login.
+ * The pairings stay. */
 NPF_API int npf_owner_reset(npf_t *n);
 
 /* ---- this node, sessions, the network ---- */
@@ -510,20 +543,20 @@ typedef struct npf_node_info {
     uint64_t number;                   /* 0: none yet */
     int      role;
     int      online;                   /* logged in to the platform */
-    int      server;                   /* its id, 0 none */
-    uint64_t account_id;               /* the account session, 0 none */
-    int      enrolling;                /* a model credential: enrolment going on */
+    int      server;                   /* its id; 0: none */
+    uint64_t account_id;               /* the account session; 0: none */
+    int      enrolling;                /* a model credential without a number yet */
     int      nat, nat_filtering;       /* NPF_NAT_*: the mapping, the filtering */
-    char     public_addr[64];          /* as the probe saw it, "" not known */
+    char     public_addr[64];          /* as the probe saw it; "": not known */
     uint16_t udp_port;
-    int64_t  started;                  /* Unix time, 0 not running */
+    int64_t  started;                  /* Unix time; 0: not running */
     int      peers, sessions;
     int      unsaved;                  /* changes waiting for local.json (npf_save) */
 } npf_node_info;
 
 typedef struct npf_session_info {
-    uint32_t peer;                     /* the peer it belongs to, 0: someone calling here */
-    uint64_t number;                   /* the other side's number, 0 none */
+    uint32_t peer;                     /* its peer; 0: someone calling here */
+    uint64_t number;                   /* the other side's number; 0: none */
     int      outgoing;
     int      path;                     /* NPF_PATH_* */
     char     call_id[40];
@@ -531,56 +564,67 @@ typedef struct npf_session_info {
 
 NPF_API int npf_node_get_size(npf_t *n, npf_node_info *out, size_t size);
 #define npf_node_get(n, out) npf_node_get_size((n), (out), sizeof *(out))
+/* This node's identity public key (X25519, the key the platform and peers
+ * know it by) in base64url: NPF_KEY_TEXT_LEN characters and a NUL.
+ * NPF_ETOOBIG: cap is too small. Works before the run. */
+#define NPF_KEY_TEXT_LEN 43
+NPF_API int npf_node_key(npf_t *n, char *out, size_t cap);
 NPF_API int npf_session_get_size(npf_t *n, uint32_t session, npf_session_info *out, size_t size);
 #define npf_session_get(n, session, out) npf_session_get_size((n), (session), (out), sizeof *(out))
 NPF_API int npf_session_list(npf_t *n, uint32_t *sessions, size_t cap, size_t *count);
-/* the network changed (a VPN up or down, another Wi-Fi): checked and mended now */
+/* The network changed (a VPN up or down, another Wi-Fi): the sockets are
+ * opened again and the peers try again. NPF_ESTATE: not running. */
 NPF_API int npf_network_changed(npf_t *n);
 
 /* ---- commands and platform requests ---- */
 
-/* A command: libnpf's own ("set KEY VALUE [--no-save]" as npf_config_set,
- * "netcheck" as npf_network_changed for the node) and those of the
- * program's modules (npf/module.h: a command line's text is the program's,
- * on the functions here); the exit code and output text come to cb, at once
- * or when the platform has answered. NPF_OK when it runs. */
+/* Runs a command: libnpf's own ("set KEY VALUE [--no-save]" as
+ * npf_config_set, "netcheck" as npf_network_changed) or one of the
+ * program's modules (npf/module.h). cb gets the exit code and the output
+ * text on the instance's thread, before npf_command returns or later when
+ * the platform has answered; an unknown command gives code 2. The
+ * arguments are copied. NPF_OK when it runs. */
 typedef void (*npf_text_cb)(void *user, int code, const char *text);
 NPF_API int npf_command(npf_t *n, int argc, const char *const *argv, npf_text_cb cb, void *user);
 
-/* A request to the platform (account_*, verify_*, password_reset_*, auth_*,
- * login_method_*, device_*, share_*, mapping_*: signaling.md); key_proof adds
- * this connection's key proof (account_register / account_login /
- * password_reset_finish / auth_finish). The library keeps the account session and its
- * certificate that a reply gives. cb gets the whole reply (JSON) or NULL
- * when the connection was lost. */
+/* Sends a request to the platform (signaling.md). type must be one the
+ * library lets applications send (account_*, verify_*, password_*, auth_*,
+ * login_method_*, device_*, share_*, mapping_*, hosted_*, plan_list,
+ * pay_ticket, owner_reset, pubconn_list), else NPF_EINVAL. data_json is a
+ * JSON object or NULL. key_proof adds this connection's key proof
+ * (account_register, account_login, password_reset_finish, auth_finish).
+ * The library keeps the account session and certificate a reply gives.
+ * cb gets, on the instance's thread, the whole reply in JSON, or NULL when
+ * the connection was lost. NPF_ESTATE: not online. */
 typedef void (*npf_reply_cb)(void *user, int ok, const char *reply);
 NPF_API int npf_request(npf_t *n, const char *type, const char *data_json, int key_proof, npf_reply_cb cb,
                         void *user);
 
 /* ---- sessions: application data ---- */
 
-/* sessions up now, JSON array of {"session", "peer", "path", "direction", "call_id"} */
+/* the sessions up now, a JSON array of {"session", "peer", "path", "direction", "call_id"} */
 NPF_API char *npf_sessions_json(npf_t *n);
-/* a hosted client's public mappings (npf-hosted): {"open": connections open,
- * "closing", "mappings": [{"mapping_id", "port", "listening", "conns"}]};
- * close != 0: the public ports close now and stay closed (stopping), the
- * open connections go on */
+/* A hosted client's public mappings (npf-hosted): {"open": connections
+ * open, "closing", "mappings": [{"mapping_id", "port", "listening",
+ * "conns"}]}. close != 0: the public ports close now and stay closed; the
+ * open connections go on. */
 NPF_API char *npf_public_json(npf_t *n, int close);
-/* application data to the peer (cb.data there): reliable, ordered, ahead of
- * the forwards' data; up to 16384 bytes per call */
+/* Sends application data to the peer (its data callback): reliable,
+ * ordered, ahead of the forwards' data. Up to 16384 bytes per call, else
+ * NPF_ETOOBIG. NPF_ESTATE: the session cannot send now. */
 NPF_API int   npf_session_send(npf_t *n, uint32_t session, const void *buf, size_t len);
 
-/* ---- sessions: audio / video (AnLiu semi-reliable streams) ---- */
+/* ---- sessions: audio / video (AnLiu semi-reliable frame streams) ---- */
 
 typedef struct npf_media_opt {
-    size_t size;                /* sizeof(npf_media_opt) of the application's build (npf_media_opt_init) */
+    size_t size;                /* set by npf_media_opt_init */
     int tag;                    /* the application's stream kind, 0..999 (the peer's media_open gets it) */
     int prio;                   /* 0 (first) .. 3; default 1: ahead of the forwards' data (2) */
     int max_age_ms;             /* a frame not sent this long after npf_media_send is dropped; default 500 */
     int drop_until_key;         /* after a dropped frame, drop the others until a key frame */
     int fec;                    /* -1 automatic (default), 0 off, 1 on */
-    int fec_ratio;              /* fixed parity per 100 packets, 0 adaptive (default) */
-    int latency_rtt;            /* the receiver may wait this many round trips for a frame; 0 = off */
+    int fec_ratio;              /* fixed parity per 100 packets; 0: adaptive (default) */
+    int latency_rtt;            /* the receiver may wait this many round trips for a frame; 0: off */
     int rcv_drop_until_key;     /* the peer, receiving: after a lost frame skip to the next key frame */
 } npf_media_opt;
 
@@ -597,16 +641,19 @@ typedef struct npf_media_stats {
 
 NPF_API void npf_media_opt_init_size(npf_media_opt *o, size_t size);
 #define npf_media_opt_init(o) npf_media_opt_init_size((o), sizeof *(o))
-/* a stream of frames to the peer of a session (any path), its number in
- * *media; NPF_ESTATE: the session is not up, NPF_EBUSY: 64 streams per
- * instance, or 30 outgoing streams per AnLiu session. Opening and closing
- * often is fine: AnLiu's streams are kept and reused (data-channel.md 14) */
+/* Opens a stream of frames to the session's peer, on any path. NPF_ESTATE:
+ * the session is not up; NPF_EBUSY: NPF_MEDIA_STREAMS_MAX per instance, or
+ * 30 outgoing streams per session. Opening and closing often is cheap. */
 NPF_API int npf_media_open(npf_t *n, uint32_t session, const npf_media_opt *o, uint32_t *media);
-/* one frame, up to NPF_MEDIA_FRAME_MAX (any thread; copied, never blocks):
- * NPF_OK when queued; from a callback it is sent at once and errors show */
+/* Sends one frame of up to NPF_MEDIA_FRAME_MAX bytes. From another thread
+ * the frame is copied and queued and the call does not wait: NPF_OK when
+ * queued, NPF_EBUSY when NPF_MEDIA_SEND_QUEUE bytes or 4096 frames wait;
+ * later failures only drop the frame. From a callback it is sent at once
+ * and errors are returned. */
 NPF_API int npf_media_send(npf_t *n, uint32_t media, int flags, const void *frame, size_t len);
 NPF_API int npf_media_stats_get_size(npf_t *n, uint32_t media, npf_media_stats *out, size_t size);
 #define npf_media_stats_get(n, media, out) npf_media_stats_get_size((n), (media), (out), sizeof *(out))
+/* closes a stream, sending or receiving; no media_closed follows */
 NPF_API int npf_media_close(npf_t *n, uint32_t media);
 
 #ifdef __cplusplus

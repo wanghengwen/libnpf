@@ -1,11 +1,13 @@
-/* NAT detection against self-hosted probe servers (nat-traversal.md 4).
+/* NAT detection against the platform's probe servers (nat-traversal.md 4).
+ * Internal to libnpf: the node probes on its loop. It is in include/npf for
+ * npf's basic module (the NAT names in npf status) and the npf-natprobe and
+ * npf-punch tools (npf_natprobe_run).
  *
- * E1 = IP_A:P1, E2 = IP_A:P2, E3 = IP_B:P1. One socket asks all three for its
- * mapped address (mapping behaviour), then K fresh sockets ask E1 (port
- * allocation), then E2 and E3 are asked to answer the first of those (F, which
- * sent to E1 only) from where they are (filtering behaviour). IPv4 only.
- * npf_natprobe_start runs on the event loop (the node); npf_natprobe_run
- * is the same run on a loop of its own, blocking (the tools). */
+ * E1 = IP_A:P1, E2 = IP_A:P2, E3 = IP_B:P1. The main socket asks each for its
+ * mapped address (mapping), then K fresh sockets ask E1 (port allocation),
+ * then E2 and E3 are asked to send to the first of those, F, which has sent
+ * to E1 only (filtering). IPv4 only. Each phase ends when all its requests
+ * are answered or after 2.2 s. */
 #ifndef NPF_NATPROBE_H
 #define NPF_NATPROBE_H
 
@@ -21,14 +23,14 @@ enum { NPF_ALLOC_UNKNOWN = 0, NPF_ALLOC_PRESERVE, NPF_ALLOC_SEQUENTIAL, NPF_ALLO
 enum { NPF_FILT_UNKNOWN = 0, NPF_FILT_EIF, NPF_FILT_ADF, NPF_FILT_APDF };
 
 typedef struct npf_nat_profile {
-    uint8_t  mapping;           /* NPF_MAP_* */
+    uint8_t  mapping;           /* NPF_MAP_*; UNKNOWN: E2 silent, or M1 = M2 and E3 silent */
     uint8_t  allocation;        /* NPF_ALLOC_* */
-    uint8_t  filtering;         /* NPF_FILT_* (ADF without an E3: EIF or ADF) */
-    int16_t  seq_delta;         /* step of sequential allocation */
-    uint16_t block_lo, block_hi;/* smallest observed port range; lo > hi when it wraps past 65535 */
-    uint8_t  open;              /* public address on a local interface, no NAT */
-    uint8_t  ip_varies;         /* E3 saw another public IP: non-paired pooling, hard side, no S3 */
-    uint8_t  has_ipv6;          /* global IPv6 address (not probed yet) */
+    uint8_t  filtering;         /* NPF_FILT_* (without E3: ADF stands for EIF or ADF) */
+    int16_t  seq_delta;         /* SEQUENTIAL: the smallest step */
+    uint16_t block_lo, block_hi;/* BLOCK / RANDOM: the smallest port range holding the samples; lo > hi wraps
+                                   past 65535 */
+    uint8_t  open;              /* the mapped address is a local interface's, the port unchanged: no NAT */
+    uint8_t  ip_varies;         /* E3 saw another public IP than E1 (non-paired pooling: no S3) */
     uint32_t measured_at;       /* Unix seconds */
 } npf_nat_profile;
 
@@ -36,19 +38,20 @@ typedef struct npf_nat_profile {
 
 typedef struct npf_natprobe_cfg {
     struct sockaddr_in ep[3];   /* E1, E2, E3 */
-    int      n_ep;              /* 2 (single server: no ADM detection) or 3 */
+    int      n_ep;              /* 1..3; without E3 no ADM is told apart, without E2 no filtering test */
     uint8_t  probe_key[NPF_SIV_KEY_SIZE];
     uint8_t  ticket[NPF_TICKET_SIZE];
     int64_t  clock_offset_ms;   /* server clock - local clock, from the signaling server */
-    int      alloc_sockets;     /* K fresh sockets for the allocation test; 0 = skip */
-    int      filter_test;       /* after it, the filtering test (default 1; needs E2) */
-    int      main_fd;           /* >= 0: probe the mapping of this (AnLiu) socket; -1: a fresh one */
+    int      alloc_sockets;     /* K (default 8, at most NPF_NATPROBE_MAX_ALLOC); 0: no allocation nor
+                                   filtering test */
+    int      filter_test;       /* default 1 */
+    int      main_fd;           /* the socket whose mapping is probed; -1 (default): npf_natprobe_run makes one */
 } npf_natprobe_cfg;
 
 typedef struct npf_natprobe_result {
     npf_nat_profile profile;
-    uint16_t local_port;                    /* the main socket */
-    int      got[3];                        /* answered */
+    uint16_t local_port;                    /* the main socket's */
+    int      got[3];                        /* E1..E3 answered */
     struct sockaddr_in mapped[3];           /* M1, M2, M3 */
     int      rtt_ms[3];
     int      tries[3];                      /* requests sent */
@@ -57,33 +60,39 @@ typedef struct npf_natprobe_result {
     uint16_t alloc_local[NPF_NATPROBE_MAX_ALLOC];
     uint16_t alloc_mapped[NPF_NATPROBE_MAX_ALLOC];
     int      alloc_doubt;                   /* BLOCK / RANDOM, but sequential with one sample left out */
-    int      filter_acked[2];                /* E2, E3 got the bounce request */
-    int      filter_got[2];                  /* their answers reached F */
+    int      filter_acked[2];               /* E2, E3 answered the request to send to F */
+    int      filter_got[2];                 /* what they sent reached F */
     int      have_offset;
     int64_t  srv_offset_ms;                 /* E1 clock - local clock */
 } npf_natprobe_result;
 
+/* the defaults: alloc_sockets 8, filter_test 1, main_fd -1, the rest 0 */
 void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg);
-/* the allocation (profile.allocation, seq_delta, block_lo/hi) from the
- * alloc_* samples of res (the detection does it; tests) */
+/* Sets profile.allocation, seq_delta, block_lo / hi and alloc_doubt from
+ * the alloc_* samples (fewer than 3 answered: UNKNOWN). */
 void npf_natprobe_classify_alloc(npf_natprobe_result *res);
 
-/* Run the whole detection (about 2-3 s worst case) and return: 0, or -1 if
- * E1 did not answer at all (no profile). cfg->main_fd -1: a fresh socket.
- * Built with NPF_TOOLS_API only (npf-natprobe, npf-punch). */
+/* The whole detection on a loop of its own; blocks, about 7 s at most.
+ * main_fd -1: a fresh socket. 0 with res filled, -1 when E1 never answered
+ * (or no loop or socket). Built with NPF_TOOLS_API only (the tools). */
 int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res);
 
-/* Event-driven (the node): the same detection on the loop, nothing blocks.
- * cfg->main_fd is required; the caller passes the main socket's datagrams
- * to npf_natprobe_input (it takes those from the probe servers, 1). fn runs
- * once, ok 1 with a profile or 0 (E1 never answered), and the probe is gone
- * afterwards. npf_natprobe_cancel drops a running one (fn does not run). */
+/* The detection on loop, nothing blocks; cfg is copied and cfg->main_fd
+ * (the caller's, never closed here) is required. The caller hands the main
+ * socket's datagrams to npf_natprobe_input: 1 when it took one (it came from
+ * a probe server's endpoint), 0 when it is the caller's. fn runs once on the
+ * loop's thread, from a timer or npf_natprobe_input, never from
+ * npf_natprobe_start: ok 1 with a profile, 0 when E1 never answered. The
+ * probe is freed before fn runs. npf_natprobe_start: NULL when n_ep < 1,
+ * main_fd is not a socket, or no memory. npf_natprobe_cancel frees a
+ * running probe without fn (NULL is fine); not after fn. */
 typedef struct npf_natprobe npf_natprobe;
 typedef void (*npf_natprobe_fn)(int ok, const npf_natprobe_result *res, void *arg);
 npf_natprobe *npf_natprobe_start(npf_loop *loop, const npf_natprobe_cfg *cfg, npf_natprobe_fn fn, void *arg);
 int  npf_natprobe_input(npf_natprobe *p, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void npf_natprobe_cancel(npf_natprobe *p);
 
+/* "UNKNOWN", "EIM", ... (static strings; out of range: "UNKNOWN") */
 const char *npf_nat_mapping_str(int mapping);
 const char *npf_nat_alloc_str(int allocation);
 const char *npf_nat_filter_str(int filtering);

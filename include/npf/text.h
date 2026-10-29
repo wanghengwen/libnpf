@@ -1,24 +1,28 @@
-/* Small parsers for the fixed text formats used by npf. */
+/* Small strict parsers of numbers, words, host:port and MAC addresses.
+ * Internal to libnpf; in include/npf because npf's app, modules and tools
+ * parse their command lines and files with them. */
 #ifndef NPF_TEXT_H
 #define NPF_TEXT_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-/* Read a whitespace-separated word, a decimal int, or a hex unsigned long.
- * On success return 0 and advance *p; on failure return -1 without advancing.
- * Words must fit including the terminator. Integers must fit their type. */
+/* Read a white-space separated word (it must fit in cap with its NUL), a
+ * decimal int or a hex unsigned long (no minus) at *p, after any white
+ * space. 0 with *p past it, or -1 with *p unchanged. npf_text_mac: s whole
+ * as "aa:bb:cc:dd:ee:ff" into out, 0 or -1. */
 int npf_text_word(const char **p, char *out, size_t cap);
 int npf_text_int(const char **p, int *out);
 int npf_text_hex(const char **p, unsigned long *out);
 int npf_text_mac(const char *s, unsigned char out[6]);
-/* a hex digit's value, -1 for anything else */
+/* A hex digit's value, -1 for anything else. */
 static inline int npf_hexval(int c)
 {
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
 
-/* no control characters (UTF-8 itself the JSON parser checks): 1, else 0 */
+/* 1 when s has no control characters (bytes below 0x20, 0x7f), else 0.
+ * It does not check UTF-8. */
 static inline int npf_text_plain(const char *s)
 {
     for (; *s; s++)
@@ -27,15 +31,16 @@ static inline int npf_text_plain(const char *s)
     return 1;
 }
 
-/* s whole a decimal number in lo..hi (hi < LONG_MAX / 10): digits only, no
- * sign, no leading zero; 0 or -1 */
+/* s whole as a decimal number in lo..hi (hi < LONG_MAX / 10): digits only,
+ * no sign, no leading zero. 0 with *out set, or -1. */
 int npf_text_dec(const char *s, long lo, long hi, long *out);
 
-/* "HOST:PORT" or "[IPV6]:PORT": the host (brackets off, not empty) into
- * host, the port (npf_text_dec, 0..65535); 0 or -1 */
+/* Splits "HOST:PORT" (at the last colon) or "[IPV6]:PORT": the host, not
+ * empty and without brackets, into host of cap bytes; the port as for
+ * npf_text_dec, 0..65535. 0 or -1. */
 int npf_hostport(const char *s, char *host, size_t cap, uint16_t *port);
 
-/* HTTP/1.x response status (three digits), or -1. s is NUL-terminated. */
+/* The status code (100..999) of an HTTP/1.x status line, or -1. */
 int npf_http_status(const char *s);
 
 #endif

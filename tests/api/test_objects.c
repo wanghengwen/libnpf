@@ -734,6 +734,25 @@ int main(void)
         check(c && npf_config_get(c, "direct", val, sizeof val) == NPF_OK && atoi(val) == dport + 1,
               "npf_setup: no configuration file, the fields as keys");
         check(c && npf_pairing_password_get(c, val, sizeof val) == NPF_ESTATE, "no number: pairing NPF_ESTATE");
+        /* the identity's public key, before the run, from data_dir's identity */
+        {
+            static const char b64u[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            char k1[NPF_KEY_TEXT_LEN + 1], ka[NPF_KEY_TEXT_LEN + 1];
+            check(c && npf_node_key(c, k1, NPF_KEY_TEXT_LEN) == NPF_ETOOBIG && !k1[0],
+                  "npf_node_key: a buffer without room for the NUL: NPF_ETOOBIG, out empty");
+            check(c && npf_node_key(c, k1, sizeof k1) == NPF_OK && strlen(k1) == NPF_KEY_TEXT_LEN
+                      && strspn(k1, b64u) == NPF_KEY_TEXT_LEN,
+                  "npf_node_key before the run: 43 characters of base64url");
+            npf_destroy(c);
+            if (npf_create(&o, &c, err, sizeof err) != NPF_OK)
+                c = NULL;
+            check(c && npf_node_key(c, val, sizeof val) == NPF_OK && strcmp(val, k1) == 0,
+                  "npf_node_key: the same key from the same data_dir again");
+            check(npf_node_key(a, ka, sizeof ka) == NPF_OK && strcmp(ka, k1) != 0,
+                  "npf_node_key of a running instance: its own identity's");
+            check(npf_node_key(NULL, ka, sizeof ka) == NPF_EINVAL && npf_node_key(a, NULL, 44) == NPF_EINVAL,
+                  "npf_node_key: NULL instance or buffer: NPF_EINVAL");
+        }
         npf_destroy(c);
     }
 

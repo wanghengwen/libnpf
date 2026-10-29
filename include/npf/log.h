@@ -1,18 +1,17 @@
-/* Logging: levels and sinks.
+/* Logging: levels, the process log and each instance's log. Internal to
+ * libnpf; in include/npf because npf's app (its log file), modules and
+ * tools log through it.
  *
  *   2026-10-06 13:01:14.013 INFO  call x: direct path 1.2.3.4:5 (213 ms)
  *
- * One line per event: local date and time with milliseconds (the terminal
- * gets the time only), the level, the message; DEBUG and TRACE add the
- * source file and line. The level comes from the configuration (log_level =
- * error | warn | info | debug | trace, default info) and can be changed at
- * run time. Thread-safe: the resolver thread logs too.
+ * A line is the local date and time with ms, the level, the message, and at
+ * DEBUG and TRACE the source file and line; stderr gets it without the
+ * date. All functions may be called from any thread.
  *
- * libnpf instances: each has a log context (its level, its recent lines,
- * the application's callback). The thread that works for an instance (its
- * loop thread, or a caller while it does not run) has it set; lines logged
- * there go to that instance only. Lines of other threads go to the process
- * log (stderr or the application's writer). */
+ * A thread that works for a libnpf instance (its loop thread, or a caller
+ * while it does not run) has the instance's log context set: its lines,
+ * level and recent lines are the instance's. Other threads use the process
+ * log (stderr, or the application's writer). */
 #ifndef NPF_LOG_H
 #define NPF_LOG_H
 
@@ -20,12 +19,14 @@
 
 enum { NPF_LOG_TRACE, NPF_LOG_DEBUG, NPF_LOG_INFO, NPF_LOG_WARN, NPF_LOG_ERROR };
 
-/* MinGW: the C99 formats (%zu, %lld) of its own printf (log.c uses it) */
+/* MinGW: checked against the C99 formats (%zu, %lld) its own printf has */
 #ifdef __MINGW32__
 #define NPF_LOG_FORMAT __attribute__((format(gnu_printf, 4, 5)))
 #else
 #define NPF_LOG_FORMAT __attribute__((format(printf, 4, 5)))
 #endif
+/* Writes a line when level is at or above the current level. Messages are
+ * cut at 2 KB. */
 void npf_log_at(int level, const char *file, int line, const char *fmt, ...) NPF_LOG_FORMAT;
 
 #define npf_loge(...) npf_log_at(NPF_LOG_ERROR, __FILE__, __LINE__, __VA_ARGS__)
@@ -34,46 +35,49 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...) NPF
 #define npf_logd(...) npf_log_at(NPF_LOG_DEBUG, __FILE__, __LINE__, __VA_ARGS__)
 #define npf_logt(...) npf_log_at(NPF_LOG_TRACE, __FILE__, __LINE__, __VA_ARGS__)
 
-/* the level of this thread's instance, else of the process */
+/* The level of this thread's instance, else of the process (default INFO).
+ * A level out of range is ignored. */
 void npf_log_set_level(int level);
 int  npf_log_get_level(void);
-/* is a message at this level written? (to skip expensive formatting) */
+/* 1 when a line at level would be written (to skip costly formatting). */
 int  npf_log_on(int level);
-/* "error", "warn", "info", "debug", "trace" -> level; -1 if unknown */
+/* "trace" .. "error" to NPF_LOG_*, -1 for anything else; and back ("?"). */
 int  npf_log_level_parse(const char *s);
 const char *npf_log_level_name(int level);
 
-/* the last lines logged (this thread's instance, else the process), oldest
- * first: copies up to cap bytes (whole lines) and returns the length */
+/* The last lines of this thread's instance (none when it keeps no ring),
+ * else of the process, oldest first: whole lines into out, NUL-terminated
+ * within cap bytes. Returns the length. */
 size_t npf_log_recent(char *out, size_t cap);
 
-/* ---- where the process log goes (npf's log file: client/app/logfile.c) ---- */
+/* ---- the process log's sink ---- */
 
-/* each line of the process log ("date time.ms LEVEL message\n") to fn, called
- * under the log lock, instead of npf_log_stderr; NULL: stderr again */
+/* Sends each line of the process log (with its date and "\n") to fn instead
+ * of stderr; NULL: stderr again. fn runs under the log lock and must not
+ * log. */
 void npf_log_set_writer(void (*fn)(const char *line, size_t len));
-/* the line on stderr without its date */
+/* Writes a line to stderr without its date. */
 void npf_log_stderr(const char *line, size_t len);
-/* the log lock, for the writer's own state */
+/* The log lock, for state the writer shares with other threads. */
 void npf_log_lock(void);
 void npf_log_unlock(void);
 
-/* ---- an instance's log (libnpf) ---- */
+/* ---- an instance's log ---- */
 
 #define NPF_LOG_RING 16384
 
 typedef struct npf_log_ctx {
-    /* the application's callback (NULL: the process log); called with no
-     * lock held, on the thread that logged */
+    /* the application's callback, or NULL for the process log; it gets the
+     * line without "\n", on the thread that logged, with no lock held */
     void  (*hook)(void *user, int level, const char *line);
     void   *user;
     int     level;
-    char   *ring;                 /* recent lines, NPF_LOG_RING bytes (NULL: none kept,
-                                     the application's hook has every line) */
+    char   *ring;                 /* recent lines, NPF_LOG_RING bytes; NULL: none kept.
+                                     Only the thread working for the instance uses it */
     size_t  ring_pos, ring_len;
 } npf_log_ctx;
 
-/* this thread now works for c (NULL: for no instance); returns the one before */
+/* Sets this thread's log context (NULL: none) and returns the one before. */
 npf_log_ctx *npf_log_ctx_swap(npf_log_ctx *c);
 
 #endif

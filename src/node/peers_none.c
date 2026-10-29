@@ -53,7 +53,10 @@ int npf_peer_forward_add_kind(npf_peer *p, char opt, const char *spec, int perm,
     return unavailable(err, errcap);
 }
 
-void npf_peers_public_json(npf_peers *ps, int close, struct npf_out *o) { npf_out_printf(o, "[]"); }
+void npf_peers_public_json(npf_peers *ps, int close, struct npf_out *o)
+{
+    npf_out_printf(o, "{\"open\":0,\"closing\":false,\"mappings\":[]}");
+}
 
 const char *npf_peers_resolve(const npf_peers *ps, const char *word, char *buf, size_t cap) { return word; }
 const char *npf_peers_kind_norm(npf_peers *ps, char opt, const char *spec, char *buf, size_t cap) { return spec; }

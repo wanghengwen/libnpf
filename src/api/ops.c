@@ -275,6 +275,26 @@ int npf_node_get_size(npf_t *n, npf_node_info *out, size_t size)
     return op_get(n, node_get_run, 0, out, size);
 }
 
+static int node_key_run(npf_t *n, void *arg)
+{
+    op_arg *x = arg;
+    char k[NPF_B64_LEN(32)];
+    if (x->size < NPF_KEY_TEXT_LEN + 1)
+        return NPF_ETOOBIG;
+    k[npf_b64url_encode(n->id.dh_pub, 32, k)] = 0;
+    memcpy(x->out, k, NPF_KEY_TEXT_LEN + 1);
+    return NPF_OK;
+}
+
+int npf_node_key(npf_t *n, char *out, size_t cap)
+{
+    op_arg x = {.out = out, .size = cap};
+    if (!out || !cap)
+        return NPF_EINVAL;
+    out[0] = 0;
+    return npf_api_op(n, node_key_run, &x);
+}
+
 static int session_get_run(npf_t *n, void *arg)
 {
     op_arg *x = arg;

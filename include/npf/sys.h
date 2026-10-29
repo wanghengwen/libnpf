@@ -1,10 +1,10 @@
-/* Portable system layer: socket headers and the few calls that differ
- * between POSIX and Windows (Winsock); platform/sys.c, with sys_posix.c or
- * sys_win.c for what differs.
+/* The portable system layer: socket headers, threads, socket errors,
+ * addresses, the node's UDP sockets, files. Internal to libnpf; in
+ * include/npf because npf's app, modules, tools, tray and Android JNI use
+ * its sockets, addresses and files too.
  *
- * Sockets are kept in an int everywhere. On Windows a SOCKET handle is a
- * small kernel handle value, so it fits; INVALID_SOCKET becomes -1.
- * Close sockets with npf_sock_close(), never close(). */
+ * A socket is an int everywhere (a Windows SOCKET fits; INVALID_SOCKET is
+ * -1). Close it with npf_sock_close(), never close(). */
 #ifndef NPF_SYS_H
 #define NPF_SYS_H
 
@@ -68,85 +68,95 @@ typedef ULONG nfds_t;
 
 /* ======== threads ======== */
 
-/* per-thread storage: each libnpf instance runs on a thread of its own */
 #if defined(_MSC_VER)
 #define NPF_THREAD_LOCAL __declspec(thread)
 #else
 #define NPF_THREAD_LOCAL __thread
 #endif
-/* fn(arg) on a detached thread of its own (platform/resolve.c); 0 or -1 */
+/* Runs fn(arg) on a new detached thread (256 KB stack on POSIX). 0, or -1
+ * when no thread could be made (fn does not run). */
 int npf_thread_detached(void (*fn)(void *), void *arg);
 
 /* ======== sockets and their errors ======== */
 
-/* WSAStartup on Windows (idempotent); nothing elsewhere. 0 or -1. */
+/* WSAStartup on Windows (reference counted, any thread); nothing elsewhere.
+ * npf_socket calls it. 0 or -1. */
 int  npf_sys_init(void);
 
-/* socket(): non-blocking unless blocking != 0, close-on-exec; UDP sockets
- * on Windows do not report ICMP port unreachable as recv errors. -1 on error. */
+/* socket(), non-blocking unless blocking != 0, not inherited by child
+ * processes; no SIGPIPE where MSG_NOSIGNAL is missing (SO_NOSIGPIPE). On
+ * Windows an ICMP port unreachable does not fail a UDP socket's next recv.
+ * The socket, or -1. npf_accept: the same for an accepted connection (always
+ * non-blocking). */
 int  npf_socket(int family, int type, int proto, int blocking);
-int  npf_accept(int lfd);                       /* non-blocking accepted socket or -1 */
+int  npf_accept(int lfd);
 int  npf_set_nonblock(int fd);
 void npf_sock_close(int fd);
-/* before bind() of a listening socket (type SOCK_STREAM or SOCK_DGRAM): its
- * port is its own. TCP may bind again at once after a restart (POSIX
- * SO_REUSEADDR); a UDP port is never shared with another socket; on Windows
- * SO_EXCLUSIVEADDRUSE for both (its SO_REUSEADDR would take a port in use) */
+/* Call before bind() of a listening socket (type SOCK_STREAM or SOCK_DGRAM).
+ * The port is never shared with another socket; on POSIX a TCP port can be
+ * bound again at once after a restart (SO_REUSEADDR), on Windows both get
+ * SO_EXCLUSIVEADDRUSE. */
 void npf_sock_listen_opts(int fd, int type);
 
-/* after a failed socket call: its error (errno; Winsock's on Windows), a
- * name for its codes (NPF_SE(WOULDBLOCK): EWOULDBLOCK, WSAEWOULDBLOCK) */
+/* The error of the last failed socket call on this thread: errno, or
+ * WSAGetLastError() on Windows. NPF_SE(X) names a code on both (EX, WSAEX).
+ * The predicates below test that error; the _code forms test an SO_ERROR
+ * value. */
 int  npf_sock_err(void);
-int  npf_sock_again(void);                      /* would block / interrupted: try later */
-int  npf_sock_in_use(void);                     /* bind: the address is taken (or not ours to take) */
-int  npf_sock_inprogress(void);                 /* non-blocking connect() started */
-/* the socket itself is unusable (iOS reclaims a suspended app's sockets, a
- * descriptor gone): reopen it; not an ICMP report or a full buffer */
+int  npf_sock_again(void);                      /* would block or interrupted: try again later */
+int  npf_sock_in_use(void);                     /* bind: the address is taken, or access is denied */
+int  npf_sock_inprogress(void);                 /* a non-blocking connect() has started */
+/* The socket itself is unusable (a descriptor gone, iOS reclaimed a
+ * suspended app's socket, the connection shut down): reopen it. Not true
+ * for an ICMP report or a full buffer. */
 int  npf_sock_broken(void);
-int  npf_sock_broken_code(int err);             /* an SO_ERROR value */
-int  npf_sock_starved(void);                    /* out of descriptors or memory (accept: the connection waits) */
-/* a TCP socket's kernel queues and retransmissions, for a log line (Linux; "-" elsewhere) */
+int  npf_sock_broken_code(int err);
+int  npf_sock_starved(void);                    /* out of descriptors or buffer memory */
+/* A TCP socket's kernel send queue, retransmissions, RTT and RTO as text in
+ * buf, for a log line (Linux; "-" elsewhere). Returns buf. */
 const char *npf_sock_tcp_diag(int fd, char *buf, size_t cap);
+/* The error's text, in English. Valid until the next call on this thread. */
 const char *npf_sock_strerror(void);
-const char *npf_sock_strerror_code(int err);         /* an SO_ERROR value */
+const char *npf_sock_strerror_code(int err);
 
 /* ======== addresses and interfaces ======== */
 
-/* An IPv4 or IPv6 socket address (sockaddr_in, sockaddr_in6, or a
- * sockaddr_storage holding one; the family says which): its length, its
- * port (host order), whether two are the same address and port (0 for
- * any other family), "1.2.3.4:5" or "[::1]:5" ("-" for another family),
- * and the address of such a text (digits only for the port; 0 or -1) */
+/* sa is a sockaddr_in, a sockaddr_in6, or a sockaddr_storage holding one.
+ * npf_addr_port is in host order. npf_addr_eq: same family, address and port
+ * (0 for any other family). npf_addr_str writes "1.2.3.4:5" or "[::1]:5"
+ * ("-" for another family) into buf and returns buf. npf_addr_parse reads
+ * that form back (a numeric address only, the port in digits): 0 or -1. */
 socklen_t   npf_addr_len(const void *sa);
 uint16_t    npf_addr_port(const void *sa);
 int         npf_addr_eq(const void *a, const void *b);
 const char *npf_addr_str(const void *sa, char *buf, size_t cap);
 int         npf_addr_parse(const char *s, struct sockaddr_storage *out);
 
-/* addresses of the interfaces that are up (loopback included) */
+/* The addresses of the interfaces that are up, loopback included. */
 typedef struct npf_ifaddr {
     int     family;                             /* AF_INET / AF_INET6 */
     uint8_t addr[16];
     int     prefix;                             /* netmask length, -1 unknown */
     int     loopback;                           /* on a loopback interface (WSL puts 10.255.255.254 on lo) */
 } npf_ifaddr;
-int  npf_if_list(npf_ifaddr *out, int max);
-/* one of them? addr: an in_addr (AF_INET) or in6_addr's 16 bytes */
+int  npf_if_list(npf_ifaddr *out, int max);     /* up to max of them: the count (0 on error) */
+/* 1 when addr (an in_addr, or an in6_addr's 16 bytes) is one of them */
 int  npf_if_has(int family, const void *addr);
 
 /* ======== UDP sends and the node's socket hook ======== */
 
-/* sendto() on a non-blocking UDP socket; to is a sockaddr_in / sockaddr_in6 /
- * sockaddr_storage. A failure other than a full queue is logged (warning,
- * the same error at most once a minute per thread, with how many more there
- * were); on macOS "No route to host" to the local network says how to allow
- * it. 0 or -1. */
+/* sendto() without blocking; to as for npf_addr_len. 0, or -1 when the
+ * datagram was not sent. A full queue is not logged; another error is, at
+ * most once a minute per thread and error, with how many more there were
+ * (unroutable destinations at DEBUG, others at WARN; on macOS a blocked
+ * local network says how to allow it). */
 int  npf_udp_send(int fd, const void *buf, size_t len, const void *to);
 
-/* When a node's main socket last sent what may keep the mapping its
- * spare allocation's relay sees (home-binding.md 5.4): by the NAT's
- * mapping, anything but the relay's address (EIM, or not known), the
- * relay's IP on another port (ADM: its probe servers), nothing (APDM). */
+/* When a node's main socket last sent a datagram that may keep the NAT
+ * mapping its spare allocation's relay sees (home-binding.md 5.4). What
+ * counts depends on the NAT's mapping: ANY (EIM, or unknown) any datagram
+ * not to the relay itself, IP (ADM) one to the relay's IP on another port,
+ * NONE (APDM) none. */
 enum { NPF_WATCH_ANY, NPF_WATCH_IP, NPF_WATCH_NONE };
 typedef struct npf_udp_watch {
     uint32_t relay_ip;                          /* network order; 0: none yet */
@@ -154,74 +164,84 @@ typedef struct npf_udp_watch {
     int      mode;                              /* NPF_WATCH_* */
     int64_t  other;                             /* npf_mono_ms of the last such datagram, 0: none */
 } npf_udp_watch;
-/* npf_udp_send notes the datagrams it sends on fd into w, on this thread
- * (each libnpf instance runs on one of its own; 4 at most); NULL: no more */
+/* From now on npf_udp_send on this thread notes into w.other the datagrams
+ * on fd that count. Per thread, at most 4 at once (more are ignored); w NULL
+ * stops it for fd. w must stay valid until then. */
 void npf_udp_watch_on(int fd, npf_udp_watch *w);
 
-/* The node's UDP sockets (the main ones, punching, NAT probing, port
- * mapping; not the loop's wake-up or a direct listener): npf_socket, then
- * the hook while it is on (connect_mode p2p; off in secure): the platform's
- * (the Android app binds them to the network under a VPN, so punching sees
- * the phone's own NAT), else the built-in npf_vpn_bypass. A hook that fails
- * (the VPN lets no app bypass it) leaves the socket on the default route.
- * Process-wide. */
+/* The node's UDP sockets (main, punching, NAT probing, port mapping; not
+ * the loop's wake-up or a direct listener) come from npf_udp_socket:
+ * npf_socket, then, while the hook is on (connect_mode p2p, not secure),
+ * the application's hook or else the built-in npf_vpn_bypass, so the
+ * socket goes around a VPN (the Android app binds it to the physical
+ * network). A hook that fails leaves the socket on the default route
+ * (logged once). The hook and its switch are process-wide, set from any
+ * thread; the hook runs on the thread that opens the socket. */
 typedef int (*npf_udp_hook_fn)(int fd, int family, void *arg);
 void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg);
 void npf_udp_hook_on(int on);
-/* a socket of the node's (its UDP ones, its signaling's TCP) out on the
- * physical network under a VPN when the hook is on (connect_mode p2p): the
- * application's hook, else npf_vpn_bypass; <0 the platform could not */
+/* Takes one of the node's sockets (UDP, or the signaling's TCP) around a
+ * VPN as above. 0 (also when the hook is off), or < 0 when the hook could
+ * not. */
 int  npf_net_bypass(int fd, int family);
-/* npf_net_bypass may take a socket around a VPN now: the hook is on, and the
- * application's own hook is set (it knows its VPN) or a VPN is in the way */
+/* 1 when npf_net_bypass may take a socket around a VPN now: the hook is on
+ * and either the application's hook is set or a VPN is in the way. */
 int  npf_net_bypass_active(void);
 int  npf_udp_socket(int family, int blocking);
 
 /* ======== the network around: adapters, VPN, firewall, gateway ======== */
 
 #ifdef _WIN32
-/* GetAdaptersAddresses(AF_UNSPEC, flags) into a buffer grown as it asks:
- * an IP_ADAPTER_ADDRESSES list to free(), or NULL */
+/* GetAdaptersAddresses(AF_UNSPEC, flags): an IP_ADAPTER_ADDRESSES list
+ * the caller frees with free(), or NULL. */
 void *npf_win_adapters(unsigned long flags);
 #endif
-/* a VPN has the default route and the node's sockets may go around it (as
- * npf_vpn_bypass last saw it) */
+/* 1 when, as npf_vpn_bypass last looked, a VPN has the default route and a
+ * physical interface is there to go around it. */
 int  npf_vpn_in_way(void);
-/* the built-in hook (platform/vpnbypass.c): a VPN with the default route:
- * the socket bound to the physical interface under it; 0, or -1 when that
- * failed; and whether an interface name is a tunnel's (utun, wg, tun, ...) */
+/* The built-in hook: when a VPN has the default route, binds fd to the
+ * physical interface under it (Linux needs CAP_NET_RAW). It looks at the
+ * interfaces again at most every 3 s. 0 (also without a VPN), or -1 when
+ * the socket could not be bound. Any thread. npf_if_tunnel_name: 1 when an
+ * interface name looks like a tunnel's (utun, wg, tun, ...). */
 int  npf_vpn_bypass(int fd, int family, void *arg);
 int  npf_if_tunnel_name(const char *name);
 
-/* How early to start punching because of a host firewall that blocks a UDP
- * flow whose first packet is unsolicited inbound (and keeps blocking it):
- * 300 on macOS with the application firewall on, else 0. */
+/* How many ms early to start punching because a host firewall blocks a
+ * UDP flow whose first packet is unsolicited inbound: 300 on macOS with
+ * the application firewall on, else 0. Runs a program on macOS: slow. */
 int  npf_firewall_lead_ms(void);
 
-/* IPv4 default gateway (network byte order), 0 or -1 */
+/* The IPv4 default gateway in network order: 0, or -1 when unknown (always
+ * on iOS and Android). */
 int  npf_default_gw4(uint32_t *gw);
 
 /* ======== files and their permissions ======== */
 
-int  npf_mkdir_p(const char *path);             /* 0700 where it matters; 0 if it exists */
-/* restrict a file holding secrets to its owner (POSIX mode 0600; Windows:
- * protected DACL for SYSTEM, Administrators and the owner) */
+/* Makes path and its parents (mode 0700 on POSIX). 0 when it exists after,
+ * -1 on error or a path of 1024 bytes or more. */
+int  npf_mkdir_p(const char *path);
+/* Restricts a file holding secrets to its owner (POSIX mode 0600; Windows:
+ * a protected DACL for SYSTEM, Administrators and the owner). 0 or -1. */
 int  npf_file_private(const char *path);
-/* is the file readable by other users? (POSIX: group/other bits; Windows: no check) */
+/* 1 when group or others have any permission on the file (POSIX); always 0
+ * on Windows. */
 int  npf_file_too_open(const char *path);
-/* absolute path of p (no symlink resolution needed); out holds cap bytes */
+/* p made absolute against the working directory (symlinks not resolved),
+ * into out of cap bytes. 0, or -1 (an error, or it does not fit). */
 int  npf_abspath(const char *p, char *out, size_t cap);
 int  npf_path_is_abs(const char *p);
 
 /* ======== scratch buffers ======== */
 
-/* Scratch buffers for the loop's deep paths (a datagram, a frame, a control
- * message) on the heap rather than the stack: a thread's stack keeps every
- * page it ever touched, so a 64 KB frame once makes 64 KB of memory for good
- * (npf-hosted: a thread per account). The thread keeps the last few for reuse
- * until npf_scratch_trim(); nested use gets buffers of its own. */
-void *npf_scratch(size_t n);                    /* NULL: no memory */
-void npf_scratch_done(void *p);                 /* NULL is fine */
-void npf_scratch_trim(void);                    /* frees the ones kept */
+/* Large temporary buffers (a datagram, a frame) from the heap instead of
+ * the stack, which keeps every page it once touched. npf_scratch returns n
+ * bytes or NULL; give each back with npf_scratch_done on the same thread
+ * (NULL is fine). Each thread keeps up to 4 for reuse until
+ * npf_scratch_trim frees the ones not in use; nested calls get distinct
+ * buffers. */
+void *npf_scratch(size_t n);
+void npf_scratch_done(void *p);
+void npf_scratch_trim(void);
 
 #endif

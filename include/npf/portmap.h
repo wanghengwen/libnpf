@@ -1,11 +1,8 @@
-/* Port mapping via PCP (RFC 6887) and NAT-PMP (RFC 6886) — nat-traversal.md 5.
- *
- * Both talk UDP to the default gateway on port 5351. We try PCP first (newer,
- * returns the external IP directly, supports IPv6) and fall back to NAT-PMP.
- * On success the router forwards its external_ip:external_port to this host's
- * internal_port — a `mapped` candidate, as good as a public address.
- *
- * UPnP IGD is not supported (nat-traversal.md 5.1). */
+/* Router port mapping with PCP (RFC 6887), else NAT-PMP (RFC 6886), over UDP
+ * to the default IPv4 gateway's port 5351 (nat-traversal.md 5; no UPnP IGD).
+ * A mapping makes the router forward external_ip:external_port to this
+ * host's internal_port: a "mapped" candidate. Internal to libnpf (the node
+ * keeps its UDP port mapped); in include/npf for the npf-portmap tool. */
 #ifndef NPF_PORTMAP_H
 #define NPF_PORTMAP_H
 
@@ -21,36 +18,42 @@ typedef struct npf_portmap {
     uint16_t internal_port;
     uint16_t external_port;
     int      ext_family;        /* 4 or 6 */
-    uint8_t  external_ip[16];   /* network order; first 4 bytes used when ext_family==4 */
+    uint8_t  external_ip[16];   /* network order, the first 4 bytes for IPv4; NAT-PMP: zeros when the
+                                   gateway did not tell it */
     uint32_t lifetime;          /* granted, seconds */
-    uint32_t epoch;             /* server epoch (for restart detection) */
+    uint32_t epoch;             /* the gateway's epoch (it restarted when it goes back) */
 } npf_portmap;
 
-/* Build/parse one PCP MAP request/response (UDP proto). Exposed for the KATs. */
+/* One UDP MAP request / its response, for the known-answer tests. build
+ * returns the length (60, 12); parse 0 for a success response (PCP: the
+ * same nonce, UDP), -1 otherwise. NAT-PMP's parse leaves external_ip zero. */
 int  npf_pcp_build_map(uint8_t out[60], const uint8_t nonce[12], const struct in_addr *client,
                        uint16_t internal_port, uint16_t suggest_ext, uint32_t lifetime);
 int  npf_pcp_parse_map(const uint8_t *in, size_t len, const uint8_t nonce[12], npf_portmap *res);
-
-/* Build/parse one NAT-PMP UDP MAP request/response. */
 int  npf_natpmp_build_map(uint8_t out[12], uint16_t internal_port, uint16_t suggest_ext, uint32_t lifetime);
 int  npf_natpmp_parse_map(const uint8_t *in, size_t len, npf_portmap *res);
 
-/* Full attempt: discover gateway, try PCP then NAT-PMP for a UDP mapping of
- * `internal_port`. Returns 0 on success (res filled), -2 without a default
- * IPv4 gateway, -1 otherwise (no answer). at: the gateway's "IP:PORT"
- * instead of the default route's (tests: NPF_TEST_PORTMAP_GW), or NULL; the
- * same in the two below. */
+/* at, in the three below: a gateway "IP:PORT" (IPv4) to use instead of the
+ * default route's (tests), or NULL. */
+
+/* Maps UDP internal_port (the same external port asked for), PCP first,
+ * then NAT-PMP, 4 tries each (250 ms doubling). Blocks up to ~7.5 s: the
+ * node calls it on a thread of its own. Only a success reply for
+ * internal_port with an external port counts. 0 with res filled, -2 without
+ * a gateway, -1 without an answer. */
 int  npf_portmap_request(const char *at, uint16_t internal_port, uint32_t lifetime, npf_portmap *res);
 
-/* The mapping of internal_port removed with the method that made it: one
- * try of 250 ms (a stopping node does not wait out a gateway gone silent;
- * an unremoved mapping ends with its lease). 0 / -1. */
+/* Removes the mapping of internal_port with the method that made it: one
+ * try, blocking up to 250 ms (an unremoved mapping ends with its lifetime).
+ * 0, or -1. */
 int  npf_portmap_remove(const char *at, uint16_t internal_port, int method);
 
-/* the network the gateway is on: the default IPv4 gateway and this host's
- * address toward it (no packet sent); 0 without a gateway */
+/* The network the gateway is on, to notice a change: the gateway's IPv4
+ * address << 32 | this host's address toward it (both network order; 0 when
+ * unknown). No packet is sent. 0 without a gateway. */
 uint64_t npf_portmap_net(const char *at);
 
+/* "none", "PCP", "NAT-PMP" (static; out of range: "none") */
 const char *npf_portmap_method_str(int method);
 
 #endif

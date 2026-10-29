@@ -1,9 +1,11 @@
-/* Address-probe packets between a device and a probe server (nat-traversal.md 6.2-6.4).
+/* Address-probe packets between a node and a probe server (nat-traversal.md
+ * 6.2-6.4), also the frame of the punch packets (npf/punch.h). Internal to
+ * libnpf; in include/npf for the npf-punch tool (npf_bind_query).
  *
- *   wire = tag(12) || ChaCha20(k_enc[dir], nonce = tag, P)
+ *   wire = tag(12) || ChaCha20(k_enc[dir], nonce = tag, P)   (npf/siv.h)
  *   P    = type(1) | flags(1) | body_len(2) | txid(12) | ts_ms(4) | body | pad
  *
- * Integers are little-endian (as in AnLiu); IP addresses are in network order. */
+ * Integers are little-endian; IP addresses are in network order. */
 #ifndef NPF_BIND_H
 #define NPF_BIND_H
 
@@ -13,20 +15,20 @@
 
 #include "npf/siv.h"
 
-/* packet types (shared numbering with the punch packets of 6.5) */
+/* packet types (one numbering with the punch packets) */
 #define NPF_PKT_BIND_REQ      1
 #define NPF_PKT_BIND_RESP     2
-#define NPF_PKT_BOUNCE_REQ    7     /* the filtering test: answer another mapping of mine (4.2) */
+#define NPF_PKT_BOUNCE_REQ    7     /* the filtering test: send to another mapping of mine */
 
 /* key directions */
-#define NPF_DIR_REQ           0     /* device -> probe server */
-#define NPF_DIR_RESP          1     /* probe server -> device */
+#define NPF_DIR_REQ           0     /* node -> probe server */
+#define NPF_DIR_RESP          1     /* probe server -> node */
 
 #define NPF_PKT_HDR_SIZE      20    /* type .. ts_ms */
 #define NPF_TXID_SIZE         12
-#define NPF_TICKET_SIZE       28    /* id(8) | expire(4) | mac(16) */
+#define NPF_TICKET_SIZE       28    /* id(8) | expire(4) | mac(16), opaque to the node */
 
-/* wire length ranges (6.3/6.4) */
+/* wire lengths (6.3, 6.4) */
 #define NPF_BIND_REQ_MIN      96
 #define NPF_BIND_REQ_MAX      200
 #define NPF_BIND_RESP_MIN     64
@@ -36,24 +38,28 @@ typedef struct npf_pkt {
     int      type;
     uint8_t  txid[NPF_TXID_SIZE];
     uint32_t ts_ms;
-    const uint8_t *body;        /* points into the caller's plaintext buffer */
+    const uint8_t *body;        /* points into the plain buffer given to npf_pkt_open */
     size_t   body_len;
 } npf_pkt;
 
-/* Build a sealed packet of exactly wire_len bytes into out (random padding).
- * Returns wire_len, or -1 if the body does not fit. */
+/* Seals a packet of exactly wire_len bytes (at most NPF_PKT_MAX) into out,
+ * padded with zeros before the encryption. wire_len, or -1 when the body
+ * does not fit. */
 int npf_pkt_seal(const npf_siv_keys *keys, int dir, int type, const uint8_t txid[NPF_TXID_SIZE],
                  uint32_t ts_ms, const uint8_t *body, size_t body_len, size_t wire_len, uint8_t *out);
 
-/* Verify, decrypt and parse. plain needs NPF_PKT_MAX bytes (len, if less); a packet
- * longer than NPF_PKT_MAX is refused. Returns 0 or -1. */
+/* Authenticates, decrypts and parses in. plain needs len - 12 bytes; a
+ * packet longer than NPF_PKT_MAX is refused. 0, or -1 (after a failed
+ * authentication plain holds nothing of it). The type and ts_ms are not
+ * checked. */
 int npf_pkt_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t len,
                  uint8_t *plain, npf_pkt *pkt);
 
-/* A request to a probe server (BIND_REQ, BOUNCE_REQ: body = ticket |
- * extra) sealed at a random length of NPF_BIND_REQ_MIN..MAX and sent on fd
- * to to; ts_ms is the local clock plus clock_offset_ms. Its length, or -1
- * (the body does not fit). */
+/* Sends a request to a probe server (BIND_REQ, BOUNCE_REQ; body = ticket |
+ * extra) on fd to to (a sockaddr), sealed at a random length of
+ * NPF_BIND_REQ_MIN..MAX; ts_ms is the local Unix clock plus clock_offset_ms.
+ * Returns the length (a failed send is not reported), or -1 when the body
+ * does not fit (a body of up to 64 bytes always does). */
 int npf_bind_req_send(int fd, const void *to, const npf_siv_keys *keys, int type, const uint8_t txid[NPF_TXID_SIZE],
                       int64_t clock_offset_ms, const uint8_t *body, size_t body_len);
 
@@ -63,16 +69,17 @@ typedef struct npf_bind_resp {
     uint64_t srv_time_ms;
 } npf_bind_resp;
 
+/* 0, or -1 when pkt is not a well-formed BIND_RESP */
 int npf_bind_resp_parse(const npf_pkt *pkt, npf_bind_resp *resp);
 
-/* uniform random integer in [lo, hi] */
+/* a uniform random integer in [lo, hi] (hi <= lo: lo); hi - lo must be below 2^32 - 1 */
 size_t npf_rand_range(size_t lo, size_t hi);
 
-/* One BIND_REQ/RESP exchange on an already-open UDP socket `fd` against `ep`,
- * using probe keys `keys` and `ticket`. `offset_ms` is added to the local clock
- * for ts_ms. On success writes the mapped address to `mapped` and returns 0;
- * -1 on timeout. Retransmits at 0/200/600 ms. Built with NPF_TOOLS_API only
- * (the tools). */
+/* One BIND_REQ / RESP exchange on the open IPv4 UDP socket fd with ep:
+ * sent at 0, 200 and 600 ms; blocks until the answer or timeout_ms. Only a
+ * response from ep with the request's txid and an IPv4 address counts.
+ * offset_ms is added to the local clock for ts_ms. 0 with *mapped set, -1
+ * on timeout. Built with NPF_TOOLS_API only (the tools). */
 int npf_bind_query(int fd, const struct sockaddr_in *ep, const npf_siv_keys *keys,
                    const uint8_t *ticket, size_t ticket_len, int64_t offset_ms,
                    struct sockaddr_in *mapped, int timeout_ms);

@@ -1,32 +1,36 @@
-/* Small platform helpers: randomness and clocks. */
+/* Randomness, clocks, descriptor limits and what the platform is told of
+ * the host. Internal to libnpf; in include/npf because npf's app, modules,
+ * tools and tray use its random bytes and clocks. All functions are
+ * thread-safe. */
 #ifndef NPF_PLATFORM_H
 #define NPF_PLATFORM_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-/* cryptographically secure random bytes (getrandom / arc4random_buf / BCryptGenRandom); aborts on failure */
+/* Fills buf with len cryptographically secure random bytes (getrandom or
+ * /dev/urandom, arc4random_buf, BCryptGenRandom). Never fails: aborts the
+ * process when the system cannot give them. */
 void npf_random(void *buf, size_t len);
 
-/* monotonic milliseconds, for timers */
+/* Monotonic ms, for timers. */
 int64_t npf_mono_ms(void);
-
-/* milliseconds that keep counting while the system sleeps (Linux
- * CLOCK_BOOTTIME; npf_mono_ms on macOS and iOS already does; Windows
- * GetTickCount64): compared with a timer's due time, it tells that the
- * process was suspended or the machine slept */
+/* Monotonic ms that also count while the system sleeps: a gap against
+ * npf_mono_ms shows the process was suspended or the machine slept. */
 int64_t npf_boot_ms(void);
-
-/* wall-clock Unix milliseconds */
+/* Wall-clock Unix time in ms. */
 int64_t npf_unix_ms(void);
 
-/* block the calling thread (command line tools only, never on the loop) */
+/* Blocks the calling thread. Never on a loop thread. */
 void npf_sleep_ms(int ms);
-/* raise the soft limit of open descriptors towards the hard one (at most
- * want); returns the limit now in force (a large value where there is none) */
+/* Raises the soft limit of open descriptors towards want (not past the hard
+ * limit). Returns the limit now in force: want when there is no limit, 1024
+ * when it cannot be read, 16384 on Windows. */
 long npf_fd_limit(long want);
 
-/* the host, as reported at login for the platform's connection records */
+/* The host as reported at login, for the platform's connection records.
+ * npf_host_info_get fills every field ("" or 0 when unknown); it reads
+ * files and system calls, so it is not for a hot path. */
 #define NPF_HOST_MAX_MACS 8
 #define NPF_MAC_LEN       18
 typedef struct npf_host_info {
@@ -40,11 +44,12 @@ typedef struct npf_host_info {
 void npf_host_info_get(npf_host_info *h);
 
 /* Hardware items for a device's fingerprint (security.md 5.2): what stays
- * with the board for its life and cannot be read from afar. Linux: the
- * soldered eMMC's CID ("emmc"), the DMI system UUID or board serial
- * ("board"), the SoC serial ("soc"); macOS: the hardware UUID ("board");
- * placeholder values are skipped, removable disks never used. Returns the
- * count (0..max). The network cards' addresses are in npf_host_info. */
+ * with the board for life and cannot be read from afar. Linux: the
+ * soldered eMMC's CID ("emmc"), the DMI system UUID or else the board
+ * serial ("board"), the SoC serial ("soc"); macOS: the hardware UUID
+ * ("board"); none on iOS, Android and Windows. Placeholder values are
+ * skipped, removable disks never used. Fills up to max items and returns
+ * how many. The network cards' addresses are in npf_host_info. */
 #define NPF_HW_MAX 4
 typedef struct npf_hw_item {
     char kind[16];

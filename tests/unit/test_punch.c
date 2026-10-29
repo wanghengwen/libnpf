@@ -87,7 +87,6 @@ int test_punch(void)
     memset(&ca, 0, sizeof ca);
     ca.plan.role = NPF_PUNCH_CONTROLLING;
     ca.plan.strategy = NPF_PUNCH_S1;
-    ca.plan.family = AF_INET;
     ca.plan.session_id = 42;
     memset(ca.plan.punch_key, 7, 32);
     memset(ca.plan.nominate_key, 9, 32);

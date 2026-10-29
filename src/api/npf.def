@@ -43,6 +43,7 @@ EXPORTS
     npf_pairing_remove
     npf_owner_reset
     npf_node_get_size
+    npf_node_key
     npf_session_get_size
     npf_session_list
     npf_network_changed

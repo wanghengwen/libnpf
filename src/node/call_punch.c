@@ -536,7 +536,6 @@ void call_on_punch_start(npf_call *c, const void *msg)
     memcpy(pl->punch_key, m->punch_key, 32);
     pl->session_id = npf_rd64(m->punch_id);
     pl->role = c->caller ? NPF_PUNCH_CONTROLLING : NPF_PUNCH_CONTROLLED;
-    pl->family = AF_INET;
     /* S2 (sequential allocation) is S3 over the predicted ports: the range says
      * which; S4 is S3 with a hard sprayer (its main socket sprays, the other
      * side's fresh sockets catch); S2B is its own (two sequential NATs) */
@@ -584,7 +583,6 @@ void call_on_punch_start(npf_call *c, const void *msg)
     pl->pps = (int)m->pps;
     pl->n_sockets = (int)m->n_sockets;
     pl->timeout_ms = (int)m->timeout_ms;
-    pl->own_delta = (int)m->delta;
     pl->peer_delta = (int)m->peer_delta;
     pl->window = (int)m->window;
     pl->passes = (int)m->passes;

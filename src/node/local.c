@@ -370,7 +370,7 @@ static void kstr(npf_out *o, int *first, const char *ind, const char *k, const c
 
 int npf_local_save(npf_local *l)
 {
-    npf_out o = {0};
+    npf_out o = {.secret = 1};              /* direct peers' keys: wiped */
     int i, k, first = 1, f2, rc;
     npf_out_printf(&o, "{");
     if (l->settings.n) {
