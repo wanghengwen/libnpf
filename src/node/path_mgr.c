@@ -132,8 +132,8 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             /* silence counts from the later of the last datagram heard and
              * the moment data went in flight (after an idle spell the first
              * new request must not look like a path quiet all along); with
-             * none in flight, from its start: a peer that is there still
-             * sends AnLiu's keepalive every 15 s */
+             * none in flight, from its start or the peer first heard: a
+             * peer that is there still sends AnLiu's keepalive every 15 s */
             if (inflight && r->t_busy) {
                 if (!p->busy_since)
                     p->busy_since = now;
@@ -142,7 +142,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             } else {
                 p->busy_since = 0;
                 quiet = r->t_idle;
-                from = max64(p->last_rx, p->since);
+                from = max64(max64(p->last_rx, p->since), m->heard_at);
             }
             if (now - from < quiet) {
                 due = min64(due, from + quiet);
@@ -274,6 +274,17 @@ void call_paths_init(npf_call *c)
     c->pw.p.ops = &path_ws_ops;
     c->pw.p.kind = PK_WS_RELAY;
     c->pm.udp_again = c->n->th.udp_again_ms ? c->n->th.udp_again_ms : PM_UDP_AGAIN_MS;
+    c->pm.heard_at = -1;
+}
+
+/* a punching round to wait for (architecture.md 3.6): one scheduled,
+ * waiting for the keys or running, or one planned and let go (busy, the
+ * peer's stop: the platform sends it again). Not before the first
+ * punch_start: none may come (a pairing that never checks out, the
+ * platform not planning), and the session waited 15 s for nothing */
+static int call_punch_coming(const npf_call *c)
+{
+    return !call_no_p2p(c) && c->punch_st < PN_LINGER && (c->punch_st != PN_NONE || c->punch_round > 0);
 }
 
 /* ---- the session's paths' health ---- */
@@ -298,6 +309,8 @@ void pm_check(npf_call *c)
     unsigned in;
     if (call_over(c))
         return;
+    if (m->heard_at < 0 && c->st == CS_UP)
+        m->heard_at = now;
     /* AnLiu's stats only for a path whose rules look at the data in flight */
     for (k = 0; k < PK_N; k++)
         busy |= m->p[k] && m->p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(m, m->p[k]);
@@ -308,7 +321,7 @@ void pm_check(npf_call *c)
         due = pm_tick(m, now, st.inflight, (int)st.rto);
     }
     in = (c->caller ? PM_IN_CALLER : 0) | (c->caller && c->st == CS_CALLING ? PM_IN_HOLD : 0)
-         | (call_up(c) ? PM_IN_UP : 0) | (!call_no_p2p(c) && c->punch_st < PN_LINGER ? PM_IN_PUNCH : 0)
+         | (call_up(c) ? PM_IN_UP : 0) | (call_punch_coming(c) ? PM_IN_PUNCH : 0)
          | (n->nat_valid && n->nat_udp && !n->th.no_udp ? PM_IN_UDP : 0)
          | (n->udp_back_ms > c->pw.p.since ? PM_IN_UDP_BACK : 0) | (n->th.no_udp && c->keys_ready ? PM_IN_NOUDP : 0)
          | (call_has_relay(c) && c->pu.p.health == PH_DEAD && call_hard_punches(n, c) > 0 ? PM_IN_PORTS : 0);
@@ -370,8 +383,7 @@ void call_relay_setup(npf_call *c, const m_relay *r)
 void call_need(npf_call *c, int need, int64_t now)
 {
     static const char *const what[] = {"", "a UDP relay", "the WS relay", "one on our own server", "the UDP relay"};
-    static const char *const how[] = {"", "\"mode\":\"udp\"", "\"mode\":\"ws\"", "\"unreachable\":true",
-                                      "\"mode\":\"udp\""};
+    static const char *const how[] = {"", "\"mode\":\"udp\"", "\"mode\":\"ws\"", "\"unreachable\":true"};
     npf_pm *m = &c->pm;
     char data[96];
     if (need == PM_NEED_PATH_LOST) {    /* once: no answer to wait for (a round, or none) */
@@ -401,19 +413,20 @@ void call_need(npf_call *c, int need, int64_t now)
                 need == PM_NEED_UDP_BACK ? "UDP works: " : need == PM_NEED_WS_ELSEWHERE ? "relay unreachable, " : "",
                 what[need]);
     m->ask_at = now + (m->asks++ ? RELAY_ASK_LATER_MS : RELAY_ASK_AGAIN_MS);
-    if (need == PM_NEED_UDP_BACK) {
+    if (need == PM_NEED_UDP_BACK) {     /* with the profile: the platform sees this side's UDP first */
         npf_out w = {0};
         npf_out_jobj(&w);
         npf_out_kstr(&w, "call_id", c->call_id_s);
-        npf_out_kstr(&w, "why", "udp_back");
+        npf_out_kstr(&w, "mode", "udp");
         npf_node_write_nat(c->n, &w);
         npf_out_jend(&w);
         if (!w.failed)
-            npf_node_send(c->n, "punch_update", 0, w.p);
+            npf_node_send(c->n, "relay_switch", 0, w.p);
         npf_out_free(&w);
+    } else {
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\",%s}", c->call_id_s, how[need]);
+        npf_node_send(c->n, "relay_switch", 0, data);
     }
-    snprintf(data, sizeof data, "{\"call_id\":\"%s\",%s}", c->call_id_s, how[need]);
-    npf_node_send(c->n, "relay_switch", 0, data);
     /* UDP believed to work: measured again, so that when it fails the
      * profile says so and the probe's retries see it come back (udp_back) */
     if (need == PM_NEED_WS && m->asks == 1 && c->n->nat_valid && c->n->nat_udp && !c->n->probe && c->n->udp_fd >= 0)

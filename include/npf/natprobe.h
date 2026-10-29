@@ -56,6 +56,7 @@ typedef struct npf_natprobe_result {
     int      alloc_got[NPF_NATPROBE_MAX_ALLOC];
     uint16_t alloc_local[NPF_NATPROBE_MAX_ALLOC];
     uint16_t alloc_mapped[NPF_NATPROBE_MAX_ALLOC];
+    int      alloc_doubt;                   /* BLOCK / RANDOM, but sequential with one sample left out */
     int      filter_acked[2];                /* E2, E3 got the bounce request */
     int      filter_got[2];                  /* their answers reached F */
     int      have_offset;

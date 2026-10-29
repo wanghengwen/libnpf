@@ -4,6 +4,8 @@
  * - a request the platform dropped without a word is sent again 10 s after
  *   it, 30 s after that and every 30 s on, not between; a need that holds
  *   no longer is not (architecture.md Q1; it was sent once only);
+ * - the UDP relay unreachable: a punching round waited for only when one
+ *   is coming, not before the first punch_start (architecture.md 3.6);
  * - a WS relay lost after it worked is connected again; after 5 connections
  *   in a row that did not pair it is given up (DEAD) and the caller asks
  *   for a relay elsewhere, the callee waits (architecture.md Q5; it was
@@ -91,6 +93,49 @@ static void relay_asked_again(npf_node *n)
     call_need(c, PM_NONE, t0 + 100001);         /* an allocation came, or the need is gone */
     call_need(c, PM_NONE, t0 + 200000);
     CHECK(count(seen, "asking for one on our own server") == 5, "sent with no need: %s", seen);
+    npf_call_end(c, "test");
+}
+
+/* the UDP relay unreachable on an established session: it waits up to 15 s
+ * for a punching round only when one is coming (scheduled, running, or
+ * planned and let go); before the first punch_start none may come: tried
+ * once more, then the WS relay at once (architecture.md 3.6; it waited
+ * 15 s for a round that never came) */
+static void relay_dead_punch(npf_node *n, int round)
+{
+    npf_call *c = call_new(n, 1);
+    int nat_valid = n->nat_valid, nat_udp = n->nat_udp;
+    CHECK(c != NULL, "call");
+    if (!c)
+        return;
+    snprintf(c->call_id_s, sizeof c->call_id_s, "punch-wait-%d", round);
+    c->st = CS_UP;
+    n->nat_valid = n->nat_udp = 1;
+    pm_add(&c->pm, &c->pu.p);
+    if (round) {                        /* a round scheduled a minute from now */
+        c->punch_round = 1;
+        call_punch_to(c, PN_SCHEDULED, npf_mono_ms() + 60000);
+    }
+    seen_clear();
+    pm_health(&c->pm, &c->pu.p, PH_DEAD);
+    pm_check(c);
+    if (round) {
+        CHECK(strstr(seen, "waiting for the punch before asking for the WS relay") && !strstr(seen, ": asking for"),
+              "a round scheduled: not waited for: %s", seen);
+        call_punch_to(c, PN_NONE, 0);   /* let go by the peer: it comes again, still waited for */
+        seen_clear();
+        pm_check(c);
+        CHECK(!strstr(seen, ": asking for"), "a round let go: not waited for: %s", seen);
+    } else {
+        CHECK(strstr(seen, "trying the UDP relay once more") && !strstr(seen, "waiting for the punch"),
+              "no round yet: waited for one: %s", seen);
+        seen_clear();
+        pm_health(&c->pm, &c->pu.p, PH_DEAD);   /* the second try fails too */
+        pm_check(c);
+        CHECK(strstr(seen, ": asking for the WS relay") != NULL, "no round yet: the WS relay not asked for: %s", seen);
+    }
+    n->nat_valid = nat_valid;
+    n->nat_udp = nat_udp;
     npf_call_end(c, "test");
 }
 
@@ -241,6 +286,8 @@ int test_call(void)
     old = npf_log_ctx_swap(&lc);
 
     relay_asked_again(&node);
+    relay_dead_punch(&node, 0);
+    relay_dead_punch(&node, 1);
     ws_gives_up(&node, 1);
     ws_gives_up(&node, 0);
     deadline_invariant(&node, 1);

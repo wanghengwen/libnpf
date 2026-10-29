@@ -102,14 +102,22 @@ static void test_probe_vector(void)
     }
     {   /* the allocation from mapped ports: a busy sequential NAT (other
          * traffic takes ports in between: seen in natlab's s2b-busy), the
-         * range wrapping, and a block of 512 ports in random order */
-        static const struct { uint16_t p[6]; int n, alloc, delta; } cases[] = {
-            {{21878, 21880, 21884, 21887}, 4, NPF_ALLOC_SEQUENTIAL, 2},
-            {{27847, 27848, 27851, 27853}, 4, NPF_ALLOC_SEQUENTIAL, 1},
-            {{24278, 24280, 24282, 24284, 24307}, 5, NPF_ALLOC_SEQUENTIAL, 2},
-            {{29997, 29998, 20000, 20001, 20002, 20003}, 6, NPF_ALLOC_SEQUENTIAL, 1},
-            {{20311, 20044, 20490, 20120}, 4, NPF_ALLOC_BLOCK, 0},
-            {{20100, 20130, 20090, 20200, 20150}, 5, NPF_ALLOC_BLOCK, 0},
+         * range wrapping, and a block of 512 ports in random order; in doubt
+         * (sequential but for one sample: RN-16's node e right after its
+         * restart, a mapping left from its last process), not with three
+         * samples, and an older port first is still sequential */
+        static const struct { uint16_t p[6]; int n, alloc, delta, doubt; } cases[] = {
+            {{21878, 21880, 21884, 21887}, 4, NPF_ALLOC_SEQUENTIAL, 2, 0},
+            {{27847, 27848, 27851, 27853}, 4, NPF_ALLOC_SEQUENTIAL, 1, 0},
+            {{24278, 24280, 24282, 24284, 24307}, 5, NPF_ALLOC_SEQUENTIAL, 2, 0},
+            {{29997, 29998, 20000, 20001, 20002, 20003}, 6, NPF_ALLOC_SEQUENTIAL, 1, 0},
+            {{20311, 20044, 20490, 20120}, 4, NPF_ALLOC_BLOCK, 0, 0},
+            {{20100, 20130, 20090, 20200, 20150}, 5, NPF_ALLOC_BLOCK, 0, 0},
+            {{53868, 53863, 53869, 53870}, 4, NPF_ALLOC_BLOCK, 0, 1},
+            {{53868, 53869, 53870, 53863}, 4, NPF_ALLOC_BLOCK, 0, 1},
+            {{40100, 40101, 40102, 40104, 33000}, 5, NPF_ALLOC_RANDOM, 0, 1},
+            {{53868, 53863, 53869}, 3, NPF_ALLOC_BLOCK, 0, 0},
+            {{53863, 53868, 53869, 53870}, 4, NPF_ALLOC_SEQUENTIAL, 1, 0},
         };
         size_t c;
         int k;
@@ -123,10 +131,10 @@ static void test_probe_vector(void)
                 r.alloc_mapped[k] = cases[c].p[k];
             }
             npf_natprobe_classify_alloc(&r);
-            CHECK(r.profile.allocation == cases[c].alloc
+            CHECK(r.profile.allocation == cases[c].alloc && r.alloc_doubt == cases[c].doubt
                       && (cases[c].alloc != NPF_ALLOC_SEQUENTIAL || r.profile.seq_delta == cases[c].delta),
-                  "allocation case %zu: %d (delta %d), want %d (%d)", c, r.profile.allocation, r.profile.seq_delta,
-                  cases[c].alloc, cases[c].delta);
+                  "allocation case %zu: %d (delta %d, doubt %d), want %d (%d, %d)", c, r.profile.allocation,
+                  r.profile.seq_delta, r.alloc_doubt, cases[c].alloc, cases[c].delta, cases[c].doubt);
         }
     }
     CHECK(npf_siv_open(&keys, NPF_DIR_REQ, buf, 52, plain) == 40, "open own direction");

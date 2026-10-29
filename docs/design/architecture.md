@@ -111,7 +111,7 @@
 | 直连无声 | `call_transport.c:anl_timer` → `call_path.c:call_check_p2p` → `call_p2p_suspect_start`（两条路都发；中转已释放时 `relay_switch{udp}`，未绑定时重绑）→ 回应：恢复；10 s：`call_p2p_drop` → `call_punch.c:call_punch_report("path_lost")`，或中转也不通时 `call_relay.c:call_ask_ws_relay` |
 | UDP 中转无声 | `anl_timer` → `call_relay.c:call_check_relay`（依赖它时每秒）→ `call_relay_rebind` → 都不答：`relay_gave_up` → 五个分支之一（第 3.6 节） |
 | 改用 WS | `call_ask_ws_relay` → `relay_switch{ws}` → 平台的 `relay_switch{relay}` → `call_relay_setup` → `call_ws.c:call_ws_setup`（`call_relay_leave`、`call_p2p_drop`）→ `wsr_paired` → `call_ws_carrier`（`ANL_CARRIER_STREAM`）|
-| 回到 UDP | `nat.c:probe_done`（上一次探测无回应、这一次有）→ `call.c:npf_node_ws_calls_udp_back` → `punch_update{udp_back}`、`relay_switch{udp}` → `call_relay_setup` → `call_ws_leave`（`ANL_CARRIER_DGRAM`）→ 绑定 |
+| 回到 UDP | `nat.c:probe_done`（上一次探测无回应、这一次有）→ `call.c:npf_node_ws_calls_udp_back` → `relay_switch{udp, nat}` → `call_relay_setup` → `call_ws_leave`（`ANL_CARRIER_DGRAM`）→ 绑定 |
 | 网络变化 | `node_network.c:node_net_check` → `call.c:npf_node_check_paths`（直连进入可疑）、`home.c:node_home_net_change`、`repunch_on_nat` → `nat.c:nat_settled` → `call_punch.c:node_calls_punch_report("network")` |
 
 **结束**：
@@ -291,6 +291,8 @@ struct npf_path {
 | `now − suspect_at ≥ T_verdict` → `DEAD` | 10 s | 所有地址都试过（约 2.8 s × 地址数） | 今天没有（Q5） |
 | 不被依赖时 | —（直连在时总是主路径） | 只保活（25 s 的 `RELAY_BIND`） | —（WS 在时没有别的路径） |
 
+**被依赖从听到对方起**（2026-10-29，RN-16）：会话 `UP`（对方的 hello 到了，`pm.heard_at`）之前没有路径被依赖（`pm_relied`），无声不算；之后空闲的无声从 `max(last_rx, since, heard_at)` 算，有数据在途的照旧从 `max(last_rx, busy_since)`（`busy_since` 在被依赖之后才记）。原来对方还没来时（主叫在等迟到的 `call_accepted`）被叫的 hello 在途、中转上什么也没有，3 秒就"无声"，探测并重新绑定中转，每 3 秒一次（一小时里一个节点 37 次）；那时的无声说明不了中转，中转本身的好坏由绑定器的保活判断（3.3）。建立之后的规则不变。
+
 今天的四套判断（P2）都是这张表的特例；备用分配不属于任何会话，它的看门狗（`home.c:dog_deadline`）保留，但用同一个绑定器状态机（第 3.3 节）。
 
 **1b 的实现与上面的不同之处**（2026-10-28）：
@@ -322,7 +324,7 @@ struct npf_path {
 | `WS` | UDP 中转与直连都没有了（或 UDP 中转绑不上，且不再等打洞） | `relay_switch{mode:"ws"}`；同时重新测 NAT（今天 `call_relay.c:call_ask_ws_relay`） | 同上 |
 | `WS_ELSEWHERE` | WS 中转首次配对之前就失败 | 主叫：`relay_switch{unreachable:true}`；主叫在接受之前等接受；被叫等 | 只有主叫发（`call_ws.c:call_ws_failed`） |
 | `PATH_LOST` | 直连 `DEAD` | `punch_update{why:"path_lost"}` | 已接受、不在 WS 上、不是 `secure`（`call_punch.c:call_punch_report`） |
-| `UDP_BACK` | 在 WS 上、本侧又有 UDP | `punch_update{why:"udp_back", nat}`，再 `relay_switch{mode:"udp"}` | 今天只由节点的 NAT 探测触发（Q4） |
+| `UDP_BACK` | 在 WS 上、本侧又有 UDP | `relay_switch{mode:"udp", nat}`（2026-10-29 起一条，原来先发 `punch_update{why:"udp_back"}`） | 今天只由节点的 NAT 探测触发（Q4） |
 | `RELEASE` | 热备结束且直连往返过 | 主叫：`relay_release` | 被叫只停用 |
 
 `call_established` 之前平台对 `relay_switch` 限次（每个呼叫分配 2 次）、所有 `relay_switch` 占切换配额（突发 6、之后 30 s 1 次，signaling.md "中转方式的选择"）：呼叫层的重发必须在这个配额内，第 3.6 节的"请求"状态带截止时间就是为此。
@@ -501,7 +503,7 @@ struct npf_path {
 
 **1c 的实现**（2026-10-29，`path_mgr.c:pm_decide`，纯函数：路径的健康、角色与一组输入位 → 一项需要或一个动作；单元测试 UT-34 逐行检查）：
 
-- 输入位（`PM_IN_*`）：主叫；平台还不接受 `relay_switch`（主叫在接受之前）；已建立；打洞还可能带来直连（`punched` 在每个 `punch_start` 清零、一轮结束时置位，"让出"的一轮不置位：平台会再发它）；难侧打洞占着端口；NAT 探测说 UDP 可用；UDP 在 WS 分配之后恢复过（节点的 `udp_back_ms`）；测试的没有 UDP。由 `pm_check` 每次算出（每个 AnLiu 定时器一次，热路径上没有）。
+- 输入位（`PM_IN_*`）：主叫；平台还不接受 `relay_switch`（主叫在接受之前）；已建立；打洞还可能带来直连（`call_punch_coming`，2026-10-29：一轮已排定、等密钥或正在进行，或者让出的一轮（`PN_NONE` 而 `punch_round > 0`：平台会再发它）；第一个 `punch_start` 之前的 `PN_NONE` 不算：配对一直核对不过、信令停住、平台不安排时没有一轮会来，原来 UDP 中转不通的会话要白等 15 秒才要 WS 中转。UT-31 检查）；难侧打洞占着端口；NAT 探测说 UDP 可用；UDP 在 WS 分配之后恢复过（节点的 `udp_back_ms`）；测试的没有 UDP。由 `pm_check` 每次算出（每个 AnLiu 定时器一次，热路径上没有）。
 - 状态：`tried`（本次失去中转已经有过的：等端口、等打洞、再试一次，中转 `UP` 时清零），`wait` + `act_at`（正在等什么、到什么时候：端口、打洞、热备、热备的探测；在 WS 上是 Q4 的时刻），请求（`need`、`asks`、`ask_at`，属于 `call_need`）。"提示"不是另存的标志：`DIRECT_PENDING` = 打洞还可能带来直连，`PORTS_HELD` = 难侧打洞占着端口，等待在原因消失（打洞结束、端口交还）或 15 s 到时结束。
 - 与上表不同或表里没写的：直连可疑时中转从没绑上就再绑一次，算作这次失去中转的"再试一次"；直连失效时中转也不通，不报 `path_lost`，直接按 UDP 中转的规则（已经再试过）要 WS；热备改为管理器的截止时间（`wait = PM_W_STANDBY / PM_W_PROBE`），取代 `t_standby` 与 `standby_check`，探测中收到回应在下一次 `pm_check` 释放（原来在回应的回调里立即释放，相差至多一次循环）；直连恢复之后才到的中转（直连可疑时要来的）也热备 30 s、之后释放（原来这时没有热备计时，中转一直保活到会话结束）；Q4 的试回把 `tried` 设满，新分配绑不上就直接要 WS（原来 `udp_back` 之后的失败也是这样，只是那时 `tried` 是每个呼叫的）。
 - WS 中转首次配对之前失败也判 `DEAD`（原来只记 `fail_wait`），于是"主叫在接受之前等待、接受后请求别处"就是 `PM_IN_HOLD` 的一条规则，`fail_wait` 去掉。

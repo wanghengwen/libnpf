@@ -4,8 +4,8 @@
  * probes while in doubt, a round trip bringing a path back, the verdict;
  * which paths the rules apply to (relied on: the primary one, the second
  * while the primary is in doubt; not one standing by, not a direct
- * connection's fixed one, not one not proven yet); a probe with no doubt
- * (the hot standby's check). */
+ * connection's fixed one, not one not proven yet, none before the peer
+ * was heard); a probe with no doubt (the hot standby's check). */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -217,6 +217,35 @@ static void relied(void)
     CHECK(d->suspects == 0 && u->suspects == 0 && f[PK_WS_RELAY].suspects == 0, "checked beside the WS relay");
 }
 
+/* before the peer is heard (the session not UP: a callee whose caller
+ * waits for a late call_accepted) no path is relied on: no silence counts,
+ * busy or idle (the UDP relay was probed and bound again every 3 s); once
+ * heard, the rules as before, the idle silence from then at the earliest */
+static void unheard(int kind)
+{
+    fake *x = &f[kind];
+    int idle = kind == PK_WS_RELAY ? 30000 : 20000;
+    start(1 << kind, 1000);
+    m.heard_at = -1;
+    CHECK(!pm_relied(&m, &x->p), "kind %d: relied on before the peer was heard", kind);
+    CHECK(pm_tick(&m, 50000, 4, 200) == INT64_MAX && pm_tick(&m, 60000, 0, 200) == INT64_MAX && x->suspects == 0
+          && x->p.busy_since == 0, "kind %d: suspected before the peer was heard (%d)", kind, x->suspects);
+    m.heard_at = 60000;
+    CHECK(pm_tick(&m, 60000, 0, 200) == 60000 + idle && x->suspects == 0, "kind %d: idle from the peer heard", kind);
+    pm_tick(&m, 60000 + idle, 0, 200);
+    CHECK(x->suspects == 1 && x->quiet == idle && !x->busy, "kind %d: silent %d ms idle after heard", kind, idle);
+    if (kind == PK_WS_RELAY)
+        return;
+    start(1 << kind, 1000);
+    m.heard_at = -1;
+    pm_tick(&m, 50000, 4, 200);
+    m.heard_at = 60000;
+    CHECK(pm_tick(&m, 60000, 4, 200) == 63000 && x->p.busy_since == 60000 && x->suspects == 0,
+          "kind %d: in flight from the peer heard", kind);
+    pm_tick(&m, 63000, 4, 200);
+    CHECK(x->suspects == 1 && x->busy && x->quiet == 3000, "kind %d: in flight 3 s after heard", kind);
+}
+
 /* probed with no doubt (the standby's check, pm_probe): the direct path's
  * checks every 500 ms for the window, nothing else (the relay stands by, no
  * verdict); a round trip ends them */
@@ -251,6 +280,7 @@ int test_path_health(void)
         silence(k);
         doubt(k);
         back(k);
+        unheard(k);
     }
     relied();
     probed();
