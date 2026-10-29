@@ -192,6 +192,7 @@ int test_relay(void)
     char js[512], rb[16], kb[48], ra[64];
     npf_jtok tok[32];
     npf_json j;
+    int64_t t1;
     bind_seen b1, b2, b3;
     npf_call *c;
     int fr, fc, len;
@@ -250,11 +251,13 @@ int test_relay(void)
     /* a challenge to its RELAY_DATA (no txid: the NAT gave a new port):
      * answered when newer than the last one and of about now, once */
     usleep(250 * 1000);
-    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, npf_node_time(&node), 0, ck2);
+    t1 = npf_node_time(&node);
+    ack(c, &keys, &relay, zero, (uint32_t)t1, 0, t1, 0, ck2);
     CHECK(next_bind(fr, &keys, 300, &b3) == 1 && memcmp(b3.cookie, ck2, sizeof ck2) == 0, "a data challenge echoed");
+    /* not newer than the last one; newer but 2 minutes ahead of now */
     usleep(250 * 1000);
-    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, npf_node_time(&node) - 1000, 0, ck3);
-    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, npf_node_time(&node) - 120000, 0, ck3);
+    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, t1, 0, ck3);
+    ack(c, &keys, &relay, zero, (uint32_t)npf_node_time(&node), 0, npf_node_time(&node) + 120000, 0, ck3);
     ack(c, &keys, &relay, b1.txid, b1.ts, b1.kseq, npf_node_time(&node), 0, ck3);
     CHECK(next_bind(fr, &keys, 100, &b3) == 0, "an old data challenge answered");
     /* the cookie of what was refused was not taken */
