@@ -186,26 +186,6 @@ const char *npf_log_level_name(int level)
     return level >= NPF_LOG_TRACE && level <= NPF_LOG_ERROR ? names[level] : "?";
 }
 
-static size_t ring_copy(const char *ring, size_t pos, size_t len, char *out, size_t cap);
-
-size_t npf_log_recent(char *out, size_t cap)
-{
-    size_t r;
-    if (!cap)
-        return 0;
-    if (t_ctx) {                            /* the instance's: only its thread touches it */
-        if (!t_ctx->ring) {
-            out[0] = 0;
-            return 0;
-        }
-        return ring_copy(t_ctx->ring, t_ctx->ring_pos, t_ctx->ring_len, out, cap);
-    }
-    npf_log_lock();
-    r = ring_copy(g_ring, g_ring_pos, g_ring_len, out, cap);
-    npf_log_unlock();
-    return r;
-}
-
 static size_t ring_copy(const char *ring, size_t pos, size_t len, char *out, size_t cap)
 {
     size_t n, start, skip = 0, i;
@@ -226,3 +206,20 @@ static size_t ring_copy(const char *ring, size_t pos, size_t len, char *out, siz
     return n - skip;
 }
 
+size_t npf_log_recent(char *out, size_t cap)
+{
+    size_t r;
+    if (!cap)
+        return 0;
+    if (t_ctx) {                            /* the instance's: only its thread touches it */
+        if (!t_ctx->ring) {
+            out[0] = 0;
+            return 0;
+        }
+        return ring_copy(t_ctx->ring, t_ctx->ring_pos, t_ctx->ring_len, out, cap);
+    }
+    npf_log_lock();
+    r = ring_copy(g_ring, g_ring_pos, g_ring_len, out, cap);
+    npf_log_unlock();
+    return r;
+}

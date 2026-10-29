@@ -23,12 +23,6 @@
 #include <iphlpapi.h>
 #include <wchar.h>
 #include <wctype.h>
-#ifndef IP_UNICAST_IF
-#define IP_UNICAST_IF 31
-#endif
-#ifndef IPV6_UNICAST_IF
-#define IPV6_UNICAST_IF 31
-#endif
 #else
 #include <arpa/inet.h>
 #include <ifaddrs.h>
@@ -47,12 +41,25 @@ typedef struct {
     char     vpn_name[64];
 } choice;
 
+/* under g_lock, a spin lock held only for the copies: pick() (interfaces,
+ * routes) and the log (an application's hook) run outside it */
 static choice g_ch;
 static int64_t g_at = -RECHECK_MS;
 static int g_lock;
 static int g_picking;                /* a thread is in pick() */
 static int g_ready;                  /* g_ch picked once */
 static char g_said[160];
+
+static void lock(void)
+{
+    while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
+        ;
+}
+
+static void unlock(void)
+{
+    __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+}
 
 int npf_if_tunnel_name(const char *n)
 {
@@ -123,27 +130,13 @@ static int has_v4(const IP_ADAPTER_ADDRESSES *a, const struct in_addr *want)
 
 static void pick(choice *c)
 {
-    ULONG len = 32768;
-    IP_ADAPTER_ADDRESSES *aa = NULL, *a, *def = NULL, *best = NULL;
+    IP_ADAPTER_ADDRESSES *aa, *a, *def = NULL, *best = NULL;
     struct in_addr src;
-    int tries, best_virtual = 1;
+    int best_virtual = 1;
     memset(c, 0, sizeof *c);
-    if (default_src(&src) < 0)
+    if (default_src(&src) < 0 || !(aa = npf_win_adapters(GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST
+                                                         | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER)))
         return;
-    for (tries = 0; tries < 3; tries++) {
-        ULONG r;
-        aa = malloc(len);
-        if (!aa)
-            return;
-        r = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST
-                                 | GAA_FLAG_SKIP_DNS_SERVER, NULL, aa, &len);
-        if (r == NO_ERROR)
-            break;
-        free(aa);
-        aa = NULL;
-        if (r != ERROR_BUFFER_OVERFLOW)
-            return;
-    }
     for (a = aa; a; a = a->Next)
         if (a->OperStatus == IfOperStatusUp && has_v4(a, &src))
             def = a;
@@ -298,59 +291,49 @@ static int bind_to(int fd, int family, const choice *c)
 
 #endif
 
+/* one thread picks while the others use the last choice */
 int npf_vpn_bypass(int fd, int family, void *arg)
 {
     choice c;
     int64_t now = npf_mono_ms();
-    char said[160];
     int look;
     (void)arg;
-    /* the lock only around the copies: pick() (interfaces, routes) and the
-     * log (an application's hook) run outside it, one thread picks while
-     * the others use the last choice */
     for (;;) {
-        while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
-            ;
+        lock();
         look = now - g_at >= RECHECK_MS && !g_picking;
         if (look || g_ready)
             break;
-        __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+        unlock();
         npf_sleep_ms(1);                /* the first choice is being made: wait for it */
     }
-    if (look)
-        g_picking = 1;
+    g_picking |= look;
     c = g_ch;
-    __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+    unlock();
     if (look) {
-        int changed;
-        memset(&c, 0, sizeof c);
+        char said[160];
+        int changed, was;
         pick(&c);
         if (!c.vpn)
             snprintf(said, sizeof said, "-");
         else
             snprintf(said, sizeof said, "%s>%s", c.vpn_name, c.name);
-        while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
-            ;
+        lock();
         g_ch = c;
         g_at = now;
         g_picking = 0;
         g_ready = 1;
-        changed = strcmp(said, g_said) != 0;
-        if (changed) {
-            int was = g_said[0] && strcmp(g_said, "-") != 0;
+        was = g_said[0] && strcmp(g_said, "-") != 0;
+        if ((changed = strcmp(said, g_said) != 0))
             snprintf(g_said, sizeof g_said, "%s", said);
-            __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
-            if (c.vpn && c.name[0])
-                npf_log("udp: a VPN (%s) has the default route: the UDP sockets and the signaling go out on %s (connect_mode p2p)",
-                        c.vpn_name, c.name);
-            else if (c.vpn)
-                npf_log("udp: a VPN (%s) has the default route and no other network is up: the UDP sockets go through it",
-                        c.vpn_name);
-            else if (was)
-                npf_log("udp: no VPN in the way any more");
-        } else {
-            __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
-        }
+        unlock();
+        if (changed && c.vpn && c.name[0])
+            npf_log("udp: a VPN (%s) has the default route: the UDP sockets and the signaling go out on %s (connect_mode p2p)",
+                    c.vpn_name, c.name);
+        else if (changed && c.vpn)
+            npf_log("udp: a VPN (%s) has the default route and no other network is up: the UDP sockets go through it",
+                    c.vpn_name);
+        else if (changed && was)
+            npf_log("udp: no VPN in the way any more");
     }
     if (!c.vpn)
         return 0;                       /* nothing to go around */
@@ -360,9 +343,8 @@ int npf_vpn_bypass(int fd, int family, void *arg)
 int npf_vpn_in_way(void)
 {
     int r;
-    while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
-        ;
+    lock();
     r = g_ch.vpn && g_ch.name[0];
-    __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
+    unlock();
     return r;
 }

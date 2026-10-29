@@ -68,10 +68,13 @@ struct npf_resolve {
     struct npf_resolve *next;       /* queue */
 };
 
+typedef struct queue {
+    npf_resolve *head, *tail;
+} queue;
+
 /* everything below is under the lock */
 static struct {
-    npf_resolve *head, *tail;       /* waiting for a worker: the node's own */
-    npf_resolve *phead, *ptail;     /* and the peers' */
+    queue        own, peer;         /* waiting for a worker: the node's own, the peers' */
     int          active;            /* queued + running */
     int          pactive, prunning; /* the peers' of them; running now */
     int          queued;            /* waiting for a worker (both queues) */
@@ -79,6 +82,23 @@ static struct {
     int          idle;              /* workers waiting for work */
     hub         *hubs;
 } P;
+
+static void q_put(queue *q, npf_resolve *r)
+{
+    if (q->tail)
+        q->tail->next = r;
+    else
+        q->head = r;
+    q->tail = r;
+}
+
+static npf_resolve *q_take(queue *q)
+{
+    npf_resolve *r = q->head;
+    if (!(q->head = r->next))
+        q->tail = NULL;
+    return r;
+}
 
 static void hub_unref(hub *h)
 {
@@ -175,22 +195,16 @@ static void worker(void)
         npf_resolve *r;
         int skip;
         LOCK();
-        while (!P.head && !(P.phead && P.prunning < RESOLVE_PEER_WORKERS)) {
+        while (!P.own.head && !(P.peer.head && P.prunning < RESOLVE_PEER_WORKERS)) {
             P.idle++;
             WAIT();
             P.idle--;
         }
         P.queued--;
-        if (P.head) {                   /* the node's own first */
-            r = P.head;
-            P.head = r->next;
-            if (!P.head)
-                P.tail = NULL;
+        if (P.own.head) {               /* the node's own first */
+            r = q_take(&P.own);
         } else {
-            r = P.phead;
-            P.phead = r->next;
-            if (!P.phead)
-                P.ptail = NULL;
+            r = q_take(&P.peer);
             P.prunning++;
         }
         skip = r->cancelled || !r->h->loop;
@@ -202,7 +216,7 @@ static void worker(void)
         if (r->peer) {
             P.pactive--;
             P.prunning--;
-            if (P.phead)
+            if (P.peer.head)
                 SIGNAL();               /* a waiting peers' lookup may run now */
         }
         /* posted under the lock: the loop cannot be freed in between */
@@ -288,20 +302,8 @@ static npf_resolve *start(npf_loop *loop, const char *host, uint16_t port, int s
     }
     h->refs++;
     r->h = h;
-    if (peer) {
-        if (P.ptail)
-            P.ptail->next = r;
-        else
-            P.phead = r;
-        P.ptail = r;
-        P.pactive++;
-    } else {
-        if (P.tail)
-            P.tail->next = r;
-        else
-            P.head = r;
-        P.tail = r;
-    }
+    q_put(peer ? &P.peer : &P.own, r);
+    P.pactive += peer;
     P.active++;
     P.queued++;
     SIGNAL();

@@ -133,25 +133,29 @@ const char *npf_sock_strerror_code(int e)
     return buf;
 }
 
-int npf_if_list(npf_ifaddr *out, int max)
+void *npf_win_adapters(unsigned long flags)
 {
     ULONG len = 16384;
-    IP_ADAPTER_ADDRESSES *aa = NULL, *a;
-    int n = 0, tries;
+    int tries;
     for (tries = 0; tries < 3; tries++) {
+        IP_ADAPTER_ADDRESSES *aa = malloc(len);
         ULONG r;
-        aa = malloc(len);
         if (!aa)
-            return 0;
-        r = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
-                                 NULL, aa, &len);
-        if (r == NO_ERROR)
-            break;
+            return NULL;
+        if ((r = GetAdaptersAddresses(AF_UNSPEC, flags, NULL, aa, &len)) == NO_ERROR)
+            return aa;
         free(aa);
-        aa = NULL;
         if (r != ERROR_BUFFER_OVERFLOW)
-            return 0;
+            return NULL;
     }
+    return NULL;
+}
+
+int npf_if_list(npf_ifaddr *out, int max)
+{
+    IP_ADAPTER_ADDRESSES *aa = npf_win_adapters(GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER),
+                         *a;
+    int n = 0;
     for (a = aa; a && n < max; a = a->Next) {
         IP_ADAPTER_UNICAST_ADDRESS *u;
         if (a->OperStatus != IfOperStatusUp)
@@ -188,13 +192,6 @@ int npf_default_gw4(uint32_t *gw)
         return -1;
     *gw = row.dwForwardNextHop;             /* network order */
     return 0;
-}
-
-static int npf_mkdir(const char *path)
-{
-    if (_mkdir(path) == 0 || errno == EEXIST)
-        return 0;
-    return -1;
 }
 
 int npf_file_private(const char *path)
@@ -530,13 +527,6 @@ int npf_default_gw4(uint32_t *gw)
 
 #endif
 
-static int npf_mkdir(const char *path)
-{
-    if (mkdir(path, 0700) == 0 || errno == EEXIST)
-        return 0;
-    return -1;
-}
-
 int npf_file_private(const char *path)
 {
     return chmod(path, 0600);
@@ -564,6 +554,16 @@ int npf_abspath(const char *p, char *out, size_t cap)
 }
 
 #endif
+
+static int npf_mkdir(const char *path)
+{
+#ifdef _WIN32
+    int r = _mkdir(path);
+#else
+    int r = mkdir(path, 0700);
+#endif
+    return r == 0 || errno == EEXIST ? 0 : -1;
+}
 
 int npf_mkdir_p(const char *path)
 {
@@ -777,12 +777,6 @@ static void send_failed(const struct sockaddr *to, int err)
 }
 
 #ifdef _WIN32
-#ifndef IP_UNICAST_IF
-#define IP_UNICAST_IF 31
-#endif
-#ifndef IPV6_UNICAST_IF
-#define IPV6_UNICAST_IF 31
-#endif
 /* 127.0.0.0/8, ::1, or ::ffff:127.x */
 static int is_loopback(const struct sockaddr *sa)
 {

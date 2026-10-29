@@ -143,27 +143,32 @@ long npf_fd_limit(long want)
     return rl.rlim_cur == RLIM_INFINITY ? want : (long)rl.rlim_cur;
 }
 
-int64_t npf_mono_ms(void)
+/* -1: no such clock here */
+static int64_t clock_ms(clockid_t id)
 {
     struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    if (clock_gettime(id, &ts) != 0)
+        return -1;
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+int64_t npf_mono_ms(void)
+{
+    return clock_ms(CLOCK_MONOTONIC);
 }
 
 int64_t npf_boot_ms(void)
 {
 #if defined(CLOCK_BOOTTIME)
-    struct timespec ts;
-    if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0)
-        return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    int64_t t = clock_ms(CLOCK_BOOTTIME);
+    if (t >= 0)
+        return t;
 #endif
     return npf_mono_ms();               /* macOS / iOS: CLOCK_MONOTONIC counts sleep */
 }
 
 int64_t npf_unix_ms(void)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return clock_ms(CLOCK_REALTIME);
 }
 #endif

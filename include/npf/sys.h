@@ -46,6 +46,16 @@ typedef ULONG nfds_t;
 #define sendto(s, b, n, f, a, al)   sendto((SOCKET)(s), (const char *)(b), (int)(n), (f), (a), (int)(al))
 #define recvfrom(s, b, n, f, a, al) recvfrom((SOCKET)(s), (char *)(b), (int)(n), (f), (a), (al))
 
+#ifndef IP_UNICAST_IF
+#define IP_UNICAST_IF 31        /* (older MinGW headers) */
+#endif
+#ifndef IPV6_UNICAST_IF
+#define IPV6_UNICAST_IF 31
+#endif
+/* GetAdaptersAddresses(AF_UNSPEC, flags) into a buffer grown as it asks:
+ * an IP_ADAPTER_ADDRESSES list to free(), or NULL */
+void *npf_win_adapters(unsigned long flags);
+
 #else
 #include <arpa/inet.h>
 #include <netdb.h>

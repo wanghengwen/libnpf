@@ -104,14 +104,11 @@ void npf_host_info_get(npf_host_info *h)
         RegCloseKey(k);
     }
     {
-        ULONG len = 16384;
-        IP_ADAPTER_ADDRESSES *aa = malloc(len), *a;
-        if (aa && GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
-                                       NULL, aa, &len) == NO_ERROR) {
-            for (a = aa; a; a = a->Next)
-                if (a->PhysicalAddressLength == 6 && a->IfType != IF_TYPE_SOFTWARE_LOOPBACK)
-                    add_mac(h, a->PhysicalAddress);
-        }
+        IP_ADAPTER_ADDRESSES *aa = npf_win_adapters(GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST
+                                                    | GAA_FLAG_SKIP_DNS_SERVER), *a;
+        for (a = aa; a; a = a->Next)
+            if (a->PhysicalAddressLength == 6 && a->IfType != IF_TYPE_SOFTWARE_LOOPBACK)
+                add_mac(h, a->PhysicalAddress);
         free(aa);
     }
 }
