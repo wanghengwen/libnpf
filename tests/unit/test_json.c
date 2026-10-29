@@ -66,6 +66,10 @@ static void test_parse(void)
           "int overflow");
     CHECK(parse("{\"n\":-9223372036854775808}", &j) == 0 && npf_json_get_int(&j, 0, "n", INT64_MIN, 0, &v) == 0
           && v == INT64_MIN, "int64 min");
+    CHECK(parse("{\"a\":9223372036854775807,\"b\":9223372036854775808,\"c\":-9223372036854775809}", &j) == 0
+          && npf_json_get_int(&j, 0, "a", 0, INT64_MAX, &v) == 0 && v == INT64_MAX
+          && npf_json_get_int(&j, 0, "b", 0, INT64_MAX, &v) < 0 && npf_json_get_int(&j, 0, "c", INT64_MIN, 0, &v) < 0,
+          "int64 bounds");
     /* structure */
     CHECK(parse("{\"a\":[[[[[[1]]]]]]}", &j) < 0, "depth > 6");
     CHECK(parse("{\"a\":[[[[1]]]]}", &j) == 0, "depth 5");

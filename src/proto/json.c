@@ -435,6 +435,7 @@ int npf_json_int(const npf_json *j, int t, int64_t min, int64_t max, int64_t *ou
     size_t i;
     int neg = 0;
     uint64_t v = 0;
+    int64_t r;
     if (!k)
         return -1;
     i = k->start;
@@ -447,16 +448,12 @@ int npf_json_int(const npf_json *j, int t, int64_t min, int64_t max, int64_t *ou
             return -1;
         v = v * 10 + (uint64_t)(c - '0');
     }
-    if (!neg && v > (uint64_t)INT64_MAX)
+    if (v > (uint64_t)INT64_MAX + (uint64_t)neg)    /* -2^63 .. 2^63 - 1 */
         return -1;
-    if (neg && v > (uint64_t)INT64_MAX + 1)
+    r = neg ? (int64_t)(0 - v) : (int64_t)v;
+    if (r < min || r > max)
         return -1;
-    {
-        int64_t s = neg ? (int64_t)(0 - v) : (int64_t)v;
-        if (s < min || s > max)
-            return -1;
-        *out = s;
-    }
+    *out = r;
     return 0;
 }
 
