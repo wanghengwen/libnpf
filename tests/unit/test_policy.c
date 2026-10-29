@@ -181,7 +181,7 @@ int test_policy(void)
                                               "net 10.0.0.0/33 x", "socks nowhere x", "tcp/http ::1:80 x",
                                               "http 127.0.0.1:80 x", "tcp/rdp 127.0.0.1:3389/a x", "tcp/RDP 127.0.0.1:3389 x",
                                               "tcp/ 127.0.0.1:3389 x", "tcp/abcdefghijklmnop 127.0.0.1:1 x", "net/rdp lan x",
-                                              "tcp/r_p 127.0.0.1:3389 x",
+                                              "tcp/r_p 127.0.0.1:3389 x", "tcp 127.0.0.1:+80 x", "tcp [::1]:080 x",
                                               "reverse 80 x", "reverse 9000-8000 x", "reverse 70000 x", "reverse lan: x", "reverse wan:8000 x",
                                               "reverse lan x", NULL};
             int i;
