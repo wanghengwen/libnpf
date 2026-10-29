@@ -10,13 +10,7 @@
 #include "npf/conf.h"
 #include "npf/log.h"
 #include "npf/sys.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 /* the key table: where a key may come from, its values, its defaults */
 static void key_table(void)
@@ -173,11 +167,7 @@ int test_conf(void)
     CHECK(stat(want, &st) < 0, "no temp file left behind");
     CHECK(npf_file_read("/nonexistent/npf", &rd) < 0, "missing file");
 
-    /* cleanup */
-    unlink(path);
-    snprintf(path, sizeof path, "%s/node.conf", dir);
-    unlink(path);
-    rmdir(dir);
+    rm_dir(dir);
     npf_conf_free(&c);
     return fails;
 }

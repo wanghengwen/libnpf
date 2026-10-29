@@ -19,13 +19,7 @@
 #include "npf/node.h"
 #include "npf/out.h"
 #include "npf/sys.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 /* the password field of the file */
 static int file_pw(const char *path, char *out, size_t cap)
@@ -160,10 +154,6 @@ int test_callee(void)
     }
     CHECK(file_pw(path, pw, sizeof pw) == 0 && strcmp(pw, "after-link1") == 0, "the file written (%s)", pw);
 
-    unlink(target);
-    unlink(path);
-    unlink(seedp);
-    unlink(tmp);
-    rmdir(dir);
+    rm_dir(dir);
     return fails;
 }

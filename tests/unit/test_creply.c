@@ -20,13 +20,7 @@
 #include "npf/platform.h"
 #include "npf/tunnel.h"
 #include "../../src/tunnel/tunnel_internal.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 typedef struct pipe_ {
     uint8_t q[8192];            /* control bytes for the other tunnel (the hellos) */

@@ -14,13 +14,7 @@
 #include "npf/json.h"
 #include "call_internal.h"
 #include "../../src/tunnel/tunnel_internal.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 typedef struct side {
     npf_node node;
@@ -44,23 +38,9 @@ static void on_wake(npf_loop *l, void *arg) { (void)l; (void)arg; woken++; }
 
 static int init_side(side *s, npf_loop *loop)
 {
-    npf_node_cfg cfg;
-    npf_node_hooks hooks = {NULL, on_state, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
-    npf_identity id;
-    uint8_t seed[32];
+    static const npf_node_hooks hooks = {.on_call_state = on_state};
     memset(s, 0, sizeof *s);
-    memset(&cfg, 0, sizeof cfg);
-    cfg.offline = 1;
-    npf_random(seed, 32);
-    npf_identity_from_seed(&id, seed);
-    return npf_node_init(&s->node, loop, &cfg, &id, &hooks, s);
-}
-
-static void run_until(npf_loop *loop, int *flag, int want, int ms)
-{
-    int64_t until = npf_mono_ms() + ms;
-    while (*flag < want && npf_mono_ms() < until)
-        npf_loop_once(loop, 10);
+    return offline_node(&s->node, loop, &hooks, s);
 }
 
 /* the session moves to the WS relay: the AnLiu connection stays (its
@@ -116,8 +96,8 @@ static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, 
     A2.node.th.block_relay = "wss://127.0.0.1:9/r";
     A2.node.cfg.server_url = "wss://127.0.0.1:9/";
     c = npf_direct_connect(&A2.node, to, psk);
-    run_until(loop, &A2.established, 1, 3000);
-    run_until(loop, &L->established, want + 1, 1000);
+    LOOP_UNTIL(loop, A2.established >= 1, 3000);
+    LOOP_UNTIL(loop, L->established >= want + 1, 1000);
     CHECK(c && A2.established == 1 && c->tun && npf_tunnel_is_ready(c->tun), "second session up");
     if (c && A2.established == 1) {
         vrec = &r1;
@@ -179,8 +159,8 @@ int test_direct(void)
     CHECK(npf_direct_resolve(spec, &to) == 0, "resolve");
     ca = npf_direct_connect(&A.node, &to, psk);
     CHECK(ca != NULL, "connect");
-    run_until(loop, &A.established, 1, 3000);
-    run_until(loop, &L.established, 1, 1000);
+    LOOP_UNTIL(loop, A.established >= 1, 3000);
+    LOOP_UNTIL(loop, L.established >= 1, 1000);
     CHECK(A.established == 1 && L.established == 1, "established (A %d, L %d)", A.established, L.established);
     CHECK(ca && strcmp(npf_call_path(ca), "direct") == 0, "path is direct");
     CHECK(npf_call_auth(ca) == NPF_AUTH_DIRECT, "auth is direct");
@@ -188,14 +168,14 @@ int test_direct(void)
     /* wrong key: silence, no session on the listener */
     cb = npf_direct_connect(&B.node, &to, wrong);
     CHECK(cb != NULL, "connect with the wrong key starts");
-    run_until(loop, &L.connecting, 2, 1500);
+    LOOP_UNTIL(loop, L.connecting >= 2, 1500);
     CHECK(L.connecting == 1 && L.established == 1, "wrong key created no session (%d)", L.connecting);
     CHECK(B.established == 0 && B.closed == 0, "initiator still retrying");
 
     /* the initiator closes: the listener sees the close; a reason goes as a
      * code (a-z 0-9 _), never as JSON of its own */
     npf_call_end(ca, "bye\"},\"x\":\"1");
-    run_until(loop, &L.closed, 1, 3000);
+    LOOP_UNTIL(loop, L.closed >= 1, 3000);
     CHECK(A.closed == 1 && L.closed == 1 && strcmp(L.why, "byex1") == 0 && strcmp(A.why, "byex1") == 0,
           "close propagated (%d/%d %s/%s)", A.closed, L.closed, A.why, L.why);
 

@@ -7,26 +7,14 @@
 #define _DEFAULT_SOURCE
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <time.h>
-#include <unistd.h>
 
-#include "npf.h"
-
-static int fails;
-static void check(int ok, const char *what)
-{
-    printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-    fails += !ok;
-}
+#include "api_test.h"
 
 /* ---- an echo service ---- */
 
@@ -78,43 +66,43 @@ static int echo_start(void)
     return ntohs(a.sin_port);
 }
 
-/* through a forward listening on port: what is sent comes back */
-static int echoes(int port)
+/* a connection to 127.0.0.1:port (reads time out after 5 s), -1 none */
+static int lo_connect(int port)
 {
     struct sockaddr_in a;
-    char b[16] = "";
     struct timeval tv = {5, 0};
-    int fd = socket(AF_INET, SOCK_STREAM, 0), ok;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     a.sin_port = htons((uint16_t)port);
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    ok = connect(fd, (struct sockaddr *)&a, sizeof a) == 0 && write(fd, "ping", 4) == 4 && read(fd, b, 4) == 4
-         && memcmp(b, "ping", 4) == 0;
-    close(fd);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* through a forward listening on port: what is sent comes back */
+static int echoes(int port)
+{
+    char b[16] = "";
+    int fd = lo_connect(port), ok = fd >= 0 && write(fd, "ping", 4) == 4 && read(fd, b, 4) == 4 && memcmp(b, "ping", 4) == 0;
+    if (fd >= 0)
+        close(fd);
     return ok;
 }
 
 /* a SOCKS5 CONNECT through port to 127.0.0.1:tport: the reply code (0 ok), -1 none */
 static int socks_connect(int port, int tport)
 {
-    struct sockaddr_in a;
-    unsigned char b[16];
-    struct timeval tv = {5, 0};
-    int fd = socket(AF_INET, SOCK_STREAM, 0), rep = -1;
-    unsigned char req[10] = {5, 1, 0, 1, 127, 0, 0, 1, 0, 0};
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    a.sin_port = htons((uint16_t)port);
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    req[8] = (unsigned char)(tport >> 8);
-    req[9] = (unsigned char)tport;
-    if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0 && write(fd, "\5\1\0", 3) == 3 && read(fd, b, 2) == 2
-        && write(fd, req, 10) == 10 && read(fd, b, 10) >= 2)
+    unsigned char b[16], req[10] = {5, 1, 0, 1, 127, 0, 0, 1, (unsigned char)(tport >> 8), (unsigned char)tport};
+    int fd = lo_connect(port), rep = -1;
+    if (fd >= 0 && write(fd, "\5\1\0", 3) == 3 && read(fd, b, 2) == 2 && write(fd, req, 10) == 10 && read(fd, b, 10) >= 2)
         rep = b[1];
-    close(fd);
+    if (fd >= 0)
+        close(fd);
     return rep;
 }
 
@@ -199,30 +187,6 @@ static uint32_t session_peer(npf_t *n, uint32_t session)
     return session && npf_session_get(n, session, &si) == NPF_OK ? si.peer : 0;
 }
 
-/* npf_peer_get until the peer is in state, up to ms: 1, 0 not */
-static int wait_peer_state(npf_t *n, uint32_t peer, int state, int ms)
-{
-    npf_peer_info pi;
-    for (; ms > 0; ms -= 20) {
-        if (npf_peer_get(n, peer, &pi) == NPF_OK && pi.state == state)
-            return 1;
-        usleep(20000);
-    }
-    return 0;
-}
-
-/* npf_forward_get until refused reaches want, up to ms: 1, 0 not */
-static int wait_refused(npf_t *n, uint32_t fwd, uint32_t want, int ms)
-{
-    npf_forward_info fi;
-    for (; ms > 0; ms -= 20) {
-        if (npf_forward_get(n, fwd, &fi) == NPF_OK && fi.refused >= want)
-            return 1;
-        usleep(20000);
-    }
-    return 0;
-}
-
 static npf_t *make(const char *dir, int role, const char *ov, int heard, int flags, char *err, size_t errcap)
 {
     npf_options o;
@@ -246,43 +210,6 @@ static npf_t *make(const char *dir, int role, const char *ov, int heard, int fla
     return n;
 }
 
-/* npf_command: its exit code (-1 none in 5 s), its text in out */
-static pthread_mutex_t cmu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t ccv = PTHREAD_COND_INITIALIZER;
-static int c_done, c_code;
-static char c_text[512];
-static void on_cmd(void *user, int code, const char *text)
-{
-    (void)user;
-    pthread_mutex_lock(&cmu);
-    c_done = 1;
-    c_code = code;
-    snprintf(c_text, sizeof c_text, "%s", text ? text : "");
-    pthread_cond_broadcast(&ccv);
-    pthread_mutex_unlock(&cmu);
-}
-
-static int cmd(npf_t *n, int argc, const char *const *argv)
-{
-    struct timespec t;
-    int code = -1;
-    pthread_mutex_lock(&cmu);
-    c_done = 0;
-    c_text[0] = 0;
-    pthread_mutex_unlock(&cmu);
-    if (npf_command(n, argc, argv, on_cmd, NULL) != NPF_OK)
-        return -1;
-    clock_gettime(CLOCK_REALTIME, &t);
-    t.tv_sec += 5;
-    pthread_mutex_lock(&cmu);
-    while (!c_done && pthread_cond_timedwait(&ccv, &cmu, &t) == 0)
-        ;
-    if (c_done)
-        code = c_code;
-    pthread_mutex_unlock(&cmu);
-    return code;
-}
-
 /* npf_peer_setopt with an int, a string */
 static int seti(npf_t *n, uint32_t peer, int opt, int v)
 {
@@ -294,18 +221,11 @@ static int sets(npf_t *n, uint32_t peer, int opt, const char *v)
     return npf_peer_setopt(n, peer, opt, v, 0);
 }
 
+/* local.json in dir has what */
 static int file_has(const char *dir, const char *what)
 {
-    char path[300], buf[16384];
-    FILE *f;
-    size_t l = 0;
-    snprintf(path, sizeof path, "%s/local.json", dir);
-    if ((f = fopen(path, "r"))) {
-        l = fread(buf, 1, sizeof buf - 1, f);
-        fclose(f);
-    }
-    buf[l] = 0;
-    return strstr(buf, what) != NULL;
+    char buf[16384];
+    return strstr(file_text(dir, "local.json", buf, sizeof buf), what) != NULL;
 }
 
 static void resources(npf_t *a, const char *da, int echo)
@@ -498,8 +418,9 @@ int main(void)
     check(npf_start(b) == NPF_OK, "B started");
     i = wait_ev(0, "session", 1, NULL, 10000);
     check(i >= 0 && evs[i].session && session_peer(b, evs[i].session) == peer, "session up: the peer's");
-    check(wait_peer_state(b, peer, NPF_PEER_CONNECTED, 5000) && npf_peer_get(b, peer, &pi) == NPF_OK
-          && pi.ctx == &ctx_peer && pi.session == evs[i].session, "peer connected, its ctx and session");
+    WAIT_UNTIL(npf_peer_get(b, peer, &pi) == NPF_OK && pi.state == NPF_PEER_CONNECTED, 5000);
+    check(npf_peer_get(b, peer, &pi) == NPF_OK && pi.state == NPF_PEER_CONNECTED && pi.ctx == &ctx_peer
+          && pi.session == evs[i].session, "peer connected, its ctx and session");
     k = wait_ev(0, "forward", 1, "\"-L ", 5000);
     check(k >= 0, "forward event: the local forward up");
     ok = npf_forward_get(b, fwd, &fi) == NPF_OK && fi.state == NPF_FWD_UP && fi.listen_port && fi.peer == peer
@@ -523,7 +444,8 @@ int main(void)
     k = ev_count();
     check(socks_connect(fi.listen_port, echo) == 0, "SOCKS to the published service");
     check(socks_connect(fi.listen_port, 9) > 0, "SOCKS to a target not published: refused");
-    check(wait_refused(b, socks, 1, 5000) && npf_forward_get(b, socks, &fi) == NPF_OK && fi.refused == 1
+    WAIT_UNTIL(npf_forward_get(b, socks, &fi) == NPF_OK && fi.refused >= 1, 5000);
+    check(npf_forward_get(b, socks, &fi) == NPF_OK && fi.refused == 1
           && fi.state == NPF_FWD_UP && fi.ctx == &ctx_socks && strstr(fi.refused_why, "not published"),
           "a refusal counted, its target; the rule still up");
     check(socks_connect(fi.listen_port, echo) == 0, "and the published one still goes");
@@ -685,7 +607,7 @@ int main(void)
     if (c) {
         const char *set1[] = {"set", "log_level", "debug"}, *set2[] = {"set", "log_level", "debug", "--no-save"};
         check(npf_config_set(c, "log_level", "debug", 1, err, sizeof err) == NPF_EUNAVAIL && cmd(c, 3, set1) == 1
-              && strstr(c_text, "not saved here") && cmd(c, 4, set2) == 0 && !file_has(dc, "debug"),
+              && strstr(cmd_text, "not saved here") && cmd(c, 4, set2) == 0 && !file_has(dc, "debug"),
               "set with saving: refused (npf_config_set and the command), --no-save in effect");
         npf_destroy(c);
     }
@@ -757,12 +679,9 @@ int main(void)
     }
 
     npf_destroy(a);
-    {
-        char cmd[400];
-        snprintf(cmd, sizeof cmd, "rm -rf %s %s %s", da, db, dc);
-        if (system(cmd) != 0)
-            fails++;
-    }
+    rm_dir(da);
+    rm_dir(db);
+    rm_dir(dc);
     printf("%s\n", fails ? "FAILED" : "ok");
     return fails != 0;
 }

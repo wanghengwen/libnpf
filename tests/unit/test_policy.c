@@ -11,43 +11,26 @@
 #include "npf/peers.h"
 #include "npf/resources.h"
 #include "npf/tunnel.h"
+#include "test.h"
 
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
-
-static int allowed4(npf_policy *p, const char *ip, int port)
+/* ip:port of family as a sockaddr (one at a time) */
+static struct sockaddr *sa(int family, const char *ip, int port)
 {
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((uint16_t)port);
-    inet_pton(AF_INET, ip, &a.sin_addr);
-    return npf_policy_allowed(p, (struct sockaddr *)&a);
+    static struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof ss);
+    ss.ss_family = (sa_family_t)family;
+    if (family == AF_INET) {
+        ((struct sockaddr_in *)&ss)->sin_port = htons((uint16_t)port);
+        inet_pton(AF_INET, ip, &((struct sockaddr_in *)&ss)->sin_addr);
+    } else {
+        ((struct sockaddr_in6 *)&ss)->sin6_port = htons((uint16_t)port);
+        inet_pton(AF_INET6, ip, &((struct sockaddr_in6 *)&ss)->sin6_addr);
+    }
+    return (struct sockaddr *)&ss;
 }
-
-static int udp4(npf_policy *p, const char *ip, int port)
-{
-    struct sockaddr_in a;
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_port = htons((uint16_t)port);
-    inet_pton(AF_INET, ip, &a.sin_addr);
-    return npf_policy_udp_allowed(p, (struct sockaddr *)&a);
-}
-
-static int allowed6(npf_policy *p, const char *ip, int port)
-{
-    struct sockaddr_in6 a;
-    memset(&a, 0, sizeof a);
-    a.sin6_family = AF_INET6;
-    a.sin6_port = htons((uint16_t)port);
-    inet_pton(AF_INET6, ip, &a.sin6_addr);
-    return npf_policy_allowed(p, (struct sockaddr *)&a);
-}
+#define allowed4(p, ip, port) npf_policy_allowed(p, sa(AF_INET, ip, port))
+#define allowed6(p, ip, port) npf_policy_allowed(p, sa(AF_INET6, ip, port))
+#define udp4(p, ip, port)     npf_policy_udp_allowed(p, sa(AF_INET, ip, port))
 
 int test_policy(void)
 {
@@ -56,13 +39,7 @@ int test_policy(void)
     CHECK(!allowed4(&p, "127.0.0.1", 80) && !allowed4(&p, "192.168.1.1", 80), "nothing published, nothing allowed");
     CHECK(npf_policy_add(&p, "lan") == 0 && p.lan && p.nrules == 0, "lan");
 
-    {
-        struct sockaddr_in a;
-        memset(&a, 0, sizeof a);
-        a.sin_family = AF_INET;
-        a.sin_addr.s_addr = htonl(0x7f000001);
-        CHECK(!npf_policy_allowed(NULL, (struct sockaddr *)&a), "no policy allows nothing");
-    }
+    CHECK(!allowed4(NULL, "127.0.0.1", 0), "no policy allows nothing");
     CHECK(allowed4(&p, "127.0.0.1", 80), "loopback allowed");
     CHECK(allowed4(&p, "127.5.6.7", 22), "all of 127/8 allowed");
     CHECK(allowed4(&p, "0.0.0.0", 80), "0.0.0.0 is the host itself");

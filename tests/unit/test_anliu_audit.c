@@ -8,8 +8,8 @@
 #include <string.h>
 #include "media.h"
 #include "udpfwd.h"
+#include "test.h"
 
-#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
 typedef struct heap { int until_fail, live; } heap;
 static void *alloc(void *arg, size_t n)
 {
@@ -37,30 +37,30 @@ static int send_failure(int mode, int bytes)
     anl_config_default(&cfg, ANL_ROLE_CLIENT);
     cfg.malloc_fn = alloc; cfg.free_fn = release; cfg.alloc_user = &h;
     w = anl_create(123, &cfg, NULL);
-    CHECK(w);
+    REQUIRE(w);
     anl_stream_opt_default(&opt, mode);
     opt.stream = bytes;
     opt.flush_on_send = 0;
     opt.fec = 0;
     s = anl_stream_open(w, &opt, &err);
-    CHECK(s);
-    if (bytes) CHECK(anl_stream_send(s, "prefix", 6) == ANL_OK);
-    CHECK(anl_stream_get_stats(s, &before) == ANL_OK);
+    REQUIRE(s);
+    if (bytes) REQUIRE(anl_stream_send(s, "prefix", 6) == ANL_OK);
+    REQUIRE(anl_stream_get_stats(s, &before) == ANL_OK);
     live = h.live;
     h.until_fail = 1;   /* first segment / byte-stream replacement succeeds */
     r = mode == ANL_SEMI ? anl_stream_send_frame(s, ANL_FRAME_KEY, data, sizeof data, &frame)
                         : anl_stream_send(s, data, sizeof data);
-    CHECK(r == ANL_ENOMEM);
-    CHECK(anl_stream_get_stats(s, &after) == ANL_OK);
-    CHECK(after.wait_snd == before.wait_snd && after.backlog_bytes == before.backlog_bytes && h.live == live);
-    if (mode == ANL_SEMI) CHECK(frame == 12345);
+    REQUIRE(r == ANL_ENOMEM);
+    REQUIRE(anl_stream_get_stats(s, &after) == ANL_OK);
+    REQUIRE(after.wait_snd == before.wait_snd && after.backlog_bytes == before.backlog_bytes && h.live == live);
+    if (mode == ANL_SEMI) REQUIRE(frame == 12345);
     h.until_fail = -1;
     r = mode == ANL_SEMI ? anl_stream_send_frame(s, ANL_FRAME_KEY, data, sizeof data, &frame)
                         : anl_stream_send(s, data, sizeof data);
-    CHECK(r == ANL_OK);
-    if (mode == ANL_SEMI) CHECK(frame == 0);
+    REQUIRE(r == ANL_OK);
+    if (mode == ANL_SEMI) REQUIRE(frame == 0);
     anl_release(w);
-    CHECK(h.live == 0);
+    REQUIRE(h.live == 0);
     return 0;
 }
 /* sizes are int since AnLiu 39fa5f1: a negative one, or one above
@@ -72,10 +72,10 @@ static int input_length(void)
     char tiny[64] = {0};
     anl_config_default(&cfg, ANL_ROLE_CLIENT);
     w = anl_create(123, &cfg, NULL);
-    CHECK(w);
-    CHECK(anl_input(w, tiny, -1) == ANL_EFORMAT);
-    CHECK(anl_input(w, tiny, INT_MAX) == ANL_EFORMAT);
-    CHECK(anl_peek_conv(tiny, -1, &(uint32_t){0}) != ANL_OK);
+    REQUIRE(w);
+    REQUIRE(anl_input(w, tiny, -1) == ANL_EFORMAT);
+    REQUIRE(anl_input(w, tiny, INT_MAX) == ANL_EFORMAT);
+    REQUIRE(anl_peek_conv(tiny, -1, &(uint32_t){0}) != ANL_OK);
     anl_release(w);
     return 0;
 }
@@ -88,11 +88,11 @@ static int option_limits(void)
     int err;
     anl_config_default(&cfg, ANL_ROLE_CLIENT);
     w = anl_create(123, &cfg, NULL);
-    CHECK(w);
+    REQUIRE(w);
     anl_stream_opt_default(&opt, ANL_SEMI);
     opt.max_age_ms = INT_MAX;
     s = anl_stream_open(w, &opt, &err);
-    CHECK(s && s->sm->rcv_deadline_ms == (int)((int64_t)INT_MAX * RCV_WAIT_PCT / 100));
+    REQUIRE(s && s->sm->rcv_deadline_ms == (int)((int64_t)INT_MAX * RCV_WAIT_PCT / 100));
     anl_release(w);
     return 0;
 }
@@ -114,16 +114,16 @@ static int broken_frames(void)
     int err;
     anl_config_default(&cfg, ANL_ROLE_CLIENT);
     w = anl_create(123, &cfg, NULL);
-    CHECK(w);
+    REQUIRE(w);
     anl_stream_opt_default(&opt, ANL_SEMI);
     opt.flush_on_send = 0;
     opt.fec = 0;
     opt.rcv_wnd = ANL_MAX_WND;
     s = anl_stream_open(w, &opt, &err);
-    CHECK(s);
+    REQUIRE(s);
     for (i = 0; i < ANL_MAX_WND; i++) {
         anl_seg *seg = seg_new(w, 1);
-        CHECK(seg);
+        REQUIRE(seg);
         seg->sn = i;
         seg->frg = 1;                       /* the next frame starts where this tail should be */
         seg->frame_no = i;
@@ -132,12 +132,12 @@ static int broken_frames(void)
         s->nrcv_que++;
         rcv_bytes_add(w, 1);
     }
-    CHECK(pthread_attr_init(&attr) == 0);
-    CHECK(pthread_attr_setstacksize(&attr, 1 << 20) == 0);
-    CHECK(pthread_create(&thread, &attr, peek_thread, s) == 0);
+    REQUIRE(pthread_attr_init(&attr) == 0);
+    REQUIRE(pthread_attr_setstacksize(&attr, 1 << 20) == 0);
+    REQUIRE(pthread_create(&thread, &attr, peek_thread, s) == 0);
     pthread_attr_destroy(&attr);
-    CHECK(pthread_join(thread, &result) == 0);
-    CHECK((intptr_t)result == ANL_EAGAIN && s->nrcv_que == 1 && s->frames_skipped == ANL_MAX_WND - 1);
+    REQUIRE(pthread_join(thread, &result) == 0);
+    REQUIRE((intptr_t)result == ANL_EAGAIN && s->nrcv_que == 1 && s->frames_skipped == ANL_MAX_WND - 1);
     anl_release(w);
     return 0;
 }
@@ -183,29 +183,29 @@ static int receive_limits(void)
     int err;
     anl_config_default(&cfg, ANL_ROLE_SERVER);
     w = anl_create(123, &cfg, NULL);
-    CHECK(w);
+    REQUIRE(w);
     anl_stream_opt_default(&opt, ANL_SEMI);
     opt.tag = NPF_TAG_MEDIA;
     opt.rcv_wnd = NPF_ANL_MEDIA_WND;
     s = anl_stream_open(w, &opt, &err);
-    CHECK(s);
+    REQUIRE(s);
     mio.on_open = take_media; mio.on_frame = got_media; mio.on_closed = closed_media;
     m = npf_media_new(w, 1, &mio, NULL);
-    CHECK(m && npf_media_accept(m, s, &opt) == 0 && npf_media_poll(m) == 0);
-    CHECK(queue_frame(s, NPF_MEDIA_FRAME_MAX + 1) == 0);
-    CHECK(npf_media_drain(m, s) == 0);
-    CHECK(npf_media_count(m) == 0 && media_closed == 1 && media_frames == 0);
+    REQUIRE(m && npf_media_accept(m, s, &opt) == 0 && npf_media_poll(m) == 0);
+    REQUIRE(queue_frame(s, NPF_MEDIA_FRAME_MAX + 1) == 0);
+    REQUIRE(npf_media_drain(m, s) == 0);
+    REQUIRE(npf_media_count(m) == 0 && media_closed == 1 && media_frames == 0);
     npf_media_free(m);
 
     opt.tag = NPF_TAG_UDP;
     s = anl_stream_open(w, &opt, &err);
-    CHECK(s);
+    REQUIRE(s);
     u = npf_udpf_new(NULL, w, 0, NULL, &uio, NULL, 0);
-    CHECK(u && npf_udpf_accept(u, s, &opt, 0) == 0);
-    CHECK(queue_frame(s, 65536) == 0);
+    REQUIRE(u && npf_udpf_accept(u, s, &opt, 0) == 0);
+    REQUIRE(queue_frame(s, 65536) == 0);
     npf_udpf_drain(u, s);
     npf_udpf_get_stats(u, &stats);
-    CHECK(!npf_udpf_is_stream(u, s) && stats.dropped == 1 && stats.flows == 0);
+    REQUIRE(!npf_udpf_is_stream(u, s) && stats.dropped == 1 && stats.flows == 0);
     npf_udpf_free(u);
     anl_release(w);
     return 0;

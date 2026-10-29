@@ -4,17 +4,12 @@
  * and more than the limit are refused; when a module's create fails only
  * those made before it are destroyed, the last first. */
 #define _DEFAULT_SOURCE                     /* mkdtemp */
-#include <pthread.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
 
-#include "npf.h"
+#include "api_test.h"
 #include "npf/conf.h"
 #include "npf/module.h"
 #include "npf/out.h"
-
 
 #define NPF_MOD_LIMIT 8                     /* npf_register_module */
 
@@ -94,73 +89,18 @@ static const npf_module first_mod = {.name = "first", .create = first_create, .d
 static const npf_module failing_mod = {.name = "failing", .create = failing_create, .destroy = failing_destroy};
 static const npf_module after_mod = {.name = "after", .create = after_create, .destroy = after_destroy};
 
-static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
-static int got, got_code;
-static char got_text[256];
+static const char *const hello[] = {"hello"};
 
-static void on_text(void *user, int code, const char *text)
+/* a started instance in dir */
+static npf_t *make(const char *dir)
 {
-    (void)user;
-    pthread_mutex_lock(&mu);
-    got = 1;
-    got_code = code;
-    snprintf(got_text, sizeof got_text, "%s", text ? text : "");
-    pthread_cond_broadcast(&cv);
-    pthread_mutex_unlock(&mu);
-}
-
-/* the command's exit code, its text in got_text */
-static int command(npf_t *n, const char *name)
-{
-    const char *argv[] = {name};
-    pthread_mutex_lock(&mu);
-    got = 0;
-    pthread_mutex_unlock(&mu);
-    if (npf_command(n, 1, argv, on_text, NULL) != NPF_OK)
-        return -100;
-    pthread_mutex_lock(&mu);
-    while (!got)
-        pthread_cond_wait(&cv, &mu);
-    pthread_mutex_unlock(&mu);
-    return got_code;
-}
-
-static int fails;
-static void check(int ok, const char *what)
-{
-    printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-    fails += !ok;
-}
-
-static npf_t *make(const char *dir, int *rc)
-{
-    npf_options o;
-    npf_t *n = NULL;
     char err[300];
-    npf_options_init(&o);
-    o.conf_dir = dir;
-    o.role = NPF_ROLE_DIRECT;
-    o.overrides = "udp_port = 0\n";
-    *rc = npf_create(&o, &n, err, sizeof err);
-    if (*rc == NPF_OK && npf_start(n) != NPF_OK) {
+    npf_t *n = instance(dir, NPF_ROLE_DIRECT, "udp_port = 0\n", NULL, err, sizeof err);
+    if (n && npf_start(n) != NPF_OK) {
         npf_destroy(n);
-        *rc = -100;
         n = NULL;
     }
     return n;
-}
-
-static void cleanup(const char *dir)
-{
-    const char *files[] = {"identity", "seed", "local.json", "local.conf"};
-    char path[400];
-    size_t i;
-    for (i = 0; i < sizeof files / sizeof files[0]; i++) {
-        snprintf(path, sizeof path, "%s/%s", dir, files[i]);
-        unlink(path);
-    }
-    rmdir(dir);
 }
 
 int main(void)
@@ -174,7 +114,7 @@ int main(void)
     if (!mkdtemp(dir) || !mkdtemp(dir2))
         return 2;
 
-    before = make(dir2, &rc);
+    before = make(dir2);
     check(before != NULL, "an instance before the module is registered");
     check(npf_register_module(&acme_module) == 0, "the module registered");
     check(npf_register_module(&acme_module) < 0 && npf_register_module(NULL) < 0, "twice, or NULL: refused");
@@ -184,11 +124,11 @@ int main(void)
           "a command or key of libnpf's own: refused");
     check(npf_register_module(&clash_cmd) < 0 && npf_register_module(&clash_key) < 0,
           "a command or key of another module: refused");
-    n = make(dir, &rc);
+    n = make(dir);
     check(n != NULL, "an instance created after has the module");
     if (!n)
         return 1;
-    check(command(n, "hello") == 0 && strcmp(got_text, "hello 1\n") == 0, "the module's command, its state");
+    check(cmd(n, 1, hello) == 0 && strcmp(cmd_text, "hello 1\n") == 0, "the module's command, its state");
     s = npf_status_json(n);
     check(s && strstr(s, "\"acme\":{\"calls\":1}") != NULL, "the module's key in the status");
     npf_free(s);
@@ -211,7 +151,7 @@ int main(void)
     check(destroyed == 1, "the module's destroy");
 
     if (before) {
-        check(command(before, "hello") != 0, "the earlier instance: no module's command");
+        check(cmd(before, 1, hello) != 0, "the earlier instance: no module's command");
         npf_destroy(before);
     }
     check(destroyed == 1, "the earlier instance never called the module");
@@ -220,18 +160,9 @@ int main(void)
     order[0] = 0;
     check(npf_register_module(&first_mod) == 0 && npf_register_module(&failing_mod) == 0
           && npf_register_module(&after_mod) == 0, "three more registered");
-    {
-        npf_options o;
-        npf_t *x = NULL;
-        npf_options_init(&o);
-        o.conf_dir = dir;
-        o.role = NPF_ROLE_DIRECT;
-        o.overrides = "udp_port = 0\n";
-        rc = npf_create(&o, &x, err, sizeof err);
-        check(rc != NPF_OK && !x && strstr(err, "failing: refused"), "a module's create fails: no instance, its reason");
-        check(strcmp(order, "first acme ") == 0 && destroyed == 1,
-              "only the modules made before it are destroyed, the last first");
-    }
+    check(!instance(dir, NPF_ROLE_DIRECT, "udp_port = 0\n", &rc, err, sizeof err) && rc != NPF_OK
+          && strstr(err, "failing: refused"), "a module's create fails: no instance, its reason");
+    check(strcmp(order, "first acme ") == 0 && destroyed == 1, "only the modules made before it are destroyed, the last first");
 
     for (i = 0, ok = 1; i < NPF_MOD_LIMIT - 4; i++) {
         snprintf(names[i], sizeof names[i], "other%d", i);
@@ -241,7 +172,7 @@ int main(void)
     others[i].name = "one-too-many";
     check(ok && npf_register_module(&others[i]) < 0, "up to the limit, not more");
 
-    cleanup(dir);
-    cleanup(dir2);
+    rm_dir(dir);
+    rm_dir(dir2);
     return fails != 0;
 }

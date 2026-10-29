@@ -15,6 +15,7 @@
 #include "npf/platform.h"
 #include "npf/tunnel.h"
 #include "call_internal.h"
+#include "test.h"
 
 typedef struct side { npf_node node; int established, closed; npf_call *last; } side;
 static void on_state(npf_node *n, npf_call *c, int st, const char *why, void *arg)
@@ -26,11 +27,9 @@ static void on_state(npf_node *n, npf_call *c, int st, const char *why, void *ar
 }
 static int init_side(side *s, npf_loop *loop)
 {
-    npf_node_cfg cfg; npf_identity id; uint8_t seed[32];
-    npf_node_hooks hooks = {NULL, on_state, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
-    memset(s, 0, sizeof *s); memset(&cfg, 0, sizeof cfg); cfg.offline = 1;
-    npf_random(seed, 32); npf_identity_from_seed(&id, seed);
-    return npf_node_init(&s->node, loop, &cfg, &id, &hooks, s);
+    static const npf_node_hooks hooks = {.on_call_state = on_state};
+    memset(s, 0, sizeof *s);
+    return offline_node(&s->node, loop, &hooks, s);
 }
 
 static double cpu_ms(void)

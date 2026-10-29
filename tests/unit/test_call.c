@@ -24,43 +24,7 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "call_internal.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
-
-/* the lines logged while a check runs */
-static char seen[8192];
-static size_t seen_len;
-
-static void log_hook(void *user, int level, const char *line)
-{
-    size_t l = strlen(line);
-    (void)user, (void)level;
-    if (seen_len + l + 2 < sizeof seen) {
-        memcpy(seen + seen_len, line, l);
-        seen_len += l;
-        seen[seen_len++] = '\n';
-        seen[seen_len] = 0;
-    }
-}
-
-static void seen_clear(void)
-{
-    seen_len = 0;
-    seen[0] = 0;
-}
-
-static int count(const char *s, const char *what)
-{
-    int k = 0;
-    for (; (s = strstr(s, what)) != NULL; s++)
-        k++;
-    return k;
-}
+#include "test.h"
 
 static void relay_asked_again(npf_node *n)
 {
@@ -75,24 +39,24 @@ static void relay_asked_again(npf_node *n)
     snprintf(c->call_id_s, sizeof c->call_id_s, "ask-test");
     c->st = CS_CONNECTING;
     pm_add(&c->pm, &c->pw.p);           /* the session on the WS relay */
-    seen_clear();
+    log_clear();
     call_ws_failed(c, "test");          /* the WS relay never worked: a relay on our own server */
     call_ws_failed(c, "test");          /* again at once: given up already */
-    CHECK(c->pw.p.health == PH_DEAD && count(seen, "asking for one on our own server") == 1, "asked %d times at once: %s",
-          count(seen, "asking for one on our own server"), seen);
+    CHECK(c->pw.p.health == PH_DEAD && count_of(logged, "asking for one on our own server") == 1, "asked %d times at once: %s",
+          count_of(logged, "asking for one on our own server"), logged);
     call_need(c, PM_NONE, t0);
-    seen_clear();
+    log_clear();
     call_need(c, PM_NEED_WS_ELSEWHERE, t0);
     for (i = 0; i < sizeof at / sizeof at[0]; i++) {
         call_need(c, PM_NEED_WS_ELSEWHERE, t0 + at[i]);
-        CHECK(count(seen, "asking for one on our own server") == sends[i],
-              "at %lld ms: sent %d times, not %d: %s", (long long)at[i], count(seen, "asking for one on our own server"),
-              sends[i], seen);
+        CHECK(count_of(logged, "asking for one on our own server") == sends[i],
+              "at %lld ms: sent %d times, not %d: %s", (long long)at[i], count_of(logged, "asking for one on our own server"),
+              sends[i], logged);
     }
-    CHECK(count(seen, "asking again") == 4, "the resends not logged once each: %s", seen);
+    CHECK(count_of(logged, "asking again") == 4, "the resends not logged once each: %s", logged);
     call_need(c, PM_NONE, t0 + 100001);         /* an allocation came, or the need is gone */
     call_need(c, PM_NONE, t0 + 200000);
-    CHECK(count(seen, "asking for one on our own server") == 5, "sent with no need: %s", seen);
+    CHECK(count_of(logged, "asking for one on our own server") == 5, "sent with no need: %s", logged);
     npf_call_end(c, "test");
 }
 
@@ -116,23 +80,23 @@ static void relay_dead_punch(npf_node *n, int round)
         c->punch_round = 1;
         call_punch_to(c, PN_SCHEDULED, npf_mono_ms() + 60000);
     }
-    seen_clear();
+    log_clear();
     pm_health(&c->pm, &c->pu.p, PH_DEAD);
     pm_check(c);
     if (round) {
-        CHECK(strstr(seen, "waiting for the punch before asking for the WS relay") && !strstr(seen, ": asking for"),
-              "a round scheduled: not waited for: %s", seen);
+        CHECK(strstr(logged, "waiting for the punch before asking for the WS relay") && !strstr(logged, ": asking for"),
+              "a round scheduled: not waited for: %s", logged);
         call_punch_to(c, PN_NONE, 0);   /* let go by the peer: it comes again, still waited for */
-        seen_clear();
+        log_clear();
         pm_check(c);
-        CHECK(!strstr(seen, ": asking for"), "a round let go: not waited for: %s", seen);
+        CHECK(!strstr(logged, ": asking for"), "a round let go: not waited for: %s", logged);
     } else {
-        CHECK(strstr(seen, "trying the UDP relay once more") && !strstr(seen, "waiting for the punch"),
-              "no round yet: waited for one: %s", seen);
-        seen_clear();
+        CHECK(strstr(logged, "trying the UDP relay once more") && !strstr(logged, "waiting for the punch"),
+              "no round yet: waited for one: %s", logged);
+        log_clear();
         pm_health(&c->pm, &c->pu.p, PH_DEAD);   /* the second try fails too */
         pm_check(c);
-        CHECK(strstr(seen, ": asking for the WS relay") != NULL, "no round yet: the WS relay not asked for: %s", seen);
+        CHECK(strstr(logged, ": asking for the WS relay") != NULL, "no round yet: the WS relay not asked for: %s", logged);
     }
     n->nat_valid = nat_valid;
     n->nat_udp = nat_udp;
@@ -155,7 +119,7 @@ static void ws_gives_up(npf_node *n, int caller)
     pm_add(&c->pm, &c->pw.p);
     c->pw.paired_once = 1;
     pm_rt(&c->pm, &c->pw.p, npf_mono_ms());
-    seen_clear();
+    log_clear();
     call_ws_failed(c, "relay connection closed");   /* lost: in doubt, connected again in 2 s */
     CHECK(c->pw.p.health == PH_SUSPECT && c->pw.re_at && c->pw.fails == 0, "a WS relay lost: health %d, fails %d",
           c->pw.p.health, c->pw.fails);
@@ -164,16 +128,16 @@ static void ws_gives_up(npf_node *n, int caller)
         CHECK(c->pw.p.health == PH_SUSPECT && c->pw.fails == k && c->pw.re_at, "reconnect %d failed: health %d",
               k, c->pw.p.health);
     }
-    CHECK(!strstr(seen, "giving it up") && !strstr(seen, "relay_switch"), "given up before 5: %s", seen);
+    CHECK(!strstr(logged, "giving it up") && !strstr(logged, "relay_switch"), "given up before 5: %s", logged);
     call_ws_failed(c, "cannot connect");
     CHECK(c->pw.p.health == PH_DEAD && !c->pw.re_at && !c->pw.wsr, "5 failed: health %d", c->pw.p.health);
-    CHECK(strstr(seen, "never paired: giving it up") != NULL, "not given up: %s", seen);
-    CHECK(caller ? strstr(seen, "asking for one on our own server") != NULL
-                 : strstr(seen, "asking for one") == NULL && strstr(seen, "waiting for the platform") != NULL,
-          "%s: %s", caller ? "the caller did not ask elsewhere" : "the callee asked", seen);
-    seen_clear();
+    CHECK(strstr(logged, "never paired: giving it up") != NULL, "not given up: %s", logged);
+    CHECK(caller ? strstr(logged, "asking for one on our own server") != NULL
+                 : strstr(logged, "asking for one") == NULL && strstr(logged, "waiting for the platform") != NULL,
+          "%s: %s", caller ? "the caller did not ask elsewhere" : "the callee asked", logged);
+    log_clear();
     call_ws_failed(c, "cannot connect");            /* given up: nothing more */
-    CHECK(!c->pw.re_at && !strstr(seen, "asking"), "after the verdict: %s", seen);
+    CHECK(!c->pw.re_at && !strstr(logged, "asking"), "after the verdict: %s", logged);
     n->th = old;
     npf_call_end(c, "test");
 }
@@ -266,24 +230,12 @@ int test_call(void)
 {
     static npf_node node;
     npf_loop *loop = npf_loop_new();
-    npf_node_cfg cfg;
-    npf_node_hooks hooks;
-    npf_identity id;
     npf_log_ctx lc, *old;
-    uint8_t seed[32];
 
-    memset(&cfg, 0, sizeof cfg);
-    memset(&hooks, 0, sizeof hooks);
-    memset(&lc, 0, sizeof lc);
-    cfg.offline = 1;
-    npf_random(seed, 32);
-    npf_identity_from_seed(&id, seed);
-    CHECK(loop && npf_node_init(&node, loop, &cfg, &id, &hooks, NULL) == 0, "set-up");
+    CHECK(offline_node(&node, loop, NULL, NULL) == 0, "set-up");
     if (fails)
         return fails;
-    lc.hook = log_hook;
-    lc.level = NPF_LOG_DEBUG;
-    old = npf_log_ctx_swap(&lc);
+    old = log_capture(&lc);
 
     relay_asked_again(&node);
     relay_dead_punch(&node, 0);

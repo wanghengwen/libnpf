@@ -22,15 +22,9 @@
  *   test_api [PORT]       exit 0 when everything passed */
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE                    /* mkdtemp on macOS */
-#include <pthread.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
-#include "npf.h"
+#include "api_test.h"
 
 #define NTAGS 4
 #define FRAMES 30
@@ -62,21 +56,7 @@ static uint32_t media_open(npf_t *n, uint32_t session, const npf_media_opt *o, i
     return m;
 }
 
-static int fails;
 static npf_runtime *rt;
-
-static void say(const char *what, int ok)
-{
-    printf("%s %s\n", ok ? "PASS" : "FAIL", what);
-    if (!ok)
-        fails++;
-}
-
-static void sleep_ms(int ms)
-{
-    struct timespec ts = {ms / 1000, (long)(ms % 1000) * 1000000L};
-    nanosleep(&ts, NULL);
-}
 
 /* wait until *v >= want (under the side's lock) */
 static int wait_for(side *s, const int *v, int want, int ms)
@@ -272,10 +252,10 @@ int main(int argc, char **argv)
     pthread_mutex_init(&b.mu, NULL);
     pthread_mutex_init(&c.mu, NULL);
     alarm(120);                         /* a deadlock fails the test instead of hanging it */
-    say("api version", npf_api_version() == NPF_API_VERSION && npf_version()[0]);
+    check(npf_api_version() == NPF_API_VERSION && npf_version()[0], "api version");
     if (getenv("NPF_TEST_RUNTIME") && *getenv("NPF_TEST_RUNTIME")) {
         rt = npf_runtime_new(atoi(getenv("NPF_TEST_RUNTIME")));
-        say("a shared runtime", rt != NULL);
+        check(rt != NULL, "a shared runtime");
         if (!rt)
             return 1;
     }
@@ -284,7 +264,7 @@ int main(int argc, char **argv)
     nb = make(&b, db, "udp_port = 0\n");
     if (!na || !nb)
         return 1;
-    say("start", npf_start(na) == NPF_OK && npf_start(nb) == NPF_OK);
+    check(npf_start(na) == NPF_OK && npf_start(nb) == NPF_OK, "start");
     {
         static const uint8_t zero[32];      /* key: 32 zero bytes */
         npf_peer_opt po;
@@ -294,9 +274,9 @@ int main(int argc, char **argv)
         po.host = "127.0.0.1";
         po.port = (uint16_t)port;
         po.psk = zero;
-        say("peer create", npf_peer_create(nb, &po, &id, err, sizeof err) == NPF_OK && id);
+        check(npf_peer_create(nb, &po, &id, err, sizeof err) == NPF_OK && id, "peer create");
     }
-    say("sessions up on both sides", wait_for(&a, &a.up, 1, 10000) && wait_for(&b, &b.up, 1, 10000));
+    check(wait_for(&a, &a.up, 1, 10000) && wait_for(&b, &b.up, 1, 10000), "sessions up on both sides");
 
     /* application data, both ways */
     if (rt && atoi(getenv("NPF_TEST_RUNTIME")) == 1) {
@@ -304,14 +284,14 @@ int main(int argc, char **argv)
         a.destroy_other = nb;           /* A's callback, on the thread B runs on too */
         pthread_mutex_unlock(&a.mu);
     }
-    say("session_send B -> A", npf_session_send(nb, b.session, "hello", 5) == NPF_OK);
-    say("session_send A -> B", npf_session_send(na, a.session, "world", 5) == NPF_OK);
+    check(npf_session_send(nb, b.session, "hello", 5) == NPF_OK, "session_send B -> A");
+    check(npf_session_send(na, a.session, "world", 5) == NPF_OK, "session_send A -> B");
     ok = wait_for(&a, &a.data_n, 1, 5000) && wait_for(&b, &b.data_n, 1, 5000);
-    say("application data arrived", ok && strcmp(a.data, "hello") == 0 && strcmp(b.data, "world") == 0);
-    say("session_send to no session", npf_session_send(nb, 999999, "x", 1) == NPF_ENOENT);
+    check(ok && strcmp(a.data, "hello") == 0 && strcmp(b.data, "world") == 0, "application data arrived");
+    check(npf_session_send(nb, 999999, "x", 1) == NPF_ENOENT, "session_send to no session");
     if (rt && atoi(getenv("NPF_TEST_RUNTIME")) == 1)
-        say("runtime: npf_destroy from a callback on the instance's thread refused",
-            a.destroy_tried && npf_session_send(nb, b.session, "again", 5) == NPF_OK);
+        check(a.destroy_tried && npf_session_send(nb, b.session, "again", 5) == NPF_OK,
+              "runtime: npf_destroy from a callback on the instance's thread refused");
 
     /* streams at once */
     npf_media_opt_init(&mo);
@@ -333,18 +313,18 @@ int main(int argc, char **argv)
             if (npf_media_send(nb, ms[t], i % 10 == 0 ? NPF_FRAME_KEY : 0, buf, sizeof buf) != NPF_OK)
                 ok = 0;
         }
-    say("4 streams opened and sent", ok && ms[0] && ms[1] && ms[2] && ms[3]);
+    check(ok && ms[0] && ms[1] && ms[2] && ms[3], "4 streams opened and sent");
     ok = wait_for(&a, &a.frames, NTAGS * FRAMES, 10000);
     for (t = 0; t < NTAGS; t++)
         ok = ok && a.tag_frames[t + 1] == FRAMES;
-    say("every frame intact, in order, key flags kept", ok && a.bad == 0);
+    check(ok && a.bad == 0, "every frame intact, in order, key flags kept");
     {
         npf_media_stats st;
-        say("stats", npf_media_stats_get(nb, ms[0], &st) == NPF_OK && st.srtt_ms < 1000);
+        check(npf_media_stats_get(nb, ms[0], &st) == NPF_OK && st.srtt_ms < 1000, "stats");
     }
     for (t = 0; t < NTAGS; t++)
         npf_media_close(nb, ms[t]);
-    say("closes reached the receiver", wait_for(&a, &a.closed, NTAGS, 5000));
+    check(wait_for(&a, &a.closed, NTAGS, 5000), "closes reached the receiver");
 
     /* open and close many times: more than AnLiu's 64 streams */
     opened = 0;
@@ -370,16 +350,16 @@ int main(int argc, char **argv)
         send_frames(nb, m, mo.tag, 3, 300);
         npf_media_close(nb, m);
     }
-    say("200 opens and closes", opened == CYCLES);
+    check(opened == CYCLES, "200 opens and closes");
     ok = wait_for(&a, &a.opened, NTAGS + CYCLES, 10000) && wait_for(&a, &a.closed, NTAGS + CYCLES, 10000);
-    say("the receiver saw every open and close", ok);
-    say("no frame broken or out of order", a.bad == 0);
+    check(ok, "the receiver saw every open and close");
+    check(a.bad == 0, "no frame broken or out of order");
     mo.prio = 1;
 
     /* refused by the receiver: ends at the sender */
     mo.tag = REFUSE_TAG;
-    say("open a stream the peer refuses", media_open(nb, b.session, &mo, &e) != 0);
-    say("the refusal ends it at the sender", wait_for(&b, &b.refused_closed, 1, 5000));
+    check(media_open(nb, b.session, &mo, &e) != 0, "open a stream the peer refuses");
+    check(wait_for(&b, &b.refused_closed, 1, 5000), "the refusal ends it at the sender");
 
     /* over and over, refused (the receiver's AnLiu RST) or taken and closed
      * by the receiver: the sender releases each one's AnLiu handle, which
@@ -401,7 +381,7 @@ int main(int argc, char **argv)
         }
         ok = ok && wait_for(&b, &b.refused_closed, 2 + i, 5000);
     }
-    say("100 streams refused or closed by the receiver in turn: each ends at the sender, opens go on", ok);
+    check(ok, "100 streams refused or closed by the receiver in turn: each ends at the sender, opens go on");
     if (!ok)
         printf("     (stopped at %d: %d)\n", i, e);
 
@@ -410,11 +390,11 @@ int main(int argc, char **argv)
     for (i = 0; i < 40; i++)
         if (!(busy[i] = media_open(nb, b.session, &mo, &e)))
             break;
-    say("too many streams at once: NPF_EBUSY", i < 40 && i >= 20 && e == NPF_EBUSY);
+    check(i < 40 && i >= 20 && e == NPF_EBUSY, "too many streams at once: NPF_EBUSY");
     printf("     (%d streams open at once)\n", i);
     if (i > 0) {
         npf_media_close(nb, busy[0]);
-        say("a close makes room", (busy[0] = media_open(nb, b.session, &mo, &e)) != 0);
+        check((busy[0] = media_open(nb, b.session, &mo, &e)) != 0, "a close makes room");
     }
     while (i-- > 0)
         npf_media_close(nb, busy[i]);
@@ -422,8 +402,8 @@ int main(int argc, char **argv)
     /* the other direction */
     mo.tag = 5;
     back = media_open(na, a.session, &mo, &e);
-    say("A opens a stream to B", back && send_frames(na, back, 5, 20, 2000) == 0);
-    say("B receives it", wait_for(&b, &b.tag_frames[5], 20, 5000) && b.bad == 0);
+    check(back && send_frames(na, back, 5, 20, 2000) == 0, "A opens a stream to B");
+    check(wait_for(&b, &b.tag_frames[5], 20, 5000) && b.bad == 0, "B receives it");
 
     /* frames from another thread while the library's thread is busy: the
      * budget (NPF_MEDIA_SEND_QUEUE) refuses the rest, nothing piles up */
@@ -444,14 +424,14 @@ int main(int argc, char **argv)
             busyc += r == NPF_EBUSY;
             okc += r == NPF_OK;
         }
-        say("a busy library thread: frames over 16 MB refused with NPF_EBUSY", ok && okc == 16 && busyc == 8);
+        check(ok && okc == 16 && busyc == 8, "a busy library thread: frames over 16 MB refused with NPF_EBUSY");
         printf("     (%d queued, %d refused)\n", okc, busyc);
         pthread_mutex_lock(&b.mu);
         b.block_ms = 0;
         pthread_mutex_unlock(&b.mu);
         sleep_ms(1600);
-        say("after it: sends again", npf_media_send(nb, m, NPF_FRAME_KEY, mb, 1000) == NPF_OK);
-        say("a stale stream number: NPF_ENOENT from this thread too", npf_media_send(nb, 999999, 0, mb, 10) == NPF_ENOENT);
+        check(npf_media_send(nb, m, NPF_FRAME_KEY, mb, 1000) == NPF_OK, "after it: sends again");
+        check(npf_media_send(nb, 999999, 0, mb, 10) == NPF_ENOENT, "a stale stream number: NPF_ENOENT from this thread too");
         npf_media_close(nb, m);
         mo.max_age_ms = 500;
     }
@@ -465,41 +445,41 @@ int main(int argc, char **argv)
         lb = b.log_lines;
         npf_config_set(na, "log_level", "info", 0, err, sizeof err);
         npf_config_set(na, "max_calls", "31", 0, err, sizeof err);
-        sleep_ms(50);
+        wait_for(&a, &a.log_lines, la + 1, 5000);
         pthread_mutex_lock(&a.mu);
         pthread_mutex_lock(&b.mu);
         ok = a.log_lines > la && b.log_lines == lb;
         pthread_mutex_unlock(&b.mu);
         pthread_mutex_unlock(&a.mu);
-        say("A's lines go to A's callback only", ok);
+        check(ok, "A's lines go to A's callback only");
         npf_config_get(nb, "log_level", lv, sizeof lv);
-        say("B's level stays (warn)", strcmp(lv, "warn") == 0);
+        check(strcmp(lv, "warn") == 0, "B's level stays (warn)");
         ja = npf_log_json(na, 8000);
         jb = npf_log_json(nb, 8000);
-        say("npf_log_json: the instance's own lines", ja && strstr(ja, "max_calls = 31") && jb && !strstr(jb, "max_calls = 31"));
+        check(ja && strstr(ja, "max_calls = 31") && jb && !strstr(jb, "max_calls = 31"), "npf_log_json: the instance's own lines");
         npf_free(ja);
         npf_free(jb);
         pthread_mutex_lock(&a.mu);
         a.reenter = 1;
         pthread_mutex_unlock(&a.mu);
         npf_config_set(na, "max_calls", "32", 0, err, sizeof err);
-        say("a log callback that calls the API (no deadlock)", wait_for(&a, &a.reentered, 1, 5000));
+        check(wait_for(&a, &a.reentered, 1, 5000), "a log callback that calls the API (no deadlock)");
     }
 
     /* settings: unknown, secret, too small */
     {
         char v[64];
-        say("config_get of an unknown key: NPF_ENOENT", npf_config_get(na, "no_such_key", v, sizeof v) == NPF_ENOENT);
-        say("config_get of a secret: hidden", npf_config_get(na, "password", v, sizeof v) == NPF_OK
-                                                 && strcmp(v, "(hidden)") == 0);
-        say("config_get into a small buffer: NPF_ETOOBIG", npf_config_get(na, "max_calls", v, 2) == NPF_ETOOBIG);
+        check(npf_config_get(na, "no_such_key", v, sizeof v) == NPF_ENOENT, "config_get of an unknown key: NPF_ENOENT");
+        check(npf_config_get(na, "password", v, sizeof v) == NPF_OK && strcmp(v, "(hidden)") == 0,
+              "config_get of a secret: hidden");
+        check(npf_config_get(na, "max_calls", v, 2) == NPF_ETOOBIG, "config_get into a small buffer: NPF_ETOOBIG");
     }
 
         /* a third instance: a log callback calling the API before the start;
      * a one-off direct peer; three instances in one process at once */
     {
         static const uint8_t zero[32];
-        char dc[] = "/tmp/npf-api-c-XXXXXX", rm[300];
+        char dc[] = "/tmp/npf-api-c-XXXXXX";
         npf_peer_opt po;
         npf_t *nc;
         if (!mkdtemp(dc))
@@ -507,12 +487,12 @@ int main(int argc, char **argv)
         nc = make(&c, dc, "udp_port = 0\n");
         ok = nc != NULL;
         if (rt)
-            say("runtime: npf_run refused", nc && npf_run(nc) == NPF_ESTATE);
+            check(nc && npf_run(nc) == NPF_ESTATE, "runtime: npf_run refused");
         pthread_mutex_lock(&c.mu);
         c.reenter = 1;                      /* not running: the caller's thread executes */
         pthread_mutex_unlock(&c.mu);
         npf_config_set(nc, "log_level", "info", 0, err, sizeof err);   /* logged at info */
-        say("a log callback calling the API before the start (no deadlock)", c.reentered);
+        check(c.reentered, "a log callback calling the API before the start (no deadlock)");
         npf_peer_opt_init(&po);
         po.target = NPF_TARGET_DIRECT;
         po.host = "127.0.0.1";
@@ -523,38 +503,31 @@ int main(int argc, char **argv)
         ok = ok && npf_peer_create(nc, &po, NULL, err, sizeof err) == NPF_OK && npf_start(nc) == NPF_OK;
         if (!ok)
             printf("     peer_create: %s\n", err);
-        say("a peer made before the start connects with it; three instances at once",
-            ok && wait_for(&c, &c.up, 1, 10000));
+        check(ok && wait_for(&c, &c.up, 1, 10000), "a peer made before the start connects with it; three instances at once");
         npf_destroy(nc);
-        snprintf(rm, sizeof rm, "rm -rf %s", dc);
-        if (system(rm) != 0)
-            fails++;
+        rm_dir(dc);
     }
 
     /* JSON queries */
     {
         char *s = npf_sessions_json(nb);
-        say("sessions_json", s && strstr(s, "\"session\""));
+        check(s && strstr(s, "\"session\""), "sessions_json");
         npf_free(s);
         s = npf_status_json(na);
-        say("status_json", s && s[0] == '{');
+        check(s && s[0] == '{', "status_json");
         npf_free(s);
     }
     if (rt)
-        say("runtime: not freed while instances live", npf_runtime_free(rt) == NPF_ESTATE);
+        check(npf_runtime_free(rt) == NPF_ESTATE, "runtime: not freed while instances live");
     npf_stop(nb);
     npf_stop(na);
     npf_destroy(nb);
     npf_destroy(na);
-    say("stopped", 1);
+    check(1, "stopped");
     if (rt)
-        say("runtime: freed after the last instance", npf_runtime_free(rt) == NPF_OK);
-    {
-        char cmd[200];
-        snprintf(cmd, sizeof cmd, "rm -rf %s %s", da, db);
-        if (system(cmd) != 0)
-            fails++;
-    }
+        check(npf_runtime_free(rt) == NPF_OK, "runtime: freed after the last instance");
+    rm_dir(da);
+    rm_dir(db);
     printf("%s\n", fails ? "FAILED" : "ok");
     return fails ? 1 : 0;
 }

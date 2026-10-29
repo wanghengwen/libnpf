@@ -11,13 +11,7 @@
 #include "npf/crypto.h"
 #include "npf/noise.h"
 #include "vectors_go.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 static size_t unhex(const char *hex, uint8_t *out, size_t cap)
 {

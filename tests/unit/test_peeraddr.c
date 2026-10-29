@@ -16,13 +16,7 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "call_internal.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 static void sin_of(struct sockaddr_storage *ss, const char *ip, int port)
 {
@@ -58,22 +52,13 @@ int test_peeraddr(void)
 {
     static npf_node node;
     npf_loop *loop = npf_loop_new();
-    npf_node_cfg cfg;
-    npf_node_hooks hooks;
-    npf_identity id;
-    uint8_t seed[32];
     char a[64];
     npf_call *c;
     struct sockaddr_storage ss;
     struct in_addr ip;
     int n, i;
 
-    memset(&cfg, 0, sizeof cfg);
-    memset(&hooks, 0, sizeof hooks);
-    cfg.offline = 1;
-    npf_random(seed, 32);
-    npf_identity_from_seed(&id, seed);
-    CHECK(loop && npf_node_init(&node, loop, &cfg, &id, &hooks, NULL) == 0, "set-up");
+    CHECK(offline_node(&node, loop, NULL, NULL) == 0, "set-up");
     if (fails)
         return fails;
     node.udp6_fd = socket(AF_INET6, SOCK_DGRAM, 0);     /* IPv6 candidates are taken with one */
