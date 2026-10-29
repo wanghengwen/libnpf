@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "api_internal.h"
+#include "npf/out.h"
 
 /* ---- configuration ---- */
 
@@ -46,12 +47,12 @@ static int path_set(char **p, const char *fmt, ...)
     int len;
     char *s;
     va_start(ap, fmt);
-    len = vsnprintf(NULL, 0, fmt, ap);
+    len = npf_vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
     if (len < 0 || !(s = malloc((size_t)len + 1)))
         return -1;
     va_start(ap, fmt);
-    vsnprintf(s, (size_t)len + 1, fmt, ap);
+    npf_vsnprintf(s, (size_t)len + 1, fmt, ap);
     va_end(ap);
     free(*p);
     *p = s;

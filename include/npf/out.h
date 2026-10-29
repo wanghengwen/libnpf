@@ -25,6 +25,13 @@ typedef struct npf_out {
     uint32_t jmore, jarr;
 } npf_out;
 
+/* vsnprintf with the C99 formats (%zu, %lld): MinGW's msvcrt one has not */
+#if defined(_WIN32) && defined(__MINGW32__)
+#define npf_vsnprintf __mingw_vsnprintf
+#else
+#define npf_vsnprintf vsnprintf
+#endif
+
 #ifdef __MINGW32__
 void npf_out_printf(npf_out *o, const char *fmt, ...) __attribute__((format(gnu_printf, 2, 3)));
 #else

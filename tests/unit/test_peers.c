@@ -9,6 +9,7 @@
  *   callback opened, taking the number, stays open). */
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -55,6 +56,15 @@ static void on_refused(npf_peer *p, uint64_t mapping, int port, const struct soc
     }
 }
 
+/* the client sees its connection's end (EOF): on loopback Linux delivers the
+ * FIN within the close, macOS a moment later (its network input thread) */
+static int eof_seen(int fd)
+{
+    struct pollfd pfd = {.fd = fd, .events = POLLIN};
+    char b;
+    return fd >= 0 && poll(&pfd, 1, 2000) == 1 && recv(fd, &b, 1, MSG_DONTWAIT) == 0;
+}
+
 /* a peer with a public mapping, and a connection to it (its fd) */
 static int mapped(npf_loop *loop, npf_peer **pp, int port)
 {
@@ -96,7 +106,6 @@ int test_peers(void)
     npf_identity id;
     npf_peer *p = NULL;
     uint8_t seed[32];
-    char b;
     int fd, i;
 
     memset(&cfg, 0, sizeof cfg);
@@ -114,7 +123,7 @@ int test_peers(void)
         npf_loop_once(loop, 5);
     CHECK(opened == 1 && refused == 1 && refused_opened && strcmp(refused_why, "mapping_closed") == 0,
           "removed by opened: refused once, as opened, mapping_closed (%d, %d, %s)", opened, refused, refused_why);
-    CHECK(fd >= 0 && recv(fd, &b, 1, MSG_DONTWAIT) == 0, "the connection closed");
+    CHECK(eof_seen(fd), "the connection closed");
     CHECK(ps->nconns == 0 && p && p->npend == 0, "not waiting for the session, not counted (%d, %d)", ps->nconns,
           p ? p->npend : -1);
     if (fd >= 0)
@@ -127,7 +136,7 @@ int test_peers(void)
         npf_peer_forward_del_at(p, 0);      /* refused: its callback removes the peer */
     CHECK(refused == 1 && ps->nconns == 0 && npf_peers_count(ps) == 1, "the mapping gone, the peer removed in its "
           "refusal: told once (%d), not counted (%d)", refused, ps->nconns);
-    CHECK(fd >= 0 && recv(fd, &b, 1, MSG_DONTWAIT) == 0, "the waiting connection closed");
+    CHECK(eof_seen(fd), "the waiting connection closed");
     CHECK(canary >= 0 && fcntl(canary, F_GETFD) >= 0, "closed once: a descriptor opened in the callback stays");
     if (canary >= 0)
         close(canary);
