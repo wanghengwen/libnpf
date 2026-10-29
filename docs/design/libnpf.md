@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-文档版本：2.5。更新日期：2026-10-28。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。文档版本与库版本、`NPF_API_VERSION` 分别编号。
+文档版本：2.6。更新日期：2026-10-29。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。2.6：库填写的结构体（`*_info`、`npf_media_stats`、列表元素）不再带 `size`，也没有 `_init`，由查询的宏传调用方的 `sizeof`（第 2 节）；`npf_media_open` 与其他创建函数一样返回错误码、经输出参数给出编号；`npf_peer_remove_id` 改名 `npf_peer_remove`；`npf_media_opt_default` 改名 `npf_media_opt_init`，保留未用的 `rcv_deadline_ms` 去掉；`no_log_ring` 改为开关 `NPF_OPT_NO_LOG_RING`；`NPF_PLATFORM` 为 4；模块的 `status_json` 钩子不再有 `first` 参数（第 12 节）。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
@@ -61,9 +61,10 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 **ABI**
 
 - `NPF_API_VERSION` 为 1，soname 为 `libnpf.so.1`；不兼容的修改会提高 soname；
-- 可扩展的选项和查询结构体以 `size` 开头，例如 `npf_options`、`npf_callbacks`、`npf_setup`、`npf_peer_opt`、`npf_forward_opt`、`npf_resource` 和各个对象的 `*_info`。库按双方已知的大小读写；输入缺少的尾部字段使用默认值，查询输出多出的尾部清零。`npf_endpoint`、`npf_frame_info` 等小结构没有 `size`，不能套用这一规则；
-- 用各自的 `*_init` 宏（媒体选项是 `npf_media_opt_default`）初始化。宏把调用方的 `sizeof` 传给库（`npf_options_init_size` 等），库只写这么多字节：旧程序配新库时不会越界，新程序配旧库时多出的字段为 0；`npf_media_stats` 由调用方填 `size`；
-- 结构体数组（`npf_resource_list`、`npf_pairing_list`）由宏传入元素大小，库按调用方的步长定位每个元素，只写双方都知道的部分，多出的尾部清零；
+- 结构体只在末尾增加字段，库按双方构建都知道的部分读写；
+- 应用交给库的结构体（`npf_options`、`npf_callbacks`、`npf_setup`、`npf_peer_opt`、`npf_forward_opt`、`npf_resource`、`npf_media_opt`）以 `size` 开头，用各自的 `*_init` 宏初始化：宏把调用方的 `sizeof` 传给库（`npf_options_init_size` 等），库写入默认值，只写这么多字节；读取时缺少的尾部字段用默认值；
+- 库填写的结构体（`npf_peer_info`、`npf_forward_info`、`npf_node_info`、`npf_session_info`、`npf_media_stats`、列表元素 `npf_resource_info`、`npf_pairing`）没有 `size`，不用初始化：查询的宏（`npf_peer_get`、`npf_resource_list` 等）把调用方的 `sizeof` 传给库（`npf_peer_get_size` 等），库只写这么多字节，多出的尾部清零。列表按调用方的元素大小定位每个元素，旧程序较小的元素也一样；
+- `npf_endpoint`、`npf_frame_info` 等小结构不扩展；
 - 事件是名称加 JSON：新版本可能增加事件和 JSON 键，应用忽略不认识的即可。
 
 大小字段只解决结构体扩展，不保证新函数在旧库中存在。部署时仍应检查所需符号和行为；旧版头文件的兼容性应通过独立消费者验证。
@@ -334,7 +335,7 @@ npf_destroy(cli);
 - 参数通过校验后，同一个目标再次创建返回 `NPF_EEXIST` 和已有的编号，不更新已有对象的口令、配置或上下文。编号按数值比较；直连主机名转为小写，IPv6 地址规范化后再与端口一起比较。名字被其他记录占用也返回 `NPF_EEXIST`，此时输出 ID 为 0；
 - `NPF_ROLE_DIRECT` 下建编号的对端、`NPF_PEERS=OFF` 的构建里建任何对端，都是 `NPF_EUNAVAIL`；
 - `npf_peer_get` 给出状态（`NPF_PEER_WAITING`、`CONNECTING`、`CONNECTED`、`RETRY`、`IDLE`、`ENDED`）和 `needs`：`NPF_NEED_PASSWORD`（没配对，要口令；口令被拒时加 `NPF_NEED_PASSWORD_WRONG`，配对丢失时加 `NPF_NEED_PAIRING_LOST`）、`NPF_NEED_ACCOUNT`（经账户授权进入的，账户会话没了）。因为这些原因结束的对端，在条件满足时自己再试：给了口令（`NPF_PEER_OPT_PASSWORD`）、账户会话开始；`npf_peer_connect_now` 让按需的对端现在就建立会话，让在退避等待中的马上重试，也让结束了的对端再试一次（`npf_start` 之前 `NPF_ESTATE`，`NPF_PLATFORM` 的对端 `NPF_EREADONLY`）；
-- `npf_peer_remove_id`（会话结束，转发删除，保存的记录不再恢复）；`npf_peer_get` 的 `ctx` 是应用登记的上下文；
+- `npf_peer_remove`（会话结束，转发删除，保存的记录不再恢复）；`npf_peer_get` 的 `ctx` 是应用登记的上下文；
 - 由模块打开的对端（例如为平台保存的公网映射）带 `NPF_PLATFORM`：不能删除、不能加转发、不能 `npf_peer_connect_now`（`NPF_EREADONLY`），可修改的选项见下表；平台映射的转发也带 `NPF_PLATFORM`，不能删除；
 - `npf_peer_list`、`npf_peer_find`；`NPF_ROLE_NODE` 和 `NPF_ROLE_DIRECT` 启动时恢复保存的对端，`NPF_ROLE_CLIENT` 不恢复。恢复的对端在 `npf_start` 之前就能枚举，这时用 `NPF_PEER_OPT_CTX` 登记上下文。
 
@@ -398,9 +399,9 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 | 类别 | 函数 |
 |---|---|
-| 初始化（宏，各有 `_init_size` 函数） | `npf_options_init`、`npf_callbacks_init`、`npf_setup_init`、`npf_peer_opt_init`、`npf_peer_info_init`、`npf_forward_opt_init`、`npf_forward_info_init`、`npf_resource_init`、`npf_node_info_init`、`npf_session_info_init`；列表元素的大小：`npf_resource_list_size`、`npf_pairing_list_size` |
+| 初始化（宏，各有 `_init_size` 函数） | `npf_options_init`、`npf_callbacks_init`、`npf_setup_init`、`npf_peer_opt_init`、`npf_forward_opt_init`、`npf_resource_init`、`npf_media_opt_init`；查询与列表的宏传结构体大小（`npf_peer_get` → `npf_peer_get_size` 等） |
 | 生命周期 | `npf_create`、`npf_start` / `npf_run`、`npf_stop`、`npf_destroy`、`npf_free`、`npf_version`、`npf_api_version`、`npf_runtime_new` / `npf_runtime_free` |
-| 对端 | `npf_peer_create`、`npf_peer_remove_id`、`npf_peer_find`、`npf_peer_list`、`npf_peer_get`、`npf_peer_setopt`、`npf_peer_connect_now` |
+| 对端 | `npf_peer_create`、`npf_peer_remove`、`npf_peer_find`、`npf_peer_list`、`npf_peer_get`、`npf_peer_setopt`、`npf_peer_connect_now` |
 | 转发 | `npf_forward_create`、`npf_forward_remove`、`npf_forward_list`、`npf_forward_get`、`npf_forward_setopt` |
 | 资源 | `npf_resource_put`、`npf_resource_remove`、`npf_resource_list` |
 | 配对与所有者 | `npf_pairing_password_get` / `_set`、`npf_pairing_list`、`npf_pairing_remove`、`npf_owner_reset` |
@@ -428,7 +429,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | `NPF_EEXIST` | 对端目标或名字冲突 |
 | `NPF_EREADONLY` | 操作受来源限制，例如修改固定资源、删除平台对端 |
 
-创建对端或转发返回 `NPF_OK`、`NPF_ESAVE` 时输出新 ID；同目标对端的 `NPF_EEXIST` 输出已有 ID，名字冲突输出 0。同一对端上的重复转发返回 `NPF_EINVAL`。`npf_config_set` 还可能返回正值 1；`npf_media_open` 返回 ID，失败时为 0 并通过 `err` 输出错误码，不能用同一套返回值判断代替这些接口各自的约定。
+创建对端或转发返回 `NPF_OK`、`NPF_ESAVE` 时输出新 ID；同目标对端的 `NPF_EEXIST` 输出已有 ID，名字冲突输出 0。同一对端上的重复转发返回 `NPF_EINVAL`。`npf_media_open` 同样经输出参数给出新流的编号。`npf_config_set` 还可能返回正值 1，见下。
 
 `npf_config_set` 返回 1 表示该配置属于启动时设置，不表示本次已经保存。若传 `save = 0`，应用仍需另行保存或在下次创建实例时提供配置，单纯重启不会保留本次修改。
 
@@ -469,11 +470,11 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 **规则**
 
-- 回调在实例线程中串行执行，由库在产生事件的工作里直接调用，不排队。`peer_done` 和 `forward` 在库处理这个对端的过程中送达：回调里不能删除它（`npf_peer_remove_id`），要删除放到之后（定时器或另一个线程）；
+- 回调在实例线程中串行执行，由库在产生事件的工作里直接调用，不排队。`peer_done` 和 `forward` 在库处理这个对端的过程中送达：回调里不能删除它（`npf_peer_remove`），要删除放到之后（定时器或另一个线程）；
 - `forward`、`peer_done` 的 `peer` 是对端的目标名（编号或 `HOST:PORT`），`npf_peer_find` 得到 ID，`npf_peer_get` 读出 `ctx`。事件里不带 `ctx`；
 - 对端的其他状态变化（连接中、退避等待）、对端或转发被删除、单条连接被对端拒绝都没有事件：需要时用 `npf_peer_get`（`state`、`needs`、`retry_in_ms`）和 `npf_forward_get`（`refused`）查询；
 - 新建转发时它的 `forward` 事件（`"up": false`）在 `npf_start` 之前就会送达；会话回调只在运行中出现。`session` 的建立先于这个会话的 `data` 和媒体回调；
-- 库不负责释放 `ctx`，事件也不用它：删除对象（`npf_peer_remove_id`、`npf_forward_remove`）返回后应用即可释放它的上下文；对端的会话结束仍经 `session` 回调送达。运行结束（`stopped`）或 `npf_destroy` 返回之后，应用释放剩下的上下文。从未运行的实例不会产生 `stopped`。
+- 库不负责释放 `ctx`，事件也不用它：删除对象（`npf_peer_remove`、`npf_forward_remove`）返回后应用即可释放它的上下文；对端的会话结束仍经 `session` 回调送达。运行结束（`stopped`）或 `npf_destroy` 返回之后，应用释放剩下的上下文。从未运行的实例不会产生 `stopped`。
 
 `data`、媒体回调和 `log` 按各自用途调用。
 
@@ -483,13 +484,13 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 **媒体流**
 
-- 打开：`npf_media_open(n, session, &opt, &err)` 返回流的编号；对方的 `media_open` 回调收到 `tag`（应用自定的流类型，0–999），返回 1 接受、0 拒绝；
+- 打开：`npf_media_open(n, session, &opt, &media)` 在 `media` 里给出流的编号；对方的 `media_open` 回调收到 `tag`（应用自定的流类型，0–999），返回 1 接受、0 拒绝；
 - 发送：`npf_media_send(n, media, flags, frame, len)`，`flags` 可带 `NPF_FRAME_KEY`。其他线程调用时复制帧并排队，`NPF_OK` 表示已接受入队，不保证之后一定发送；实例线程内调用直接提交帧并返回结果，不等待网络传输完成。函数返回后应用可复用输入缓冲区；
 - 接收：`media_frame` 回调收到帧和 `npf_frame_info`（`frame_no`、`flags`、`lost_before`：上一帧之后丢了几帧，可以直接驱动解码器）；
 - 关闭：`npf_media_close`；会话结束时它的流随之关闭；
-- 统计：调用前设置 `npf_media_stats.size = sizeof(npf_media_stats)`。`npf_media_stats_get` 给出 `target_rate`（同一会话所有媒体流共享的建议发送速率，字节/秒）、往返时延、丢弃与 FEC 恢复统计、对方报告的帧时延与抖动、`capacity_short`（路径容量不足）。
+- 统计：`npf_media_stats_get` 给出 `target_rate`（同一会话所有媒体流共享的建议发送速率，字节/秒）、往返时延、丢弃与 FEC 恢复统计、对方报告的帧时延与抖动、`capacity_short`（路径容量不足）。
 
-**选项**（`npf_media_opt`，用 `npf_media_opt_default` 初始化）：
+**选项**（`npf_media_opt`，用 `npf_media_opt_init` 初始化）：
 
 | 选项 | 默认 | 说明 |
 |---|---|---|
@@ -564,10 +565,10 @@ static int hello(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, np
 
 static void on_login(npf_t *n) { npf_log("acme: online as %llu", (unsigned long long)n->number); }
 
-static void status(npf_t *n, npf_out *o, int *first)       /* 状态 JSON 里的 "acme" */
+static void status(npf_t *n, npf_out *o)                   /* 状态 JSON 里的 "acme" */
 {
     acme *a = npf_mod_state(n, &acme_module);
-    npf_mod_jkey(o, first, "acme");
+    npf_out_jkey(o, "acme");                                /* 逗号由 npf_out 自己写 */
     npf_out_printf(o, "{\"hellos\":%d}", a->hellos);
 }
 
@@ -619,11 +620,10 @@ target_link_libraries(acme-app PRIVATE npf_common)
 
 ## 13. 日志与排查
 
-- 每条日志格式为“日期 时间.毫秒 级别 消息”。有 `log` 回调时交给回调，否则写到 stderr；`npf_log_json` 给出最近的日志（`no_log_ring` 可以关掉）。日志回调在产生日志的线程执行，创建和销毁阶段也可能调用；建议只做日志收集，避免在其中改变实例生命周期。业务回调的 API 调用规则见第 8 节；
+- 每条日志格式为“日期 时间.毫秒 级别 消息”。有 `log` 回调时交给回调，否则写到 stderr；`npf_log_json` 给出最近的日志（`NPF_OPT_NO_LOG_RING` 可以关掉）。日志回调在产生日志的线程执行，创建和销毁阶段也可能调用；建议只做日志收集，避免在其中改变实例生命周期。业务回调的 API 调用规则见第 8 节；
 - 连不上时先看状态 JSON 的 `online`、`nat` 和对端的状态；会话的 `path` 说明走的是直连还是中转；
 - 在 `p2p` 模式下检测到 VPN 占用默认路由时，库会尝试让 UDP 套接字和信令连接使用物理网卡。是否成功取决于平台支持、可用网卡和绑定权限，不能保证绕过 VPN；网络变化后调用 `npf_network_changed` 让库立即重新检查。
 
 ## 14. 限制与后续
 
 - 当前安装规则只在满足第 2 节条件的 Linux 构建中生成合并并隐藏内部符号的 `libnpf.a`。其他平台可使用共享库，或自行集成静态目标；自行静态链接时需处理与应用自带的 mbedTLS 等库的符号冲突；
-- `rcv_deadline_ms` 暂不生效：要等 AnLiu 支持修改已打开的流的接收选项；

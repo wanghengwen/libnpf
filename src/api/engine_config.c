@@ -1,4 +1,4 @@
-/* libnpf: configuration sources, paths and saved peers. */
+/* libnpf: the configuration in effect (npf.conf or npf_setup, the overrides, local.json) and the paths. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "engine_internal.h"
+#include "api_internal.h"
 
 /* ---- configuration ---- */
 
@@ -96,76 +96,6 @@ static void conf_merge(npf_conf *dst, const npf_conf *src)
         npf_conf_set(dst, src->key[i], src->val[i]);
 }
 
-/* the peers of local.json saved to be connected at every start, and their
- * saved forwards (a record that does not make one is left out, with a
- * warning) */
-void npf_engine_restore_peers(npf_t *n)
-{
-    int i, k;
-    for (i = 0; i < n->lc.ndev; i++) {
-        npf_ldev *d = &n->lc.dev[i];
-        npf_peer_new pn;
-        npf_peer *p;
-        char host[300], e[300];
-        uint8_t psk[32];
-        int code;
-        if (!d->save || npf_peers_find(n->peers, d->target))
-            continue;
-        memset(&pn, 0, sizeof pn);
-        if (!(pn.number = npf_number_parse(d->target))) {
-            const char *colon = strrchr(d->target, ':');
-            char path[1600];
-            if (!colon)
-                continue;
-            if (d->target[0] == '[')
-                snprintf(host, sizeof host, "%.*s", (int)(colon - d->target - 2), d->target + 1);
-            else
-                snprintf(host, sizeof host, "%.*s", (int)(colon - d->target), d->target);
-            pn.host = host;
-            pn.port = (uint16_t)atoi(colon + 1);
-            if (d->psk_file[0]) {
-                if (npf_path_is_abs(d->psk_file))
-                    snprintf(path, sizeof path, "%s", d->psk_file);
-                else
-                    snprintf(path, sizeof path, "%s/%s", n->data_dir, d->psk_file);
-            }
-            if (npf_direct_psk(d->psk[0] ? d->psk : NULL, d->psk_file[0] ? path : NULL, psk) < 0) {
-                npf_logw("local.json: %s: no key to connect with: left out", d->target);
-                continue;
-            }
-            pn.psk = psk;
-        }
-        pn.connect = d->on_demand ? NPF_CONNECT_ON_DEMAND : NPF_CONNECT_KEEP;
-        pn.idle_ms = d->idle_ms;
-        p = npf_peers_create(n->peers, &pn, e, sizeof e, &code);
-        npf_wipe(psk, sizeof psk);
-        if (!p) {
-            npf_logw("local.json: %s: %s: left out", d->target, e);
-            continue;
-        }
-        npf_peer_set_tag(p, PEER_SAVED);
-        for (k = 0; k < d->nfwd; k++) {
-            const npf_lfwd *lf = &d->fwd[k];
-            int r;
-            if (lf->opt == 'L' || lf->opt == 'D' || lf->opt == 'R') {
-                npf_fwd_new fn;
-                memset(&fn, 0, sizeof fn);
-                fn.opt = lf->opt;
-                fn.udp = lf->udp;
-                fn.bind = lf->bind[0] ? lf->bind : NULL;
-                fn.port = lf->port;
-                fn.host = lf->host;
-                fn.hostport = lf->hostport;
-                r = npf_peer_forward_add_parts(p, &fn, 1, 0, e, sizeof e);
-            } else {
-                r = npf_peer_forward_add_kind(p, lf->opt, lf->spec, 1, e, sizeof e);
-            }
-            if (r < 0)
-                npf_logw("local.json: %s: a forward left out: %s", d->target, e);
-        }
-    }
-}
-
 /* the configuration in effect and the paths made from it: ro (npf.conf or
  * the setup) and ov (the overrides) read, merged into n->conf */
 static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *ov, char *err, size_t errcap)
@@ -239,7 +169,6 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
     npf_mkdir_p(n->data_dir);
     if (npf_local_load(&n->lc, n->data_dir, err, errcap) < 0)
         return NPF_EFAIL;
-    n->local_path = n->lc.path;
     if (npf_conf_copy(&n->conf, ro) < 0) {
         snprintf(err, errcap, "no memory");
         return NPF_EFAIL;

@@ -52,23 +52,29 @@ void npf_out_write(npf_out *o, const char *s, size_t n)
     o->p[o->len] = 0;
 }
 
-void npf_out_printf(npf_out *o, const char *fmt, ...)
+void npf_out_vprintf(npf_out *o, const char *fmt, va_list ap)
 {
-    va_list ap;
+    va_list aq;
     int n;
-    va_start(ap, fmt);
-    n = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
+    va_copy(aq, ap);
+    n = vsnprintf(NULL, 0, fmt, aq);
+    va_end(aq);
     if (n < 0) {
         o->failed = 1;
         return;
     }
     if (out_grow(o, (size_t)n) < 0)
         return;
-    va_start(ap, fmt);
     vsnprintf(o->p + o->len, (size_t)n + 1, fmt, ap);
-    va_end(ap);
     o->len += (size_t)n;
+}
+
+void npf_out_printf(npf_out *o, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    npf_out_vprintf(o, fmt, ap);
+    va_end(ap);
 }
 
 size_t npf_json_esc(unsigned char c, char e[6])
@@ -86,6 +92,51 @@ size_t npf_json_esc(unsigned char c, char e[6])
         return 0;
     e[1] = 'u'; e[2] = '0'; e[3] = '0'; e[4] = hex[c >> 4]; e[5] = hex[c & 15];
     return 6;
+}
+
+/* before a value: the comma when its container has a member already (none
+ * at the top level, none after a key) */
+static void jsep(npf_out *o)
+{
+    if (o->jkey) {
+        o->jkey = 0;
+        return;
+    }
+    if (!o->jdepth)
+        return;
+    if (o->jmore & (1u << o->jdepth))
+        npf_out_write(o, ",", 1);
+    o->jmore |= 1u << o->jdepth;
+}
+
+void npf_out_jopen(npf_out *o, char c)
+{
+    jsep(o);
+    if (o->jdepth >= 31) {                  /* deeper than the mask: never in our replies */
+        o->failed = 1;
+        return;
+    }
+    npf_out_write(o, &c, 1);
+    o->jdepth++;
+    o->jmore &= ~(1u << o->jdepth);
+}
+
+void npf_out_jclose(npf_out *o, char c)
+{
+    o->jkey = 0;
+    if (o->jdepth)
+        o->jdepth--;
+    npf_out_write(o, &c, 1);
+}
+
+/* the member counts from here, so a value written with printf after it
+ * still has the comma before the next key */
+void npf_out_jkey(npf_out *o, const char *k)
+{
+    o->jkey = 0;
+    jsep(o);
+    npf_out_printf(o, "\"%s\":", k);
+    o->jkey = 1;
 }
 
 void npf_out_json_str(npf_out *o, const char *s, size_t n)
@@ -108,25 +159,38 @@ void npf_out_jstr(npf_out *o, const char *s)
     npf_out_json_str(o, s ? s : "", s ? strlen(s) : 0);
 }
 
-void npf_out_jkey(npf_out *o, int *first, const char *k)
+void npf_out_jitem(npf_out *o, const char *s)
 {
-    npf_out_printf(o, "%s\"%s\":", *first ? "" : ",", k);
-    *first = 0;
+    jsep(o);
+    npf_out_jstr(o, s);
 }
 
-void npf_out_jkstr(npf_out *o, int *first, const char *k, const char *v)
+void npf_out_jraw(npf_out *o, const char *json)
 {
-    npf_out_jkey(o, first, k);
+    jsep(o);
+    npf_out_write(o, json, strlen(json));
+}
+
+void npf_out_kstr(npf_out *o, const char *k, const char *v)
+{
+    npf_out_jkey(o, k);
     if (v)
         npf_out_jstr(o, v);
     else
-        npf_out_write(o, "null", 4);
+        npf_out_jraw(o, "null");
 }
 
-void npf_out_jkint(npf_out *o, int *first, const char *k, long long v)
+void npf_out_kint(npf_out *o, const char *k, long long v)
 {
-    npf_out_jkey(o, first, k);
+    npf_out_jkey(o, k);
+    jsep(o);
     npf_out_printf(o, "%lld", v);
+}
+
+void npf_out_kbool(npf_out *o, const char *k, int v)
+{
+    npf_out_jkey(o, k);
+    npf_out_jraw(o, v ? "true" : "false");
 }
 
 void npf_out_free(npf_out *o)

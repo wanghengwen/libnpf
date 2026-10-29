@@ -1,5 +1,7 @@
-/* libnpf internals: the npf_t behind npf.h. Everything here runs on the
- * library thread (the loop); api.c moves calls from other threads onto it. */
+/* libnpf internals: the npf_t behind npf.h, and what the program's modules
+ * (npf/module.h) use of it. Everything here runs on the instance's thread
+ * (api.c moves calls from other threads onto it); what only src/api uses
+ * is in api_internal.h. */
 #ifndef NPF_INT_H
 #define NPF_INT_H
 
@@ -17,11 +19,6 @@
 #include "npf/tunnel.h"
 #include "npf/version.h"
 
-/* where a peer comes from (npf_peer_info.flags) */
-enum { PEER_TEMP = 0,       /* the application's, not saved */
-       PEER_SAVED = 1,      /* the application's saved in local.json, or brought back from it */
-       PEER_PLATFORM = 3 }; /* opened for port mappings saved on the platform */
-
 #define NPF_MAX_SESS  256
 #define NPF_MAX_MEDIA NPF_MEDIA_STREAMS_MAX
 #define NPF_MOD_MAX   8          /* modules (npf/module.h) */
@@ -35,11 +32,8 @@ typedef struct npf_sess {
 typedef struct npf_med {
     uint32_t  id, session;
     npf_call *call;
-    size_t    frame_max;
     uint32_t  lid;                  /* its number in the session (node/media.h) */
 } npf_med;
-
-struct npf_bindjob;
 
 struct npf_api_sync;
 
@@ -48,13 +42,12 @@ struct npf {
     int           role;
     char          app_name[33], app_ver[33];  /* the program (npf_options) */
     npf_callbacks cb;
-    /* configuration: npf.conf, the overrides and local.json's settings in
-     * effect (later ones win, peer lines add up); and each alone (where a peer
-     * is from). local.json also keeps the devices (npf/local.h) */
+    /* the configuration in effect: npf.conf (or npf_setup), the overrides
+     * and local.json's settings, later ones winning; local.json also keeps
+     * the peers, forwards and resources saved (npf/local.h) */
     npf_conf      conf;
     npf_local     lc;
     char         *conf_dir, *data_dir;   /* malloc (path_set) */
-    const char   *local_path;           /* lc.path */
     /* identity (data_dir) */
     int           cred;             /* NPFD1 device credential */
     int           model_dev;        /* NPFV1 model credential: enrols */
@@ -72,8 +65,8 @@ struct npf {
     npf_node_cfg  cfg;
     npf_peers    *peers;
     npf_policy    policy;           /* a client's / a direct listener's sessions */
-    struct npf_res *res;            /* the published resources (publish.c): res_cap of room, */
-    int           nres, res_cap;    /* grown to NPF_RES_MAX as they come (most publish none) */
+    struct npf_res *res;            /* the published resources (publish.c), nres of them */
+    int           nres;
     npf_direct   *dl;
     /* state shared with other threads: under the API lock (api.c) */
     int           started, running, stopping, ended, torn_down;
@@ -84,8 +77,8 @@ struct npf {
     unsigned long loop_tid;
     int           exec_busy;        /* not running: a caller executes a call (they take turns) */
     unsigned long exec_owner;
-    unsigned      send_jobs;        /* also bound metadata for tiny frames */
-    size_t        send_queued;      /* media frames posted from other threads, bytes */
+    unsigned      send_jobs;        /* media frames posted from other threads (at most 4096) */
+    size_t        send_queued;      /* and their bytes (NPF_MEDIA_SEND_QUEUE) */
     /* this instance's log: level, recent lines, the application's callback */
     npf_log_ctx   logctx;
     /* sessions and media streams by number */
@@ -105,22 +98,14 @@ struct npf {
      * module keeps it filled) */
     npf_budget    budget;
     int           opt_flags;        /* npf_options.flags: NPF_OPT_* */
-    int           from_setup;       /* started from npf_setup (no configuration file) */
     int64_t       started_unix;     /* the run's start (Unix s), 0 not running */
 };
 
-/* api.c: an operation for the instance (on its thread while it runs, else
- * on the caller's), with the API's entry checks: its result, or NPF_ESTATE
- * when it did not run */
-int  npf_api_op(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg);
-
-/* setup.c: npf_setup's fields as configuration keys (c); 0, or -1 with err */
-int  npf_setup_conf(const npf_setup *s, int role, const char *data_dir, npf_conf *c, char *err, size_t errcap);
-/* a key of the overrides that is a field of npf_setup, NULL none */
-const char *npf_setup_key_taken(const npf_conf *ov);
-
-/* ops.c: the operations of npf.h's objects, shared with the command line */
-uint32_t npf_ops_flags(const npf_t *n, const npf_peer *p);  /* NPF_PERSIST, NPF_PLATFORM */
+/* A peer's tag (npf/peers.h) says where it comes from, as npf_peer_info.flags
+ * does: 0 the application's for this run, NPF_PERSIST saved in local.json (or
+ * brought back from it), NPF_PLATFORM opened for port mappings saved on the
+ * platform. Its name: "temporary", "saved", "platform" */
+const char *npf_source_name(int tag);
 /* a peer's record in local.json: saved (connected at every start, with its
  * saved forwards) or not; psk_file: a direct peer's key file as given, NULL
  * its key. NPF_OK, NPF_ESAVE */
@@ -128,60 +113,22 @@ int  npf_ops_record(npf_t *n, npf_peer *p, int save, const char *psk_file);
 /* a saved peer's forward into its record or out of it: NPF_OK, NPF_ESAVE */
 int  npf_ops_record_fwd(npf_t *n, npf_peer *p, int i, int add);
 
-/* api.c: the lock of the state above, of the media registry (npf_media_send
- * reads it on any thread) */
-int  npf_api_init(npf_t *n);
-void npf_api_fini(npf_t *n);
-void npf_api_lock(npf_t *n);
-void npf_api_unlock(npf_t *n);
-
-/* engine.c */
-int  npf_app_name_valid(const char *s);
-int  npf_app_ver_valid(const char *s);
-/* a public structure's defaults into the application's size bytes (engine.c) */
-void npf_init_sized(void *s, size_t size, const void *d, size_t dsize);
-/* the run on the library thread: the node until npf_loop_stop, then its end */
-int  npf_engine_run(npf_t *n);
-void npf_engine_begin(npf_t *n);
-int  npf_engine_end_step(npf_t *n);
-npf_loop *npf_engine_loop(npf_t *n);
-void npf_engine_free(npf_t *n);
-/* a peer made after npf_start: start it now (the run starts the others) */
-void npf_start_peer(npf_t *n, npf_peer *p);
-/* the network changed (npf_network_changed, the command netcheck): the UDP
- * sockets again, then the peers (ops.c) */
-void npf_net_changed(npf_t *n);
-
-/* engine_events.c: events, the node's and the peers' callbacks, sessions and media streams by number */
-/* the account session began or ended (event "account") */
-void npf_ev_account(npf_t *n);
 /* an event to the application (npf_callbacks.event): the library's, a module's */
 void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 #ifdef __GNUC__
     __attribute__((format(printf, 3, 4)))
 #endif
     ;
-uint32_t npf_session_of(npf_t *n, npf_call *call);
-npf_call *npf_session_call(npf_t *n, uint32_t id);
-/* the peer whose session call is (an outgoing one), or NULL */
-npf_peer *npf_peer_of_call(npf_t *n, npf_call *call);
-/* {"session", "peer", "path", "direction", "call_id"} */
-void npf_session_info_out(npf_t *n, npf_call *call, npf_out *o);
-uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid);
-npf_med *npf_media_find(npf_t *n, uint32_t id);
-void npf_media_forget(npf_t *n, uint32_t id);
-
-/* engine_identity.c: the identity, enrolment, the account certificate */
-void npf_save_account_cert(npf_t *n);
-void npf_forget_account(npf_t *n);
-/* ask for the account's login name (status "account_login") once a session is there */
-void npf_account_info(npf_t *n);
+/* the status object (npf_status_json) */
+void npf_status_out(npf_t *n, npf_out *o);
 /* a device enrolled at run time got its number: keep it, become callable */
 int  npf_become_node(npf_t *n, uint64_t number);
 
-/* a shared runtime: the loop of an instance on one of its threads (api.c) */
-npf_loop *npf_runtime_child(npf_runtime *rt, int *slot);
-void npf_runtime_leave(npf_runtime *rt, int slot);
+/* published resources (publish.c, resources.h): add or replace (by name) /
+ * remove one (name NULL: all but npf.conf's): NPF_OK, NPF_ESAVE, or an error
+ * with the reason in err */
+int  npf_pub_put(npf_t *n, const struct npf_res *r, char *err, size_t errcap);
+int  npf_pub_remove(npf_t *n, const char *name, char *err, size_t errcap);
 
 /* cmd.c: a command (argv[0] = its name); the exit code with the text in o
  * (0 done, 1 failed, 2 a bad command, NPF_CMD_UNSAVED done but local.json
@@ -190,33 +137,10 @@ void npf_runtime_leave(npf_runtime *rt, int slot);
 #define NPF_CMD_UNSAVED 3
 int  npf_cmd_run(npf_t *n, int argc, char **argv, npf_out *o, npf_text_cb cb, void *user);
 int  npf_cmd_builtin(const char *name);     /* one of libnpf's own commands? */
-void npf_cmd_status_json(npf_t *n, npf_out *o);
 void npf_cmd_config_json(npf_t *n, npf_out *o);
-/* where a peer comes from (npf/peers.h tags): "saved", "platform", "temporary" */
-const char *npf_cmd_tag_name(int tag);
-/* published resources (publish.c, resources.h) */
-int  npf_pub_load(npf_t *n, char *err, size_t errcap);  /* npf.conf + local.json, the policy */
-int  npf_pub_apply(npf_t *n);                           /* the policy again (a node now) */
-void npf_pub_free(npf_t *n);
-/* the resources of a JSON text (an array): their number, *r (malloc'd,
- * NPF_RES_MAX of them, for the caller to free); NPF_ENOMEM or NPF_EFAIL with
- * err and *r NULL */
-int  npf_pub_res_text(const char *json, struct npf_res **r, char *err, size_t errcap);
-void npf_pub_send(npf_t *n, npf_call *c);               /* to a caller whose session came up */
-void npf_pub_json(npf_t *n, npf_out *o);                /* this node's list (status) */
-void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d);
-/* add or replace (by name) / remove one (name NULL: all but npf.conf's):
- * NPF_OK, NPF_ESAVE, or an error with the reason in err */
-int  npf_pub_put(npf_t *n, const struct npf_res *r, char *err, size_t errcap);
-int  npf_pub_remove(npf_t *n, const char *name, char *err, size_t errcap);
 int  npf_cmd_set(npf_t *n, const char *k, const char *v, int save, npf_out *o);
 const char *npf_cmd_get(npf_t *n, const char *k, char *buf, size_t cap);
-void npf_cmd_sessions_json(npf_t *n, npf_out *o);
 int  npf_cmd_is_settable(const char *k);
 int  npf_cmd_is_secret(const char *k);
-
-/* platform.c */
-int  npf_plat_request(npf_t *n, const char *type, const char *data, int proof, npf_reply_cb cb, void *user,
-                      npf_out *err);
 
 #endif

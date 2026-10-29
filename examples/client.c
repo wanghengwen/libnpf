@@ -29,7 +29,6 @@ static void forward_changed(void)
     npf_forward_info fi;
     uint32_t fwd;
     size_t count;
-    npf_forward_info_init(&fi);
     if (npf_forward_list(cli, peer, &fwd, 1, &count) != NPF_OK || !count || npf_forward_get(cli, fwd, &fi) != NPF_OK)
         return;
     if (fi.state == NPF_FWD_UP)
@@ -47,7 +46,6 @@ static void on_event(void *user, const char *name, const char *json)
         forward_changed();
     } else if (strcmp(name, "peer_done") == 0) {     /* it gave up: why, from npf_peer_get */
         npf_peer_info pi;
-        npf_peer_info_init(&pi);
         if (npf_peer_get(cli, peer, &pi) == NPF_OK)
             printf("%s\n", pi.needs & NPF_NEED_PASSWORD ? "the device needs its pairing password (NPF_PASSWORD)"
                                                        : pi.why);

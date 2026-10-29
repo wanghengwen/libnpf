@@ -54,6 +54,14 @@ typedef struct side {
     int             destroy_tried;
 } side;
 
+/* a stream's number, 0 with the reason in *e */
+static uint32_t media_open(npf_t *n, uint32_t session, const npf_media_opt *o, int *e)
+{
+    uint32_t m = 0;
+    *e = npf_media_open(n, session, o, &m);
+    return m;
+}
+
 static int fails;
 static npf_runtime *rt;
 
@@ -249,7 +257,8 @@ int main(int argc, char **argv)
     static side a, b, c;
     char da[] = "/tmp/npf-api-a-XXXXXX", db[] = "/tmp/npf-api-b-XXXXXX", ov[256];
     const char *key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";   /* 32 zero bytes */
-    int port = argc > 1 ? atoi(argv[1]) : 47960 + (int)(getpid() % 30), i, t, ok, opened, e;
+    /* below the ephemeral ports (other programs on this machine take those) */
+    int port = argc > 1 ? atoi(argv[1]) : 27760 + (int)(getpid() % 30), i, t, ok, opened, e;
     npf_t *na, *nb;
     uint32_t ms[NTAGS], busy[40], back;
     npf_media_opt mo;
@@ -305,10 +314,10 @@ int main(int argc, char **argv)
             a.destroy_tried && npf_session_send(nb, b.session, "again", 5) == NPF_OK);
 
     /* streams at once */
-    npf_media_opt_default(&mo);
+    npf_media_opt_init(&mo);
     for (t = 0; t < NTAGS; t++) {
         mo.tag = t + 1;
-        ms[t] = npf_media_open(nb, b.session, &mo, &e);
+        ms[t] = media_open(nb, b.session, &mo, &e);
         if (!ms[t])
             printf("open tag %d: %d\n", t + 1, e);
     }
@@ -331,7 +340,6 @@ int main(int argc, char **argv)
     say("every frame intact, in order, key flags kept", ok && a.bad == 0);
     {
         npf_media_stats st;
-        st.size = sizeof st;
         say("stats", npf_media_stats_get(nb, ms[0], &st) == NPF_OK && st.srtt_ms < 1000);
     }
     for (t = 0; t < NTAGS; t++)
@@ -349,7 +357,7 @@ int main(int argc, char **argv)
          * A busy loop may produce streams faster than the peer can retire
          * them; respect that backpressure while testing repeated reuse. */
         for (retry = 0; retry < 500; retry++) {
-            m = npf_media_open(nb, b.session, &mo, &e);
+            m = media_open(nb, b.session, &mo, &e);
             if (m || e != NPF_EBUSY)
                 break;
             sleep_ms(10);
@@ -370,7 +378,7 @@ int main(int argc, char **argv)
 
     /* refused by the receiver: ends at the sender */
     mo.tag = REFUSE_TAG;
-    say("open a stream the peer refuses", npf_media_open(nb, b.session, &mo, &e) != 0);
+    say("open a stream the peer refuses", media_open(nb, b.session, &mo, &e) != 0);
     say("the refusal ends it at the sender", wait_for(&b, &b.refused_closed, 1, 5000));
 
     /* over and over, refused (the receiver's AnLiu RST) or taken and closed
@@ -382,7 +390,7 @@ int main(int argc, char **argv)
         pthread_mutex_lock(&a.mu);
         took = a.opened;
         pthread_mutex_unlock(&a.mu);
-        ok = npf_media_open(nb, b.session, &mo, &e) != 0;
+        ok = media_open(nb, b.session, &mo, &e) != 0;
         if (ok && i % 2) {
             uint32_t m;
             ok = wait_for(&a, &a.opened, took + 1, 5000);
@@ -400,20 +408,20 @@ int main(int argc, char **argv)
     /* too many at once */
     mo.tag = 7;
     for (i = 0; i < 40; i++)
-        if (!(busy[i] = npf_media_open(nb, b.session, &mo, &e)))
+        if (!(busy[i] = media_open(nb, b.session, &mo, &e)))
             break;
     say("too many streams at once: NPF_EBUSY", i < 40 && i >= 20 && e == NPF_EBUSY);
     printf("     (%d streams open at once)\n", i);
     if (i > 0) {
         npf_media_close(nb, busy[0]);
-        say("a close makes room", (busy[0] = npf_media_open(nb, b.session, &mo, &e)) != 0);
+        say("a close makes room", (busy[0] = media_open(nb, b.session, &mo, &e)) != 0);
     }
     while (i-- > 0)
         npf_media_close(nb, busy[i]);
 
     /* the other direction */
     mo.tag = 5;
-    back = npf_media_open(na, a.session, &mo, &e);
+    back = media_open(na, a.session, &mo, &e);
     say("A opens a stream to B", back && send_frames(na, back, 5, 20, 2000) == 0);
     say("B receives it", wait_for(&b, &b.tag_frames[5], 20, 5000) && b.bad == 0);
 
@@ -425,7 +433,7 @@ int main(int argc, char **argv)
         int busyc = 0, okc = 0;
         mo.tag = 9;
         mo.max_age_ms = 0;
-        m = npf_media_open(nb, b.session, &mo, &e);
+        m = media_open(nb, b.session, &mo, &e);
         pthread_mutex_lock(&b.mu);
         b.block_ms = 1500;
         pthread_mutex_unlock(&b.mu);

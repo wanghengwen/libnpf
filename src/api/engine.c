@@ -8,57 +8,25 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "engine_internal.h"
+#include "api_internal.h"
 #include "npf/module.h"
 
 /* ---- lifecycle ---- */
 
-int npf_app_name_valid(const char *s)
+/* npf_options.app_name: 1..32 of a-z 0-9 . _ -; app_ver: 1..32 printable characters */
+static int app_name_ok(const char *s)
 {
-    size_t i, l = strlen(s);
-    if (l < 1 || l > 32)
-        return 0;
-    for (i = 0; i < l; i++)
-        if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '.' || s[i] == '_' || s[i] == '-'))
-            return 0;
-    return 1;
+    size_t l = strlen(s);
+    return l >= 1 && l <= 32 && strspn(s, "abcdefghijklmnopqrstuvwxyz0123456789._-") == l;
 }
 
-int npf_app_ver_valid(const char *s)
+static int app_ver_ok(const char *s)
 {
     size_t i, l = strlen(s);
-    if (l < 1 || l > 32)
-        return 0;
     for (i = 0; i < l; i++)
         if ((unsigned char)s[i] <= 0x20 || (unsigned char)s[i] >= 0x7f)
             return 0;
-    return 1;
-}
-
-/* the defaults d (sizeof d bytes) into the application's s of size bytes:
- * what both know, zeros past this build's structure */
-void npf_init_sized(void *s, size_t size, const void *d, size_t dsize)
-{
-    if (!s || size < sizeof(size_t))
-        return;
-    memset(s, 0, size);
-    memcpy(s, d, size < dsize ? size : dsize);
-    memcpy(s, &size, sizeof size);          /* the first field: size */
-}
-
-void npf_options_init_size(npf_options *o, size_t size)
-{
-    npf_options d;
-    memset(&d, 0, sizeof d);
-    d.log_level = -1;
-    npf_init_sized(o, size, &d, sizeof d);
-}
-
-void npf_callbacks_init_size(npf_callbacks *cb, size_t size)
-{
-    npf_callbacks d;
-    memset(&d, 0, sizeof d);
-    npf_init_sized(cb, size, &d, sizeof d);
+    return l >= 1 && l <= 32;
 }
 
 int npf_api_version(void)
@@ -69,7 +37,7 @@ int npf_api_version(void)
 static int create(const npf_options *o, npf_t **out, char *err, size_t errcap);
 
 /* the structures as this build knows them: what the application's build has,
- * the defaults for the rest (fields are only ever added at the end) */
+ * the defaults for the rest */
 int npf_create(const npf_options *uo, npf_t **out, char *err, size_t errcap)
 {
     npf_options o;
@@ -77,21 +45,15 @@ int npf_create(const npf_options *uo, npf_t **out, char *err, size_t errcap)
     if (!out || !err || !errcap)
         return NPF_EINVAL;
     *out = NULL;
-    if (!uo || uo->size < offsetof(npf_options, cb) + sizeof uo->cb) {
+    npf_options_init(&o);
+    npf_callbacks_init(&cb);
+    if (take_in(&o, sizeof o, uo, SIZE_TO(npf_options, flags)) < 0) {
         snprintf(err, errcap, "options not initialised (npf_options_init)");
         return NPF_EINVAL;
     }
-    npf_options_init(&o);
-    memcpy(&o, uo, uo->size < sizeof o ? uo->size : sizeof o);
-    o.size = sizeof o;
-    npf_callbacks_init(&cb);
-    if (o.cb) {
-        if (o.cb->size < offsetof(npf_callbacks, media_closed) + sizeof o.cb->media_closed) {
-            snprintf(err, errcap, "callbacks not initialised (npf_callbacks_init)");
-            return NPF_EINVAL;
-        }
-        memcpy(&cb, o.cb, o.cb->size < sizeof cb ? o.cb->size : sizeof cb);
-        cb.size = sizeof cb;
+    if (o.cb && take_in(&cb, sizeof cb, o.cb, SIZE_TO(npf_callbacks, media_closed)) < 0) {
+        snprintf(err, errcap, "callbacks not initialised (npf_callbacks_init)");
+        return NPF_EINVAL;
     }
     o.cb = &cb;
     return create(&o, out, err, errcap);
@@ -102,8 +64,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     npf_t *n;
     int rc, fail_rc = NPF_EFAIL;
     npf_log_ctx *prev_log;
-    *out = NULL;
-    if (!o || (!o->setup && !o->conf_dir && !o->conf_file)) {
+    if (!o->setup && !o->conf_dir && !o->conf_file) {
         snprintf(err, errcap, "conf_dir (or npf_options.setup) is needed");
         return NPF_EINVAL;
     }
@@ -111,7 +72,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
         snprintf(err, errcap, "npf_options.setup: no conf_dir or conf_file, and a data_dir");
         return NPF_EINVAL;
     }
-    if (o->flags & ~(NPF_OPT_NO_SAVED_SETTINGS | NPF_OPT_NO_SAVED_OBJECTS)) {
+    if (o->flags & ~(NPF_OPT_NO_SAVED_SETTINGS | NPF_OPT_NO_SAVED_OBJECTS | NPF_OPT_NO_LOG_RING)) {
         snprintf(err, errcap, "npf_options.flags: unknown flags");
         return NPF_EINVAL;
     }
@@ -122,10 +83,8 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     n->role = o->role;
     n->cb = *o->cb;
     n->opt_flags = o->flags;
-    n->from_setup = o->setup != NULL;
     npf_mods_take(n);                   /* the modules registered by now */
-    if (!npf_app_name_valid(o->app_name ? o->app_name : "libnpf")
-        || !npf_app_ver_valid(o->app_ver ? o->app_ver : npf_version())) {
+    if (!app_name_ok(o->app_name ? o->app_name : "libnpf") || !app_ver_ok(o->app_ver ? o->app_ver : npf_version())) {
         snprintf(err, errcap, "app_name: 1..32 of a-z 0-9 . _ -; app_ver: up to 32 printable characters");
         free(n);
         return NPF_EINVAL;
@@ -141,7 +100,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     n->logctx.hook = o->cb->log;
     n->logctx.user = o->cb->user;
     /* recent lines for npf_log_json, unless the application asked for none */
-    if (!o->no_log_ring && !(n->logctx.ring = malloc(NPF_LOG_RING))) {
+    if (!(o->flags & NPF_OPT_NO_LOG_RING) && !(n->logctx.ring = malloc(NPF_LOG_RING))) {
         snprintf(err, errcap, "no memory");
         npf_api_fini(n);
         free(n);
@@ -212,7 +171,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
         goto fail;
     /* a long-running role brings back what it saved (a client's one-off tasks do not) */
     if (n->role != NPF_ROLE_CLIENT && !(n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS))
-        npf_engine_restore_peers(n);
+        npf_ops_restore(n);
     {   /* direct connections (no platform): "direct = [ADDR:]PORT" with its key */
         const char *direct = npf_conf_get(&n->conf, "direct", NULL);
         if (direct && *direct && n->role != NPF_ROLE_CLIENT) {
@@ -296,20 +255,6 @@ int npf_engine_run(npf_t *n)
     while ((ms = npf_engine_end_step(n)) >= 0)
         npf_loop_once(n->loop, ms);
     return 0;
-}
-
-/* a peer made while running starts now; only it (all of them were started
- * again: a direct one's backoff skipped, the others' login steps redone) */
-void npf_start_peer(npf_t *n, npf_peer *p)
-{
-    if (!n->started)
-        return;                             /* the run starts them */
-    npf_peer_start(p);
-}
-
-npf_loop *npf_engine_loop(npf_t *n)
-{
-    return n->loop;
 }
 
 void npf_engine_free(npf_t *n)

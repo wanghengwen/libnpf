@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "npf/json.h"
+#include "npf/out.h"
 
 static int fails;
 
@@ -115,9 +116,44 @@ static void test_writer(void)
     CHECK(npf_jw_finish(&w) < 0, "unclosed object detected");
 }
 
+/* npf_out's JSON: commas by themselves, text of one's own after a key */
+static void test_out(void)
+{
+    npf_out o = {0};
+    npf_json j;
+    npf_out_jopen(&o, '{');
+    npf_out_kstr(&o, "s", "a\"b");
+    npf_out_kstr(&o, "none", NULL);
+    npf_out_jkey(&o, "raw");
+    npf_out_printf(&o, "{\"x\":1}");          /* a writer of its own */
+    npf_out_kint(&o, "n", -7);
+    npf_out_jkey(&o, "arr");
+    npf_out_jopen(&o, '[');
+    npf_out_jitem(&o, "i");
+    npf_out_jraw(&o, "2");
+    npf_out_jopen(&o, '{');
+    npf_out_kbool(&o, "t", 1);
+    npf_out_jclose(&o, '}');
+    npf_out_jclose(&o, ']');
+    npf_out_kbool(&o, "f", 0);
+    npf_out_jclose(&o, '}');
+    CHECK(!o.failed && strcmp(o.p, "{\"s\":\"a\\\"b\",\"none\":null,\"raw\":{\"x\":1},\"n\":-7,"
+                                  "\"arr\":[\"i\",2,{\"t\":true}],\"f\":false}") == 0, "out JSON %s", o.p);
+    CHECK(parse(o.p, &j) == 0, "out JSON parses");
+    npf_out_free(&o);
+    npf_out_jopen(&o, '[');
+    npf_out_jclose(&o, ']');
+    npf_out_printf(&o, " ");
+    npf_out_jstr(&o, "top");                    /* the top level: as it is */
+    npf_out_jstr(&o, "level");
+    CHECK(o.p && strcmp(o.p, "[] \"top\"\"level\"") == 0, "out JSON at the top level: no commas");
+    npf_out_free(&o);
+}
+
 int test_json(void)
 {
     test_parse();
     test_writer();
+    test_out();
     return fails;
 }

@@ -15,6 +15,7 @@
 
 #include "npf/platform.h"
 #include "api_internal.h"
+
 int npf_api_init(npf_t *n)
 {
     n->sync = calloc(1, sizeof *n->sync);
@@ -48,8 +49,6 @@ void npf_api_fini(npf_t *n)
     free(n->sync);
 }
 
-/* Public entry points hold a reference through preparation, posting and
- * completion. The owner prevents new calls from starting once destroy begins. */
 int api_enter(npf_t *n)
 {
     int ok;
@@ -74,12 +73,13 @@ void api_leave(npf_t *n)
     UNLOCK();
 }
 
-int npf_api_guard(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
+/* fn on the caller's thread with a reference held (npf_start, npf_run, npf_stop) */
+static int guarded(npf_t *n, int (*fn)(npf_t *n))
 {
     int r;
     if (!api_enter(n))
         return n ? NPF_ESTATE : NPF_EINVAL;
-    r = fn(n, arg);
+    r = fn(n);
     api_leave(n);
     return r;
 }
@@ -88,9 +88,9 @@ int npf_api_guard(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
  * caller that gives up (the run ended first) leaves it to the loop. */
 typedef struct job {
     npf_t *n;
-    void (*fn)(npf_t *n, void *arg);
+    int  (*fn)(npf_t *n, void *arg);
     void  *arg;
-    int    done, cancelled;
+    int    rc, done, cancelled;
 } job;
 
 static void job_run(npf_loop *loop, void *arg)
@@ -107,7 +107,7 @@ static void job_run(npf_loop *loop, void *arg)
         return;
     }
     if (!j->n->ended)
-        j->fn(j->n, j->arg);
+        j->rc = j->fn(j->n, j->arg);
     else
         j->cancelled = -1;                  /* tell the caller it did not run */
     LOCK();
@@ -145,8 +145,9 @@ void npf_api_unlock(npf_t *n)
 /* Who executes a call. Running: the loop thread (others post to it). Not
  * running (before the start, after the end): the caller itself, one at a
  * time per instance; a call from inside one (a callback) goes on at once. */
+enum { EXEC_POST, EXEC_HERE, EXEC_TURN };
 
-int exec_mode(npf_t *n)
+static int exec_mode(npf_t *n)
 {
     unsigned long me = self_tid();
     int r;
@@ -170,7 +171,7 @@ int exec_mode(npf_t *n)
     return r;
 }
 
-void turn_end(npf_t *n)
+static void turn_end(npf_t *n)
 {
     LOCK();
     n->exec_busy = 0;
@@ -179,9 +180,7 @@ void turn_end(npf_t *n)
     UNLOCK();
 }
 
-/* run fn for the instance and wait for it: 0, or NPF_ESTATE when it did not
- * run (the run has ended) */
-int sync_call(npf_t *n, void (*fn)(npf_t *n, void *arg), void *arg)
+int sync_call(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
 {
     job *j;
     int r, mode = exec_mode(n);
@@ -191,9 +190,8 @@ int sync_call(npf_t *n, void (*fn)(npf_t *n, void *arg), void *arg)
             r = NPF_ESTATE;
         } else {
             prev = npf_log_ctx_swap(&n->logctx);    /* its lines go to this instance */
-            fn(n, arg);
+            r = fn(n, arg);
             npf_log_ctx_swap(prev);
-            r = 0;
         }
         if (mode == EXEC_TURN)
             turn_end(n);
@@ -216,9 +214,19 @@ int sync_call(npf_t *n, void (*fn)(npf_t *n, void *arg), void *arg)
         UNLOCK();
         return NPF_ESTATE;
     }
-    r = j->cancelled < 0 ? NPF_ESTATE : 0;
+    r = j->cancelled < 0 ? NPF_ESTATE : j->rc;
     UNLOCK();
     free(j);
+    return r;
+}
+
+int npf_api_op(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
+{
+    int r;
+    if (!api_enter(n))
+        return n ? NPF_ESTATE : NPF_EINVAL;
+    r = sync_call(n, fn, arg);
+    api_leave(n);
     return r;
 }
 
@@ -498,10 +506,9 @@ static void thread_join(void *th)
 #endif
 }
 
-static int start_run(npf_t *n, void *arg)
+static int start_run(npf_t *n)
 {
     void *th = NULL;
-    (void)arg;
     if (n->rt)
         return start_on_runtime(n);
     if (begin_run(n, 0) != NPF_OK)
@@ -518,18 +525,16 @@ static int start_run(npf_t *n, void *arg)
     return th ? NPF_OK : NPF_EFAIL;
 }
 
-static int run_run(npf_t *n, void *arg)
+static int run_run(npf_t *n)
 {
-    (void)arg;
     if (n->rt || begin_run(n, 1) != NPF_OK)
         return NPF_ESTATE;
     loop_main(n);
     return NPF_OK;
 }
 
-static int stop_run(npf_t *n, void *arg)
+static int stop_run(npf_t *n)
 {
-    (void)arg;
     LOCK();
     n->stopping = 1;
     /* Atomic stop + wake: no allocation and no lost stop under memory pressure. */
@@ -567,6 +572,6 @@ void npf_free(void *p)
     free(p);
 }
 
-int npf_start(npf_t *n) { return npf_api_guard(n, start_run, NULL); }
-int npf_run(npf_t *n) { return npf_api_guard(n, run_run, NULL); }
-void npf_stop(npf_t *n) { npf_api_guard(n, stop_run, NULL); }
+int npf_start(npf_t *n) { return guarded(n, start_run); }
+int npf_run(npf_t *n) { return guarded(n, run_run); }
+void npf_stop(npf_t *n) { guarded(n, stop_run); }

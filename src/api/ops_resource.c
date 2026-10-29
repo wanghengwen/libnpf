@@ -4,22 +4,12 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf_int.h"
-#include "npf/module.h"
+#include "api_internal.h"
 #include "npf/resources.h"
-#include "ops_internal.h"
-/* ---- resources ---- */
-
-typedef struct rp_arg {
-    npf_resource r;
-    char        *err;
-    size_t       errcap;
-} rp_arg;
 
 /* npf.h's NPF_RES_TCP .. NPF_RES_REVERSE (1 .. 5) by their names in the resources */
 static const char *const res_types[] = {NULL, "tcp", "udp", "net", "socks", "reverse"};
@@ -40,44 +30,33 @@ static int res_type_code(const char *t)
 
 static int res_put_run(npf_t *n, void *arg)
 {
-    rp_arg *x = arg;
-    npf_resource *u = &x->r;
-    npf_res r;
+    op_arg *x = arg;
+    const npf_resource *u = x->in;
     const char *type = res_type_name(u->type);
     /* udp: one service (service.host), or "*" / networks as a rule */
     int service = u->type == NPF_RES_TCP || (u->type == NPF_RES_UDP && !(u->rule && *u->rule && !u->service.host)), l;
+    npf_res r;
     memset(&r, 0, sizeof r);
     if (!type || !u->name || !*u->name || strlen(u->name) >= sizeof r.name || (u->flags & ~NPF_PERSIST)
         || (u->svc && strlen(u->svc) >= sizeof r.svc) || (u->desc && strlen(u->desc) >= sizeof r.desc)
-        || (u->path && strlen(u->path) >= sizeof r.path)) {
-        err_set(x->err, x->errcap, "%s", "bad type or flags, or a name, service, path or description too long");
-        return NPF_EINVAL;
-    }
+        || (u->path && strlen(u->path) >= sizeof r.path))
+        return op_fail(x, NPF_EINVAL, "bad type or flags, or a name, service, path or description too long");
     snprintf(r.type, sizeof r.type, "%s", type);
     snprintf(r.name, sizeof r.name, "%s", u->name);
-    if (u->svc)
-        snprintf(r.svc, sizeof r.svc, "%s", u->svc);
-    if (u->desc)
-        snprintf(r.desc, sizeof r.desc, "%s", u->desc);
+    snprintf(r.svc, sizeof r.svc, "%s", u->svc ? u->svc : "");
+    snprintf(r.desc, sizeof r.desc, "%s", u->desc ? u->desc : "");
     if (service) {
         const char *h = u->service.host;
-        if (!h || !*h || !u->service.port) {
-            err_set(x->err, x->errcap, "%s", "a service needs an address and a port");
-            return NPF_EINVAL;
-        }
-        l = strchr(h, ':') ? snprintf(r.target, sizeof r.target, "[%s]:%u", h, (unsigned)u->service.port)
-                           : snprintf(r.target, sizeof r.target, "%s:%u", h, (unsigned)u->service.port);
-        if (l < 0 || (size_t)l >= sizeof r.target) {
-            err_set(x->err, x->errcap, "%s", "the service's address is too long");
-            return NPF_EINVAL;
-        }
+        if (!h || !*h || !u->service.port)
+            return op_fail(x, NPF_EINVAL, "a service needs an address and a port");
+        l = snprintf(r.target, sizeof r.target, strchr(h, ':') ? "[%s]:%u" : "%s:%u", h, (unsigned)u->service.port);
+        if (l < 0 || (size_t)l >= sizeof r.target)
+            return op_fail(x, NPF_EINVAL, "the service's address is too long");
         if (u->path && *u->path && strcmp(u->path, "/") != 0)
             snprintf(r.path, sizeof r.path, "%s", u->path);
     } else {
-        if (!u->rule || !*u->rule || strlen(u->rule) > 63) {
-            err_set(x->err, x->errcap, "%s", "a rule of 1 to 63 bytes is needed");
-            return NPF_EINVAL;
-        }
+        if (!u->rule || !*u->rule || strlen(u->rule) >= sizeof r.target)
+            return op_fail(x, NPF_EINVAL, "a rule of 1 to 63 bytes is needed");
         snprintf(r.target, sizeof r.target, "%s", u->rule);
     }
     if (npf_res_check(&r, x->err, x->errcap) < 0)
@@ -88,113 +67,79 @@ static int res_put_run(npf_t *n, void *arg)
 
 int npf_resource_put(npf_t *n, const npf_resource *r, char *err, size_t errcap)
 {
-    rp_arg x;
-    if (err && errcap)
-        err[0] = 0;
-    memset(&x, 0, sizeof x);
-    npf_resource_init(&x.r);
-    if (copy_in(&x.r, sizeof x.r, r, offsetof(npf_resource, flags) + sizeof r->flags) < 0) {
-        err_set(err, errcap, "%s", "not initialised (npf_resource_init)");
-        return NPF_EINVAL;
-    }
-    x.err = err;
-    x.errcap = errcap;
+    npf_resource res;
+    op_arg x = {.in = &res, .err = err, .errcap = errcap};
+    err_clear(err, errcap);
+    npf_resource_init(&res);
+    if (take_in(&res, sizeof res, r, SIZE_TO(npf_resource, flags)) < 0)
+        return op_fail(&x, NPF_EINVAL, "not initialised (npf_resource_init)");
     return npf_api_op(n, res_put_run, &x);
 }
 
 static int res_remove_run(npf_t *n, void *arg)
 {
-    pid_arg *x = arg;
     char err[200];
-    return npf_pub_remove(n, x->a, err, sizeof err);
+    return npf_pub_remove(n, arg, err, sizeof err);
 }
 
 int npf_resource_remove(npf_t *n, const char *name)
 {
-    pid_arg x = {.a = name};
     if (!name || !*name)
         return NPF_EINVAL;
-    return npf_api_op(n, res_remove_run, &x);
+    return npf_api_op(n, res_remove_run, (void *)name);
 }
 
-typedef struct rl_arg {
-    uint32_t           peer;
-    npf_resource_info *out;
-    size_t             elem, cap, *count;
-} rl_arg;
-
-static void res_info(const npf_res *r, int saved, npf_resource_info *i)
+static void res_info(const npf_res *r, int flags, int saved, npf_resource_info *i)
 {
     memset(i, 0, sizeof *i);
-    i->size = sizeof *i;
     i->type = res_type_code(r->type);
-    i->flags = (r->persist ? NPF_PERSIST : 0) | (r->fixed ? NPF_FIXED : 0);
-    i->saved = r->persist && saved;
+    i->flags = flags;
+    i->saved = saved;
     snprintf(i->name, sizeof i->name, "%s", r->name);
     snprintf(i->svc, sizeof i->svc, "%s", r->svc);
-    if (npf_res_is_service(r)) {
-        const char *colon = strrchr(r->target, ':');
-        if (colon) {
-            if (r->target[0] == '[')
-                snprintf(i->host, sizeof i->host, "%.*s", (int)(colon - r->target - 2), r->target + 1);
-            else
-                snprintf(i->host, sizeof i->host, "%.*s", (int)(colon - r->target), r->target);
-            i->port = (uint16_t)atoi(colon + 1);
-        }
-    } else {
+    if (npf_res_is_service(r))
+        npf_hostport_split(r->target, i->host, sizeof i->host, &i->port);
+    else
         snprintf(i->rule, sizeof i->rule, "%s", r->target);
-    }
     snprintf(i->path, sizeof i->path, "%s", r->path);
     snprintf(i->desc, sizeof i->desc, "%s", r->desc);
 }
 
 static int res_list_run(npf_t *n, void *arg)
 {
-    rl_arg *x = arg;
+    op_arg *x = arg;
     npf_resource_info i;
-    int k;
-    if (!x->peer) {
+    npf_peer *p;
+    npf_res *r;
+    const char *json;
+    char e[160];
+    int k, m;
+    if (!x->id) {                           /* this node's */
         for (k = 0; k < n->nres; k++) {
-            if (*x->count < x->cap) {
-                res_info(&n->res[k], !n->lc.unsaved, &i);
-                put_elem(x->out, x->elem, *x->count, &i, sizeof i);
-            }
-            (*x->count)++;
+            const npf_res *q = &n->res[k];
+            res_info(q, (q->persist ? NPF_PERSIST : 0) | (q->fixed ? NPF_FIXED : 0), q->persist && !n->lc.unsaved, &i);
+            list_put(x, &i, sizeof i);
         }
-    } else {
-        npf_peer *p = peer_of(n, x->peer);
-        const char *json;
-        npf_res *r;
-        char e[160];
-        int m;
-        if (!p)
-            return NPF_ENOENT;
-        if (!(json = npf_peer_resources(p)))
-            return NPF_OK;
-        if ((m = npf_pub_res_text(json, &r, e, sizeof e)) < 0) {  /* (checked when it came: no memory) */
-            npf_loge("resources of %s: %s", npf_peer_name(p), e);
-            return m;
-        }
-        for (k = 0; k < m; k++) {
-            if (*x->count < x->cap) {
-                r[k].persist = 0;
-                res_info(&r[k], 0, &i);
-                i.flags = 0;
-                put_elem(x->out, x->elem, *x->count, &i, sizeof i);
-            }
-            (*x->count)++;
-        }
-        free(r);
+        return NPF_OK;
     }
-    return list_rc(*x->count, x->cap);
+    if (!(p = peer_of(n, x->id)))
+        return NPF_ENOENT;
+    if (!(json = npf_peer_resources(p)))
+        return NPF_OK;
+    if ((m = npf_pub_res_text(json, &r, e, sizeof e)) < 0) {   /* (checked when it came: no memory) */
+        npf_loge("resources of %s: %s", npf_peer_name(p), e);
+        return m;
+    }
+    for (k = 0; k < m; k++) {               /* the peer's, as last heard */
+        res_info(&r[k], 0, 0, &i);
+        list_put(x, &i, sizeof i);
+    }
+    free(r);
+    return NPF_OK;
 }
 
-int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *out, size_t elem_size, size_t cap,
+int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *out, size_t size, size_t cap,
                            size_t *count)
 {
-    rl_arg x = {.peer = peer, .out = out, .elem = elem_size, .cap = cap, .count = count};
-    if (!count || (cap && !out) || elem_size < offsetof(npf_resource_info, desc) + sizeof out->desc)
-        return NPF_EINVAL;
-    *count = 0;
-    return npf_api_op(n, res_list_run, &x);
+    return op_list(n, res_list_run, peer, out, size, cap, count);
 }

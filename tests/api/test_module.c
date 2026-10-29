@@ -52,10 +52,10 @@ static int acme_hello(npf_t *n, int argc, char **argv, npf_text_cb cb, void *use
     return 0;
 }
 
-static void acme_status(npf_t *n, npf_out *o, int *first)
+static void acme_status(npf_t *n, npf_out *o)
 {
     acme *a = npf_mod_state(n, &acme_module);
-    npf_mod_jkey(o, first, "acme");
+    npf_out_jkey(o, "acme");
     npf_out_printf(o, "{\"calls\":%d}", a->calls);
 }
 

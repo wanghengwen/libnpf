@@ -9,54 +9,59 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "engine_internal.h"
+#include "api_internal.h"
 #include "npf/module.h"
 
 /* ---- events ---- */
 
-/* fmt into small when it fits, else into a malloc'd buffer (the platform's
- * event data passed on as it came is not cut into invalid JSON); NULL no memory */
-static char *vfmt(char *small, size_t cap, const char *fmt, va_list ap)
+/* an event with o's JSON to the application, o freed */
+static void emit_out(npf_t *n, const char *name, npf_out *o)
 {
-    va_list aq;
-    int len;
-    char *big;
-    va_copy(aq, ap);
-    len = vsnprintf(small, cap, fmt, aq);
-    va_end(aq);
-    if (len < 0)
-        return NULL;
-    if ((size_t)len < cap)
-        return small;
-    if (!(big = malloc((size_t)len + 1)))
-        return NULL;
-    vsnprintf(big, (size_t)len + 1, fmt, ap);
-    return big;
+    if (n->cb.event && !o->failed && o->p)
+        n->cb.event(n->cb.user, name, o->p);
+    npf_out_free(o);
 }
 
-/* an event (name, its JSON) to the application: the library's and the modules' */
 void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 {
-    char small[1024], *buf;
+    npf_out o = {0};
     va_list ap;
     if (!n->cb.event)
         return;
     va_start(ap, fmt);
-    buf = vfmt(small, sizeof small, fmt, ap);
+    npf_out_vprintf(&o, fmt, ap);
     va_end(ap);
-    if (!buf)
-        return;
-    n->cb.event(n->cb.user, name, buf);
-    if (buf != small)
-        free(buf);
+    emit_out(n, name, &o);
+}
+
+/* an event whose JSON is {"key": text} (the text may be the platform's) */
+static void emit_text(npf_t *n, const char *name, const char *key, const char *text)
+{
+    npf_out o = {0};
+    npf_out_jopen(&o, '{');
+    npf_out_kstr(&o, key, text);
+    npf_out_jclose(&o, '}');
+    emit_out(n, name, &o);
+}
+
+/* "online" {server, account_id} (with the server) and "account" {account_id}:
+ * the account session's id as a string, null none */
+static void emit_account(npf_t *n, const char *name, int server)
+{
+    npf_out o = {0};
+    char a[24];
+    snprintf(a, sizeof a, "%llu", (unsigned long long)n->node.account_id);
+    npf_out_jopen(&o, '{');
+    if (server >= 0)
+        npf_out_kint(&o, "server", server);
+    npf_out_kstr(&o, "account_id", n->node.account_id ? a : NULL);
+    npf_out_jclose(&o, '}');
+    emit_out(n, name, &o);
 }
 
 void npf_ev_account(npf_t *n)
 {
-    if (n->node.account_id)
-        npf_emit(n, "account", "{\"account_id\":\"%llu\"}", (unsigned long long)n->node.account_id);
-    else
-        npf_emit(n, "account", "{\"account_id\":null}");
+    emit_account(n, "account", -1);
 }
 
 /* ---- sessions and media streams by number ---- */
@@ -90,9 +95,10 @@ npf_peer *npf_peer_of_call(npf_t *n, npf_call *call)
 
 static uint32_t sess_add(npf_t *n, npf_call *call)
 {
+    npf_peer *p = npf_peer_of_call(n, call);
+    npf_sess *s;
     if (n->nsess == n->capsess) {           /* an instance has a few at a time, a node up to the limit */
         int cap = n->capsess ? 2 * n->capsess : 4;
-        npf_sess *s;
         if (cap > NPF_MAX_SESS)
             cap = NPF_MAX_SESS;
         if (n->nsess == cap || !(s = realloc(n->sess, (size_t)cap * sizeof *s)))
@@ -100,20 +106,13 @@ static uint32_t sess_add(npf_t *n, npf_call *call)
         n->sess = s;
         n->capsess = cap;
     }
-    if (n->nsess == NPF_MAX_SESS)
-        return 0;
     if (!++n->next_sess)
         n->next_sess = 1;
-    {
-        npf_sess *ss = &n->sess[n->nsess];
-        npf_peer *p = npf_peer_of_call(n, call);
-        memset(ss, 0, sizeof *ss);
-        ss->id = n->next_sess;
-        ss->call = call;
-        ss->peer = p ? npf_peer_id(p) : 0;
-    }
-    n->nsess++;
-    return n->next_sess;
+    s = &n->sess[n->nsess++];
+    s->id = n->next_sess;
+    s->call = call;
+    s->peer = p ? npf_peer_id(p) : 0;
+    return s->id;
 }
 
 static void med_drop(npf_t *n, int i, int tell)
@@ -148,37 +147,13 @@ static void sess_end(npf_t *n, npf_call *call, const char *why)
     }
     if (n->cb.session) {
         npf_out o = {0};
-        npf_out_printf(&o, "{\"why\":");
-        npf_out_jstr(&o, why ? why : "closed");
-        npf_out_printf(&o, "}");
-        n->cb.session(n->cb.user, id, 0, o.p);
+        npf_out_jopen(&o, '{');
+        npf_out_kstr(&o, "why", why ? why : "closed");
+        npf_out_jclose(&o, '}');
+        if (!o.failed)
+            n->cb.session(n->cb.user, id, 0, o.p);
         npf_out_free(&o);
     }
-}
-
-/* the session's description for the session callback and npf_sessions_json */
-void npf_session_info_out(npf_t *n, npf_call *call, npf_out *o)
-{
-    npf_call_info i;
-    char peer[40];
-    npf_call_info_get(call, &i);
-    if (i.number)
-        snprintf(peer, sizeof peer, "%llu", (unsigned long long)i.number);
-    else
-        snprintf(peer, sizeof peer, "key:%016llx", (unsigned long long)npf_fp(i.peer_pub));
-    npf_out_printf(o, "{\"session\":%u,\"peer\":", npf_session_of(n, call));
-    npf_out_jstr(o, peer);
-    npf_out_printf(o, ",\"path\":");
-    npf_out_jstr(o, i.path);
-    npf_out_printf(o, ",\"direction\":\"%s\",\"call_id\":", i.caller ? "out" : "in");
-    npf_out_jstr(o, i.id);
-    if (i.app && *i.app) {
-        npf_out_printf(o, ",\"app\":");
-        npf_out_jstr(o, i.app);
-    }
-    if (i.hosted)
-        npf_out_printf(o, ",\"hosted\":true");
-    npf_out_printf(o, "}");
 }
 
 static void on_account_cert(npf_node *node, void *arg)
@@ -200,20 +175,6 @@ static void on_account_lost(npf_node *node, void *arg)
 
 /* ---- node hooks ---- */
 
-/* an event whose JSON is {"key": text} (escaped: the text may be the
- * platform's, quotes and backslashes broke the JSON) */
-static void event_text(npf_t *n, const char *name, const char *key, const char *text)
-{
-    npf_out o = {0};
-    if (!n->cb.event)
-        return;
-    npf_out_printf(&o, "{\"%s\":", key);
-    npf_out_jstr(&o, text);
-    npf_out_printf(&o, "}");
-    npf_emit(n, name, "%s", o.p ? o.p : "{}");
-    npf_out_free(&o);
-}
-
 static void on_enrolled(npf_node *node, uint64_t number, void *arg)
 {
     npf_t *n = arg;
@@ -225,19 +186,14 @@ static void on_enrolled(npf_node *node, uint64_t number, void *arg)
 static void on_enroll_failed(npf_node *node, const char *error, const char *reason, int retry_s, void *arg)
 {
     npf_t *n = arg;
+    npf_out o = {0};
     (void)node;
-    if (!n->cb.event)
-        return;
-    {
-        npf_out o = {0};
-        npf_out_printf(&o, "{\"error\":");
-        npf_out_jstr(&o, error);
-        npf_out_printf(&o, ",\"reason\":");
-        npf_out_jstr(&o, reason);
-        npf_out_printf(&o, ",\"retry_in\":%d}", retry_s);
-        npf_emit(n, "enroll_failed", "%s", o.p ? o.p : "{}");
-        npf_out_free(&o);
-    }
+    npf_out_jopen(&o, '{');
+    npf_out_kstr(&o, "error", error);
+    npf_out_kstr(&o, "reason", reason);
+    npf_out_kint(&o, "retry_in", retry_s);
+    npf_out_jclose(&o, '}');
+    emit_out(n, "enroll_failed", &o);
 }
 
 /* signaling on demand: a module's work not done yet keeps the connection */
@@ -255,8 +211,7 @@ static void on_login(npf_node *node, void *arg)
     npf_peers_on_login(n->peers);
     npf_mods_login(n);
     npf_account_info(n);
-    npf_emit(n, "online", "{\"server\":%d,\"account_id\":%s%llu%s}", node->server_id, node->account_id ? "\"" : "",
-             (unsigned long long)node->account_id, node->account_id ? "\"" : "");
+    emit_account(n, "online", node->server_id);
 }
 
 /* the process was suspended or the network changed (node.c's watch) */
@@ -265,7 +220,7 @@ static void on_net_change(npf_node *node, const char *why, void *arg)
     npf_t *n = arg;
     (void)node;
     npf_peers_net_changed(n->peers);
-    event_text(n, "network", "why", why);
+    emit_text(n, "network", "why", why);
 }
 
 /* signaling lost after a login */
@@ -273,7 +228,7 @@ static void on_offline(npf_node *node, const char *why, void *arg)
 {
     npf_t *n = arg;
     (void)node;
-    event_text(n, "offline", "why", why ? why : "");
+    emit_text(n, "offline", "why", why ? why : "");
 }
 
 /* UDP on demand: the profile is there, the sessions waiting for it start */
@@ -289,32 +244,24 @@ static void on_udp_ready(npf_node *node, void *arg)
 static void on_event(npf_node *node, const char *type, const npf_json *j, int d, void *arg)
 {
     npf_t *n = arg;
-    const char *s;
-    char *buf;
-    size_t len, i, cap;
+    npf_out o = {0};
+    size_t i;
     (void)node;
     npf_mods_event(n, type, j, d);
-    if (!n->cb.event)
-        return;
     for (i = 0; type[i]; i++)               /* a name of the protocol: nothing to escape */
         if (!((type[i] >= 'a' && type[i] <= 'z') || (type[i] >= '0' && type[i] <= '9') || type[i] == '_'))
             return;
-    if (!i || i > 64)
+    if (!i || i > 64 || !n->cb.event)
         return;
-    if (d >= 0) {
-        int str = j->tok[d].type == NPF_JT_STRING;
-        s = j->s + j->tok[d].start - (str ? 1 : 0);     /* a string with its quotes */
-        len = j->tok[d].end - j->tok[d].start + (str ? 2 : 0);
-    } else {
-        s = "null";
-        len = 4;
-    }
-    cap = len + i + 32;
-    if (!(buf = malloc(cap)))
-        return;
-    snprintf(buf, cap, "{\"type\":\"%s\",\"data\":%.*s}", type, (int)len, s);
-    n->cb.event(n->cb.user, "platform", buf);
-    free(buf);
+    npf_out_printf(&o, "{\"type\":\"%s\",\"data\":", type);
+    if (d < 0)
+        npf_out_printf(&o, "null");
+    else if (j->tok[d].type == NPF_JT_STRING)   /* the string with its quotes, as it came */
+        npf_out_write(&o, j->s + j->tok[d].start - 1, j->tok[d].end - j->tok[d].start + 2);
+    else
+        npf_out_write(&o, j->s + j->tok[d].start, j->tok[d].end - j->tok[d].start);
+    npf_out_printf(&o, "}");
+    emit_out(n, "platform", &o);
 }
 
 static void on_paired(npf_node *node, uint64_t number, const uint8_t pub[32], void *arg)
@@ -339,8 +286,9 @@ static void on_call_state(npf_node *node, npf_call *call, int st, const char *wh
         uint32_t id = sess_add(n, call);
         if (id && n->cb.session) {
             npf_out o = {0};
-            npf_session_info_out(n, call, &o);
-            n->cb.session(n->cb.user, id, 1, o.p);
+            npf_session_out(n, call, &o);
+            if (!o.failed)
+                n->cb.session(n->cb.user, id, 1, o.p);
             npf_out_free(&o);
         }
     } else if (st == NPF_CALL_CLOSED) {
@@ -352,10 +300,7 @@ static void on_call_state(npf_node *node, npf_call *call, int st, const char *wh
         npf_call_info i;
         char who[40];
         npf_call_info_get(call, &i);
-        if (i.number)
-            snprintf(who, sizeof who, "node %llu", (unsigned long long)i.number);
-        else
-            snprintf(who, sizeof who, "key %016llx", (unsigned long long)npf_fp(i.peer_pub));
+        npf_who(&i, who, sizeof who);
         if (st == NPF_CALL_ESTABLISHED)
             npf_log("call %s: session with %s established (%s)", i.id, who, npf_call_path_label(call));
         else if (st == NPF_CALL_CLOSED)
@@ -444,7 +389,6 @@ uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid)
     n->med[n->nmed].session = session;
     n->med[n->nmed].call = call;
     n->med[n->nmed].lid = lid;
-    n->med[n->nmed].frame_max = NPF_MEDIA_FRAME_MAX;
     n->nmed++;
     npf_api_unlock(n);
     return id;
@@ -475,32 +419,28 @@ static void peer_up(npf_peer *p, npf_call *call, void *arg)
 {
     npf_t *n = arg;
     npf_mods_peer_up(n, p, call);           /* a binding waits for this session */
-    if (npf_peer_tag(p) == PEER_TEMP && npf_peer_nfwd(p) == 0 && n->role == NPF_ROLE_CLIENT)
+    if (npf_peer_tag(p) == 0 && npf_peer_nfwd(p) == 0 && n->role == NPF_ROLE_CLIENT)
         npf_log("%s: no -L/-D/-R given; the session stays open", npf_peer_name(p));
 }
 
 static void peer_fwd(npf_peer *p, int i, int up, const char *why, void *arg)
 {
     npf_t *n = arg;
-    char opt;
+    char opt, st[160], sp[320];
     const char *spec;
     int perm;
-    char st[160];
+    npf_out o = {0};
     npf_mods_peer_fwd(n, p, i, up, why);
-    if (n->cb.event && npf_peer_forward_info(p, i, &opt, &spec, &perm, st, sizeof st)) {
-        npf_out o = {0};
-        char sp[320];
-        snprintf(sp, sizeof sp, "-%c %s", opt, spec);
-        npf_out_printf(&o, "{\"peer\":");
-        npf_out_jstr(&o, npf_peer_name(p));
-        npf_out_printf(&o, ",\"spec\":");
-        npf_out_jstr(&o, sp);
-        npf_out_printf(&o, ",\"up\":%s,\"why\":", up ? "true" : "false");
-        npf_out_jstr(&o, why);
-        npf_out_printf(&o, "}");
-        n->cb.event(n->cb.user, "forward", o.p ? o.p : "{}");
-        npf_out_free(&o);
-    }
+    if (!npf_peer_forward_info(p, i, &opt, &spec, &perm, st, sizeof st))
+        return;
+    snprintf(sp, sizeof sp, "-%c %s", opt, spec);
+    npf_out_jopen(&o, '{');
+    npf_out_kstr(&o, "peer", npf_peer_name(p));
+    npf_out_kstr(&o, "spec", sp);
+    npf_out_kbool(&o, "up", up);
+    npf_out_kstr(&o, "why", why ? why : "");
+    npf_out_jclose(&o, '}');
+    emit_out(n, "forward", &o);
 }
 
 static void peer_done(npf_peer *p, const char *why, void *arg)
@@ -510,14 +450,11 @@ static void peer_done(npf_peer *p, const char *why, void *arg)
     if (n->role == NPF_ROLE_NODE)
         npf_logw("%s: gave up (%s)", npf_peer_name(p), why);
     npf_mods_peer_done(n, p, why);
-    npf_out_printf(&o, "{\"peer\":");
-    npf_out_jstr(&o, npf_peer_name(p));
-    npf_out_printf(&o, ",\"why\":");
-    npf_out_jstr(&o, why);
-    npf_out_printf(&o, "}");
-    if (n->cb.event)
-        n->cb.event(n->cb.user, "peer_done", o.p);
-    npf_out_free(&o);
+    npf_out_jopen(&o, '{');
+    npf_out_kstr(&o, "peer", npf_peer_name(p));
+    npf_out_kstr(&o, "why", why ? why : "");
+    npf_out_jclose(&o, '}');
+    emit_out(n, "peer_done", &o);
 }
 
 /* public connections (npf_peers_cbs): the modules' */

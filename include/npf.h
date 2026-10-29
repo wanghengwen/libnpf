@@ -39,8 +39,8 @@
  *     Its callbacks must not block, nor wait for an instance on another
  *     runtime thread; npf_destroy of an instance is refused from any
  *     callback on its thread. npf_runtime_free after the last npf_destroy.
- * Sessions and media streams are numbers (0 = none), never reused while the
- * npf_t lives: a stale number only gives NPF_ENOENT.
+ * Peers, forwards, sessions and media streams are numbers (0 = none), never
+ * reused while the npf_t lives: a stale number only gives NPF_ENOENT.
  *
  * Memory: JSON and text returned by a function belong to the caller, freed
  * with npf_free (NULL: the instance does not run any more, or no memory).
@@ -144,7 +144,7 @@ typedef struct npf_callbacks {
      * docs/protocol/signaling.md), "resources" {session, resources} (the
      * peer's published list); and those of the program's modules
      * (npf/module.h). "peer_done" and "forward" come from inside the
-     * library's work on that peer: removing the peer there (npf_peer_remove_id)
+     * library's work on that peer: removing the peer there (npf_peer_remove)
      * is not allowed, do it later (a timer, another thread) */
     void (*event)(void *user, const char *name, const char *json);
     /* a session came up (up 1; info: {"peer", "path", "direction", "call_id"})
@@ -199,11 +199,15 @@ typedef struct npf_setup {
 } npf_setup;
 
 enum { NPF_OPT_NO_SAVED_SETTINGS = 1,  /* local.json's settings are not applied (nor saved) */
-       NPF_OPT_NO_SAVED_OBJECTS = 2 }; /* its peers, forwards and resources are not brought back (nor saved) */
+       NPF_OPT_NO_SAVED_OBJECTS = 2,   /* its peers, forwards and resources are not brought back (nor saved) */
+       NPF_OPT_NO_LOG_RING = 4 };      /* no recent lines for npf_log_json (16 KB an instance: for an
+                                          application with a log callback and many instances) */
 
-/* ABI: the structures carry their size and only grow at the end; the
- * library reads what the application's build has and takes the defaults
- * for the rest. Initialise them with the _init / _default functions. */
+/* ABI: structures only grow at the end. What the application gives starts
+ * with its size (the _init macros set it and the defaults); what the
+ * library fills in is sized by the macro that passes the caller's sizeof
+ * (npf_peer_get, npf_resource_list, ...): the library reads and writes
+ * what both builds know, the defaults or zeros for the rest. */
 typedef struct npf_options {
     size_t      size;           /* sizeof(npf_options) of the application's build (npf_options_init) */
     const char *conf_dir;       /* read-only for the library */
@@ -223,9 +227,6 @@ typedef struct npf_options {
      * version */
     const char *app_name;
     const char *app_ver;
-    /* 1: keep no recent lines for npf_log_json (16 KB an instance; for an
-     * application with a log callback and many instances) */
-    int         no_log_ring;
     /* a shared runtime to run on (see Lifecycle); NULL: a thread of its own */
     npf_runtime *runtime;
     /* NULL: conf_dir / conf_file; given: no configuration file is read,
@@ -237,7 +238,8 @@ typedef struct npf_options {
 NPF_API const char *npf_version(void);
 NPF_API int         npf_api_version(void);
 /* the defaults, for size bytes (the application's sizeof: the macros give
- * it), so a library with larger structures never writes past them */
+ * it), so a library with larger structures never writes past them; the
+ * same for every _init */
 NPF_API void        npf_options_init_size(npf_options *o, size_t size);
 NPF_API void        npf_callbacks_init_size(npf_callbacks *cb, size_t size);
 NPF_API void        npf_setup_init_size(npf_setup *s, size_t size);
@@ -279,12 +281,10 @@ NPF_API int   npf_config_set(npf_t *n, const char *key, const char *value, int s
 NPF_API int   npf_save(npf_t *n);
 
 /* ---- objects: peers, forwards, resources ----
- * Peers and forwards are numbers (0 none) never reused while the npf_t lives;
- * a stale one gives NPF_ENOENT. Lists: count is always the number there is;
- * with too small an array the first cap are filled and NPF_ETOOBIG returned.
- * Creating: NPF_OK / NPF_ESAVE (made; not saved yet) give the new one,
- * NPF_EEXIST the one there is (what was given is ignored), other errors 0
- * and nothing made. */
+ * Lists: count is always the number there is; with too small an array the
+ * first cap are filled and NPF_ETOOBIG returned. Creating: NPF_OK /
+ * NPF_ESAVE (made; not saved yet) give the new one, NPF_EEXIST the one there
+ * is (what was given is ignored), other errors 0 and nothing made. */
 
 enum { NPF_TARGET_NUMBER = 1,          /* a node on the platform, by its number */
        NPF_TARGET_DIRECT = 2 };        /* HOST:PORT with a pre-shared key, no platform */
@@ -293,7 +293,7 @@ enum { NPF_CONNECT_KEEP = 0,           /* connected, again after a drop (backoff
        NPF_CONNECT_ON_DEMAND = 2 };    /* a session when a forward is used, ended when idle */
 enum { NPF_PERSIST = 1,                /* saved in local.json, back at the next start */
        NPF_FIXED = 2,                  /* info only: a resource of npf.conf */
-       NPF_PLATFORM = 8 };             /* info only: a peer opened for port mappings saved on the platform
+       NPF_PLATFORM = 4 };             /* info only: a peer opened for port mappings saved on the platform
                                           (a hosted client's), or one of those forwards */
 
 typedef struct npf_peer_opt {
@@ -327,7 +327,6 @@ enum { NPF_NEED_PASSWORD = 1,          /* not paired: the user gives its passwor
        NPF_NEED_ACCOUNT = 8 };         /* let in through the account: log in again */
 
 typedef struct npf_peer_info {
-    size_t   size;
     int      target;
     uint64_t number;
     char     host[256];
@@ -347,17 +346,16 @@ typedef struct npf_peer_info {
 } npf_peer_info;
 
 NPF_API void npf_peer_opt_init_size(npf_peer_opt *o, size_t size);
-NPF_API void npf_peer_info_init_size(npf_peer_info *o, size_t size);
-#define npf_peer_opt_init(o)  npf_peer_opt_init_size((o), sizeof *(o))
-#define npf_peer_info_init(o) npf_peer_info_init_size((o), sizeof *(o))
+#define npf_peer_opt_init(o) npf_peer_opt_init_size((o), sizeof *(o))
 
 NPF_API int npf_peer_create(npf_t *n, const npf_peer_opt *o, uint32_t *peer, char *err, size_t errcap);
 /* its session ends, its forwards go; a persisted one leaves local.json */
-NPF_API int npf_peer_remove_id(npf_t *n, uint32_t peer);
+NPF_API int npf_peer_remove(npf_t *n, uint32_t peer);
 /* by target ("318204776", "host:9000") or name */
 NPF_API int npf_peer_find(npf_t *n, const char *target_or_name, uint32_t *peer);
 NPF_API int npf_peer_list(npf_t *n, uint32_t *peers, size_t cap, size_t *count);
-NPF_API int npf_peer_get(npf_t *n, uint32_t peer, npf_peer_info *out);
+NPF_API int npf_peer_get_size(npf_t *n, uint32_t peer, npf_peer_info *out, size_t size);
+#define npf_peer_get(n, peer, out) npf_peer_get_size((n), (peer), (out), sizeof *(out))
 /* NPF_CONNECT_ON_DEMAND: the session now; NPF_PEER_ENDED: one more try */
 NPF_API int npf_peer_connect_now(npf_t *n, uint32_t peer);
 
@@ -419,7 +417,6 @@ enum { NPF_FWD_WHY_NONE = 0,
        NPF_FWD_WHY_OTHER };            /* why has the text */
 
 typedef struct npf_forward_info {
-    size_t   size;
     uint32_t peer;
     int      kind, proto;
     int      flags, saved;             /* as for peers */
@@ -437,16 +434,15 @@ typedef struct npf_forward_info {
 } npf_forward_info;
 
 NPF_API void npf_forward_opt_init_size(npf_forward_opt *o, size_t size);
-NPF_API void npf_forward_info_init_size(npf_forward_info *o, size_t size);
-#define npf_forward_opt_init(o)  npf_forward_opt_init_size((o), sizeof *(o))
-#define npf_forward_info_init(o) npf_forward_info_init_size((o), sizeof *(o))
+#define npf_forward_opt_init(o) npf_forward_opt_init_size((o), sizeof *(o))
 
 NPF_API int npf_forward_create(npf_t *n, uint32_t peer, const npf_forward_opt *o, uint32_t *fwd, char *err,
                                size_t errcap);
 NPF_API int npf_forward_remove(npf_t *n, uint32_t fwd);
 /* peer 0: every peer's */
 NPF_API int npf_forward_list(npf_t *n, uint32_t peer, uint32_t *fwds, size_t cap, size_t *count);
-NPF_API int npf_forward_get(npf_t *n, uint32_t fwd, npf_forward_info *out);
+NPF_API int npf_forward_get_size(npf_t *n, uint32_t fwd, npf_forward_info *out, size_t size);
+#define npf_forward_get(n, fwd, out) npf_forward_get_size((n), (fwd), (out), sizeof *(out))
 /* a forward's settings, as npf_peer_setopt: NPF_FWD_OPT_CTX the pointer as val, len 0 */
 enum { NPF_FWD_OPT_CTX = 1 };
 NPF_API int npf_forward_setopt(npf_t *n, uint32_t fwd, int opt, const void *val, size_t len);
@@ -468,7 +464,6 @@ typedef struct npf_resource {
 } npf_resource;
 
 typedef struct npf_resource_info {
-    size_t   size;
     int      type, flags, saved;       /* flags: NPF_PERSIST, NPF_FIXED */
     char     name[65], svc[16];
     char     host[64];                 /* tcp, udp of one service */
@@ -483,9 +478,8 @@ NPF_API void npf_resource_init_size(npf_resource *r, size_t size);
  * replaced by one without NPF_PERSIST leaves local.json) */
 NPF_API int npf_resource_put(npf_t *n, const npf_resource *r, char *err, size_t errcap);
 NPF_API int npf_resource_remove(npf_t *n, const char *name);
-/* this node's (peer 0), or what that peer published as last heard; elem_size:
- * the caller's sizeof (the macro) */
-NPF_API int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *out, size_t elem_size, size_t cap,
+/* this node's (peer 0), or what that peer published as last heard */
+NPF_API int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *out, size_t size, size_t cap,
                                    size_t *count);
 #define npf_resource_list(n, peer, out, cap, count) \
     npf_resource_list_size((n), (peer), (out), sizeof *(out), (cap), (count))
@@ -497,11 +491,10 @@ NPF_API int npf_pairing_password_get(npf_t *n, char *out, size_t cap);
 /* 8 .. NPF_PASSWORD_MAX bytes */
 NPF_API int npf_pairing_password_set(npf_t *n, const char *password, char *err, size_t errcap);
 typedef struct npf_pairing {
-    size_t  size;
     uint8_t key[32];                   /* the caller's public key */
     int64_t since;                     /* Unix time it paired */
 } npf_pairing;
-NPF_API int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t elem_size, size_t cap, size_t *count);
+NPF_API int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t size, size_t cap, size_t *count);
 #define npf_pairing_list(n, out, cap, count) npf_pairing_list_size((n), (out), sizeof *(out), (cap), (count))
 /* key NULL: all of them */
 NPF_API int npf_pairing_remove(npf_t *n, const uint8_t key[32]);
@@ -514,7 +507,6 @@ enum { NPF_NAT_UNKNOWN = 0, NPF_NAT_EIM, NPF_NAT_ADM, NPF_NAT_APDM };
 enum { NPF_PATH_DIRECT = 1, NPF_PATH_UDP_RELAY, NPF_PATH_WS_RELAY };
 
 typedef struct npf_node_info {
-    size_t   size;
     uint64_t number;                   /* 0: none yet */
     int      role;
     int      online;                   /* logged in to the platform */
@@ -530,7 +522,6 @@ typedef struct npf_node_info {
 } npf_node_info;
 
 typedef struct npf_session_info {
-    size_t   size;
     uint32_t peer;                     /* the peer it belongs to, 0: someone calling here */
     uint64_t number;                   /* the other side's number, 0 none */
     int      outgoing;
@@ -538,12 +529,10 @@ typedef struct npf_session_info {
     char     call_id[40];
 } npf_session_info;
 
-NPF_API void npf_node_info_init_size(npf_node_info *o, size_t size);
-NPF_API void npf_session_info_init_size(npf_session_info *o, size_t size);
-#define npf_node_info_init(o)    npf_node_info_init_size((o), sizeof *(o))
-#define npf_session_info_init(o) npf_session_info_init_size((o), sizeof *(o))
-NPF_API int npf_node_get(npf_t *n, npf_node_info *out);
-NPF_API int npf_session_get(npf_t *n, uint32_t session, npf_session_info *out);
+NPF_API int npf_node_get_size(npf_t *n, npf_node_info *out, size_t size);
+#define npf_node_get(n, out) npf_node_get_size((n), (out), sizeof *(out))
+NPF_API int npf_session_get_size(npf_t *n, uint32_t session, npf_session_info *out, size_t size);
+#define npf_session_get(n, session, out) npf_session_get_size((n), (session), (out), sizeof *(out))
 NPF_API int npf_session_list(npf_t *n, uint32_t *sessions, size_t cap, size_t *count);
 /* the network changed (a VPN up or down, another Wi-Fi): checked and mended now */
 NPF_API int npf_network_changed(npf_t *n);
@@ -584,7 +573,7 @@ NPF_API int   npf_session_send(npf_t *n, uint32_t session, const void *buf, size
 /* ---- sessions: audio / video (AnLiu semi-reliable streams) ---- */
 
 typedef struct npf_media_opt {
-    size_t size;                /* sizeof(npf_media_opt) of the application's build (npf_media_opt_default) */
+    size_t size;                /* sizeof(npf_media_opt) of the application's build (npf_media_opt_init) */
     int tag;                    /* the application's stream kind, 0..999 (the peer's media_open gets it) */
     int prio;                   /* 0 (first) .. 3; default 1: ahead of the forwards' data (2) */
     int max_age_ms;             /* a frame not sent this long after npf_media_send is dropped; default 500 */
@@ -592,13 +581,10 @@ typedef struct npf_media_opt {
     int fec;                    /* -1 automatic (default), 0 off, 1 on */
     int fec_ratio;              /* fixed parity per 100 packets, 0 adaptive (default) */
     int latency_rtt;            /* the receiver may wait this many round trips for a frame; 0 = off */
-    int rcv_deadline_ms;        /* reserved: needs AnLiu to change a stream's receiving
-                                   options; AnLiu's default applies */
     int rcv_drop_until_key;     /* the peer, receiving: after a lost frame skip to the next key frame */
 } npf_media_opt;
 
 typedef struct npf_media_stats {
-    size_t   size;              /* set by the caller: sizeof(npf_media_stats) */
     uint32_t target_rate;       /* bytes/s the encoder may send over all streams of the session */
     uint32_t srtt_ms, min_rtt_ms;
     uint32_t frames_dropped;    /* sender: too old */
@@ -609,17 +595,18 @@ typedef struct npf_media_stats {
     int      capacity_short;    /* the path is slower than the media */
 } npf_media_stats;
 
-NPF_API void npf_media_opt_default_size(npf_media_opt *o, size_t size);
-#define npf_media_opt_default(o) npf_media_opt_default_size((o), sizeof *(o))
-/* a stream of frames to the peer of a session (any path); returns the
- * stream number, 0 with *err: NPF_ESTATE (the session is not up), NPF_EBUSY
- * (64 streams per instance, or 30 outgoing streams per AnLiu session). Opening and closing
+NPF_API void npf_media_opt_init_size(npf_media_opt *o, size_t size);
+#define npf_media_opt_init(o) npf_media_opt_init_size((o), sizeof *(o))
+/* a stream of frames to the peer of a session (any path), its number in
+ * *media; NPF_ESTATE: the session is not up, NPF_EBUSY: 64 streams per
+ * instance, or 30 outgoing streams per AnLiu session. Opening and closing
  * often is fine: AnLiu's streams are kept and reused (data-channel.md 14) */
-NPF_API uint32_t npf_media_open(npf_t *n, uint32_t session, const npf_media_opt *o, int *err);
+NPF_API int npf_media_open(npf_t *n, uint32_t session, const npf_media_opt *o, uint32_t *media);
 /* one frame, up to NPF_MEDIA_FRAME_MAX (any thread; copied, never blocks):
  * NPF_OK when queued; from a callback it is sent at once and errors show */
 NPF_API int npf_media_send(npf_t *n, uint32_t media, int flags, const void *frame, size_t len);
-NPF_API int npf_media_stats_get(npf_t *n, uint32_t media, npf_media_stats *out);
+NPF_API int npf_media_stats_get_size(npf_t *n, uint32_t media, npf_media_stats *out, size_t size);
+#define npf_media_stats_get(n, media, out) npf_media_stats_get_size((n), (media), (out), sizeof *(out))
 NPF_API int npf_media_close(npf_t *n, uint32_t media);
 
 #ifdef __cplusplus

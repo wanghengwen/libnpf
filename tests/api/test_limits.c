@@ -38,23 +38,23 @@ int main(void)
         sessions[i] = s[0].session;
         pthread_mutex_unlock(&s[0].mu);
     }
-    npf_media_opt_default(&mo);
+    npf_media_opt_init(&mo);
     for (i = 0; i < 3; i++)
         for (j = 0; j < (i < 2 ? 30 : 4); j++) {
-            media[count] = npf_media_open(n[0], sessions[i], &mo, &e);
+            media[count] = media_open(n[0], sessions[i], &mo, &e);
             if (media[count]) count++;
         }
     say("64 media streams across three sessions", count == 64);
-    say("65th media stream refused by instance budget", npf_media_open(n[0], sessions[2], &mo, &e) == 0 && e == NPF_EBUSY);
+    say("65th media stream refused by instance budget", media_open(n[0], sessions[2], &mo, &e) == 0 && e == NPF_EBUSY);
     /* Receiver-initiated streams count against that same budget. */
     say("remote session ready", wait_for(&s[3], &s[3].up, 1, 10000));
     pthread_mutex_lock(&s[3].mu);
     replacement = s[3].session;
     pthread_mutex_unlock(&s[3].mu);
-    say("remote tries an incoming stream", npf_media_open(n[3], replacement, &mo, &e) != 0);
+    say("remote tries an incoming stream", media_open(n[3], replacement, &mo, &e) != 0);
     say("incoming stream refused at 64 too", wait_for(&s[3], &s[3].refused_closed, 1, 5000));
     say("close frees an instance slot", npf_media_close(n[0], media[0]) == NPF_OK);
-    say("slot reused on another session", npf_media_open(n[0], sessions[2], &mo, &e) != 0);
+    say("slot reused on another session", media_open(n[0], sessions[2], &mo, &e) != 0);
     for (i = 0; i < 4; i++) {
         npf_destroy(n[i]);
         snprintf(path, sizeof path, "%s/identity", dirs[i]); unlink(path);

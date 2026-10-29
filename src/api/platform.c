@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf_int.h"
+#include "api_internal.h"
 #include "npf/module.h"
 #include "npf/peers.h"
 
@@ -88,7 +88,8 @@ static void relay_apply(npf_t *c, const char *type, const npf_json *j)
         npf_account_info(c);
         npf_ev_account(c);
     } else if (strcmp(type, "account_logout") == 0 || strcmp(type, "account_delete") == 0) {
-        npf_log("account %llu: %s", (unsigned long long)n->account_id, type[8] == 'l' ? "logged out" : "deleted");
+        npf_log("account %llu: %s", (unsigned long long)n->account_id,
+                strcmp(type, "account_logout") == 0 ? "logged out" : "deleted");
         npf_forget_account(c);
         npf_mods_account(c, 0);             /* the platform's mappings go */
     }

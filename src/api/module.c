@@ -23,13 +23,13 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 /* the modules registered, NULL at the end: an instance takes them at npf_create */
 static const npf_module *g_mods[NPF_MOD_MAX + 1];
 
-static int has_cmd(const npf_module *m, const char *name)
+static const npf_mod_cmd *cmd_of(const npf_module *m, const char *name)
 {
     const npf_mod_cmd *c;
     for (c = m->cmds; c && c->name; c++)
         if (strcmp(c->name, name) == 0)
-            return 1;
-    return 0;
+            return c;
+    return NULL;
 }
 
 static int has_key(const npf_module *m, const char *k)
@@ -57,7 +57,7 @@ static int fits(const npf_module *m, int count)
         if (!c->run || npf_cmd_builtin(c->name))
             return 0;
         for (i = 0; i < count; i++)
-            if (has_cmd(g_mods[i], c->name))
+            if (cmd_of(g_mods[i], c->name))
                 return 0;
     }
     for (kk = m->keys; kk && *kk; kk++) {
@@ -115,11 +115,6 @@ void npf_mod_set_state(npf_t *n, const npf_module *m, void *state)
     int i = slot_of(n, m);
     if (i >= 0)
         n->mod_state[i] = state;
-}
-
-void npf_mod_jkey(npf_out *o, int *first, const char *k)
-{
-    npf_out_jkey(o, first, k);
 }
 
 int npf_mod_key_known(npf_t *n, const char *k)
@@ -183,7 +178,7 @@ void npf_mods_peer_fwd(npf_t *n, npf_peer *p, int i, int up, const char *why) { 
 void npf_mods_peer_removed(npf_t *n) { CALL(peer_removed, n); }
 void npf_mods_nick_set(npf_t *n, const char *target, const char *nick) { CALL(nick_set, n, target, nick); }
 void npf_mods_fwds_saved(npf_t *n, npf_ldev *d) { CALL(fwds_saved, n, d); }
-void npf_mods_status_json(npf_t *n, npf_out *o, int *first) { CALL(status_json, n, o, first); }
+void npf_mods_status_json(npf_t *n, npf_out *o) { CALL(status_json, n, o); }
 
 void npf_mods_peer_opened(npf_t *n, npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from)
 {
@@ -225,15 +220,12 @@ int npf_mods_peer_removing(npf_t *n, npf_peer *p)
 int npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o, int *rc)
 {
     const npf_module *m;
+    const npf_mod_cmd *c;
     if (!n->mods_made)
         return 0;
-    EACH(m) {
-        const npf_mod_cmd *c;
-        for (c = m->cmds; c && c->name; c++)
-            if (strcmp(c->name, argv[0]) == 0) {
-                *rc = c->run(n, argc, argv, cb, user, o);
-                return 1;
-            }
+    EACH(m) if ((c = cmd_of(m, argv[0]))) {
+        *rc = c->run(n, argc, argv, cb, user, o);
+        return 1;
     }
     return 0;
 }
@@ -249,11 +241,6 @@ void npf_mods_conf_set(npf_t *n, const char *k, const char *v)
 int npf_mods_check(npf_t *n, const char *k, const char *v, npf_out *o)
 {
     const npf_module *m;
-    EACH(m) {
-        const char *const *kk;
-        for (kk = m->keys; kk && *kk; kk++)
-            if (strcmp(*kk, k) == 0)
-                return m->check ? m->check(n, k, v, o) : 0;
-    }
+    EACH(m) if (has_key(m, k)) return m->check ? m->check(n, k, v, o) : 0;
     return -1;
 }

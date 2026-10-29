@@ -164,6 +164,7 @@ add_library(npf_common STATIC
   src/api/engine_identity.c
   src/api/engine_events.c
   src/api/cmd.c
+  src/api/status.c
   src/api/publish.c
   src/api/platform.c
   src/api/module.c

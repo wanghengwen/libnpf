@@ -69,7 +69,7 @@ typedef struct npf_module {
                       const struct npf_sublink_stats *st);
     void (*peer_refused)(npf_t *n, npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from,
                          const char *why, int opened);
-    /* a peer is removed (npf_peer_remove_id): 1 when the module opens it again
+    /* a peer is removed (npf_peer_remove): 1 when the module opens it again
      * (its sync below), so the reply says so */
     int  (*peer_removing)(npf_t *n, npf_peer *p);
     void (*peer_removed)(npf_t *n);
@@ -82,9 +82,10 @@ typedef struct npf_module {
     /* the command line (npf_command): commands of its own */
     const npf_mod_cmd *cmds;
 
-    /* the status: keys of its own in the JSON object (npf_mod_jkey for each,
-     * first as there) */
-    void (*status_json)(npf_t *n, npf_out *o, int *first);
+    /* the status: members of its own in the JSON object, written with
+     * npf_out_kstr, npf_out_jkey and the rest (npf/out.h: the commas come by
+     * themselves); names with the module's prefix */
+    void (*status_json)(npf_t *n, npf_out *o);
 
     /* configuration keys it reads (npf.conf, npf set); NULL ends them */
     const char *const *keys;
@@ -105,9 +106,6 @@ int   npf_register_module(const npf_module *m);
 /* each module's state in an instance */
 void *npf_mod_state(npf_t *n, const npf_module *m);
 void  npf_mod_set_state(npf_t *n, const npf_module *m, void *state);
-
-/* a key of the status JSON object: the comma before it unless it is the first */
-void npf_mod_jkey(npf_out *o, int *first, const char *k);
 
 /* one of the instance's modules' configuration keys? */
 int  npf_mod_key_known(npf_t *n, const char *k);
@@ -138,7 +136,7 @@ void npf_mods_nick_set(npf_t *n, const char *target, const char *nick);
 void npf_mods_fwds_saved(npf_t *n, npf_ldev *d);
 /* a module's command: 1 found (*rc its result), 0 none of that name */
 int  npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o, int *rc);
-void npf_mods_status_json(npf_t *n, npf_out *o, int *first);
+void npf_mods_status_json(npf_t *n, npf_out *o);
 /* -1: not a module's key; else check's result */
 int  npf_mods_check(npf_t *n, const char *k, const char *v, npf_out *o);
 void npf_mods_conf_set(npf_t *n, const char *k, const char *v);
