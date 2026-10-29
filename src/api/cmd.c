@@ -262,19 +262,19 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
                               : npf_peer_connect_mode(p) == NPF_CONNECT_ONCE ? "once" : "keep");
         npf_out_jkstr(o, &g, "source", npf_cmd_tag_name(npf_peer_tag(p)));
         npf_out_jkstr(o, &g, "status", npf_peer_status(p, b, sizeof b));
-        if (npf_peer_needs_password(p)) {   /* not paired: the console asks for its password */
+        if (npf_peer_needs(p) & NPF_NEED_PASSWORD) {   /* not paired: the console asks for its password */
             npf_out_jkey(o, &g, "need_password");
             npf_out_printf(o, "true");
-            if (npf_peer_password_wrong(p)) {
+            if (npf_peer_needs(p) & NPF_NEED_PASSWORD_WRONG) {
                 npf_out_jkey(o, &g, "password_wrong");
                 npf_out_printf(o, "true");
             }
-            if (npf_peer_pairing_lost(p)) {
+            if (npf_peer_needs(p) & NPF_NEED_PAIRING_LOST) {
                 npf_out_jkey(o, &g, "pairing_lost");
                 npf_out_printf(o, "true");
             }
         }
-        if (npf_peer_needs_account(p)) {    /* the account let it in: log in again */
+        if (npf_peer_needs(p) & NPF_NEED_ACCOUNT) {    /* the account let it in: log in again */
             npf_out_jkey(o, &g, "need_account");
             npf_out_printf(o, "true");
         }
