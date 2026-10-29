@@ -132,8 +132,8 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             /* silence counts from the later of the last datagram heard and
              * the moment data went in flight (after an idle spell the first
              * new request must not look like a path quiet all along); with
-             * none in flight, from its start: a peer that is there still
-             * sends AnLiu's keepalive every 15 s */
+             * none in flight, from its start or the peer first heard: a
+             * peer that is there still sends AnLiu's keepalive every 15 s */
             if (inflight && r->t_busy) {
                 if (!p->busy_since)
                     p->busy_since = now;
@@ -142,7 +142,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             } else {
                 p->busy_since = 0;
                 quiet = r->t_idle;
-                from = max64(p->last_rx, p->since);
+                from = max64(max64(p->last_rx, p->since), m->heard_at);
             }
             if (now - from < quiet) {
                 due = min64(due, from + quiet);
@@ -274,6 +274,7 @@ void call_paths_init(npf_call *c)
     c->pw.p.ops = &path_ws_ops;
     c->pw.p.kind = PK_WS_RELAY;
     c->pm.udp_again = c->n->th.udp_again_ms ? c->n->th.udp_again_ms : PM_UDP_AGAIN_MS;
+    c->pm.heard_at = -1;
 }
 
 /* ---- the session's paths' health ---- */
@@ -298,6 +299,8 @@ void pm_check(npf_call *c)
     unsigned in;
     if (call_over(c))
         return;
+    if (m->heard_at < 0 && c->st == CS_UP)
+        m->heard_at = now;
     /* AnLiu's stats only for a path whose rules look at the data in flight */
     for (k = 0; k < PK_N; k++)
         busy |= m->p[k] && m->p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(m, m->p[k]);

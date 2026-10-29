@@ -96,6 +96,7 @@ typedef struct npf_pm {
     npf_path *p[PK_N];              /* NULL: none of that kind */
     npf_path *primary, *second;     /* pm_route's choice */
     int       fixed;                /* a direct connection's fixed direct path: no health rules */
+    int64_t   heard_at;             /* the peer first heard (the session UP); < 0 not yet: nothing relied on */
     int64_t   check_at;             /* pm_check again */
     /* pm_decide's: the steps this loss of the UDP relay has had (PM_IN_PORTS,
      * PM_IN_PUNCH, PM_T_RETRY), the wait act_at ends (PM_IN_PORTS,
@@ -136,10 +137,12 @@ void pm_probe(npf_path *p, int64_t now, int64_t window);
 int  pm_rt(npf_pm *m, npf_path *p, int64_t now);
 int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto);
 
-/* the session relies on p: the health rules apply to it */
+/* the session relies on p: the health rules apply to it. Not before the
+ * peer was heard: a peer not there yet (the caller waiting for a late
+ * call_accepted) is no path's silence */
 static inline int pm_relied(const npf_pm *m, const npf_path *p)
 {
-    return !m->fixed && (p->role == PR_PRIMARY || p->role == PR_SECOND);
+    return !m->fixed && m->heard_at >= 0 && (p->role == PR_PRIMARY || p->role == PR_SECOND);
 }
 
 static inline void pm_send(const npf_pm *m, const uint8_t *dgram, size_t len)
