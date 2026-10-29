@@ -184,7 +184,7 @@ static void start_round(npf_node *n, const char *why)
 void node_sources_check(npf_node *n)
 {
     int64_t now = npf_mono_ms(), after = n->th.sources_after_ms ? n->th.sources_after_ms : SRC_AFTER_MS;
-    int expired, stuck, d;
+    int expired, stuck;
     char why[96];
     if (n->online || n->nsrc_req > 0 || now < n->src_next || (!n->sl_meta.ndoh && !n->sl_meta.nhttps))
         return;
@@ -196,9 +196,7 @@ void node_sources_check(npf_node *n)
         snprintf(why, sizeof why, "no server reachable for %lld s", (long long)((now - n->unreachable_since) / 1000));
     else
         snprintf(why, sizeof why, "the list has expired");
-    n->src_backoff = n->src_backoff ? (n->src_backoff * 2 > SRC_MAX_MS ? SRC_MAX_MS : n->src_backoff * 2) : SRC_FIRST_MS;
-    d = n->src_backoff * 3 / 4 + (int)npf_rand_range(0, (size_t)n->src_backoff / 2);
-    n->src_next = now + d;
+    n->src_next = now + npf_backoff(&n->src_backoff, SRC_FIRST_MS, SRC_MAX_MS);
     start_round(n, why);
 }
 

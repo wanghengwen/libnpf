@@ -18,6 +18,15 @@ static inline int npf_hexval(int c)
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
 
+/* no control characters (UTF-8 itself the JSON parser checks): 1, else 0 */
+static inline int npf_text_plain(const char *s)
+{
+    for (; *s; s++)
+        if ((unsigned char)*s < 0x20 || *s == 0x7f)
+            return 0;
+    return 1;
+}
+
 /* s whole a decimal number in lo..hi (hi < LONG_MAX / 10): digits only, no
  * sign, no leading zero; 0 or -1 */
 int npf_text_dec(const char *s, long lo, long hi, long *out);

@@ -61,12 +61,6 @@ static void known_put(npf_peers *ps, uint64_t number, const uint8_t pub[32])
         npf_loge("cannot write %s", ps->lc->path);
 }
 
-int peers_backoff(int *backoff, int max)
-{
-    int ms = *backoff = *backoff ? (*backoff * 2 > max ? max : *backoff * 2) : 1000;
-    return ms * 3 / 4 + (int)npf_rand_range(0, (size_t)ms / 2 + 1);
-}
-
 /* ---- sessions ---- */
 
 /* the peer gives up (it stays, finished, until removed or tried again) */
@@ -142,7 +136,7 @@ static void again(npf_peer *p, const char *why)
     }
     if (p->t_retry)
         return;
-    d = peers_backoff(&p->backoff, BACKOFF_MAX_MS);
+    d = npf_backoff(&p->backoff, 1000, BACKOFF_MAX_MS);
     snprintf(p->last_why, sizeof p->last_why, "%s", why);
     p->retry_at = npf_mono_ms() + d;
     npf_log("%s: reconnecting in %d s", p->name, (d + 999) / 1000);
@@ -446,12 +440,10 @@ static void peer_free_now(npf_peer *p)
     for (i = 0; i < p->nfwd; i++) {
         npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_accept);
         free(p->fwds[i]->acl);
-        npf_wipe(p->fwds[i], sizeof *p->fwds[i]);
-        free(p->fwds[i]);
+        npf_wipe_free(p->fwds[i], sizeof *p->fwds[i]);
     }
     free(p->resources);
-    npf_wipe(p, sizeof *p);
-    free(p);
+    npf_wipe_free(p, sizeof *p);
 }
 
 static void peer_free_later(npf_loop *loop, void *arg)

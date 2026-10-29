@@ -165,9 +165,6 @@ struct npf_peers {
 };
 
 /* peers.c */
-/* the next of a doubling backoff (1 s first, at most max): its delay, with
- * +-25 % jitter (ms) */
-int  peers_backoff(int *backoff, int max);
 /* someone waits for the session (a connection, a datagram, a module's
  * forward, a wake): it starts now, no backoff; -1 when the start removed the
  * peer (in the done callback of a start that failed: its fds went) */

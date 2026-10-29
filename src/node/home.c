@@ -353,8 +353,7 @@ void node_home_stop(npf_node *n)
     npf_timer_stop(n->loop, &h->t_due);
     npf_node_cancel_requests(n, h);
     npf_udp_watch_on(h->watch_fd, NULL);
-    npf_wipe(&h->r, sizeof h->r);
-    free(h);
+    npf_wipe_free(h, sizeof *h);
     n->home = NULL;
 }
 

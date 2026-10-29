@@ -278,14 +278,11 @@ void npf_engine_free(npf_t *n)
     npf_pub_free(n);
     npf_local_free(&n->lc);
     npf_engine_config_free(n);
-    if (n->callee)
-        npf_wipe(n->callee, sizeof *n->callee);
-    free(n->callee);
+    npf_wipe_free(n->callee, sizeof *n->callee);
     free(n->sess);
     free(n->med);
     npf_log_ctx_swap(prev == &n->logctx ? NULL : prev);
     npf_api_fini(n);
     free(n->logctx.ring);
-    npf_wipe(n, sizeof *n);                 /* the keys: its own, the node's copy, the model's; the passwords */
-    free(n);
+    npf_wipe_free(n, sizeof *n);            /* the keys: its own, the node's copy, the model's; the passwords */
 }

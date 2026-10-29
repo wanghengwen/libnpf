@@ -82,8 +82,7 @@ int npf_seed_file(const char *path, uint8_t seed[32], int create)
         while (n > 0 && isspace((unsigned char)s[n - 1]))
             s[--n] = 0;
         r = npf_b64url_decode(s, (size_t)n, seed, 32);
-        npf_wipe(s, (size_t)len);
-        free(s);
+        npf_wipe_free(s, (size_t)len);
         return r == 32 ? 0 : -1;
     }
     /* made only when there is none: a key that cannot be read now (its

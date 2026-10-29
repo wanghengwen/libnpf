@@ -152,10 +152,7 @@ int npf_plat_request(npf_t *c, const char *type, const char *data, int proof, np
     r->user = user;
     snprintf(r->type, sizeof r->type, "%s", type);
     rc = npf_node_request(&c->node, type, proof ? buf : data && *data ? data : NULL, relay_done, r);
-    if (buf) {
-        npf_wipe(buf, NPF_JSON_MAX_SIZE);   /* passwords */
-        free(buf);
-    }
+    npf_wipe_free(buf, NPF_JSON_MAX_SIZE);  /* passwords */
     if (rc < 0) {
         free(r);
         npf_out_printf(err, "cannot send the request\n");

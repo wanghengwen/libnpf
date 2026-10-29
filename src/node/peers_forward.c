@@ -266,7 +266,7 @@ static void fwd_retry(pfwd *f, const char *why)
     int d;
     if (f->t_retry || !f->used)
         return;
-    d = peers_backoff(&f->backoff, FWD_BACKOFF_MAX_MS);
+    d = npf_backoff(&f->backoff, 1000, FWD_BACKOFF_MAX_MS);
     snprintf(f->why, sizeof f->why, "%s", why);
     f->retry_at = npf_mono_ms() + d;
     {

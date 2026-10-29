@@ -182,10 +182,8 @@ int npf_command(npf_t *n, int argc, const char *const *argv, npf_text_cb cb, voi
         x.argv = own + argc;
         rc = npf_api_op(n, c_run, &x);
     }
-    for (i = 0; i < argc && own[i]; i++) {
-        npf_wipe(own[i], strlen(own[i]));   /* passwords */
-        free(own[i]);
-    }
+    for (i = 0; i < argc && own[i]; i++)
+        npf_wipe_free(own[i], strlen(own[i]));      /* passwords */
     free(own);
     return rc;
 }
