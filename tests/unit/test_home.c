@@ -202,10 +202,13 @@ static void to_home(npf_node *n, const char *m, int ok, int event)
     char e[1200];
     snprintf(e, sizeof e, "{\"v\":1,\"type\":\"%s\",%s", event ? "relay_spare" : "home_open", m + 1);
     CHECK(npf_json_parse(&j, e, strlen(e), tok, 48) >= 0, "JSON %s", e);
-    if (event)
+    if (event) {
         node_msg(n, &j);
-    else
-        open_reply(n, &j, ok, n->home);
+    } else {
+        m_env env;
+        CHECK(node_env(&j, &env) == 0, "an envelope");
+        open_reply(n, &env, ok, n->home);
+    }
 }
 
 /* {"data":{"relay":...more}}: the spare id, its key, its addresses ("a","b") */
@@ -360,9 +363,10 @@ static void test_client(void)
     {
         npf_jtok tok[16];
         npf_json j;
+        m_env env;
         char m[] = "{\"v\":1,\"type\":\"reply\",\"status\":\"error\",\"error\":\"rate_limited\",\"data\":{}}";
-        CHECK(npf_json_parse(&j, m, strlen(m), tok, 16) == 0, "reply JSON");
-        open_reply(&node, &j, 0, node.home);
+        CHECK(npf_json_parse(&j, m, strlen(m), tok, 16) == 0 && node_env(&j, &env) == 0, "reply JSON");
+        open_reply(&node, &env, 0, node.home);
         CHECK(node.home->r.state == RB_GAVE_UP && node.home->at && node.home->t_due,
               "no timer after home_open refused while backing off");
     }

@@ -50,22 +50,21 @@ void npf_forget_account(npf_t *n)
     npf_ev_account(n);
 }
 
-static void account_got(npf_node *node, const npf_json *j, int ok, void *arg)
+static void account_got(npf_node *node, const npf_env *e, int ok, void *arg)
 {
     npf_t *n = arg;
-    int d;
     (void)node;
-    if (!ok || !j || (d = npf_json_get(j, 0, "data")) < 0)
+    if (!ok)
         return;
-    if (npf_json_get_str(j, d, "email", n->account_login, sizeof n->account_login) <= 0
-        && npf_json_get_str(j, d, "phone", n->account_login, sizeof n->account_login) <= 0)
-        npf_json_get_str(j, d, "name", n->account_login, sizeof n->account_login);
+    if (npf_json_get_str(e->j, e->data, "email", n->account_login, sizeof n->account_login) <= 0
+        && npf_json_get_str(e->j, e->data, "phone", n->account_login, sizeof n->account_login) <= 0)
+        npf_json_get_str(e->j, e->data, "name", n->account_login, sizeof n->account_login);
 }
 
 void npf_account_info(npf_t *n)
 {
     n->account_login[0] = 0;
-    if (n->node.online && n->node.account_id && !n->cfg.hosted_exec)
+    if (n->node.online && n->node.account_id && !n->node.cfg.hosted_exec)
         npf_node_request(&n->node, "account_get", "{}", account_got, n);
 }
 
@@ -389,11 +388,11 @@ int npf_become_node(npf_t *n, uint64_t number)
         npf_logw("cannot write %s", bak);
     n->number = number;
     n->has_number = 1;
-    /* callable from now on here too, as in the node's own copy (node_signal.c):
-     * at each login the callee's work runs (on_login: it never did until a
-     * restart, unpairings and an owner reset were not reported) */
-    n->cfg.callable = 1;
-    n->cfg.number = number;
+    /* callable from now on: at each login the callee's work runs (on_login:
+     * it never did until a restart, unpairings and an owner reset were not
+     * reported) */
+    n->node.cfg.callable = 1;
+    n->node.cfg.number = number;
     snprintf(n->default_pw, sizeof n->default_pw, "%s", pw);
     /* the published resources make the callee's policy now; without it an
      * exit node enrolled at run time refused every internet target until a

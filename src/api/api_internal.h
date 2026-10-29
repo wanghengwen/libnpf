@@ -1,4 +1,4 @@
-/* Shared by src/api's files only (what modules use is in npf_int.h): how a
+/* Shared by src/api's files only (what modules use is in npf/module.h): how a
  * call reaches the instance's thread (api_thread.c), the engine's parts
  * (engine*.c), and the operations of npf.h's objects (ops*.c, api.c). */
 #ifndef NPF_API_INTERNAL_H
@@ -14,7 +14,42 @@
 #include <pthread.h>
 #endif
 
-#include "npf_int.h"
+#include "npf/callee.h"
+#include "npf/crypto.h"
+#include "npf/module.h"
+#include "npf/platform.h"
+#include "npf/tunnel.h"
+#include "npf/version.h"
+
+/* sessions and media streams by number (npf_t's sess, med) */
+#define NPF_MAX_SESS  256
+#define NPF_MAX_MEDIA NPF_MEDIA_STREAMS_MAX
+
+typedef struct npf_sess {
+    uint32_t  id;
+    npf_call *call;
+    uint32_t  peer;                 /* its peer's number (npf_peer_id), 0: someone calling here */
+} npf_sess;
+
+typedef struct npf_med {
+    uint32_t  id, session;
+    npf_call *call;
+    uint32_t  lid;                  /* its number in the session (node/media.h) */
+} npf_med;
+
+/* the status object (npf_status_json) */
+void npf_status_out(npf_t *n, npf_out *o);
+
+/* cmd.c: a command (argv[0] = its name); the exit code with the text in o
+ * (0 done, 1 failed, 2 a bad command, NPF_CMD_UNSAVED), or -1 when it answers
+ * later through cb. libnpf's own commands come before the modules' */
+int  npf_cmd_run(npf_t *n, int argc, char **argv, npf_out *o, npf_text_cb cb, void *user);
+int  npf_cmd_builtin(const char *name);     /* one of libnpf's own commands? */
+void npf_cmd_config_json(npf_t *n, npf_out *o);
+/* a hosted client's limits on its public mappings (hosted_max_conns ...: npf-hosted sets them from the platform) */
+void npf_hosted_limits(npf_t *n);
+int  npf_cmd_set(npf_t *n, const char *k, const char *v, int save, npf_out *o);
+const char *npf_cmd_get(npf_t *n, const char *k, char *buf, size_t cap);
 
 /* ---- the instance's thread (api_thread.c) ---- */
 
@@ -68,7 +103,7 @@ int  npf_engine_identity_load(npf_t *n, char *err, size_t errcap);
 void npf_engine_callee_attach(npf_t *n);
 void npf_engine_account_load(npf_t *n);
 /* engine_events.c: the node and the peers with the engine's callbacks */
-int  npf_engine_node_init(npf_t *n);
+int  npf_engine_node_init(npf_t *n, const npf_node_cfg *cfg);
 npf_peers *npf_engine_peers_new(npf_t *n);
 /* setup.c: npf_setup's fields as configuration keys (c), their values
  * checked (npf_conf_check); 0, or -1 with err */
@@ -214,5 +249,32 @@ static inline npf_peer *peer_of(npf_t *n, uint32_t id)
 {
     return n->peers ? npf_peers_by_id(n->peers, id) : NULL;
 }
+
+/* ---- the modules' hooks (module.c) ---- */
+void npf_mods_take(npf_t *n);              /* the modules registered by now */
+int  npf_mods_create(npf_t *n, char *err, size_t errcap);
+void npf_mods_begin(npf_t *n);
+int  npf_mods_end(npf_t *n, int step);      /* the longest wait asked for */
+void npf_mods_destroy(npf_t *n);
+void npf_mods_login(npf_t *n);
+void npf_mods_event(npf_t *n, const char *type, const npf_json *j, int d);
+int  npf_mods_sig_busy(npf_t *n);
+void npf_mods_account(npf_t *n, int on);
+void npf_mods_call_state(npf_t *n, npf_call *call, int st, const char *why);
+void npf_mods_peer_up(npf_t *n, npf_peer *p, npf_call *call);
+void npf_mods_peer_done(npf_t *n, npf_peer *p, const char *why);
+void npf_mods_peer_fwd(npf_t *n, npf_peer *p, int i, int up, const char *why);
+void npf_mods_peer_opened(npf_t *n, npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from);
+void npf_mods_peer_conn(npf_t *n, npf_peer *p, npf_call *call, uint64_t mapping, int port,
+                        const struct sockaddr_storage *from, int64_t start, int64_t end,
+                        const struct npf_sublink_stats *st);
+void npf_mods_peer_refused(npf_t *n, npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from,
+                           const char *why, int opened);
+void npf_mods_peer_removed(npf_t *n);
+void npf_mods_fwds_saved(npf_t *n, npf_ldev *d);
+/* a module's command: 1 found (*rc its result), 0 none of that name */
+int  npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o, int *rc);
+void npf_mods_status_json(npf_t *n, npf_out *o);
+void npf_mods_conf_set(npf_t *n, const char *k, const char *v);
 
 #endif

@@ -21,13 +21,13 @@ static int fails;
 /* the key table: where a key may come from, its values, its defaults */
 static void key_table(void)
 {
-    static const char *const file[] = {"root", "server", "cred", "dir", "state", "log", "control", "node", "resource",
+    static const char *const file[] = {"root", "server", "cred", "dir", "state", "node", "resource",
                                        "direct_psk", "hosted_exec", "test_one_host", NULL};
     static const char *const live[] = {"log_level", "max_calls", "punch_lead_ms", "punch_sockets", "hosted_trust",
-                                       "connect_mode", "peer_idle", "keep_awake", "hosted_max_conns", NULL};
+                                       "connect_mode", "peer_idle", "hosted_max_conns", NULL};
     npf_conf c;
     char err[96];
-    const npf_key *k = NULL;
+    const npf_key *k;
     int i, n = 0;
     for (i = 0; file[i]; i++)
         CHECK(npf_key_is(file[i], NPF_K_FILE) && !npf_key_is(file[i], NPF_K_LIVE), "%s: npf.conf only", file[i]);
@@ -37,12 +37,14 @@ static void key_table(void)
           && !npf_key_is("serial_file", NPF_K_PATH) && npf_key_is("resource", NPF_K_MULTI)
           && npf_key_is("hosted_ip_rate", NPF_K_UNLISTED) && npf_key_is("peer_idle", NPF_K_SETUP)
           && !npf_key_is("log_level", NPF_K_SETUP), "the flags");
-    while ((k = npf_key_next(k))) {
+    for (k = npf_keys; k->name; k++) {
         char e2[96];
         n++;
         CHECK(k->def && (k->type == NPF_K_STR || npf_key_check(k, k->def, e2, sizeof e2) == 0), "%s: its default", k->name);
     }
-    CHECK(n == 48, "%d keys", n);
+    CHECK(n == 41, "%d keys", n);
+    CHECK(!npf_key_find("control") && !npf_key_find("log") && !npf_key_find("keep_awake") && !npf_key_find("hosted_ports"),
+          "none of the program's (its module's: architecture.md 7)");
     CHECK(npf_key_check(npf_key_find("max_calls"), "4097", err, sizeof err) < 0
           && strcmp(err, "max_calls: a number from 0 to 4096") == 0, "max_calls: %s", err);
     CHECK(npf_key_check(npf_key_find("punch_lead_ms"), "-1", err, sizeof err) == 0

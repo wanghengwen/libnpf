@@ -67,10 +67,9 @@ typedef struct relay {
 } relay;
 
 /* what the reply changes here: the account session and its certificate */
-static void relay_apply(npf_t *c, const char *type, const npf_json *j)
+static void relay_apply(npf_t *c, const char *type, const npf_json *j, int d)
 {
     npf_node *n = &c->node;
-    int d = npf_json_get(j, 0, "data");
     if (strcmp(type, "account_login") == 0 || strcmp(type, "account_register") == 0
         || strcmp(type, "password_reset_finish") == 0 || strcmp(type, "hosted_login") == 0
         || strcmp(type, "auth_finish") == 0) {
@@ -95,18 +94,18 @@ static void relay_apply(npf_t *c, const char *type, const npf_json *j)
     }
 }
 
-static void relay_done(npf_node *n, const npf_json *j, int ok, void *arg)
+static void relay_done(npf_node *n, const npf_env *e, int ok, void *arg)
 {
     relay *r = arg;
     (void)n;
-    if (j && ok)
-        relay_apply(r->c, r->type, j);
+    if (ok)
+        relay_apply(r->c, r->type, e->j, e->data);
     if (r->cb) {
-        if (j) {
-            char *t = malloc(j->len + 1);
+        if (e) {
+            char *t = malloc(e->j->len + 1);
             if (t) {
-                memcpy(t, j->s, j->len);
-                t[j->len] = 0;
+                memcpy(t, e->j->s, e->j->len);
+                t[e->j->len] = 0;
             }
             r->cb(r->user, ok, t ? t : "{}");
             free(t);

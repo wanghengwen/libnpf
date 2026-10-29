@@ -158,18 +158,16 @@ static const char *no_account_why(const npf_peer *p)
     return p->by_account ? "no_account" : unpaired_why(p);
 }
 
-static void grant_got(npf_node *n, const npf_json *j, int ok, void *arg)
+static void grant_got(npf_node *n, const npf_env *e, int ok, void *arg)
 {
     npf_peer *p = arg;
     uint8_t chain[1024], grant[512];
-    int d, cl, gl;
-    char err[32] = "no reply";
+    int cl, gl;
     p->waiting = 0;
     if (p->finished || p->call)
         return;
     if (!ok) {
-        if (j)
-            npf_json_get_str(j, 0, "error", err, sizeof err);
+        const char *err = e && e->error[0] ? e->error : "no reply";
         if (strcmp(err, "unavailable") == 0) {  /* the account neither owns it nor was given it */
             p->by_account = 0;
             npf_logw("%s: not paired yet, and the account has no access to it: give its password (-p)", p->name);
@@ -180,9 +178,8 @@ static void grant_got(npf_node *n, const npf_json *j, int ok, void *arg)
         }
         return;
     }
-    d = npf_json_get(j, 0, "data");
-    cl = npf_json_get_b64(j, d, "cert", chain, sizeof chain);
-    gl = npf_json_get_b64(j, d, "grant", grant, sizeof grant);
+    cl = npf_json_get_b64(e->j, e->data, "cert", chain, sizeof chain);
+    gl = npf_json_get_b64(e->j, e->data, "grant", grant, sizeof grant);
     if (cl > 0 && gl > 0) {
         p->by_account = 1;
         p->call_pinned = 0;
@@ -192,23 +189,20 @@ static void grant_got(npf_node *n, const npf_json *j, int ok, void *arg)
         again(p, "error");
 }
 
-static void grant_updated(npf_call *c, const npf_json *j, int ok, void *arg)
+static void grant_updated(npf_call *c, const npf_env *e, int ok, void *arg)
 {
     npf_peer *p = arg;
-    char err[32] = "no reply";
     (void)c;
     if (ok) {
         npf_log("%s: the device took the new target list", p->name);
         return;
     }
-    if (j)
-        npf_json_get_str(j, 0, "error", err, sizeof err);
-    npf_logw("%s: grant_update refused (%s): the session starts again", p->name, err);
+    npf_logw("%s: grant_update refused (%s): the session starts again", p->name, e && e->error[0] ? e->error : "no reply");
     if (p->call)
         npf_call_end(p->call, "closed");    /* the next session brings the new grant */
 }
 
-static void grant_renewed(npf_node *n, const npf_json *j, int ok, void *arg)
+static void grant_renewed(npf_node *n, const npf_env *e, int ok, void *arg)
 {
     npf_peer *p = arg;
     uint8_t grant[512];
@@ -218,7 +212,7 @@ static void grant_renewed(npf_node *n, const npf_json *j, int ok, void *arg)
     p->renewing = 0;
     if (!p->call || npf_call_state(p->call) != NPF_CALL_ESTABLISHED)
         return;                             /* a new session gets a new grant anyway */
-    gl = ok ? npf_json_get_b64(j, npf_json_get(j, 0, "data"), "grant", grant, sizeof grant) : -1;
+    gl = ok ? npf_json_get_b64(e->j, e->data, "grant", grant, sizeof grant) : -1;
     if (gl <= 0) {
         npf_logw("%s: no new grant: the session ends (no target left?)", p->name);
         npf_call_end(p->call, "closed");

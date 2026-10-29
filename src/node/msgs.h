@@ -37,7 +37,9 @@
 /* the envelope (signaling.md "公共消息格式"); j: the message */
 #define M_ENV(T) F_INT(T, v, F_REQ, 1, 1, 0) F_STR(T, type, 32, F_REQ) F_STR(T, id, 24, 0) F_STR(T, reply_to, 24, 0) \
     F_STR(T, status, 16, 0) F_STR(T, error, 32, 0) F_STR(T, message, 64, 0) F_TOK(T, data, F_REQ, NPF_JT_OBJECT)
-typedef struct m_env { M_ENV(m_env) const npf_json *j; } m_env;
+typedef npf_env m_env;                  /* node.h's, of these fields */
+typedef struct { M_ENV(x) const npf_json *j; } m_env_as_listed;
+typedef char m_env_same[sizeof(m_env_as_listed) == sizeof(npf_env) ? 1 : -1];
 extern const npf_msgdesc m_env_d;
 
 /* the elements of arrays of single values: an IPv4 address, a port, a string not empty */
@@ -156,7 +158,10 @@ NODE_FILE(m_list, M_LIST)
 
 /* state.json (callee.c; password: its token, any string) */
 #define M_PAIRED(T) F_B64X(T, pub, 32, 0) F_INT(T, added, 0, 0, INT64_MAX, 0)
-NODE_MSG(m_paired, M_PAIRED)
+typedef npf_paired m_paired;            /* callee.h's, read into place */
+typedef struct { M_PAIRED(x) } m_paired_as_listed;
+typedef char m_paired_same[sizeof(m_paired_as_listed) == sizeof(npf_paired) ? 1 : -1];
+extern const npf_msgdesc m_paired_d;
 #define M_REVOKED(T) F_STR(T, account, 32, F_REQ) F_INT(T, before, F_REQ, 0, INT64_MAX, 0)
 NODE_MSG(m_revoked, M_REVOKED)
 #define M_STATE(T) F_TOK(T, password, 0, NPF_JT_STRING) F_ARR(T, paired, m_paired, NPF_MAX_PAIRED, F_SKIP) \

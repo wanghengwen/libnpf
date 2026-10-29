@@ -62,6 +62,7 @@ int npf_create(const npf_options *uo, npf_t **out, char *err, size_t errcap)
 static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
 {
     npf_t *n;
+    npf_node_cfg cfg;                   /* the node's (its copy: n->node.cfg) */
     int rc, fail_rc = NPF_EFAIL;
     npf_log_ctx *prev_log;
     if (!o->setup && !o->conf_dir && !o->conf_file) {
@@ -119,39 +120,39 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
 
     /* the node */
     if (n->role == NPF_ROLE_DIRECT) {
-        memset(&n->cfg, 0, sizeof n->cfg);
-        n->cfg.offline = 1;
-        n->cfg.udp_port = (int)npf_conf_int(&n->conf, "udp_port");
-    } else if (npf_node_cfg_from_conf(&n->cfg, &n->conf) < 0) {
+        memset(&cfg, 0, sizeof cfg);
+        cfg.offline = 1;
+        cfg.udp_port = (int)npf_conf_int(&n->conf, "udp_port");
+    } else if (npf_node_cfg_from_conf(&cfg, &n->conf) < 0) {
         snprintf(err, errcap, "config: root keys and a server list are needed");
         goto fail;
     }
-    n->cfg.callable = n->role == NPF_ROLE_NODE && n->has_number;
-    n->cfg.number = n->cfg.callable ? n->number : 0;
+    cfg.callable = n->role == NPF_ROLE_NODE && n->has_number;
+    cfg.number = cfg.callable ? n->number : 0;
     if (n->role == NPF_ROLE_NODE && n->model_dev && !n->has_number)
-        n->cfg.enroll = &n->enroll;
-    if (n->role != NPF_ROLE_NODE || n->cfg.hosted_service || n->cfg.hosted_exec)
-        n->cfg.no_portmap = 1;
-    n->cfg.model = npf_conf_get(&n->conf, "model", n->cred || n->model_dev ? "NAS" : "console");
-    n->cfg.fw = npf_version();
-    n->cfg.app_name = n->app_name;
-    n->cfg.app_ver = n->app_ver;
+        cfg.enroll = &n->enroll;
+    if (n->role != NPF_ROLE_NODE || cfg.hosted_service || cfg.hosted_exec)
+        cfg.no_portmap = 1;
+    cfg.model = npf_conf_get(&n->conf, "model", n->cred || n->model_dev ? "NAS" : "console");
+    cfg.fw = npf_version();
+    cfg.app_name = n->app_name;
+    cfg.app_ver = n->app_ver;
     n->loop = o->runtime ? npf_runtime_child(o->runtime, &n->rt_slot) : npf_loop_new();
     if (n->loop && o->runtime) {
         n->rt = o->runtime;
         npf_loop_set_logctx(n->loop, &n->logctx);
     }
-    if (!n->loop || npf_engine_node_init(n) < 0) {
+    if (!n->loop || npf_engine_node_init(n, &cfg) < 0) {
         snprintf(err, errcap, "cannot start the node (UDP socket or server list)");
         goto fail;
     }
-    if (!n->cfg.offline && !n->cred)
+    if (!n->node.cfg.offline && !n->cred)
         npf_engine_account_load(n);
     /* target policy of the sessions accepted here: the published resources
      * (resources.h, security.md D22) */
     if (npf_pub_load(n, err, errcap) < 0)
         goto fail;
-    if (n->cfg.callable)
+    if (n->node.cfg.callable)
         npf_engine_callee_attach(n);
     /* peers: the application's, and those it saved in local.json */
     if (!(n->peers = npf_engine_peers_new(n))) {
@@ -164,6 +165,8 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
         int idle = (int)npf_conf_int(&n->conf, "peer_idle");
         npf_peers_set_idle(n->peers, (idle > 0 ? idle : 300) * 1000);
     }
+    if (n->node.cfg.hosted_exec)
+        npf_hosted_limits(n);
     /* the modules, before the peers come: their forwards' callbacks go to them */
     if (npf_mods_create(n, err, errcap) < 0)
         goto fail;
@@ -179,7 +182,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
                 snprintf(err, errcap, "direct needs direct_psk_file (or direct_psk)");
                 goto fail;
             }
-            n->dl = npf_direct_listen(&n->node, direct, psk, n->cfg.callable ? NULL : &n->policy);
+            n->dl = npf_direct_listen(&n->node, direct, psk, n->node.cfg.callable ? NULL : &n->policy);
             npf_wipe(psk, 32);
             if (!n->dl) {
                 snprintf(err, errcap, "cannot listen for direct connections on %s", direct);
@@ -201,8 +204,8 @@ void npf_engine_begin(npf_t *n)
 {
     n->started_unix = npf_unix_ms() / 1000;
     if (n->role == NPF_ROLE_NODE)
-        npf_log("npf %s: %s %llu, %d peer(s), UDP port %u", npf_version(), n->cfg.callable ? "node" : "client",
-                n->cfg.callable ? (unsigned long long)n->number : 0ULL, npf_peers_count(n->peers), n->node.udp_port);
+        npf_log("npf %s: %s %llu, %d peer(s), UDP port %u", npf_version(), n->node.cfg.callable ? "node" : "client",
+                n->node.cfg.callable ? (unsigned long long)n->number : 0ULL, npf_peers_count(n->peers), n->node.udp_port);
     npf_node_start(&n->node);
     npf_peers_start(n->peers);
     npf_mods_begin(n);

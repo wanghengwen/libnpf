@@ -239,7 +239,7 @@ void call_control(void *arg, const npf_json *j)
             if (c->ctl[i].fn && c->ctl[i].id == id) {
                 npf_ctl_fn fn = c->ctl[i].fn;
                 c->ctl[i].fn = NULL;
-                fn(c, j, strcmp(e.status, "ok") == 0, c->ctl[i].arg);
+                fn(c, &e, strcmp(e.status, "ok") == 0, c->ctl[i].arg);
                 return;
             }
         }

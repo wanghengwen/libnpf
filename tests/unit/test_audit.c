@@ -147,9 +147,9 @@ static int reply_json(npf_loop *loop)
     npf_tunnel_free(f.t);
     return 0;
 }
-static void ctl_done(npf_call *c, const npf_json *j, int ok, void *arg)
+static void ctl_done(npf_call *c, const npf_env *e, int ok, void *arg)
 {
-    (void)c; (void)j; (void)ok;
+    (void)c; (void)e; (void)ok;
     if (arg) (*(int *)arg)++;
 }
 static int ctl_sequence(npf_loop *loop)

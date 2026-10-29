@@ -129,8 +129,3 @@ int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
     return 0;
 }
 
-const char *npf_peer_forward_info(const npf_peer *p, int i, char *opt, const char **spec, int *perm, char *state,
-                                  size_t cap)
-{
-    return NULL;
-}

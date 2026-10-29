@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-文档版本：2.6。更新日期：2026-10-29。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。2.6：库填写的结构体（`*_info`、`npf_media_stats`、列表元素）不再带 `size`，也没有 `_init`，由查询的宏传调用方的 `sizeof`（第 2 节）；`npf_media_open` 与其他创建函数一样返回错误码、经输出参数给出编号；`npf_peer_remove_id` 改名 `npf_peer_remove`；`npf_media_opt_default` 改名 `npf_media_opt_init`，保留未用的 `rcv_deadline_ms` 去掉；`no_log_ring` 改为开关 `NPF_OPT_NO_LOG_RING`；`NPF_PLATFORM` 为 4；模块的 `status_json` 钩子不再有 `first` 参数（第 12 节）。文档版本与库版本、`NPF_API_VERSION` 分别编号。
+文档版本：2.7。更新日期：2026-10-29。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。2.6：库填写的结构体（`*_info`、`npf_media_stats`、列表元素）不再带 `size`，也没有 `_init`，由查询的宏传调用方的 `sizeof`（第 2 节）；`npf_media_open` 与其他创建函数一样返回错误码、经输出参数给出编号；`npf_peer_remove_id` 改名 `npf_peer_remove`；`npf_media_opt_default` 改名 `npf_media_opt_init`，保留未用的 `rcv_deadline_ms` 去掉；`no_log_ring` 改为开关 `NPF_OPT_NO_LOG_RING`；`NPF_PLATFORM` 为 4；模块的 `status_json` 钩子不再有 `first` 参数（第 12 节）。2.7：模块的配置键是 `npf_key` 表（`check` 钩子去掉），模块只包含 `npf/module.h`（`npf_int.h` 去掉），应答回调拿 `npf_env`（第 12 节）。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
@@ -408,7 +408,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | 资源 | `npf_resource_put`、`npf_resource_remove`、`npf_resource_list` |
 | 配对与所有者 | `npf_pairing_password_get` / `_set`、`npf_pairing_list`、`npf_pairing_remove`、`npf_owner_reset` |
 | 本机与会话 | `npf_node_get`、`npf_session_get`、`npf_session_list`、`npf_network_changed`、`npf_save` |
-| 设置 | `npf_config_get`（未知键 `NPF_ENOENT`；`password`、`cred`、`model_cred`、`direct_psk` 显示 `(hidden)`；缓冲区不足 `NPF_ETOOBIG`）；`npf_config_set`（0：即时设置已应用；1：启动时设置，需保存后重启生效；模块配置键属于后者） |
+| 设置 | `npf_config_get`（未知键 `NPF_ENOENT`；`password`、`cred`、`model_cred`、`direct_psk` 显示 `(hidden)`；缓冲区不足 `NPF_ETOOBIG`）；`npf_config_set`（0：即时设置已应用；1：启动时设置，需保存后重启生效；模块的键看它有没有 `NPF_K_LIVE`） |
 | 诊断（JSON，调用方 `npf_free`） | `npf_status_json`、`npf_config_json`（可即时修改的设置）、`npf_log_json`、`npf_sessions_json`、`npf_public_json` |
 | 命令 | `npf_command(argv)`：库自己的 `set`、`netcheck` 和程序的模块的命令，结果文本和退出码交给回调 |
 | 平台请求 | `npf_request(type, data, key_proof, cb)`：账户、设备、分享等请求（信令协议的 `account_*`、`device_*`、`share_*` 等），应答 JSON 整个交给回调；库自己保存账户会话和证书 |
@@ -534,7 +534,7 @@ int main(void)
 - 最多 8 个模块；可以在任何线程调用。以下情况返回 -1：`NULL`、没有名字、重复注册、某条命令没有 `run`，名字与已注册的模块相同，命令与库自己的命令或其他模块的命令同名，配置键与库的配置键或其他模块的配置键相同。所以模块不能覆盖库的命令和配置；
 - 创建实例时按顺序调用各模块的 `create`；某个模块失败时实例创建失败，失败的模块自己清理已分配的资源，库只对排在它前面、已经创建成功的模块调用 `end` / `destroy`，按相反顺序销毁；
 - 注册表在进程内保存模块指针，没有注销接口。模块结构体及其引用的命令表、键名等应在进程运行期间一直有效，通常定义为静态常量；
-- 没有注册任何模块时，库只有自己的命令和配置键。
+- 没有注册任何模块时，库只有自己的命令和配置键：程序自己的键（npf 的 `control`、`log`、`pidfile`……）由程序的模块声明，库不认得。
 
 **编写模块**
 
@@ -542,8 +542,7 @@ int main(void)
 /* acme.c */
 #include <stdio.h>
 #include <stdlib.h>
-#include "npf_int.h"
-#include "npf/module.h"
+#include "npf/module.h"                 /* 模块的接口：实例 struct npf、钩子、库为模块做的事 */
 
 extern const npf_module acme_module;
 typedef struct acme { int hellos; } acme;
@@ -577,7 +576,11 @@ static void status(npf_t *n, npf_out *o)                   /* 状态 JSON 里的
 }
 
 static const npf_mod_cmd cmds[] = {{"hello", hello}, {NULL, NULL}};
-static const char *const keys[] = {"acme_mode", NULL};    /* npf.conf、npf_config_set 认的键 */
+static const npf_key keys[] = {                             /* 与库自己的键同一种表（npf/conf.h） */
+    NPF_KEY_E("acme_mode", NPF_K_LIVE, "off", "on|off"),    /* npf_config_set 即时生效 */
+    NPF_KEY_S("acme_dir", NPF_K_FILE | NPF_K_PATH),         /* 只能来自 npf.conf，相对它的目录 */
+    NPF_KEY_END,
+};
 
 const npf_module acme_module = {.name = "acme", .create = acme_create, .destroy = acme_destroy,
                                 .login = on_login, .cmds = cmds, .status_json = status, .keys = keys};
@@ -608,7 +611,7 @@ target_link_libraries(acme-app PRIVATE npf_common)
 
 在这个应用目录执行 `cmake -S . -B build` 和 `cmake --build build --parallel`。`npf_VERSION` 决定源码集成后的版本字符串，这里使用应用版本。
 
-模块使用内部头文件 `include/npf/module.h`、`src/api/npf_int.h` 等，所以链接源码构建目标 `npf_common`。安装后的库只提供 `npf.h` 中的公开接口，不能用于这个模块示例。内部接口没有独立的稳定 ABI 保证；升级 libnpf 后应核对内部接口变化并重新编译模块。
+模块只包含 `include/npf/module.h`（和它要用到的 `include/npf/` 下各部分的头文件：节点、对端、local.json……），`src/api` 不在模块的头文件路径上；所以链接源码构建目标 `npf_common`。`module.h` 里有实例 `struct npf`：模块只读写它前面的成员（配置、身份、节点、对端、事件循环、额度），`src/api's own from here on` 之后的是库自己的。安装后的库只提供 `npf.h` 中的公开接口，不能用于这个模块示例。内部接口没有独立的稳定 ABI 保证；升级 libnpf 后应核对内部接口变化并重新编译模块。
 
 **钩子与扩展点**
 
@@ -616,12 +619,13 @@ target_link_libraries(acme-app PRIVATE npf_common)
 - 运行中的业务钩子在实例线程执行，包括 `begin`、分步结束的 `end`、登录、平台事件、账户与会话状态等。启动前调用命令、查询或设置，也可能在调用线程触发对应钩子，不能假定所有钩子都在后台线程执行；
 - 对端钩子覆盖连接、结束、转发变化（`peer_up`、`peer_done`、`peer_fwd`），平台公网映射的连接（`peer_opened`、`peer_conn`、`peer_refused`），以及删除（`peer_removing`、`peer_removed`）。`peer_removing` 返回 1 表示模块将重新打开对端；`sig_busy` 返回非零可在模块仍有业务时保持信令连接；
 - 本地记录变更可触发 `nick_set` 和 `fwds_saved`，分别通知备注和保存的转发列表变化。这些钩子不代表磁盘写入成功；调用方仍要检查保存结果；
-- 模块命令通过 `npf_command` 调用。模块还可提供状态 JSON 的键和配置键（状态的文字由程序自己的命令给出，库里没有）；`check` 校验配置，返回 0 接受，否则返回退出码并把原因写入输出。`conf_set` 在支持即时更新的配置（如 `log_level`、`peer_idle`）生效后调用；
+- 模块命令通过 `npf_command` 调用。模块还可提供状态 JSON 的键和配置键（状态的文字由程序自己的命令给出，库里没有）。配置键是与库自己的键同一种表（`npf_key`：类型、范围或取值、缺省、标志 `NPF_K_FILE` / `LIVE` / `SECRET` / `PATH` / `MULTI`），库按表检查每个来源（npf.conf、`overrides`、local.json、`npf_config_set`）、拒绝只能来自 npf.conf 的键、隐藏秘密、把 `LIVE` 的列在 `npf_config_json` 里；`npf_key_find` 认得已注册模块的键，所以程序在读 npf.conf 之前注册模块（`npf_conf_load` 才知道哪些键是路径）。`conf_set` 在支持即时更新的配置（库的 `log_level`、`peer_idle`，模块自己的 `LIVE` 键）生效后调用；
+- 模块发给平台的请求（`npf_node_request`）与会话的控制请求（`npf_call_ctl_request`）的应答回调拿到解析好的信封 `npf_env`（`status`、`error`、`message`，`data` 是 `j` 里数据对象的位置），没有应答（连接或会话断了）时为 `NULL`；
 - 一种新的转发：在 `create` 钩子里用 `npf_peers_add_kind` 登记一个 `npf_fwd_kind`（大写字母，以及解析、检查、建立、撤销的回调），用 `npf_peer_forward_add_kind` 加到对端上，库像本地转发一样保存、重试、随对端删除；`npf_peers_fwd_call` 给出这条转发所在的会话；
 - 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`），库原样保留；
 - 状态 JSON 里模块的字段和库的字段在同一个对象里，模块应使用带自己前缀的键名，避免与库现有或以后的字段重名；
 - 库里写 JSON 只有 `npf_out`（`include/npf/out.h`）：`npf_out_jobj` / `jarr` / `jend` 开合容器，`npf_out_kstr` / `kint` / `kbool` / `kb64` 写成员、`jstr` / `jint` 等写数组项，逗号与转义（键也转义）由它负责；模块发给平台的消息（`npf_node_send`、`npf_node_request` 的 `data`）也这样写，`w.failed` 为真时不发，用完 `npf_out_free`。`max` 限定总长（库的信封是 `NPF_JSON_MAX_SIZE`），`secret` 让含口令的文字在增长与释放时擦除；
-- `tests/api/test_module.c` 是一个完整的例子：注册（重复、冲突、上限）、命令、配置键及其检查、`conf_set`、状态字段、销毁、创建失败时的清理，以及注册之前创建的实例。
+- `tests/api/test_module.c` 是一个完整的例子：注册（重复、冲突、上限）、命令、配置键的检查、即时生效与只能来自 npf.conf 的键、`conf_set`、状态字段、销毁、创建失败时的清理，以及注册之前创建的实例。
 
 ## 13. 日志与排查
 

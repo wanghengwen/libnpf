@@ -165,10 +165,7 @@ static int state_load(npf_callee *d)
         memset(m, 0, sizeof *m);            /* a first run: the defaults */
     if (n < 0 || m->password < 0 || npf_json_str(&j, m->password, d->password, sizeof d->password) <= 0)
         snprintf(d->password, sizeof d->password, "%s", d->default_pw);
-    for (i = 0; i < m->npaired; i++) {
-        memcpy(d->paired[i].pub, m->paired[i].pub, 32);
-        d->paired[i].added = m->paired[i].added;
-    }
+    memcpy(d->paired, m->paired, (size_t)m->npaired * sizeof *d->paired);
     d->npaired = m->npaired;
     d->fails = (int)m->fails;
     d->locked_until = m->locked_until;

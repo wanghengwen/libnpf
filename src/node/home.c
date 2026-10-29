@@ -225,25 +225,24 @@ static const char *id_json(const struct npf_home *h, const char *key, char *out,
     return out;
 }
 
-static void open_reply(npf_node *n, const npf_json *j, int ok, void *arg)
+static void open_reply(npf_node *n, const npf_env *e, int ok, void *arg)
 {
     struct npf_home *h = arg;
-    m_env e;
     m_home_open m;
     char err[96];
     h->opening = 0;
-    if (!j || node_env(j, &e) < 0)
+    if (!e)
         return;                             /* the connection went: the next login asks again */
     if (!ok) {
-        npf_log("home: home_open refused (%s)%s", e.error, h->r.state ? ": the spare kept" : "");
+        npf_log("home: home_open refused (%s)%s", e->error, h->r.state ? ": the spare kept" : "");
         if (!h->r.state) {
             h->state = H_OFF;
-            h->at = npf_mono_ms() + (strcmp(e.error, "rate_limited") == 0 ? 60000 : 300000);
+            h->at = npf_mono_ms() + (strcmp(e->error, "rate_limited") == 0 ? 60000 : 300000);
             home_arm(h);
         }
         return;
     }
-    if (npf_msg_parse(&m_home_open_d, j, e.data, &m, err, sizeof err) < 0)
+    if (npf_msg_parse(&m_home_open_d, e->j, e->data, &m, err, sizeof err) < 0)
         npf_logw("home: home_open's reply refused (%s)", err);
     else if (m.resumed && h->r.state && m.relay_id_len && memcmp(m.relay_id, h->r.relay_id, 8) == 0) {
         npf_log("home: spare resumed (server %d)", n->server_id);

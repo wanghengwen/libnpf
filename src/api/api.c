@@ -103,7 +103,7 @@ static int get_run(npf_t *n, void *arg)
     kv_arg *x = arg;
     char buf[NPF_CONF_VAL_MAX];
     int l;
-    if (!npf_key_find(x->key) && !npf_mod_key_known(n, x->key))
+    if (!npf_key_find(x->key))
         return NPF_ENOENT;
     l = snprintf(x->out, x->cap, "%s", npf_key_is(x->key, NPF_K_SECRET) ? "(hidden)" : npf_cmd_get(n, x->key, buf, sizeof buf));
     return l < 0 || (size_t)l >= x->cap ? NPF_ETOOBIG : NPF_OK;

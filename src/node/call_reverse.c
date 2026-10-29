@@ -258,14 +258,12 @@ typedef struct rev_req {
     void *arg;
 } rev_req;
 
-static void rev_reply(npf_call *c, const npf_json *j, int ok, void *arg)
+static void rev_reply(npf_call *c, const npf_env *e, int ok, void *arg)
 {
     rev_req *r = arg;
-    m_env e;
     m_listening m;
-    int got = j && node_env(j, &e) == 0;
-    const char *err = !j ? "no reply" : got && e.error[0] ? e.error : "failed";
-    if (ok && got && npf_msg_parse(&m_listening_d, j, e.data, &m, NULL, 0) == 0) {
+    const char *err = !e ? "no reply" : e->error[0] ? e->error : "failed";
+    if (ok && npf_msg_parse(&m_listening_d, e->j, e->data, &m, NULL, 0) == 0) {
         if (c->tun && (r->udp ? npf_udpf_rev_add(call_udp_of(c), (uint32_t)m.listen_id, r->host, r->port)
                               : npf_tunnel_rev_add(c->tun, (uint32_t)m.listen_id, r->host, r->port)) == 0) {
             r->fn(c, (int)m.port, (uint32_t)m.listen_id, NULL, r->arg);

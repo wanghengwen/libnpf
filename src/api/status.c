@@ -63,12 +63,10 @@ static void mappings_out(const npf_peer *p, npf_out *o)
     npf_out_jarr(o);
     for (i = 0; i < npf_peer_nfwd(p); i++) {
         npf_fwd_state st;
-        char kind[2] = {0}, text[120];
-        const char *label;
-        int perm;
-        if (npf_peer_forward_state(p, i, &st) < 0
-            || !npf_peer_forward_info(p, i, &kind[0], &label, &perm, text, sizeof text))
+        char kind[2] = {0};
+        if (npf_peer_forward_state(p, i, &st) < 0)
             continue;
+        kind[0] = st.opt;
         npf_out_jobj(o);
         npf_out_kint(o, "id", npf_peer_forward_id(p, i));
         if (st.opt == 'L' || st.opt == 'D' || st.opt == 'R') {
@@ -85,13 +83,13 @@ static void mappings_out(const npf_peer *p, npf_out *o)
             npf_out_kstr(o, "kind", kind);
             npf_out_kstr(o, "spec", st.spec);
         }
-        npf_out_kbool(o, "saved", perm);
+        npf_out_kbool(o, "saved", st.perm);
         if (st.ext) {
             npf_out_jkey(o, "platform_id");
             npf_out_printf(o, "\"%llu\"", (unsigned long long)st.ext);
         }
         npf_out_kstr(o, "state", states[st.state]);
-        npf_out_kstr(o, "status", text);                    /* for people: "up", "retry in N s (why)" */
+        npf_out_kstr(o, "status", st.text);                 /* for people: "up", "retry in N s (why)" */
         npf_out_kint(o, "conns", st.conns);
         if (st.refused) {
             npf_out_kint(o, "refused", st.refused);

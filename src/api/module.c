@@ -4,20 +4,18 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "npf_int.h"
-#include "npf/conf.h"
-#include "npf/module.h"
+#include "api_internal.h"
 
 #ifdef _WIN32
 #include <windows.h>
 static SRWLOCK g_mu = SRWLOCK_INIT;
-#define LOCK()   AcquireSRWLockExclusive(&g_mu)
-#define UNLOCK() ReleaseSRWLockExclusive(&g_mu)
+#define MODS_LOCK()   AcquireSRWLockExclusive(&g_mu)
+#define MODS_UNLOCK() ReleaseSRWLockExclusive(&g_mu)
 #else
 #include <pthread.h>
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-#define LOCK()   pthread_mutex_lock(&g_mu)
-#define UNLOCK() pthread_mutex_unlock(&g_mu)
+#define MODS_LOCK()   pthread_mutex_lock(&g_mu)
+#define MODS_UNLOCK() pthread_mutex_unlock(&g_mu)
 #endif
 
 /* the modules registered, NULL at the end: an instance takes them at npf_create */
@@ -32,21 +30,12 @@ static const npf_mod_cmd *cmd_of(const npf_module *m, const char *name)
     return NULL;
 }
 
-static int has_key(const npf_module *m, const char *k)
-{
-    const char *const *kk;
-    for (kk = m->keys; kk && *kk; kk++)
-        if (strcmp(*kk, k) == 0)
-            return 1;
-    return 0;
-}
-
 /* m's name, commands and keys clash with none of libnpf's and of the
  * modules registered (count of them)? */
 static int fits(const npf_module *m, int count)
 {
     const npf_mod_cmd *c;
-    const char *const *kk;
+    const npf_key *k;
     int i;
     if (!m->name || !*m->name)
         return 0;
@@ -60,11 +49,11 @@ static int fits(const npf_module *m, int count)
             if (cmd_of(g_mods[i], c->name))
                 return 0;
     }
-    for (kk = m->keys; kk && *kk; kk++) {
-        if (npf_key_find(*kk))
+    for (k = m->keys; k && k->name; k++) {
+        if (npf_key_in(npf_keys, k->name))
             return 0;
         for (i = 0; i < count; i++)
-            if (has_key(g_mods[i], *kk))
+            if (npf_key_in(g_mods[i]->keys, k->name))
                 return 0;
     }
     return 1;
@@ -75,22 +64,22 @@ int npf_register_module(const npf_module *m)
     int i, r = -1;
     if (!m)
         return -1;
-    LOCK();
+    MODS_LOCK();
     for (i = 0; i < NPF_MOD_MAX && g_mods[i]; i++)
         ;
     if (i < NPF_MOD_MAX && fits(m, i)) {
         g_mods[i] = m;
         r = 0;
     }
-    UNLOCK();
+    MODS_UNLOCK();
     return r;
 }
 
 void npf_mods_take(npf_t *n)
 {
-    LOCK();
+    MODS_LOCK();
     memcpy(n->mods, g_mods, sizeof n->mods);
-    UNLOCK();
+    MODS_UNLOCK();
 }
 
 #define EACH(m) for (const npf_module *const *mp_ = n->mods; ((m) = *mp_) != NULL; mp_++)
@@ -117,11 +106,15 @@ void npf_mod_set_state(npf_t *n, const npf_module *m, void *state)
         n->mod_state[i] = state;
 }
 
-int npf_mod_key_known(npf_t *n, const char *k)
+const npf_key *npf_mods_key(const char *name)
 {
-    const npf_module *m;
-    EACH(m) if (has_key(m, k)) return 1;
-    return 0;
+    const npf_key *k = NULL;
+    int i;
+    MODS_LOCK();
+    for (i = 0; g_mods[i] && !(k = npf_key_in(g_mods[i]->keys, name)); i++)
+        ;
+    MODS_UNLOCK();
+    return k;
 }
 
 /* in order; one that fails cleans up after itself, and only those made
@@ -236,11 +229,4 @@ void npf_mods_conf_set(npf_t *n, const char *k, const char *v)
     EACH(m)
         if (m->conf_set)
             m->conf_set(n, k, v);
-}
-
-int npf_mods_check(npf_t *n, const char *k, const char *v, npf_out *o)
-{
-    const npf_module *m;
-    EACH(m) if (has_key(m, k)) return m->check ? m->check(n, k, v, o) : 0;
-    return -1;
 }
