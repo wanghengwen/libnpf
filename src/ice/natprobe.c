@@ -205,12 +205,33 @@ static void decide_filter(npf_natprobe_result *res, const tx *txs, int n)
         res->profile.filtering = NPF_FILT_UNKNOWN;
 }
 
+/* sequential (4.2): the ports go up in small steps, all of them (but one,
+ * of five and more: the range wrapping at its end); the step the smallest,
+ * returned (0: not sequential). Other traffic behind the same NAT takes
+ * ports in between (a busy NAT: deltas 2 4 3 for a step of 1), so not "the
+ * same delta" each time: that read a busy sequential NAT as a block. A
+ * block's or random allocation goes down as often as up */
+static int seq_step(const uint16_t *p, int n)
+{
+    int i, best = 0, cnt = 0;
+    for (i = 0; i + 1 < n; i++) {
+        int d = (int16_t)(uint16_t)(p[i + 1] - p[i]);
+        if (d >= 1 && d <= 64) {
+            cnt++;
+            if (!best || d < best)
+                best = d;
+        }
+    }
+    return n >= 3 && cnt >= (n - 1 >= 5 ? n - 2 : n - 1) && best <= 16 ? best : 0;
+}
+
 /* port allocation from K (local, mapped) samples, 4.2 */
 void npf_natprobe_classify_alloc(npf_natprobe_result *res)
 {
     uint16_t p[NPF_NATPROBE_MAX_ALLOC], sorted[NPF_NATPROBE_MAX_ALLOC], tmp, lo, hi;
-    int n = 0, i, j, preserve = 1, best = 0, best_cnt = 0, gap_best = -1, gap_at = 0;
+    int n = 0, i, j, preserve = 1, best, gap_best = -1, gap_at = 0;
 
+    res->alloc_doubt = 0;
     for (i = 0; i < res->alloc_n; i++) {
         if (!res->alloc_got[i])
             continue;
@@ -226,24 +247,20 @@ void npf_natprobe_classify_alloc(npf_natprobe_result *res)
         res->profile.allocation = NPF_ALLOC_PRESERVE;
         return;
     }
-    /* sequential: the ports go up in small steps, all of them (but one, of
-     * five and more: the range wrapping at its end); the step the smallest.
-     * Other traffic behind the same NAT takes ports in between (a busy NAT:
-     * deltas 2 4 3 for a step of 1), so not "the same delta" each time: that
-     * read a busy sequential NAT as a block. A block's or random allocation
-     * goes down as often as up */
-    for (i = 0; i + 1 < n; i++) {
-        int d = (int16_t)(uint16_t)(p[i + 1] - p[i]);
-        if (d >= 1 && d <= 64) {
-            best_cnt++;
-            if (!best || d < best)
-                best = d;
-        }
-    }
-    if (best_cnt >= (n - 1 >= 5 ? n - 2 : n - 1) && best <= 16) {     /* n >= 3: best_cnt >= 2, best > 0 */
+    if ((best = seq_step(p, n)) != 0) {
         res->profile.allocation = NPF_ALLOC_SEQUENTIAL;
         res->profile.seq_delta = (int16_t)best;
         return;
+    }
+    /* sequential but for one sample: in doubt (the node measures again). A
+     * new socket that got a closed one's inside port gets that one's mapping
+     * while the NAT keeps it, an older port out of the sequence (a node's
+     * probe right after its restart: its last process probed seconds before) */
+    for (j = 0; j < n && n > 3 && !res->alloc_doubt; j++) {
+        uint16_t q[NPF_NATPROBE_MAX_ALLOC];
+        memcpy(q, p, (size_t)j * sizeof *p);
+        memcpy(q + j, p + j + 1, (size_t)(n - j - 1) * sizeof *p);
+        res->alloc_doubt = seq_step(q, n - 1) != 0;
     }
     /* smallest circular range holding every sample: the complement of the
      * largest gap (a port block may wrap from 65535 back to 1024) */

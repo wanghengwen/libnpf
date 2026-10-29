@@ -180,6 +180,22 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
         if (nat_probe_start(n) == 0)
             return;
     }
+    /* The port allocation in doubt: sequential but for one sample (a mapping
+     * left from before, natprobe.c), or not the last measurement's on the
+     * same public IP: measured once more at once, the second taken as it
+     * comes. Once, right after a restart, a sequential NAT was measured a
+     * block (RN-16): no strategy with its sequential peer, an hour on the
+     * relay where they had punched for days */
+    if (ok && !n->nat_again && !n->nat_quick
+        && (res->alloc_doubt || (n->nat_valid && n->nat_udp && n->nat.allocation != NPF_ALLOC_UNKNOWN
+                                 && n->nat.allocation != res->profile.allocation
+                                 && n->pub_ip.s_addr == res->mapped[0].sin_addr.s_addr))) {
+        n->nat_again = 1;
+        npf_log("nat: port allocation %s, %s: measuring once more", npf_nat_alloc_str(res->profile.allocation),
+                res->alloc_doubt ? "but sequential with one sample left out" : "not the last measurement's");
+        if (nat_probe_start(n) == 0)
+            return;
+    }
     n->nat_again = 0;
     if (ok) {
         int i, last = -1;
