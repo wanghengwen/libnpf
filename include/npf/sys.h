@@ -1,5 +1,6 @@
 /* Portable system layer: socket headers and the few calls that differ
- * between POSIX and Windows (Winsock).
+ * between POSIX and Windows (Winsock); platform/sys.c, with sys_posix.c or
+ * sys_win.c for what differs.
  *
  * Sockets are kept in an int everywhere. On Windows a SOCKET handle is a
  * small kernel handle value, so it fits; INVALID_SOCKET becomes -1.
@@ -10,14 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* per-thread storage: each libnpf instance runs on a thread of its own */
-#if defined(_MSC_VER)
-#define NPF_THREAD_LOCAL __declspec(thread)
-#else
-#define NPF_THREAD_LOCAL __thread
-#endif
-/* fn(arg) on a detached thread of its own (platform/resolve.c); 0 or -1 */
-int npf_thread_detached(void (*fn)(void *), void *arg);
+/* ======== system headers, and what Winsock spells otherwise ======== */
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -55,9 +49,6 @@ typedef ULONG nfds_t;
 #ifndef IPV6_UNICAST_IF
 #define IPV6_UNICAST_IF 31
 #endif
-/* GetAdaptersAddresses(AF_UNSPEC, flags) into a buffer grown as it asks:
- * an IP_ADAPTER_ADDRESSES list to free(), or NULL */
-void *npf_win_adapters(unsigned long flags);
 
 #else
 #include <arpa/inet.h>
@@ -75,38 +66,25 @@ void *npf_win_adapters(unsigned long flags);
 #define NPF_SE(x) E##x
 #endif
 
+/* ======== threads ======== */
+
+/* per-thread storage: each libnpf instance runs on a thread of its own */
+#if defined(_MSC_VER)
+#define NPF_THREAD_LOCAL __declspec(thread)
+#else
+#define NPF_THREAD_LOCAL __thread
+#endif
+/* fn(arg) on a detached thread of its own (platform/resolve.c); 0 or -1 */
+int npf_thread_detached(void (*fn)(void *), void *arg);
+
+/* ======== sockets and their errors ======== */
+
 /* WSAStartup on Windows (idempotent); nothing elsewhere. 0 or -1. */
 int  npf_sys_init(void);
 
 /* socket(): non-blocking unless blocking != 0, close-on-exec; UDP sockets
  * on Windows do not report ICMP port unreachable as recv errors. -1 on error. */
 int  npf_socket(int family, int type, int proto, int blocking);
-/* The node's UDP sockets (the main ones, punching, NAT probing, port
- * mapping; not the loop's wake-up or a direct listener): npf_socket, then
- * the hook while it is on (connect_mode p2p; off in secure): the platform's
- * (the Android app binds them to the network under a VPN, so punching sees
- * the phone's own NAT), else the built-in npf_vpn_bypass. A hook that fails
- * (the VPN lets no app bypass it) leaves the socket on the default route.
- * Process-wide. */
-typedef int (*npf_udp_hook_fn)(int fd, int family, void *arg);
-void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg);
-void npf_udp_hook_on(int on);
-/* a socket of the node's (its UDP ones, its signaling's TCP) out on the
- * physical network under a VPN when the hook is on (connect_mode p2p): the
- * application's hook, else npf_vpn_bypass; <0 the platform could not */
-int  npf_net_bypass(int fd, int family);
-/* a VPN has the default route and the node's sockets may go around it (as
- * npf_vpn_bypass last saw it) */
-int  npf_vpn_in_way(void);
-/* npf_net_bypass may take a socket around a VPN now: the hook is on, and the
- * application's own hook is set (it knows its VPN) or a VPN is in the way */
-int  npf_net_bypass_active(void);
-int  npf_udp_socket(int family, int blocking);
-/* the built-in hook (platform/vpnbypass.c): a VPN with the default route:
- * the socket bound to the physical interface under it; 0, or -1 when that
- * failed; and whether an interface name is a tunnel's (utun, wg, tun, ...) */
-int  npf_vpn_bypass(int fd, int family, void *arg);
-int  npf_if_tunnel_name(const char *name);
 int  npf_accept(int lfd);                       /* non-blocking accepted socket or -1 */
 int  npf_set_nonblock(int fd);
 void npf_sock_close(int fd);
@@ -132,6 +110,8 @@ const char *npf_sock_tcp_diag(int fd, char *buf, size_t cap);
 const char *npf_sock_strerror(void);
 const char *npf_sock_strerror_code(int err);         /* an SO_ERROR value */
 
+/* ======== addresses and interfaces ======== */
+
 /* An IPv4 or IPv6 socket address (sockaddr_in, sockaddr_in6, or a
  * sockaddr_storage holding one; the family says which): its length, its
  * port (host order), whether two are the same address and port (0 for
@@ -153,6 +133,8 @@ typedef struct npf_ifaddr {
 int  npf_if_list(npf_ifaddr *out, int max);
 /* one of them? addr: an in_addr (AF_INET) or in6_addr's 16 bytes */
 int  npf_if_has(int family, const void *addr);
+
+/* ======== UDP sends and the node's socket hook ======== */
 
 /* sendto() on a non-blocking UDP socket; to is a sockaddr_in / sockaddr_in6 /
  * sockaddr_storage. A failure other than a full queue is logged (warning,
@@ -176,6 +158,41 @@ typedef struct npf_udp_watch {
  * (each libnpf instance runs on one of its own; 4 at most); NULL: no more */
 void npf_udp_watch_on(int fd, npf_udp_watch *w);
 
+/* The node's UDP sockets (the main ones, punching, NAT probing, port
+ * mapping; not the loop's wake-up or a direct listener): npf_socket, then
+ * the hook while it is on (connect_mode p2p; off in secure): the platform's
+ * (the Android app binds them to the network under a VPN, so punching sees
+ * the phone's own NAT), else the built-in npf_vpn_bypass. A hook that fails
+ * (the VPN lets no app bypass it) leaves the socket on the default route.
+ * Process-wide. */
+typedef int (*npf_udp_hook_fn)(int fd, int family, void *arg);
+void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg);
+void npf_udp_hook_on(int on);
+/* a socket of the node's (its UDP ones, its signaling's TCP) out on the
+ * physical network under a VPN when the hook is on (connect_mode p2p): the
+ * application's hook, else npf_vpn_bypass; <0 the platform could not */
+int  npf_net_bypass(int fd, int family);
+/* npf_net_bypass may take a socket around a VPN now: the hook is on, and the
+ * application's own hook is set (it knows its VPN) or a VPN is in the way */
+int  npf_net_bypass_active(void);
+int  npf_udp_socket(int family, int blocking);
+
+/* ======== the network around: adapters, VPN, firewall, gateway ======== */
+
+#ifdef _WIN32
+/* GetAdaptersAddresses(AF_UNSPEC, flags) into a buffer grown as it asks:
+ * an IP_ADAPTER_ADDRESSES list to free(), or NULL */
+void *npf_win_adapters(unsigned long flags);
+#endif
+/* a VPN has the default route and the node's sockets may go around it (as
+ * npf_vpn_bypass last saw it) */
+int  npf_vpn_in_way(void);
+/* the built-in hook (platform/vpnbypass.c): a VPN with the default route:
+ * the socket bound to the physical interface under it; 0, or -1 when that
+ * failed; and whether an interface name is a tunnel's (utun, wg, tun, ...) */
+int  npf_vpn_bypass(int fd, int family, void *arg);
+int  npf_if_tunnel_name(const char *name);
+
 /* How early to start punching because of a host firewall that blocks a UDP
  * flow whose first packet is unsolicited inbound (and keeps blocking it):
  * 300 on macOS with the application firewall on, else 0. */
@@ -184,7 +201,8 @@ int  npf_firewall_lead_ms(void);
 /* IPv4 default gateway (network byte order), 0 or -1 */
 int  npf_default_gw4(uint32_t *gw);
 
-/* files */
+/* ======== files and their permissions ======== */
+
 int  npf_mkdir_p(const char *path);             /* 0700 where it matters; 0 if it exists */
 /* restrict a file holding secrets to its owner (POSIX mode 0600; Windows:
  * protected DACL for SYSTEM, Administrators and the owner) */
@@ -194,6 +212,8 @@ int  npf_file_too_open(const char *path);
 /* absolute path of p (no symlink resolution needed); out holds cap bytes */
 int  npf_abspath(const char *p, char *out, size_t cap);
 int  npf_path_is_abs(const char *p);
+
+/* ======== scratch buffers ======== */
 
 /* Scratch buffers for the loop's deep paths (a datagram, a frame, a control
  * message) on the heap rather than the stack: a thread's stack keeps every
