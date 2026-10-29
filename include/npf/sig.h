@@ -14,7 +14,6 @@
 #include "npf/crypto.h"
 #include "npf/json.h"
 #include "npf/loop.h"
-#include "npf/noise.h"
 #include "npf/ws.h"
 
 typedef struct npf_sig npf_sig;
@@ -23,6 +22,10 @@ typedef struct npf_sig_cbs {
     void (*on_ready)(npf_sig *s, void *arg);                     /* handshake done */
     void (*on_msg)(npf_sig *s, const npf_json *j, void *arg);    /* token 0 = root object */
     void (*on_down)(npf_sig *s, const char *why, void *arg);     /* handle freed after return; do not close it here */
+    /* set (the WS relay, wsrelay.c): every message after the handshake
+     * begins with a type byte, 0 a sealed JSON message (npf_sig_send too),
+     * the others raw, given here with their type byte (len may be 0) */
+    void (*on_raw)(npf_sig *s, const uint8_t *d, size_t len, void *arg);
 } npf_sig_cbs;
 
 /* outside_vpn: the connection goes around a VPN like the node's UDP sockets
@@ -37,13 +40,7 @@ int  npf_sig_ping(npf_sig *s);
 int64_t npf_sig_last_rx(const npf_sig *s);
 /* Noise handshake hash (binds enrollment signatures to this connection) */
 const uint8_t *npf_sig_hash(const npf_sig *s);
-
-/* Noise_XK as the initiator over a WebSocket, here and on the WS relay
- * (wsrelay.c): the first message once it is open (0 or -1); then the
- * server's answer msg and the last message, the keys split (hash may be
- * NULL): NULL, or why it failed */
-int         npf_sig_xk_first(npf_ws *ws, npf_noise_hs *hs);
-const char *npf_sig_xk_finish(npf_ws *ws, npf_noise_hs *hs, const uint8_t *msg, size_t len, npf_noise_cs *tx,
-                              npf_noise_cs *rx, uint8_t hash[64]);
+/* its WebSocket (raw messages queued on it), NULL once down */
+npf_ws *npf_sig_ws(const npf_sig *s);
 
 #endif

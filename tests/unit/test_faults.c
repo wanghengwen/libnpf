@@ -7,7 +7,7 @@ static void *test_realloc(void *p, size_t size);
 #include "npf/local.h"
 #define npf_ws_send test_ws_send
 #define npf_ws_free test_ws_free
-#include "../../src/proto/sig.c"              /* the relay's handshake (npf_sig_xk_*) */
+#include "../../src/proto/sig.c"              /* the relay's WebSocket and handshake */
 #include "../../src/proto/wsrelay.c"
 #undef npf_ws_send
 #undef npf_ws_free
@@ -33,6 +33,21 @@ static void relay_paired(npf_wsr *r, int peer_udp, void *arg)
     paired++;
     paired_udp = peer_udp;
 }
+/* a relay connection as npf_wsr_open makes it, on no WebSocket */
+static npf_wsr *relay_new(npf_loop *loop)
+{
+    static const npf_sig_cbs scb = {on_ready, on_ctl, on_down, on_raw};
+    npf_wsr *r = calloc(1, sizeof *r);
+    if (!r || !(r->s = calloc(1, sizeof *r->s)))
+        abort();
+    r->loop = r->s->loop = loop;
+    r->cbs.gone = relay_gone;
+    r->cbs.paired = relay_paired;
+    r->s->ws = (npf_ws *)r;             /* not used: npf_ws_send, npf_ws_free are the test's */
+    r->s->cbs = scb;
+    r->s->arg = r;
+    return r;
+}
 /* a control message from the relay, sealed with the relay's cipher state */
 static void ctl_in(npf_wsr *r, npf_noise_cs *relay_tx, const char *json)
 {
@@ -41,7 +56,7 @@ static void ctl_in(npf_wsr *r, npf_noise_cs *relay_tx, const char *json)
     m[0] = NPF_WSR_CTL;
     n = npf_noise_encrypt(relay_tx, NULL, 0, (const uint8_t *)json, strlen(json), m + 1);
     if (n > 0)
-        on_msg(NULL, m, (size_t)n + 1, 1, r);
+        ws_msg(NULL, m, (size_t)n + 1, 1, r->s);
 }
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
 int main(void)
@@ -69,17 +84,16 @@ int main(void)
     npf_local_free(&l);
 
     loop = npf_loop_new();
-    r = calloc(1, sizeof *r);
-    CHECK(loop && r);
-    r->loop = loop; r->cbs.gone = relay_gone;
+    CHECK(loop);
+    r = relay_new(loop);
     npf_x25519_pub(server_pk, server_sk);
-    CHECK(npf_noise_init(&r->hs, NPF_NOISE_XK, 1, "npf-relay-v1", 12, client_sk, server_pk, NULL) == 0);
+    CHECK(npf_noise_init(&r->s->hs, NPF_NOISE_XK, 1, "npf-relay-v1", 12, client_sk, server_pk, NULL) == 0);
     CHECK(npf_noise_init(&server, NPF_NOISE_XK, 0, "npf-relay-v1", 12, server_sk, NULL, NULL) == 0);
-    n1 = npf_noise_write(&r->hs, NULL, 0, msg1, sizeof msg1);
+    n1 = npf_noise_write(&r->s->hs, NULL, 0, msg1, sizeof msg1);
     CHECK(n1 > 0 && npf_noise_read(&server, msg1, (size_t)n1, payload, sizeof payload) >= 0);
     n2 = npf_noise_write(&server, NULL, 0, msg2, sizeof msg2);
     CHECK(n2 > 0);
-    on_msg(NULL, msg2, (size_t)n2, 1, r);
+    ws_msg(NULL, msg2, (size_t)n2, 1, r->s);     /* the last message sent, relay_bind not */
     CHECK(gone == 1 && sends == 2);
     npf_loop_once(loop, 0);
 
@@ -87,14 +101,12 @@ int main(void)
      * changes nothing */
     {
         npf_noise_cs relay_tx;
-        r = calloc(1, sizeof *r);
-        CHECK(r);
-        r->loop = loop; r->cbs.gone = relay_gone; r->cbs.paired = relay_paired;
-        r->ready = 1;
+        r = relay_new(loop);
+        r->s->ready = 1;
         memset(&relay_tx, 0, sizeof relay_tx);
         memset(relay_tx.k, 5, 32);
         relay_tx.has_key = 1;
-        r->rx = relay_tx;
+        r->s->rx = relay_tx;
         gone = 0;
         ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_note\",\"data\":{\"after\":\"relay_paired\"}}");
         CHECK(!paired && !gone && !r->bound);

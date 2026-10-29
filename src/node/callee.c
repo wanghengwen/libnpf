@@ -108,8 +108,8 @@ static int state_load(npf_callee *d)
     char *s = NULL, bak[1100];
     long n;
     npf_json j;
-    int arr, i, missing, from_bak = 0;
-    int64_t v;
+    m_state *m;
+    int i, missing, from_bak = 0;
     if (state_read(d->state_path, &s, &n, &tok, &j, &missing) < 0) {
         if (missing) {
             n = -1;                         /* only a missing file means first run */
@@ -147,61 +147,48 @@ static int state_load(npf_callee *d)
             from_bak = 1;
         }
     }
+    if (!(m = malloc(sizeof *m))) {
+        npf_loge("state: no memory");
+        if (n >= 0)
+            npf_wipe(s, (size_t)n);
+        free(s);
+        free(tok);
+        return -1;
+    }
     d->state_loaded = 1;
     if (d->damaged)
         npf_log("state: %s readable again: safe mode over", d->state_path);
     d->damaged = 0;
-    snprintf(d->password, sizeof d->password, "%s", d->default_pw);
-    d->npaired = 0;
-    d->fails = 0;
-    d->locked_until = 0;
-    d->lock_secs = 0;
-    d->cert_len = 0;
-    d->owner = 0;
-    d->nrevokes = 0;
-    d->owner_reset_pending = 0;
-    if (n < 0)
-        return 0;   /* first run: defaults */
-    if (!from_bak)
+    if (n >= 0 && !from_bak)
         stamp(d, s, (size_t)n);
-    if (npf_json_get_str(&j, 0, "password", d->password, sizeof d->password) <= 0)
+    if (n < 0 || npf_msg_parse(&m_state_d, &j, 0, m, NULL, 0) < 0)
+        memset(m, 0, sizeof *m);            /* a first run: the defaults */
+    if (n < 0 || m->password < 0 || npf_json_str(&j, m->password, d->password, sizeof d->password) <= 0)
         snprintf(d->password, sizeof d->password, "%s", d->default_pw);
-    arr = npf_json_get(&j, 0, "paired");
-    for (i = 0; arr >= 0 && i < tok[arr].size && d->npaired < NPF_MAX_PAIRED; i++) {
-        int it = npf_json_item(&j, arr, i);
-        if (npf_json_get_b64(&j, it, "pub", d->paired[d->npaired].pub, 32) == 32) {
-            npf_json_get_int(&j, it, "added", 0, INT64_MAX, &d->paired[d->npaired].added);
-            d->npaired++;
-        }
+    for (i = 0; i < m->npaired; i++) {
+        memcpy(d->paired[i].pub, m->paired[i].pub, 32);
+        d->paired[i].added = m->paired[i].added;
     }
-    if (npf_json_get_int(&j, 0, "fails", 0, 1000000, &v) == 0) d->fails = (int)v;
-    if (npf_json_get_int(&j, 0, "locked_until", 0, INT64_MAX, &v) == 0) d->locked_until = v;
-    if (npf_json_get_int(&j, 0, "lock_secs", 0, INT64_MAX, &v) == 0) d->lock_secs = v;
-    {
-        int cl = npf_json_get_b64(&j, 0, "cert", d->cert, sizeof d->cert);
-        d->cert_len = cl > 0 ? (size_t)cl : 0;
+    d->npaired = m->npaired;
+    d->fails = (int)m->fails;
+    d->locked_until = m->locked_until;
+    d->lock_secs = m->lock_secs;
+    memcpy(d->cert, m->cert, sizeof d->cert);
+    d->cert_len = (size_t)m->cert_len;
+    d->owner = strtoull(m->owner, NULL, 10);
+    d->owner_reset_pending = (int)m->owner_reset_pending;
+    for (i = 0; i < m->nrevokes; i++) {
+        d->revokes[i].account = strtoull(m->revokes[i].account, NULL, 10);
+        d->revokes[i].before = m->revokes[i].before;
     }
-    {
-        char a[32];
-        d->owner = npf_json_get_str(&j, 0, "owner", a, sizeof a) > 0 ? strtoull(a, NULL, 10) : 0;
-    }
-    if (npf_json_get_int(&j, 0, "owner_reset_pending", 0, 1, &v) == 0) d->owner_reset_pending = (int)v;
-    arr = npf_json_get(&j, 0, "revokes");
-    d->nrevokes = 0;
-    for (i = 0; arr >= 0 && i < tok[arr].size && d->nrevokes < NPF_MAX_REVOKES; i++) {
-        int it = npf_json_item(&j, arr, i);
-        char a[32];
-        if (npf_json_get_str(&j, it, "account", a, sizeof a) > 0
-            && npf_json_get_int(&j, it, "before", 0, INT64_MAX, &d->revokes[d->nrevokes].before) == 0) {
-            d->revokes[d->nrevokes].account = strtoull(a, NULL, 10);
-            d->nrevokes++;
-        }
-    }
+    d->nrevokes = m->nrevokes;
+    free(m);
     free(tok);
-    npf_wipe(s, (size_t)n);             /* the password */
+    if (n >= 0)
+        npf_wipe(s, (size_t)n);             /* the password */
     free(s);
     if (from_bak)
-        state_save(d);                  /* the file from its copy */
+        state_save(d);                      /* the file from its copy */
     return 0;
 }
 

@@ -22,18 +22,20 @@ static size_t field_bytes(const npf_field *f)
     }
 }
 
-/* the field absent: zero, its length or count 0, an integer its default,
- * a token -1 */
+/* the field absent: zero, its length or count 0, an integer or a boolean
+ * its default, a token -1, an object's fields absent */
 static void absent(const npf_field *f, uint8_t *base)
 {
-    int none = -1;
+    int i, v = f->type == NPF_F_TOK ? -1 : (int)f->def;
     memset(base + f->off, 0, field_bytes(f));
     if (f->aux)
         memset(base + f->aux, 0, sizeof(int));
     if (f->type == NPF_F_INT)
         memcpy(base + f->off, &f->def, sizeof f->def);
-    else if (f->type == NPF_F_TOK)
-        memcpy(base + f->off, &none, sizeof none);
+    else if (f->type == NPF_F_TOK || f->type == NPF_F_BOOL)
+        memcpy(base + f->off, &v, sizeof v);
+    for (i = 0; f->type == NPF_F_OBJ && i < f->sub->nf; i++)
+        absent(&f->sub->f[i], base + f->off);
 }
 
 static int bad(char *err, size_t cap, const char *key, const char *why)
@@ -68,7 +70,7 @@ static int array(const npf_field *f, const npf_json *j, int t, uint8_t *base, ch
             return bad(err, cap, f->key, in);
     }
     set_int(base, f->aux, n);
-    return 0;
+    return n || !(f->flags & NPF_F_REQ) ? 0 : bad(err, cap, f->key, "empty");
 }
 
 /* the value at token t into its place: 0, or -1 (err says why) */
@@ -165,7 +167,7 @@ int npf_msg_parse(const npf_msgdesc *d, const npf_json *j, int obj, void *out, c
             continue;
         }
         absent(&d->f[f], base);
-        if (d->f[f].flags & NPF_F_REQ) {
+        if (d->f[f].flags & (NPF_F_REQ | NPF_F_STRICT)) {
             if (cap)
                 snprintf(err, cap, "%s", why);
             return -1;

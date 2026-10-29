@@ -958,7 +958,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
 
 void node_sig_connect(npf_node *n)
 {
-    static const npf_sig_cbs cbs = {sig_ready, sig_msg, sig_down};
+    static const npf_sig_cbs cbs = {sig_ready, sig_msg, sig_down, NULL};
     npf_server_entry *e;
     int i;
     if (n->sig)

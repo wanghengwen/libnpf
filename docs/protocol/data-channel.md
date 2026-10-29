@@ -1,6 +1,6 @@
 # NPF 数据通道协议
 
-状态：草案 v0.50。更新日期：2026-10-31。变更记录见文末。
+状态：草案 v0.51。更新日期：2026-10-31。变更记录见文末。
 
 本版按 libnpf 源码 `a03a458` 核对。线格式与节点行为以本仓库实现为依据；平台分配、服务器计费等服务端规则是配套协议要求，本仓库不含对应服务端实现。当前实现与协议约定的差异在相关章节单独说明，源码索引与待完善项见第 12 节。文中的 `npf` 命令、配置文件和网页控制台描述宿主程序的集成用法，本仓库提供库，不包含这些程序的完整实现。
 
@@ -445,7 +445,7 @@ ANL = 3(1) | AnLiu 数据报        数据报就是 P2P、UDP 中转上同一个
 | TCP 子链路、SOCKS5、信用窗口与 `hello` | [src/tunnel/tunnel.c](../../src/tunnel/tunnel.c) |
 | 地址策略与控制接口登记 | [src/tunnel/policy.c](../../src/tunnel/policy.c) |
 | 资源定义与目标规则 | [src/node/resources.c](../../src/node/resources.c) |
-| WSS 中转连接、认证与消息封装 | [src/proto/wsrelay.c](../../src/proto/wsrelay.c) |
+| WSS 中转连接、认证与消息封装 | [src/proto/wsrelay.c](../../src/proto/wsrelay.c)（WebSocket 与 Noise_XK 用信令的 [src/proto/sig.c](../../src/proto/sig.c)） |
 | 应用数据与媒体接口 | [include/npf.h](../../include/npf.h)、[src/node/media.c](../../src/node/media.c) |
 | UDP 正向与反向转发 | [src/node/udpfwd.c](../../src/node/udpfwd.c) |
 
@@ -561,6 +561,7 @@ body = op(1) | flow(4) [| reason(1)]
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-29 | 0.51 | `reverse_listen` 的可选字段（`bind`、`port`、`udp`）写错时也回 `bad_request`（原来按缺失：`bind` 回到 `127.0.0.1`、`udp: "true"` 当作 TCP），与第 8 节的"字段不合格时 `bad_request`"一致 |
 | 2026-10-29 | 0.50 | 隧道内的控制消息按描述表检查（signaling.md 0.57）：信封要有 `v: 1` 与对象 `data`；`reverse_listen` 的 `bind` 为空时也是 `127.0.0.1`（原来为空表示所有地址：主叫写 `*` 或 `0.0.0.0`，libnpf 的主叫从来如此），字段不合格回 `bad_request` |
 | 2026-10-29 | 0.49 | 9.4 节点一侧：看门狗从当前地址起重新绑定（libnpf 1b 起），退避按上次绑上以来第几次放弃计、在线时每次都问平台，UDP 又通时立即重绑（libnpf 第 2 步按实现改写，行为只有退避的计数变了：新分配到来、UDP 又通不再从 5 秒重来） |
 | 2026-10-29 | 0.48 | 第 3 节：向平台的请求（`relay_switch` 的四种）有截止时间，10 秒、30 秒、之后每 30 秒重发，直到分配到来或不再需要（原来只发一次）；UDP 中转不通时的等待（打洞、端口）与再试一次按每次失去中转计（原来每个呼叫一次），等打洞到时也先等正在进行的重绑；只因自己的 UDP 中转不通而在 WS 上、UDP 可用的会话每 5 分钟试一次回 UDP；10.3 放弃 WS 中转后的请求同样重发。线上格式不变 |
