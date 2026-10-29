@@ -186,12 +186,9 @@ static void start_round(npf_node *n, const char *why)
 
 void node_sources_check(npf_node *n)
 {
-    int64_t now = npf_mono_ms(), after = SRC_AFTER_MS;
+    int64_t now = npf_mono_ms(), after = n->th.sources_after_ms ? n->th.sources_after_ms : SRC_AFTER_MS;
     int expired, stuck, d;
     char why[96];
-    const char *e = getenv("NPF_TEST_SOURCES_AFTER_MS");
-    if (e)
-        after = atoll(e);
     if (n->online || n->nsrc_req > 0 || now < n->src_next || (!n->sl_meta.ndoh && !n->sl_meta.nhttps))
         return;
     expired = n->sl_meta.expires && npf_unix_ms() / 1000 > n->sl_meta.expires;

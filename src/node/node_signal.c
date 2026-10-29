@@ -266,10 +266,8 @@ static void schedule_reconnect(npf_node *n)
     d = n->backoff_ms ? n->backoff_ms : 1000;
     n->backoff_ms = d * 2 > 60000 ? 60000 : d * 2;
     d = d * 3 / 4 + (int)npf_rand_range(0, (size_t)d / 2);
-    if (n->upgrade.required) {      /* only an upgrade helps: 5..10 minutes between tries */
-        const char *t = getenv("NPF_TEST_UPGRADE_RETRY_MS");    /* tests */
-        d = t && atoi(t) > 0 ? atoi(t) : 300000 + (int)npf_rand_range(0, 300000);
-    }
+    if (n->upgrade.required)        /* only an upgrade helps: 5..10 minutes between tries */
+        d = n->th.upgrade_retry_ms ? (int)n->th.upgrade_retry_ms : 300000 + (int)npf_rand_range(0, 300000);
     n->t_reconnect = npf_timer_add(n->loop, d, reconnect_cb, n);
 }
 

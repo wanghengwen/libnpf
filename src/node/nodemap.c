@@ -40,6 +40,7 @@ enum { PM_GW_UNKNOWN = 0, PM_GW_MAP, PM_GW_PRIVATE, PM_GW_NONE, PM_GW_NOGW };
  * a job not cancelled touches the node or its loop */
 typedef struct pm_job {
     npf_node   *n;
+    const char *gw;                 /* n->th.portmap_gw */
     uint16_t    port;
     uint32_t    lifetime;
     int         ret;                /* npf_portmap_request */
@@ -85,7 +86,7 @@ static void pm_deliver(npf_loop *loop, void *arg)
     n->pm_job = NULL;
     was_gw = n->pm_gw;
     was_m = n->pm_m;
-    if (j->ret == 0 && j->res.ext_family == 4 && (public_ip4(j->res.external_ip) || getenv("NPF_TEST_PORTMAP_GW"))) {
+    if (j->ret == 0 && j->res.ext_family == 4 && (public_ip4(j->res.external_ip) || n->th.portmap_gw)) {
         int had = n->pm_ok;
         if (j->res.lifetime < PM_MIN_S)
             j->res.lifetime = PM_MIN_S;
@@ -126,7 +127,7 @@ static void pm_deliver(npf_loop *loop, void *arg)
 
 static void pm_work(pm_job *j)
 {
-    j->ret = npf_portmap_request(j->port, j->lifetime, &j->res);
+    j->ret = npf_portmap_request(j->gw, j->port, j->lifetime, &j->res);
     PM_LOCK();                              /* the node (and its loop) still there while not cancelled */
     if (j->cancelled || npf_loop_post_drop(j->n->loop, pm_deliver, free, j) < 0) {
         PM_UNLOCK();
@@ -191,6 +192,7 @@ static void pm_request(npf_node *n)
     if (n->pm_job || n->udp_fd < 0 || !(j = calloc(1, sizeof *j)))
         return;
     j->n = n;
+    j->gw = n->th.portmap_gw;
     j->port = n->udp_port;
     j->lifetime = PM_LEASE_S;
     n->pm_job = j;
@@ -212,7 +214,7 @@ void node_portmap_start(npf_node *n)
 {
     if (n->cfg.offline || n->cfg.no_portmap)
         return;
-    n->pm_net = npf_portmap_net();
+    n->pm_net = npf_portmap_net(n->th.portmap_gw);
     pm_request(n);
 }
 
@@ -220,7 +222,7 @@ void node_portmap_stop(npf_node *n)
 {
     pm_forget(n);
     if (n->pm_ok) {                         /* one short try: a gateway gone silent does not hold up the stop */
-        npf_portmap_remove(n->udp_port, n->pm.method);
+        npf_portmap_remove(n->th.portmap_gw, n->udp_port, n->pm.method);
         n->pm_ok = 0;
     }
 }
@@ -238,7 +240,7 @@ void node_portmap_restart(npf_node *n)
 void node_portmap_net_change(npf_node *n)
 {
     uint64_t net;
-    if (n->cfg.offline || n->cfg.no_portmap || (net = npf_portmap_net()) == n->pm_net)
+    if (n->cfg.offline || n->cfg.no_portmap || (net = npf_portmap_net(n->th.portmap_gw)) == n->pm_net)
         return;                             /* the same gateway, the same address toward it */
     npf_logd("portmap: another network: the router's mapping asked for again");
     n->pm_net = net;

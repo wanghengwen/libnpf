@@ -273,7 +273,7 @@ void call_paths_init(npf_call *c)
     c->pu.p.kind = PK_UDP_RELAY;
     c->pw.p.ops = &path_ws_ops;
     c->pw.p.kind = PK_WS_RELAY;
-    c->pm.udp_again = c->n->th.udp_again_ms > 0 ? c->n->th.udp_again_ms : PM_UDP_AGAIN_MS;
+    c->pm.udp_again = c->n->th.udp_again_ms ? c->n->th.udp_again_ms : PM_UDP_AGAIN_MS;
 }
 
 
@@ -310,8 +310,8 @@ void pm_check(npf_call *c)
     }
     in = (c->caller ? PM_IN_CALLER : 0) | (c->caller && c->st == CS_CALLING ? PM_IN_HOLD : 0)
          | (call_up(c) ? PM_IN_UP : 0) | (!call_no_p2p(c) && c->punch_st < PN_LINGER ? PM_IN_PUNCH : 0)
-         | (n->nat_valid && n->nat_udp && !n->test_no_udp ? PM_IN_UDP : 0)
-         | (n->udp_back_ms > c->pw.p.since ? PM_IN_UDP_BACK : 0) | (n->test_no_udp && c->keys_ready ? PM_IN_NOUDP : 0)
+         | (n->nat_valid && n->nat_udp && !n->th.no_udp ? PM_IN_UDP : 0)
+         | (n->udp_back_ms > c->pw.p.since ? PM_IN_UDP_BACK : 0) | (n->th.no_udp && c->keys_ready ? PM_IN_NOUDP : 0)
          | (call_has_relay(c) && c->pu.p.health == PH_DEAD && call_hard_punches(n, c) > 0 ? PM_IN_PORTS : 0);
     if (call_over(c))
         return;

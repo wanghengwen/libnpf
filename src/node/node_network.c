@@ -368,7 +368,7 @@ static void watch_cb(npf_loop *loop, void *arg)
 #ifndef _WIN32
     {   /* tests: NPF_TEST_UDP_FAIL=FILE: when FILE appears, the IPv4 socket
          * fails as a reclaimed one does (every call on it: ENOTSOCK) */
-        const char *f = n->test_udp_fail;
+        const char *f = n->th.udp_fail;
         int z;
         if (f && n->udp_fd >= 0 && remove(f) == 0 && (z = open("/dev/null", O_RDONLY)) >= 0) {
             npf_logw("test: the UDP socket fails now");
@@ -378,8 +378,8 @@ static void watch_cb(npf_loop *loop, void *arg)
         /* tests: NPF_TEST_WS_FILE=FILE: while FILE exists the node has no
          * UDP (its profile says so, its sessions move to the WS relay); when
          * it goes, UDP works again (the sessions go back, udp_back) */
-        if ((f = n->test_ws_file) != NULL && (z = access(f, F_OK) == 0) != n->test_no_udp) {
-            n->test_no_udp = z;
+        if ((f = n->th.ws_file) != NULL && (z = access(f, F_OK) == 0) != n->th.no_udp) {
+            n->th.no_udp = z;
             npf_logw("test: UDP %s", z ? "gone" : "back");
             npf_node_report_nat(n);         /* as a probe's new profile would */
             if (!z)

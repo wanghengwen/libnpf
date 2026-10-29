@@ -200,7 +200,7 @@ static int receive_limits(void)
     opt.tag = NPF_TAG_UDP;
     s = anl_stream_open(w, &opt, &err);
     CHECK(s);
-    u = npf_udpf_new(NULL, w, 0, NULL, &uio, NULL);
+    u = npf_udpf_new(NULL, w, 0, NULL, &uio, NULL, 0);
     CHECK(u && npf_udpf_accept(u, s, &opt, 0) == 0);
     CHECK(queue_frame(s, 65536) == 0);
     npf_udpf_drain(u, s);

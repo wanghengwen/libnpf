@@ -84,8 +84,7 @@ struct npf_udpf {
     urev        *rev;               /* NPF_MAX_REVERSE, made at the first -R .../udp */
     int          nrev;
     npf_timer   *t_tick;
-    int          idle_ms, tick_ms;  /* NPF_UDP_IDLE_MS, TICK_MS (tests: NPF_TEST_UDP_IDLE_MS) */
-    int          max_age_ms;        /* tests: NPF_TEST_UDP_MAX_AGE_MS, 0 none */
+    int          idle_ms, tick_ms;  /* NPF_UDP_IDLE_MS, TICK_MS (tests: shorter, npf_udpf_new) */
     uint8_t     *out, *in;          /* frame being built / a datagram read */
     npf_udpf_stats st;
     int64_t      warned_at;
@@ -275,16 +274,14 @@ static void tick(npf_loop *loop, void *arg)
 
 /* ---- life ---- */
 
-npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *policy, const npf_udpf_io *io, void *arg)
+npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *policy, const npf_udpf_io *io, void *arg,
+                       int idle_ms)
 {
     npf_udpf *u = calloc(1, sizeof *u);
-    const char *t = getenv("NPF_TEST_UDP_IDLE_MS");
     if (!u)
         return NULL;
-    u->idle_ms = t ? atoi(t) : NPF_UDP_IDLE_MS;
-    u->tick_ms = t ? 500 : TICK_MS;
-    t = getenv("NPF_TEST_UDP_MAX_AGE_MS");
-    u->max_age_ms = t ? atoi(t) : 0;
+    u->idle_ms = idle_ms ? idle_ms : NPF_UDP_IDLE_MS;
+    u->tick_ms = idle_ms ? 500 : TICK_MS;
     u->loop = loop;
     u->anl = anl;
     u->caller = caller;
@@ -335,13 +332,13 @@ void npf_udpf_get_stats(const npf_udpf *u, npf_udpf_stats *out)
  * Pacific (RTT 360 ms): with 200 ms nothing was resent and 7-16 % of the
  * datagrams were lost; with this, 498 of 500 came back. No FEC: adaptive
  * FEC on that path (a free plan's 128 kbps relay) made the delays grow to
- * 2 s and most datagrams expire. Tests: NPF_TEST_UDP_MAX_AGE_MS */
-static void stream_opts(npf_udpf *u, anl_stream_opt *opt, int srtt)
+ * 2 s and most datagrams expire. */
+static void stream_opts(anl_stream_opt *opt, int srtt)
 {
     int age = srtt * 2 + 100;               /* srtt 0 (unknown): 100, the floor below */
     age = age < NPF_UDP_MAX_AGE_MS ? NPF_UDP_MAX_AGE_MS : age > NPF_UDP_MAX_AGE_HI ? NPF_UDP_MAX_AGE_HI : age;
     opt->prio = 1;                          /* ahead of the forwards' data (2), behind control (0) */
-    opt->max_age_ms = u->max_age_ms ? u->max_age_ms : age;
+    opt->max_age_ms = age;
     opt->fec = 0;
 }
 
@@ -357,7 +354,7 @@ static anl_stream_t *stream(npf_udpf *u)
     anl_stream_opt_default(&opt, ANL_SEMI);
     opt.tag = NPF_TAG_UDP;
     opt.rcv_wnd = UDP_WND;
-    stream_opts(u, &opt, anl_get_stats(u->anl, &st) == 0 ? (int)st.srtt : 0);
+    stream_opts(&opt, anl_get_stats(u->anl, &st) == 0 ? (int)st.srtt : 0);
     if (!(u->s = anl_stream_open(u->anl, &opt, &e))) {
         npf_logw("udp: no AnLiu stream for the UDP forwards (%d)", e);
     } else {
@@ -678,7 +675,7 @@ int npf_udpf_accept(npf_udpf *u, anl_stream_t *s, anl_stream_opt *opt, int srtt)
 {
     if (u->caller || u->s || opt->mode != ANL_SEMI || opt->rcv_wnd > UDP_WND)
         return -1;
-    stream_opts(u, opt, srtt);              /* this side's sending: as the caller's */
+    stream_opts(opt, srtt);                 /* this side's sending: as the caller's */
     u->s = s;
     return 0;
 }

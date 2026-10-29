@@ -60,8 +60,10 @@ typedef struct npf_udpf_stats {
     uint64_t refused;                   /* flows the callee refused (caller) / refused here (callee) */
 } npf_udpf_stats;
 
-/* policy: the callee's (NULL refuses every flow) */
-npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *policy, const npf_udpf_io *io, void *arg);
+/* policy: the callee's (NULL refuses every flow); idle_ms: a flow's idle
+ * time, 0 NPF_UDP_IDLE_MS (tests: NPF_TEST_UDP_IDLE_MS) */
+npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *policy, const npf_udpf_io *io, void *arg,
+                       int idle_ms);
 /* the shares the sockets of the peer's flows count in, with the tunnels'
  * sublinks (npf_tunnel_set_shared): a flow over subs_max is refused */
 void npf_udpf_set_shared(npf_udpf *u, npf_tunnel_shared *node, npf_tunnel_shared *key);

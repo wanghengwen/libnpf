@@ -596,7 +596,7 @@ static const npf_udpf_io udp_io = {u_unit, m_kick, u_allowed};
 npf_udpf *call_udp_of(npf_call *c)
 {
     if (!c->udp && !call_over(c) && c->tun && c->anl) {
-        c->udp = npf_udpf_new(c->n->loop, c->anl, c->caller, call_policy(c), &udp_io, c);
+        c->udp = npf_udpf_new(c->n->loop, c->anl, c->caller, call_policy(c), &udp_io, c, (int)c->n->th.udp_idle_ms);
         if (c->udp)
             npf_udpf_set_shared(c->udp, &c->n->tun_shared, c->kshare ? &c->kshare->sh : NULL);
     }
@@ -752,12 +752,6 @@ int call_start_transport(npf_call *c)
     cfg.default_rcv_wnd = NPF_ANL_CTRL_WND;
     cfg.keepalive_ms = 15000;
     cfg.idle_timeout_ms = 60000;
-    {
-        /* tests: NPF_TEST_PACE=bytes/s caps AnLiu's pacing (a BBR-overestimate diagnostic) */
-        const char *v = getenv("NPF_TEST_PACE");
-        if (v)
-            cfg.pace_rate = atoi(v);
-    }
     npf_wipe(psk, 32);
     c->anl = anl_create(c->conv, &cfg, c);
     npf_wipe(&cfg, sizeof cfg);

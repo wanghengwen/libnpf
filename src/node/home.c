@@ -69,8 +69,8 @@ static const char *learn_str(int learn)
 static int home_allowed(const npf_node *n)
 {
     return !n->cfg.home_off && !n->cfg.offline && !n->cfg.udp_on_demand && !n->cfg.hosted_service
-           && !n->cfg.hosted_exec && n->udp_fd >= 0 && (n->cfg.callable || n->account_id) && !n->test_no_udp
-           && !getenv("NPF_NO_HOME");
+           && !n->cfg.hosted_exec && n->udp_fd >= 0 && (n->cfg.callable || n->account_id) && !n->th.no_udp
+           && !n->th.no_home;
 }
 
 /* the main socket's sends watched (again, after a reopen) toward the relay
@@ -454,8 +454,7 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
             bind_send(h, 0, 0);
         return;
     }
-    /* tests: NPF_TEST_DROP_BIND_ACK=1 loses every BIND_ACK that binds, as a call's (path_udp.c) */
-    if (h->n->th.drop_bind_ack)
+    if (h->n->th.drop_bind_ack)             /* tests */
         return;
     h->newnet = 0;
     learn_seen(h, a.t_s, a.learn);

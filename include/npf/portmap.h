@@ -37,17 +37,19 @@ int  npf_natpmp_parse_map(const uint8_t *in, size_t len, npf_portmap *res);
 
 /* Full attempt: discover gateway, try PCP then NAT-PMP for a UDP mapping of
  * `internal_port`. Returns 0 on success (res filled), -2 without a default
- * IPv4 gateway, -1 otherwise (no answer). */
-int  npf_portmap_request(uint16_t internal_port, uint32_t lifetime, npf_portmap *res);
+ * IPv4 gateway, -1 otherwise (no answer). at: the gateway's "IP:PORT"
+ * instead of the default route's (tests: NPF_TEST_PORTMAP_GW), or NULL; the
+ * same in the two below. */
+int  npf_portmap_request(const char *at, uint16_t internal_port, uint32_t lifetime, npf_portmap *res);
 
 /* The mapping of internal_port removed with the method that made it: one
  * try of 250 ms (a stopping node does not wait out a gateway gone silent;
  * an unremoved mapping ends with its lease). 0 / -1. */
-int  npf_portmap_remove(uint16_t internal_port, int method);
+int  npf_portmap_remove(const char *at, uint16_t internal_port, int method);
 
 /* the network the gateway is on: the default IPv4 gateway and this host's
  * address toward it (no packet sent); 0 without a gateway */
-uint64_t npf_portmap_net(void);
+uint64_t npf_portmap_net(const char *at);
 
 const char *npf_portmap_method_str(int method);
 

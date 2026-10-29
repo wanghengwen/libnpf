@@ -322,10 +322,7 @@ struct npf_node {
     /* UDP */
     int           udp_fd;
     uint16_t      udp_port;
-    npf_test_hooks th;              /* the test hooks (npf/testhooks.h) */
-    const char   *test_udp_fail;    /* NPF_TEST_UDP_FAIL (node_network.c), read once: not every watch tick */
-    int           test_no_udp;      /* NPF_NO_UDP: no UDP at all (sessions on the WS relay, no spare) */
-    const char   *test_ws_file;     /* NPF_TEST_WS_FILE: no UDP while this file exists (node_network.c) */
+    npf_test_hooks th;              /* the test hooks (npf/testhooks.h); th.no_udp follows th.ws_file */
     struct npf_call *relay_hit;     /* the call the last relayed datagram was for: tried first */
     int           udp6_fd;          /* IPv6 main socket (S0, host6 candidates), -1 when the host has no IPv6 */
     uint16_t      pred_port;        /* sequential allocation: the next new mapping's port (the "pred" candidate) */
