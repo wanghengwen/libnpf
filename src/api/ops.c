@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "api_internal.h"
+#include "npf/out.h"
 #include "npf/text.h"
 
 /* ---- the structures' defaults ---- */
@@ -51,7 +52,7 @@ int op_fail(op_arg *x, int rc, const char *fmt, ...)
     va_list ap;
     if (x && x->err && x->errcap) {
         va_start(ap, fmt);
-        vsnprintf(x->err, x->errcap, fmt, ap);
+        npf_vsnprintf(x->err, x->errcap, fmt, ap);
         va_end(ap);
     }
     return rc;

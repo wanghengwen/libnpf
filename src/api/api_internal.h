@@ -182,7 +182,9 @@ typedef struct op_arg {
 
 /* rc, with the reason in x->err (x NULL: none) */
 int  op_fail(op_arg *x, int rc, const char *fmt, ...)
-#ifdef __GNUC__
+#ifdef __MINGW32__
+    __attribute__((format(gnu_printf, 3, 4)))      /* npf_vsnprintf: the C99 formats */
+#elif defined(__GNUC__)
     __attribute__((format(printf, 3, 4)))
 #endif
     ;
