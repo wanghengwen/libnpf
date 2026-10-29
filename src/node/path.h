@@ -81,7 +81,9 @@ typedef struct path_ws {
     npf_path p;
     npf_wsr *wsr;                   /* the relay connection, NULL none (lost: connected again) */
     char     url[256];              /* the allocation's relay, for a connection lost after pairing */
-    uint8_t  pub[32], id[8];        /* ... its key, the allocation's id */
+    uint8_t  id[8];                 /* the allocation's id */
+    npf_siv_keys keys;              /* ... its alloc_key's (LABEL_RELAY): the binds */
+    uint64_t kseq;                  /* ... the last bind's (one each connection) */
     npf_timer *t_flush;             /* the datagrams queued this turn of the loop go out in one write */
     int64_t  re_at;                 /* connected again after a loss; a connection made again: paired by then */
     int      paired_once;           /* it worked at least once */

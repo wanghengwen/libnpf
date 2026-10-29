@@ -7,24 +7,26 @@ static void *test_realloc(void *p, size_t size);
 #include "npf/local.h"
 #define npf_ws_send test_ws_send
 #define npf_ws_free test_ws_free
-#include "../../src/proto/sig.c"              /* the relay's WebSocket and handshake */
 #include "../../src/proto/wsrelay.c"
 #undef npf_ws_send
 #undef npf_ws_free
 #include <unistd.h>
 
-static int failing, sends, gone;
+static int failing, sends, gone, left;
 static void *test_realloc(void *p, size_t size) { return failing && size > 256 ? NULL : realloc(p, size); }
 int test_ws_send(npf_ws *ws, const void *data, size_t len, int binary)
 {
     (void)ws; (void)data; (void)len; (void)binary;
-    return ++sends == 2 ? -1 : 0;
+    return ++sends == 1 ? -1 : 0;
 }
 void test_ws_free(npf_ws *ws) { (void)ws; }
 static void relay_gone(npf_wsr *r, const char *why, void *arg)
 {
-    (void)r; (void)why; (void)arg;
-    gone++;
+    (void)why; (void)arg;
+    if (r)
+        left++;
+    else
+        gone++;
 }
 static int paired, paired_udp;
 static void relay_paired(npf_wsr *r, int peer_udp, void *arg)
@@ -36,27 +38,19 @@ static void relay_paired(npf_wsr *r, int peer_udp, void *arg)
 /* a relay connection as npf_wsr_open makes it, on no WebSocket */
 static npf_wsr *relay_new(npf_loop *loop)
 {
-    static const npf_sig_cbs scb = {on_ready, on_ctl, on_down, on_raw};
     npf_wsr *r = calloc(1, sizeof *r);
-    if (!r || !(r->s = calloc(1, sizeof *r->s)))
+    if (!r)
         abort();
     r->loop = loop;
     r->cbs.gone = relay_gone;
     r->cbs.paired = relay_paired;
-    r->s->ws = (npf_ws *)r;             /* not used: npf_ws_send, npf_ws_free are the test's */
-    r->s->cbs = scb;
-    r->s->arg = r;
+    r->ws = (npf_ws *)r;                /* not used: npf_ws_send, npf_ws_free are the test's */
     return r;
 }
-/* a control message from the relay, sealed with the relay's cipher state */
-static void ctl_in(npf_wsr *r, npf_noise_cs *relay_tx, const char *json)
+static void msg_in(npf_wsr *r, uint8_t type, uint8_t ev, size_t len)
 {
-    uint8_t m[1100];
-    int n;
-    m[0] = NPF_WSR_CTL;
-    n = npf_noise_encrypt(relay_tx, NULL, 0, (const uint8_t *)json, strlen(json), m + 1);
-    if (n > 0)
-        ws_msg(NULL, m, (size_t)n + 1, 1, r->s);
+    uint8_t m[2] = {type, ev};
+    ws_msg(NULL, m, len, 1, r);
 }
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
 int main(void)
@@ -66,10 +60,6 @@ int main(void)
     long len;
     npf_wsr *r;
     npf_loop *loop;
-    npf_noise_hs server;
-    uint8_t client_sk[32] = {1}, server_sk[32] = {2}, server_pk[32];
-    uint8_t msg1[128], msg2[128], payload[128];
-    int n1, n2;
     CHECK(mkdtemp(dir));
     snprintf(l.path, sizeof l.path, "%s/local.json", dir);
     memset(value, 'a', sizeof value - 1); value[sizeof value - 1] = 0;
@@ -86,42 +76,29 @@ int main(void)
     loop = npf_loop_new();
     CHECK(loop);
     r = relay_new(loop);
-    npf_x25519_pub(server_pk, server_sk);
-    CHECK(npf_noise_init(&r->s->hs, NPF_NOISE_XK, 1, "npf-relay-v1", 12, client_sk, server_pk, NULL) == 0);
-    CHECK(npf_noise_init(&server, NPF_NOISE_XK, 0, "npf-relay-v1", 12, server_sk, NULL, NULL) == 0);
-    n1 = npf_noise_write(&r->s->hs, NULL, 0, msg1, sizeof msg1);
-    CHECK(n1 > 0 && npf_noise_read(&server, msg1, (size_t)n1, payload, sizeof payload) >= 0);
-    n2 = npf_noise_write(&server, NULL, 0, msg2, sizeof msg2);
-    CHECK(n2 > 0);
-    ws_msg(NULL, msg2, (size_t)n2, 1, r->s);     /* the last message sent, relay_bind not */
-    CHECK(gone == 1 && sends == 2);
+    ws_open(NULL, r);                   /* the bind not sent */
+    CHECK(gone == 1 && sends == 1);
     npf_loop_once(loop, 0);
 
-    /* control messages by their type: another type's name in the data
-     * changes nothing */
-    {
-        npf_noise_cs relay_tx;
-        r = relay_new(loop);
-        r->s->ready = 1;
-        memset(&relay_tx, 0, sizeof relay_tx);
-        memset(relay_tx.k, 5, 32);
-        relay_tx.has_key = 1;
-        r->s->rx = relay_tx;
-        gone = 0;
-        ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_note\",\"data\":{\"after\":\"relay_paired\"}}");
-        CHECK(!paired && !gone);
-        ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_bound\",\"data\":{}}");
-        CHECK(!paired && !gone);
-        ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_paired\",\"data\":{}}");
-        CHECK(paired == 1 && r->paired && !gone && !paired_udp);
-        /* the peer on a UDP allocation (the relay bridges): told */
-        ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_paired\",\"data\":{\"peer\":\"udp\"}}");
-        CHECK(paired == 2 && paired_udp);
-        ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_error\",\"data\":{\"error\":\"forbidden\"}}");
-        CHECK(gone == 1);                   /* closed and freed (wsr_down) */
-        npf_loop_once(loop, 0);
-    }
+    /* the relay's events, one byte each; anything else ends the connection */
+    r = relay_new(loop);
+    gone = 0;
+    msg_in(r, NPF_WSR_CTL, 9, 2);
+    CHECK(gone == 1 && !paired);
+    r = relay_new(loop);
+    gone = 0;
+    msg_in(r, NPF_WSR_CTL, NPF_WSR_PAIRED, 2);
+    CHECK(paired == 1 && r->paired && !gone && !paired_udp);
+    /* the peer on a UDP allocation (the relay bridges): told */
+    msg_in(r, NPF_WSR_CTL, NPF_WSR_PAIRED_UDP, 2);
+    CHECK(paired == 2 && paired_udp);
+    msg_in(r, NPF_WSR_ANL, 0, 1);       /* an empty datagram: nothing */
+    msg_in(r, NPF_WSR_CTL, NPF_WSR_PEER_GONE, 2);
+    CHECK(left == 1 && !gone && r->paired);     /* told, still paired: the peer comes back */
+    msg_in(r, NPF_WSR_CTL, NPF_WSR_PAIRED, 1);
+    CHECK(gone == 1);                   /* closed and freed (wsr_down) */
+    npf_loop_once(loop, 0);
     npf_loop_free(loop);
-    puts("PASS failed serialization preserves the file; failed relay bind releases once; control messages by type");
+    puts("PASS failed serialization preserves the file; failed relay bind releases once; the relay's events");
     return 0;
 }

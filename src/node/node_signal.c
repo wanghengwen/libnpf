@@ -875,7 +875,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
 
 void node_sig_connect(npf_node *n)
 {
-    static const npf_sig_cbs cbs = {sig_ready, sig_msg, sig_down, NULL};
+    static const npf_sig_cbs cbs = {sig_ready, sig_msg, sig_down};
     npf_server_entry *e;
     int i;
     if (n->sig)
@@ -895,7 +895,7 @@ void node_sig_connect(npf_node *n)
     /* around a VPN like the UDP sockets (connect_mode p2p: a tunnel that
      * stalls after the system slept took the signaling with it, 2026-10-20);
      * through it the next time when going around did not log in */
-    n->sig = npf_sig_open(n->loop, e->ws[i], e->dh_pub, &n->id, "npf-ws-v1", &cbs, n, !n->sig_via_vpn);
+    n->sig = npf_sig_open(n->loop, e->ws[i], e->dh_pub, &n->id, &cbs, n, !n->sig_via_vpn);
     if (!n->sig) {
         node_server_failed(e, 1);
         npf_logw("signaling: cannot connect to %s", e->ws[i]);
@@ -917,7 +917,7 @@ void node_sig_connect(npf_node *n)
         if (r >= 0) {
             npf_server_entry *f = &n->servers[r];
             npf_log("signaling: and to server %d %s", f->id, f->ws[u]);
-            n->race = npf_sig_open(n->loop, f->ws[u], f->dh_pub, &n->id, "npf-ws-v1", &cbs, n, !n->sig_via_vpn);
+            n->race = npf_sig_open(n->loop, f->ws[u], f->dh_pub, &n->id, &cbs, n, !n->sig_via_vpn);
             n->race_server = r;
         }
     }

@@ -1,7 +1,8 @@
 /* Minimal WebSocket client (RFC 6455) over TCP or TLS, driven by npf_loop.
  *
  * wss:// is TLS (npf/tls.h) without certificate verification (security.md
- * 7.1, D5): TLS is camouflage, authentication is the Noise handshake inside.
+ * 7.1, D5): TLS is camouflage, authentication is inside (signaling's Noise
+ * handshake, the WS relay's sealed bind).
  * ws:// is accepted for tests. The connection: npf/tcp.h. */
 #ifndef NPF_WS_H
 #define NPF_WS_H

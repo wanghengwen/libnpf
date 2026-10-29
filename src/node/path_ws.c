@@ -103,11 +103,15 @@ static void wsr_gone(npf_wsr *r, const char *why, void *arg)
 
 static const npf_wsr_cbs wsr_cbs = {wsr_paired, wsr_datagram, wsr_gone};
 
+/* a connection, its first message the bind (data-channel.md 10.1) */
 static int ws_open(npf_call *c)
 {
-    if (call_relay_blocked(c->n, c->pw.url))
+    uint8_t bind[256];
+    int len;
+    if (call_relay_blocked(c->n, c->pw.url)
+        || (len = relay_ws_bind(c->n, &c->pw.keys, c->pw.id, ++c->pw.kseq, bind)) < 0)
         return -1;
-    c->pw.wsr = npf_wsr_open(c->n->loop, c->pw.url, c->pw.pub, &c->n->id, c->pw.id, &wsr_cbs, c);
+    c->pw.wsr = npf_wsr_open(c->n->loop, c->pw.url, bind, (size_t)len, &wsr_cbs, c);
     c->pw.p.last_rx = npf_mono_ms();            /* its silence counts from now */
     return c->pw.wsr ? 0 : -1;
 }
@@ -193,20 +197,8 @@ void call_ws_failed(npf_call *c, const char *why)
  * session moves because UDP does not work) */
 int call_ws_setup(npf_call *c, const m_relay *r)
 {
-    int64_t sid = r->ws.server_id;
-    const uint8_t *pub = NULL;
-    int i;
-    if (!r->ws.url[0])
+    if (!r->ws[0])
         return -1;
-    for (i = 0; i < c->n->nlist; i++)
-        if (c->n->list[i].id == sid)
-            pub = c->n->list[i].dh_pub;
-    if (!pub && c->n->cfg.server_url && sid == c->n->server_id)
-        pub = c->n->cfg.server_pub;
-    if (!pub) {
-        npf_logw("call %s: WS relay server %lld not in the server list", c->call_id_s, (long long)sid);
-        return -1;
-    }
     if (!call_has_ws(c) && c->anl)
         npf_log("call %s: the session moves to the WS relay (its connections stay)", c->call_id_s);
     c->pw.p.health = PH_NEW;                    /* UP once paired */
@@ -219,8 +211,9 @@ int call_ws_setup(npf_call *c, const m_relay *r)
     if (call_has_p2p(c))
         call_p2p_drop(c);
     call_ws_leave_conn(c);
-    snprintf(c->pw.url, sizeof c->pw.url, "%s", r->ws.url);
-    memcpy(c->pw.pub, pub, 32);
+    snprintf(c->pw.url, sizeof c->pw.url, "%s", r->ws);
+    npf_siv_derive(&c->pw.keys, r->alloc_key, LABEL_RELAY);
+    c->pw.kseq = (uint64_t)npf_node_time(c->n) << 10;     /* above any the relay took (relay_bind_take) */
     if (ws_open(c) < 0)
         return -1;
     npf_log("call %s: WS relay %s", c->call_id_s, c->pw.url);

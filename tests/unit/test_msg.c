@@ -113,11 +113,12 @@ static void rules(void)
           "a duplicate key reached the table");
     CHECK(parse(&m_punch_start_d, "[1]", &ps, err, sizeof err) == -1, "not an object");
 
-    /* the relay: IPv6 addresses left out, the fifth address ignored, a missing key refused, the key wiped */
+    /* the relay: IPv6 addresses left out, the fifth address ignored, ws not a string as missing, a missing key
+     * refused, the key wiped */
     snprintf(big, sizeof big, "{\"mode\":\"udp\",\"relay_id\":\"AQIDBAUGBwg\",\"alloc_key\":\"%s\",\"udp\":[\"[::1]:1\","
              "\"1.0.0.1:1\",\"1.0.0.2:2\",\"x\",\"1.0.0.3:3\",\"1.0.0.4:4\",\"1.0.0.5:5\"],\"ws\":{\"server_id\":3}}", key);
-    CHECK(parse(&m_relay_d, big, &r, err, sizeof err) == 0 && r.nudp == 4 && r.alloc_key[0] == 0xab && !r.ws.url[0]
-          && !r.ws.server_id, "relay: %s", err);
+    CHECK(parse(&m_relay_d, big, &r, err, sizeof err) == 0 && r.nudp == 4 && r.alloc_key[0] == 0xab && !r.ws[0],
+          "relay: %s", err);
     npf_msg_wipe(&m_relay_d, &r);
     CHECK(r.alloc_key[0] == 0 && r.relay_id[0] == 1, "alloc_key wiped");
     CHECK(parse(&m_relay_d, "{\"mode\":\"udp\",\"relay_id\":\"AQIDBAUGBwg\"}", &r, err, sizeof err) == -1

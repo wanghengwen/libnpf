@@ -43,7 +43,6 @@ const npf_msgdesc m_port_d = {"port", m_port_f, 1, sizeof(m_port)};
 const npf_msgdesc m_s256_d = {"string", m_s256_f, 1, sizeof(m_s256)};
 
 TABLE(m_env, M_ENV)
-TABLE(m_ws, M_WS)
 TABLE(m_relay, M_RELAY)
 TABLE(m_upgrade, M_UPGRADE)
 TABLE(m_daykey, M_DAYKEY)
