@@ -373,8 +373,7 @@ void call_relay_setup(npf_call *c, const m_relay *r)
 void call_need(npf_call *c, int need, int64_t now)
 {
     static const char *const what[] = {"", "a UDP relay", "the WS relay", "one on our own server", "the UDP relay"};
-    static const char *const how[] = {"", "\"mode\":\"udp\"", "\"mode\":\"ws\"", "\"unreachable\":true",
-                                      "\"mode\":\"udp\""};
+    static const char *const how[] = {"", "\"mode\":\"udp\"", "\"mode\":\"ws\"", "\"unreachable\":true"};
     npf_pm *m = &c->pm;
     char data[96];
     if (need == PM_NEED_PATH_LOST) {    /* once: no answer to wait for (a round, or none) */
@@ -404,19 +403,20 @@ void call_need(npf_call *c, int need, int64_t now)
                 need == PM_NEED_UDP_BACK ? "UDP works: " : need == PM_NEED_WS_ELSEWHERE ? "relay unreachable, " : "",
                 what[need]);
     m->ask_at = now + (m->asks++ ? RELAY_ASK_LATER_MS : RELAY_ASK_AGAIN_MS);
-    if (need == PM_NEED_UDP_BACK) {
+    if (need == PM_NEED_UDP_BACK) {     /* with the profile: the platform sees this side's UDP first */
         npf_out w = {0};
         npf_out_jobj(&w);
         npf_out_kstr(&w, "call_id", c->call_id_s);
-        npf_out_kstr(&w, "why", "udp_back");
+        npf_out_kstr(&w, "mode", "udp");
         npf_node_write_nat(c->n, &w);
         npf_out_jend(&w);
         if (!w.failed)
-            npf_node_send(c->n, "punch_update", 0, w.p);
+            npf_node_send(c->n, "relay_switch", 0, w.p);
         npf_out_free(&w);
+    } else {
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\",%s}", c->call_id_s, how[need]);
+        npf_node_send(c->n, "relay_switch", 0, data);
     }
-    snprintf(data, sizeof data, "{\"call_id\":\"%s\",%s}", c->call_id_s, how[need]);
-    npf_node_send(c->n, "relay_switch", 0, data);
     /* UDP believed to work: measured again, so that when it fails the
      * profile says so and the probe's retries see it come back (udp_back) */
     if (need == PM_NEED_WS && m->asks == 1 && c->n->nat_valid && c->n->nat_udp && !c->n->probe && c->n->udp_fd >= 0)
