@@ -71,7 +71,6 @@ struct npf_peer {
     pfwd      *fwds[NPF_PEER_MAX_FWD];  /* 0 .. nfwd-1 allocated; a slot is never moved */
     int        nfwd;
     int        listening;
-    int        keep;                /* NPF_CONNECT_KEEP: reconnect (a one-off is done when its session ends) */
     int64_t    up_since;            /* the session's start (ms), for STABLE_MS */
     int        backoff;             /* ms */
     npf_timer *t_retry;
@@ -110,7 +109,7 @@ struct npf_peer {
 typedef struct pconn {
     uint64_t  id;                   /* ours, for the waiting ones */
     npf_peer *p;                    /* NULL: the peer went */
-    int       slot, fid, port;      /* its mapping's slot and id (the slot may be reused) */
+    int       fid, port;            /* its mapping's id */
     uint64_t  mapping;
     npf_call *call;                 /* its session, NULL while it waits */
     uint32_t  sid;                  /* its sublink there */

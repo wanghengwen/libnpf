@@ -106,22 +106,12 @@ static int kind_taken(const npf_peers *ps, const pfwd *f, char *err, size_t errc
     return 0;
 }
 
-/* a forward for the log: what it is, or a module's kind in its form */
-static const char *fwd_label(const pfwd *f, char *b, size_t cap)
-{
-    if (f->kind)
-        snprintf(b, cap, "-%c %s", f->opt, f->spec);
-    else
-        snprintf(b, cap, "%s", f->spec);
-    return b;
-}
-
 /* a connection or a datagram may wait for the session: a peer that will
  * have one (on demand, or kept), not one that ended (no password, no
  * account: it was closed after DEMAND_WAIT_MS instead of at once) */
 static int peer_may_wait(const npf_peer *p)
 {
-    return !p->finished && (p->idle_ms || p->keep);
+    return !p->finished && (p->idle_ms || p->connect != NPF_CONNECT_ONCE);
 }
 
 static void accept_resume(npf_loop *loop, void *arg)
@@ -216,8 +206,6 @@ static int fwd_why_code(const pfwd *f, const char *why)
 {
     if (f->refused)
         return NPF_FWD_WHY_FORBIDDEN;
-    if (!why)
-        return NPF_FWD_WHY_NONE;
     if (strstr(why, "in use") || strstr(why, "taken"))
         return NPF_FWD_WHY_PORT_IN_USE;
     if (strstr(why, "cannot listen") || strstr(why, "bind"))
@@ -243,12 +231,14 @@ static void fwd_changed(pfwd *f)
         ps->cbs.fwd(f->p, f->idx, st == NPF_FWD_UP, st == NPF_FWD_UP ? NULL : f->why, ps->arg);
 }
 
-/* tell the application: the mapping is up, or failed (why) */
-static void fwd_report(pfwd *f, int up, const char *why)
+/* tell the application: the mapping is up (why NULL), or failed (why) */
+static void fwd_report(pfwd *f, const char *why)
 {
-    if (!up && why && why != f->why)
+    if (!why)
+        f->up = 1, f->backoff = 0;
+    else if (why != f->why)
         snprintf(f->why, sizeof f->why, "%s", why);
-    f->why_code = up ? NPF_FWD_WHY_NONE : fwd_why_code(f, why);
+    f->why_code = why ? fwd_why_code(f, why) : NPF_FWD_WHY_NONE;
     fwd_changed(f);
 }
 
@@ -263,18 +253,15 @@ static void fwd_retry_cb(npf_loop *loop, void *arg)
 /* try this mapping again later; the session goes on */
 static void fwd_retry(pfwd *f, const char *why)
 {
+    char k[4] = {'-', f->opt, ' ', 0};     /* a module's kind in its form */
     int d;
     if (f->t_retry || !f->used)
         return;
     d = npf_backoff(&f->backoff, 1000, FWD_BACKOFF_MAX_MS);
-    snprintf(f->why, sizeof f->why, "%s", why);
     f->retry_at = npf_mono_ms() + d;
-    {
-        char lb[320];
-        npf_logw("%s: %s: %s, again in %d s", f->p->name, fwd_label(f, lb, sizeof lb), why, (d + 999) / 1000);
-    }
+    npf_logw("%s: %s%s: %s, again in %d s", f->p->name, f->kind ? k : "", f->spec, why, (d + 999) / 1000);
     f->t_retry = npf_timer_add(f->p->ps->n->loop, d, fwd_retry_cb, f);
-    fwd_report(f, 0, why);
+    fwd_report(f, why);
 }
 
 void peers_fwd_stop(pfwd *f)
@@ -314,19 +301,17 @@ static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *e
         snprintf(f->why, sizeof f->why, strcmp(f->bind, "0.0.0.0") == 0
                  ? "refused by the device (port or LAN not allowed)" : "refused by the device (its policy)");
         npf_logw("%s: %s: refused by the device's policy", f->p->name, f->spec);
-        fwd_report(f, 0, f->why);
+        fwd_report(f, f->why);
         return;
     }
     if (port < 0) {
         fwd_retry(f, err && *err ? err : "refused by the callee");
         return;
     }
-    f->up = 1;
     f->rev_id = listen_id;
     f->lport = port;
-    f->backoff = 0;
     npf_log("%s: reverse mapping: callee %s:%d -> %s:%d here", f->p->name, f->bind, port, f->host, f->hostport);
-    fwd_report(f, 1, NULL);
+    fwd_report(f, NULL);
 }
 
 npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
@@ -342,8 +327,7 @@ npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
     if (!p->call && !p->waiting && !p->finished) {
         npf_log("%s: a connection through -%c %s: starting the session", p->name, p->fwds[i]->kind->k->opt,
                 p->fwds[i]->spec);
-        if (peers_kick(p) == 0 && p->idle_ms)
-            peers_demand_timer(p);
+        peers_kick(p);                      /* on demand: idle from when it is up */
     }
     return NULL;
 }
@@ -408,10 +392,8 @@ static void fwd_start(pfwd *f)
             fwd_retry(f, tw);
             return;
         }
-        f->up = 1;
-        f->backoff = 0;
         npf_log("%s: -%c %s: through %s", p->name, f->opt, f->spec, f->kind->k->name ? f->kind->k->name(f->kind->arg) : "");
-        fwd_report(f, 1, NULL);
+        fwd_report(f, NULL);
         return;
     }
     if ((f->fd = listen_on(f->bind, f->port, type, why, sizeof why, &in_use)) < 0 && !in_use && strcmp(f->bind, "::") == 0) {
@@ -433,14 +415,12 @@ static void fwd_start(pfwd *f)
         if (getsockname(f->fd, (struct sockaddr *)&ss, &sl) == 0)
             f->lport = npf_addr_port(&ss);
     }
-    f->up = 1;
-    f->backoff = 0;
     if (f->socks)
         npf_log("%s: SOCKS5 proxy on %s:%d", p->name, f->bind, f->lport);
     else
         npf_log("%s: forwarding %s%s:%d -> %s:%d on the callee", p->name, f->udp ? "UDP " : "", f->bind, f->lport,
                 f->host, f->hostport);
-    fwd_report(f, 1, NULL);
+    fwd_report(f, NULL);
 }
 
 void peers_listeners_close(npf_peer *p)
