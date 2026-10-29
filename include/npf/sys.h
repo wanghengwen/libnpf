@@ -127,6 +127,8 @@ int  npf_sock_inprogress(void);                 /* non-blocking connect() starte
 int  npf_sock_broken(void);
 int  npf_sock_broken_code(int err);             /* an SO_ERROR value */
 int  npf_sock_starved(void);                    /* out of descriptors or memory (accept: the connection waits) */
+/* a TCP socket's kernel queues and retransmissions, for a log line (Linux; "-" elsewhere) */
+const char *npf_sock_tcp_diag(int fd, char *buf, size_t cap);
 const char *npf_sock_strerror(void);
 const char *npf_sock_strerror_code(int err);         /* an SO_ERROR value */
 

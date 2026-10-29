@@ -36,6 +36,8 @@ int  npf_ws_flush(npf_ws *ws);
 int  npf_ws_ping(npf_ws *ws);
 /* bytes queued but not yet written to the socket */
 size_t npf_ws_pending(const npf_ws *ws);
+/* the connection's queues, for a log line when it stalls (npf_sock_tcp_diag) */
+const char *npf_ws_diag(const npf_ws *ws, char *buf, size_t cap);
 /* close without callback; frees the handle */
 void npf_ws_free(npf_ws *ws);
 /* monotonic ms of the last frame received (pongs included), 0 = none yet */

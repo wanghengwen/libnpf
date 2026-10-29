@@ -505,6 +505,14 @@ size_t npf_ws_pending(const npf_ws *ws)
     return ws->out.len;
 }
 
+const char *npf_ws_diag(const npf_ws *ws, char *buf, size_t cap)
+{
+    char k[200];
+    snprintf(buf, cap, "%zu B queued here, %s", ws->out.len,
+             ws->tcp.fd >= 0 ? npf_sock_tcp_diag(ws->tcp.fd, k, sizeof k) : "no socket");
+    return buf;
+}
+
 void npf_ws_free(npf_ws *ws)
 {
     if (!ws || ws->freed)
