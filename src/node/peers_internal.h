@@ -157,7 +157,6 @@ struct npf_peers {
     } *subs;
     int           nsubs;
     size_t        capsubs;
-    uint8_t      *ubuf;             /* a datagram read from a UDP forward */
     struct kind_reg {               /* the modules' kinds of forward */
         const npf_fwd_kind *k;
         void               *arg;
@@ -185,20 +184,19 @@ pfwd *peers_fwd_by_id(const npf_peers *ps, int id);
 /* peers_demand.c */
 void peers_demand_timer(npf_peer *p);
 void peers_demand_wait(pfwd *f, int fd, uint64_t cid);
-void peers_ready_wait(npf_peer *p);
-void peers_demand_flush(npf_peer *p);
+/* what waits for the session goes into it: now when its transport is ready, else as soon as it is */
+void peers_ready(npf_peer *p);
 void peers_udp_queue_drop(npf_peer *p, int slot);
-void peers_udp_queue_flush(npf_peer *p);
 void peers_demand_drop(npf_peer *p, const char *why);
 /* the connections waiting for a forward that goes (its slot may be reused): closed, mapping_closed */
 void peers_demand_drop_slot(npf_peer *p, int slot);
 void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, const uint8_t *buf, size_t len);
 
 /* peers_connections.c */
-void peers_unmap_v4(struct sockaddr_storage *ss);
-const char *peers_conn_admit(pfwd *f, const struct sockaddr_storage *from, int *ip);
-void peers_conn_refused(pfwd *f, const struct sockaddr_storage *from, const char *why);
-uint64_t peers_conn_add(pfwd *f, const struct sockaddr_storage *from, int ip);
+/* a visitor's connection fd on the public mapping f: who may (allow_from),
+ * the quota, the limits; its record's id, or 0 with fd closed (refused, or
+ * no memory to track it: not let in untracked) */
+uint64_t peers_public_admit(pfwd *f, int fd);
 void peers_conn_gone(npf_peers *ps, uint64_t cid, const char *why);
 void peers_subs_call_gone(npf_peers *ps, npf_call *c);
 void peers_conn_open(pfwd *f, int fd, uint64_t cid);

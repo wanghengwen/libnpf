@@ -4,8 +4,6 @@
 #define _DEFAULT_SOURCE
 #include "npf/log.h"
 #include "npf/sys.h"
-#include <errno.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -78,14 +76,11 @@ static int tx_input(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t
         tx *t = &txs[i];
         if (t->done || t->fd != fd || memcmp(t->txid, pkt.txid, NPF_TXID_SIZE) != 0)
             continue;
-        if (!npf_addr_eq(from, &t->dst) || resp.family != 4)
+        if (!npf_addr_eq(from, &t->dst) || resp.mapped.ss_family != AF_INET)
             continue;                   /* the server answers from the endpoint we asked */
         t->done = 1;
         t->acked_at = npf_mono_ms();
-        memset(&t->mapped, 0, sizeof(t->mapped));
-        t->mapped.sin_family = AF_INET;
-        memcpy(&t->mapped.sin_addr, resp.addr, 4);
-        t->mapped.sin_port = htons(resp.port);
+        memcpy(&t->mapped, &resp.mapped, sizeof t->mapped);
         /* the response echoes the ts_ms of the request it answers (no retransmission ambiguity) */
         t->rtt_ms = (int)(uint32_t)(wire_ts(cfg->clock_offset_ms) - pkt.ts_ms);
         t->srv_offset_ms = (int64_t)resp.srv_time_ms - (npf_unix_ms() - t->rtt_ms / 2);
@@ -210,22 +205,11 @@ static void decide_filter(npf_natprobe_result *res, const tx *txs, int n)
         res->profile.filtering = NPF_FILT_UNKNOWN;
 }
 
-static int is_local_ipv4(const struct in_addr *ip)
-{
-    npf_ifaddr ifs[64];
-    int i, n = npf_if_list(ifs, 64);
-    for (i = 0; i < n; i++)
-        if (ifs[i].family == AF_INET && memcmp(ifs[i].addr, &ip->s_addr, 4) == 0)
-            return 1;
-    return 0;
-}
-
 /* port allocation from K (local, mapped) samples, 4.2 */
 void npf_natprobe_classify_alloc(npf_natprobe_result *res)
 {
-    uint16_t p[NPF_NATPROBE_MAX_ALLOC];
-    int n = 0, i, preserve = 1, best = 0, best_cnt = 0;
-    uint16_t lo = 0xffff, hi = 0;
+    uint16_t p[NPF_NATPROBE_MAX_ALLOC], sorted[NPF_NATPROBE_MAX_ALLOC], tmp, lo, hi;
+    int n = 0, i, j, preserve = 1, best = 0, best_cnt = 0, gap_best = -1, gap_at = 0;
 
     for (i = 0; i < res->alloc_n; i++) {
         if (!res->alloc_got[i])
@@ -256,31 +240,27 @@ void npf_natprobe_classify_alloc(npf_natprobe_result *res)
                 best = d;
         }
     }
-    if (n - 1 >= 2 && best_cnt >= (n - 1 >= 5 ? n - 2 : n - 1) && best > 0 && best <= 16) {
+    if (best_cnt >= (n - 1 >= 5 ? n - 2 : n - 1) && best <= 16) {     /* n >= 3: best_cnt >= 2, best > 0 */
         res->profile.allocation = NPF_ALLOC_SEQUENTIAL;
         res->profile.seq_delta = (int16_t)best;
         return;
     }
     /* smallest circular range holding every sample: the complement of the
      * largest gap (a port block may wrap from 65535 back to 1024) */
-    {
-        int j, gap_best = -1, gap_at = 0;
-        uint16_t sorted[NPF_NATPROBE_MAX_ALLOC], tmp;
-        memcpy(sorted, p, (size_t)n * sizeof(p[0]));
-        for (i = 1; i < n; i++)
-            for (j = i; j > 0 && sorted[j - 1] > sorted[j]; j--) {
-                tmp = sorted[j]; sorted[j] = sorted[j - 1]; sorted[j - 1] = tmp;
-            }
-        for (i = 0; i < n; i++) {
-            int gap = (uint16_t)(sorted[(i + 1) % n] - sorted[i]);
-            if (gap > gap_best) {
-                gap_best = gap;
-                gap_at = i;
-            }
+    memcpy(sorted, p, (size_t)n * sizeof(p[0]));
+    for (i = 1; i < n; i++)
+        for (j = i; j > 0 && sorted[j - 1] > sorted[j]; j--) {
+            tmp = sorted[j]; sorted[j] = sorted[j - 1]; sorted[j - 1] = tmp;
         }
-        lo = sorted[(gap_at + 1) % n];
-        hi = sorted[gap_at];
+    for (i = 0; i < n; i++) {
+        int gap = (uint16_t)(sorted[(i + 1) % n] - sorted[i]);
+        if (gap > gap_best) {
+            gap_best = gap;
+            gap_at = i;
+        }
     }
+    lo = sorted[(gap_at + 1) % n];
+    hi = sorted[gap_at];
     res->profile.block_lo = lo;
     res->profile.block_hi = hi;     /* lo > hi: the range wraps around */
     res->profile.allocation = (uint16_t)(hi - lo) < 4096 ? NPF_ALLOC_BLOCK : NPF_ALLOC_RANDOM;
@@ -302,18 +282,13 @@ static int decide_mapping(npf_natprobe_result *res, const tx *txs, int n_ep)
         return -1;
     res->have_offset = 1;
     res->srv_offset_ms = txs[0].srv_offset_ms;
-    res->profile.open = is_local_ipv4(&res->mapped[0].sin_addr)
+    res->profile.open = npf_if_has(AF_INET, &res->mapped[0].sin_addr)
                         && ntohs(res->mapped[0].sin_port) == res->local_port;
     if (n_ep >= 2 && res->got[1] && !npf_addr_eq(&res->mapped[0], &res->mapped[1]))
         res->profile.mapping = NPF_MAP_APDM;
     else if (n_ep >= 3 && res->got[1] && res->got[2]) {
-        if (res->mapped[2].sin_addr.s_addr != res->mapped[0].sin_addr.s_addr) {
-            res->profile.ip_varies = 1;
-            res->profile.mapping = NPF_MAP_ADM;
-        } else if (npf_addr_eq(&res->mapped[0], &res->mapped[2]))
-            res->profile.mapping = NPF_MAP_EIM;
-        else
-            res->profile.mapping = NPF_MAP_ADM;
+        res->profile.ip_varies = res->mapped[2].sin_addr.s_addr != res->mapped[0].sin_addr.s_addr;
+        res->profile.mapping = npf_addr_eq(&res->mapped[0], &res->mapped[2]) ? NPF_MAP_EIM : NPF_MAP_ADM;
     } else
         res->profile.mapping = NPF_MAP_UNKNOWN;
     return 0;
@@ -596,33 +571,23 @@ int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res)
 }
 #endif
 
+/* the names in enum order; out of range: the first, UNKNOWN */
+#define NAME_OF(names, v) ((v) > 0 && (v) < (int)(sizeof names / sizeof *names) ? names[v] : names[0])
+
 const char *npf_nat_mapping_str(int mapping)
 {
-    switch (mapping) {
-    case NPF_MAP_EIM:  return "EIM";
-    case NPF_MAP_ADM:  return "ADM";
-    case NPF_MAP_APDM: return "APDM";
-    default:           return "UNKNOWN";
-    }
+    static const char *const names[] = {"UNKNOWN", "EIM", "ADM", "APDM"};
+    return NAME_OF(names, mapping);
 }
 
 const char *npf_nat_filter_str(int filtering)
 {
-    switch (filtering) {
-    case NPF_FILT_EIF:  return "EIF";
-    case NPF_FILT_ADF:  return "ADF";
-    case NPF_FILT_APDF: return "APDF";
-    default:            return "UNKNOWN";
-    }
+    static const char *const names[] = {"UNKNOWN", "EIF", "ADF", "APDF"};
+    return NAME_OF(names, filtering);
 }
 
 const char *npf_nat_alloc_str(int allocation)
 {
-    switch (allocation) {
-    case NPF_ALLOC_PRESERVE:   return "PRESERVE";
-    case NPF_ALLOC_SEQUENTIAL: return "SEQUENTIAL";
-    case NPF_ALLOC_BLOCK:      return "BLOCK";
-    case NPF_ALLOC_RANDOM:     return "RANDOM";
-    default:                   return "UNKNOWN";
-    }
+    static const char *const names[] = {"UNKNOWN", "PRESERVE", "SEQUENTIAL", "BLOCK", "RANDOM"};
+    return NAME_OF(names, allocation);
 }

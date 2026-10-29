@@ -1,32 +1,23 @@
 /* UDP sockets, recovery and network-change monitoring. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
 #endif
 
-#include "npf/candidates.h"
-#include "npf/cert.h"
-#include "npf/conf.h"
 #include "npf/node.h"
 #include "npf/platform.h"
 
 #include "node_internal.h"
 #include "home.h"
 
-static void udp_new_port(npf_node *n);
 static void udp_failed(npf_node *n, int fd, const char *why);
 static void node_net_check(npf_node *n, const char *why);
 
 /* ---- UDP ---- */
-
 
 static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
@@ -75,12 +66,12 @@ static int udp_open(npf_node *n, int fam, uint16_t port, uint16_t *bound)
      * flights while the loop is busy. The kernel caps this at rmem_max. */
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char *)&sz, sizeof sz);
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const char *)&sz, sizeof sz);
-    if (bind(fd, (struct sockaddr *)&a, fam == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)) < 0
+    if (bind(fd, (struct sockaddr *)&a, npf_addr_len(&a)) < 0
         || getsockname(fd, (struct sockaddr *)&a, &al) < 0 || npf_loop_add(n->loop, fd, NPF_EV_READ, udp_cb, n) < 0) {
         npf_sock_close(fd);
         return -1;
     }
-    *bound = ntohs(fam == AF_INET6 ? ((struct sockaddr_in6 *)&a)->sin6_port : ((struct sockaddr_in *)&a)->sin_port);
+    *bound = npf_addr_port(&a);
     return fd;
 }
 
@@ -110,19 +101,6 @@ void node_udp_close(npf_node *n)
 
 /* ---- UDP on demand (cfg.udp_on_demand: hosted clients) ---- */
 
-
-int npf_node_udp_open(npf_node *n)
-{
-    if (!n->cfg.udp_on_demand || n->udp_fd >= 0)
-        return 0;
-    if (node_udp_open(n) < 0) {
-        npf_loge("udp: cannot open the socket: %s", npf_sock_strerror());
-        return -1;
-    }
-    udp_new_port(n);
-    return 0;
-}
-
 /* a new main socket (another port): the address the last probe found is not
  * this socket's, unless the operator says it is public and that probe agreed */
 static void udp_new_port(npf_node *n)
@@ -140,6 +118,18 @@ static void udp_new_port(npf_node *n)
                 n->nat_quick ? "its mapping to be measured (the NAT's port allocation is known)"
                              : "its NAT profile to be measured");
     }
+}
+
+int npf_node_udp_open(npf_node *n)
+{
+    if (!n->cfg.udp_on_demand || n->udp_fd >= 0)
+        return 0;
+    if (node_udp_open(n) < 0) {
+        npf_loge("udp: cannot open the socket: %s", npf_sock_strerror());
+        return -1;
+    }
+    udp_new_port(n);
+    return 0;
 }
 
 int npf_node_udp_ready(npf_node *n)
@@ -185,7 +175,6 @@ void node_udp_close_idle(npf_node *n)
 #define NETCHECK_MS      8000           /* the signaling must answer a check's ping this soon */
 #define UDP_REOPEN_RETRY_MS 5000
 
-
 /* a digest of the interfaces' addresses: IPv4, and the /64 prefix of global
  * IPv6 ones (temporary addresses change within it every day); in any order */
 static uint32_t addrs_digest(void)
@@ -219,22 +208,18 @@ static uint32_t addrs_digest(void)
 static int udp_alive(int fd, int family)
 {
     struct sockaddr_storage to;
-    memset(&to, 0, sizeof to);
-    if (family == AF_INET6) {
-        struct sockaddr_in6 *a = (struct sockaddr_in6 *)&to;
-        a->sin6_family = AF_INET6;
-        a->sin6_addr.s6_addr[15] = 1;
-        a->sin6_port = htons(9);
-    } else {
-        struct sockaddr_in *a = (struct sockaddr_in *)&to;
-        a->sin_family = AF_INET;
-        a->sin_addr.s_addr = htonl(0x7f000001);
-        a->sin_port = htons(9);
-    }
-    if (sendto(fd, "", 0, 0, (struct sockaddr *)&to,
-               family == AF_INET6 ? (socklen_t)sizeof(struct sockaddr_in6) : (socklen_t)sizeof(struct sockaddr_in)) >= 0)
+    npf_addr_parse(family == AF_INET6 ? "[::1]:9" : "127.0.0.1:9", &to);
+    if (sendto(fd, "", 0, 0, (struct sockaddr *)&to, npf_addr_len(&to)) >= 0)
         return 1;
     return npf_sock_again() || !npf_sock_broken();
+}
+
+/* a main socket that failed (udp_alive), the IPv4 one first; -1 none */
+static int udp_dead(const npf_node *n)
+{
+    return n->udp_fd >= 0 && !udp_alive(n->udp_fd, AF_INET)      ? n->udp_fd
+           : n->udp6_fd >= 0 && !udp_alive(n->udp6_fd, AF_INET6) ? n->udp6_fd
+                                                                  : -1;
 }
 
 static void udp_reopen_cb(npf_loop *loop, void *arg)
@@ -326,14 +311,11 @@ static void netcheck_cb(npf_loop *loop, void *arg)
 
 static void node_net_check(npf_node *n, const char *why)
 {
+    int fd;
     npf_log("network: %s: checking the connections", why);
-    if (n->udp_fd >= 0 && !n->t_udp_reopen && !udp_alive(n->udp_fd, AF_INET)) {
-        udp_failed(n, n->udp_fd, npf_sock_strerror());
+    if (!n->t_udp_reopen && (fd = udp_dead(n)) >= 0) {
+        udp_failed(n, fd, npf_sock_strerror());
         return;                             /* the reopen checks again */
-    }
-    if (n->udp6_fd >= 0 && !n->t_udp_reopen && !udp_alive(n->udp6_fd, AF_INET6)) {
-        udp_failed(n, n->udp6_fd, npf_sock_strerror());
-        return;
     }
     if (!n->cfg.offline && !n->dormant) {
         if (n->sig && n->online) {
@@ -363,6 +345,7 @@ static void watch_cb(npf_loop *loop, void *arg)
     int64_t now = npf_boot_ms(), late = now - n->watch_boot_ms - WATCH_TICK_MS;
     uint32_t d = addrs_digest();
     char why[64];
+    int dead;
     n->t_watch = npf_timer_add(loop, WATCH_TICK_MS, watch_cb, n);
     n->watch_boot_ms = now;
 #ifndef _WIN32
@@ -390,15 +373,10 @@ static void watch_cb(npf_loop *loop, void *arg)
 #endif
     /* a failed socket may never wake the loop (epoll forgets a descriptor
      * that is gone): asked every tick, one empty datagram each */
-    if (!n->t_udp_reopen) {
-        int dead = n->udp_fd >= 0 && !udp_alive(n->udp_fd, AF_INET)      ? n->udp_fd
-                   : n->udp6_fd >= 0 && !udp_alive(n->udp6_fd, AF_INET6) ? n->udp6_fd
-                                                                          : -1;
-        if (dead >= 0) {                    /* each checked once; the error of the one that failed */
-            n->watch_addrs = d;
-            udp_failed(n, dead, npf_sock_strerror());
-            return;                         /* the reopen checks the connections */
-        }
+    if (!n->t_udp_reopen && (dead = udp_dead(n)) >= 0) {   /* the error of the one that failed */
+        n->watch_addrs = d;
+        udp_failed(n, dead, npf_sock_strerror());
+        return;                             /* the reopen checks the connections */
     }
     if (late >= WATCH_LATE_MS) {
         snprintf(why, sizeof why, "suspended for %lld s", (long long)(late / 1000));

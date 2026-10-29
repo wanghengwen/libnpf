@@ -375,12 +375,13 @@ static int s2b_input(npf_punch *p, const uint8_t *buf, size_t len, const struct 
     if (ep == 2)
         return 0;
     if (ep == 0 && !p->own_port && npf_pkt_open(&p->kprobe, NPF_DIR_RESP, buf, len, plain, &pkt) == 0
-        && memcmp(pkt.txid, p->btx, NPF_TXID_SIZE) == 0 && npf_bind_resp_parse(&pkt, &resp) == 0 && resp.family == 4) {
-        p->own_port = resp.port;
+        && memcmp(pkt.txid, p->btx, NPF_TXID_SIZE) == 0 && npf_bind_resp_parse(&pkt, &resp) == 0
+        && resp.mapped.ss_family == AF_INET) {
+        p->own_port = npf_addr_port(&resp.mapped);
         npf_log("punch: %s: the fresh socket's mapping is port %u", p->cfg.plan.strategy == NPF_PUNCH_S2B ? "S2B" : "S2",
-                resp.port);
+                p->own_port);
         if (p->cfg.info)
-            p->cfg.info(p, resp.port, p->arg);
+            p->cfg.info(p, p->own_port, p->arg);
         if (p->peer_port) {
             p->pass_next = npf_mono_ms();
             schedule(p);

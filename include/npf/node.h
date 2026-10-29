@@ -43,11 +43,9 @@ typedef struct npf_list_meta {
 typedef struct npf_server_entry {
     int      id;
     int      prio, weight;
-    int      cdn;
     char     ws[2][256];
     int      nws;
     uint8_t  dh_pub[32];
-    int      relay;
     int      fails;
     int64_t  degraded_until;    /* monotonic ms: deprioritised after 3 failures for an hour (security.md 7.5) */
 } npf_server_entry;
@@ -454,7 +452,6 @@ int  npf_call_reverse(npf_call *c, const char *bind_addr, int port, const char *
 /* caller: end a reverse mapping (the callee closes its listener) */
 void npf_call_reverse_close(npf_call *c, uint32_t listen_id);
 int  npf_call_auth(const npf_call *c);
-uint64_t npf_call_grant_account(const npf_call *c);
 /* end a call (sends close / call_end) */
 void npf_call_end(npf_call *c, const char *reason);
 /* end every call of the node (shutdown); the loop must run a moment afterwards */
@@ -481,13 +478,11 @@ void npf_node_calls_decide(npf_node *n);
  * check after it calls hooks.on_net_change; -1: nothing reopens it here
  * (no socket, or opened on demand: no check follows) */
 int  npf_node_udp_reset(npf_node *n, const char *why);
-/* caller: a local TCP connection becomes a sublink (see npf_tunnel_open) */
-/* a forwarded connection in the session: its id (> 0), or -1 */
-int  npf_call_open(npf_call *c, int fd, int passthrough, const char *host, uint16_t port);
-/* the same in a rate group (npf_tunnel_open_rated) */
-int  npf_call_open_rated(npf_call *c, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
-                         uint32_t rate);
-/* a connection opened with npf_call_open* (its id, what it returned) ended:
+/* caller: a local TCP connection becomes a sublink, in a rate group (0:
+ * none; npf_tunnel_open_rated): its id (> 0), or -1 */
+int  npf_call_open(npf_call *c, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
+                   uint32_t rate);
+/* a connection opened with npf_call_open (its id, what it returned) ended:
  * the bytes read from / written to it; NULL: none. Also while the call is
  * being freed (its tunnel goes): clear it before what arg points to goes */
 struct npf_sublink_stats;
@@ -504,7 +499,6 @@ int  npf_call_sub_reset(npf_call *c, uint32_t sid, const char *why);            
  * client's usage_report, the same bytes as its quota budget */
 void npf_call_usage_take(npf_call *c, uint64_t *tx, uint64_t *rx);
 int  npf_call_state(const npf_call *c);
-uint64_t npf_call_peer(const npf_call *c);
 /* debugging: calls, AnLiu and tunnel state to stderr */
 void npf_node_dump(npf_node *n);
 /* the path the session sends on: "p2p", "relay", "relay (binding)", "ws

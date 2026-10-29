@@ -1,13 +1,7 @@
-/* The router's port mapping for the node's main socket (nat-traversal.md 5):
- * PCP, else NAT-PMP, at the default gateway. A mapping is a "mapped"
- * candidate, as good as a public address: the platform then plans S1 instead
- * of birthday punching for this side. The request blocks for up to a few
- * seconds when the gateway does not answer, so it runs on a thread of its
- * own; the result comes back through npf_loop_post. Renewed before the lease
- * ends (1 hour, 10 minutes ahead), tried again every 30 minutes when there
- * is none, removed when the node stops, asked for again on another network.
- * What the gateway did goes to the platform with the NAT profile ("pm",
- * npf_node_write_nat), for its statistics. */
+/* The router's port mapping for the node's main socket, a "mapped"
+ * candidate (nat-traversal.md 5: PCP, else NAT-PMP, its lease and renewal,
+ * the "pm" report). A request blocks while the gateway does not answer: it
+ * runs on a thread of its own, its result posted back to the loop. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -125,8 +119,9 @@ static void pm_deliver(npf_loop *loop, void *arg)
         npf_node_report_nat(n);             /* the platform's statistics */
 }
 
-static void pm_work(pm_job *j)
+static void pm_work(void *arg)
 {
+    pm_job *j = arg;
     j->ret = npf_portmap_request(j->gw, j->port, j->lifetime, &j->res);
     PM_LOCK();                              /* the node (and its loop) still there while not cancelled */
     if (j->cancelled || npf_loop_post_drop(j->n->loop, pm_deliver, free, j) < 0) {
@@ -150,42 +145,6 @@ static void pm_forget(npf_node *n)
     n->pm_job = NULL;
 }
 
-#ifdef _WIN32
-static DWORD WINAPI pm_thread(LPVOID arg)
-{
-    pm_work(arg);
-    return 0;
-}
-
-static int spawn(pm_job *j)
-{
-    HANDLE h = CreateThread(NULL, 0, pm_thread, j, 0, NULL);
-    if (!h)
-        return -1;
-    CloseHandle(h);
-    return 0;
-}
-#else
-static void *pm_thread(void *arg)
-{
-    pm_work(arg);
-    return NULL;
-}
-
-static int spawn(pm_job *j)
-{
-    pthread_t t;
-    pthread_attr_t a;
-    int e;
-    pthread_attr_init(&a);
-    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&a, 256 << 10);    /* not musl's 128 KB default */
-    e = pthread_create(&t, &a, pm_thread, j);
-    pthread_attr_destroy(&a);
-    return e ? -1 : 0;
-}
-#endif
-
 static void pm_request(npf_node *n)
 {
     pm_job *j;
@@ -196,7 +155,7 @@ static void pm_request(npf_node *n)
     j->port = n->udp_port;
     j->lifetime = PM_LEASE_S;
     n->pm_job = j;
-    if (spawn(j) < 0) {
+    if (npf_thread_detached(pm_work, j) < 0) {
         n->pm_job = NULL;
         free(j);
     }

@@ -1,20 +1,9 @@
 /* Node lifecycle. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
-#include <stdarg.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#ifndef _WIN32
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
-#include "npf/candidates.h"
-#include "npf/cert.h"
-#include "npf/conf.h"
 #include "npf/node.h"
 #include "npf/platform.h"
 

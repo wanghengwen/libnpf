@@ -629,7 +629,7 @@ Linux 内核 NAT 的行为不能完整覆盖上面的分类（MASQUERADE 默认�
 ### 12.5 端口映射与 IPv6（2026-10-04）
 
 - **PCP / NAT-PMP**：报文编解码有已知答案测试（`tests/unit`，PCP MAP 60 字节、NAT-PMP MAP 12/16 字节的构造与解析，含错误码拒绝）。本机网关（WSL）不支持 5351，实测走到"无 PCP/NAT-PMP 响应"的优雅失败路径；云主机的网关也不应答 5351，因此真实命中需在支持的家用路由器上验证（待办）；
-- **IPv6**：打洞模块（当时的 `punch.c`，现在的 `punch_ev.c`）已改为 family-agnostic（`sockaddr_storage`），S0/S1 支持 IPv6；S3 暴力打洞仍限 IPv4（依赖 NAT 端口行为，IPv6 无 NAT）。候选收集 `ice/candidates.c` 的 `npf_gather_host6` / `host4` 提供本机地址。**所有测试机都没有全局 IPv6**，无法做跨机实测；已在本机用 `::1` 回环验证 S1 over IPv6 打通（双方提名成功，地址为 v6）。真实 IPv6 穿透（家宽双栈，开放对端防火墙针孔）待有 v6 环境时验证。
+- **IPv6**：打洞模块（当时的 `punch.c`，现在的 `punch_ev.c`）已改为 family-agnostic（`sockaddr_storage`），S0/S1 支持 IPv6；S3 暴力打洞仍限 IPv4（依赖 NAT 端口行为，IPv6 无 NAT）。候选收集 `ice/candidates.c` 的 `npf_gather_host`（`AF_INET6` / `AF_INET`）提供本机地址。**所有测试机都没有全局 IPv6**，无法做跨机实测；已在本机用 `::1` 回环验证 S1 over IPv6 打通（双方提名成功，地址为 v6）。真实 IPv6 穿透（家宽双栈，开放对端防火墙针孔）待有 v6 环境时验证。
 
 ### 12.6 打洞增强的接入（2026-10-06）
 

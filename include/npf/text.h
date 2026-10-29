@@ -18,8 +18,12 @@ static inline int npf_hexval(int c)
     return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
 }
 
+/* s whole a decimal number in lo..hi (hi < LONG_MAX / 10): digits only, no
+ * sign, no leading zero; 0 or -1 */
+int npf_text_dec(const char *s, long lo, long hi, long *out);
+
 /* "HOST:PORT" or "[IPV6]:PORT": the host (brackets off, not empty) into
- * host, the port (digits, no leading zero, 0..65535); 0 or -1 */
+ * host, the port (npf_text_dec, 0..65535); 0 or -1 */
 int npf_hostport(const char *s, char *host, size_t cap, uint16_t *port);
 
 /* HTTP/1.x response status (three digits), or -1. s is NUL-terminated. */

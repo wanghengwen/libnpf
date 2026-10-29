@@ -12,32 +12,21 @@
 /* an address of this host's interfaces (a -R listening on one of them) */
 static int own_addr(const char *a)
 {
-    npf_ifaddr ifs[32];
     unsigned char b[16];
-    int fam, len, n, i;
-    if (inet_pton(AF_INET, a, b) == 1)
-        fam = AF_INET, len = 4;
-    else if (inet_pton(AF_INET6, a, b) == 1)
-        fam = AF_INET6, len = 16;
-    else
-        return 0;
-    n = npf_if_list(ifs, 32);
-    for (i = 0; i < n; i++)
-        if (ifs[i].family == fam && memcmp(ifs[i].addr, b, (size_t)len) == 0)
-            return 1;
-    return 0;
+    int fam = inet_pton(AF_INET, a, b) == 1 ? AF_INET : inet_pton(AF_INET6, a, b) == 1 ? AF_INET6 : 0;
+    return fam && npf_if_has(fam, b);
 }
 
 /* the published resources still let this listener be (a "reverse" resource
  * removed, its ports narrowed, its "lan:" taken back: no longer) */
-static int rev_allowed(struct rev_listener *l)
+static int rev_allowed(struct rev_map *l)
 {
     return npf_policy_reverse_ok(call_policy(l->c), l->want, l->lan);
 }
 
 static void rev_accept(npf_loop *loop, int lfd, unsigned ev, void *arg)
 {
-    struct rev_listener *l = arg;
+    struct rev_map *l = arg;
     int k;
     (void)loop;
     (void)ev;
@@ -77,7 +66,7 @@ static void rev_accept(npf_loop *loop, int lfd, unsigned ev, void *arg)
  * the caller, who sends it to the target it registered */
 static void rev_udp(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
-    struct rev_listener *l = arg;
+    struct rev_map *l = arg;
     npf_call *c = l->c;
     uint8_t *buf = npf_scratch(NPF_UDP_PAYLOAD_MAX + 1);
     int k;
@@ -112,26 +101,68 @@ static void rev_udp(npf_loop *loop, int fd, unsigned ev, void *arg)
     npf_scratch_done(buf);
 }
 
+/* a mapping more (NPF_MAX_REVERSE at most), or NULL */
+static struct rev_map *rev_new(npf_call *c, uint32_t id, int fd, const char *host, uint16_t port, int udp)
+{
+    struct rev_map *r;
+    if (c->nrev >= NPF_MAX_REVERSE || strlen(host) >= sizeof r->host || !(r = calloc(1, sizeof *r)))
+        return NULL;
+    r->c = c;
+    r->id = id;
+    r->fd = fd;
+    strcpy(r->host, host);
+    r->port = port;
+    r->udp = udp;
+    return c->rev[c->nrev++] = r;
+}
+
+static void rev_free(npf_call *c, struct rev_map *r)
+{
+    if (r->fd >= 0) {
+        npf_loop_del(c->n->loop, r->fd);
+        npf_sock_close(r->fd);
+    }
+    free(r);
+}
+
 void call_rev_close_all(npf_call *c)
+{
+    while (c->nrev)
+        rev_free(c, c->rev[--c->nrev]);
+}
+
+/* end mapping i, its UDP flows with it; the last one takes its place */
+static void rev_close(npf_call *c, int i)
+{
+    struct rev_map *r = c->rev[i];
+    if (r->udp && r->fd >= 0)
+        npf_udpf_forget_fd(c->udp, r->fd);
+    else if (r->udp)
+        npf_udpf_rev_del(c->udp, r->id);
+    c->rev[i] = c->rev[--c->nrev];
+    rev_free(c, r);
+}
+
+void call_rev_drop(npf_call *c, uint32_t id)
+{
+    int i;
+    for (i = 0; i < c->nrev; i++)
+        if (c->rev[i]->id == id) {
+            rev_close(c, i);
+            return;
+        }
+}
+
+/* caller: the target of a reverse sublink (host:port) or UDP flow (its id) */
+const struct rev_map *call_rev_target(const npf_call *c, int udp, uint32_t id, const char *host, uint16_t port)
 {
     int i;
     for (i = 0; i < c->nrev; i++) {
-        npf_loop_del(c->n->loop, c->rev[i]->fd);
-        npf_sock_close(c->rev[i]->fd);
-        free(c->rev[i]);
+        const struct rev_map *r = c->rev[i];
+        if (r->udp == udp && (udp ? r->id == id : r->port == port && strcmp(r->host, host) == 0))
+            return r;
     }
-    c->nrev = 0;
-}
-
-/* close listener i; the last one takes its place */
-static void rev_close(npf_call *c, int i)
-{
-    if (c->rev[i]->udp)
-        npf_udpf_forget_fd(c->udp, c->rev[i]->fd);   /* its flows end */
-    npf_loop_del(c->n->loop, c->rev[i]->fd);
-    npf_sock_close(c->rev[i]->fd);
-    free(c->rev[i]);
-    c->rev[i] = c->rev[--c->nrev];
+    return NULL;
 }
 
 void npf_node_reverse_recheck(npf_node *n)
@@ -139,15 +170,13 @@ void npf_node_reverse_recheck(npf_node *n)
     npf_call *c;
     int i;
     for (c = n->calls; c; c = c->next)
-        for (i = c->nrev - 1; i >= 0; i--)
+        for (i = c->nrev - 1; i >= 0 && !c->caller; i--)
             if (!rev_allowed(c->rev[i])) {
-                char m[112];
-                int len = snprintf(m, sizeof m, "{\"v\":1,\"type\":\"reverse_closed\",\"data\":"
-                                   "{\"listen_id\":%u,\"reason\":\"forbidden\"}}", c->rev[i]->id);
+                char m[64];
+                snprintf(m, sizeof m, "{\"listen_id\":%u,\"reason\":\"forbidden\"}", c->rev[i]->id);
                 npf_log("call %s: reverse mapping %u closed: the published resources no longer allow it",
                         c->call_id_s, c->rev[i]->id);
-                if (c->tun && npf_tunnel_is_ready(c->tun))  /* the caller forgets it (reverse_closed) */
-                    npf_tunnel_control(c->tun, m, (size_t)len);
+                npf_call_ctl_event(c, "reverse_closed", m);     /* the caller forgets it */
                 rev_close(c, i);
             }
 }
@@ -156,20 +185,17 @@ void call_reverse_request(npf_call *c, const m_env *e)
 {
     const char *type = e->type;
     const npf_json *j = e->j;
-    int i, fd, udp, lan;
+    int fd, udp, lan;
     int64_t port;
     char bind_addr[64], reply[96];
+    struct rev_map *l;
     struct sockaddr_storage ss;
     socklen_t sl;
     m_reverse_listen m;
     if (strcmp(type, "reverse_close") == 0) {
         m_listen_id li;
         if (npf_msg_parse(&m_listen_id_d, j, e->data, &li, NULL, 0) == 0)
-            for (i = 0; i < c->nrev; i++)
-                if (c->rev[i]->id == (uint32_t)li.listen_id) {
-                    rev_close(c, i);
-                    break;
-                }
+            call_rev_drop(c, (uint32_t)li.listen_id);
         npf_call_ctl_reply(c, type, j, "ok", NULL, NULL);
         return;
     }
@@ -222,27 +248,15 @@ void call_reverse_request(npf_call *c, const m_env *e)
         return;
     }
     getsockname(fd, (struct sockaddr *)&ss, &sl);
-    {
-        struct rev_listener *l = calloc(1, sizeof *l);
-        if (!l) {
-            npf_sock_close(fd);
-            npf_call_ctl_reply(c, type, j, "error", "internal_error", NULL);
-            return;
-        }
-        i = c->nrev++;
-        c->rev[i] = l;
-        l->c = c;
-        l->id = ++c->rev_seq;
-        l->fd = fd;
-        snprintf(l->host, sizeof l->host, "%s", m.target_host);
-        l->port = (uint16_t)m.target_port;
-        l->lan = lan;
-        l->want = (int)port;
-        l->udp = udp;
-        npf_loop_add(c->n->loop, fd, NPF_EV_READ, udp ? rev_udp : rev_accept, l);
+    if (!(l = rev_new(c, ++c->rev_seq, fd, m.target_host, (uint16_t)m.target_port, udp))) {
+        npf_sock_close(fd);
+        npf_call_ctl_reply(c, type, j, "error", "internal_error", NULL);
+        return;
     }
-    snprintf(reply, sizeof reply, "{\"listen_id\":%u,\"port\":%u}", c->rev[i]->id,
-             ntohs(ss.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&ss)->sin6_port : ((struct sockaddr_in *)&ss)->sin_port));
+    l->lan = lan;
+    l->want = (int)port;
+    npf_loop_add(c->n->loop, fd, NPF_EV_READ, udp ? rev_udp : rev_accept, l);
+    snprintf(reply, sizeof reply, "{\"listen_id\":%u,\"port\":%u}", l->id, npf_addr_port(&ss));
     npf_call_ctl_reply(c, type, j, "ok", NULL, reply);
     npf_log("call %s: reverse mapping%s %s -> caller %s:%d", c->call_id_s, udp ? " (UDP)" : "", reply, m.target_host,
             (int)m.target_port);
@@ -264,8 +278,7 @@ static void rev_reply(npf_call *c, const npf_env *e, int ok, void *arg)
     m_listening m;
     const char *err = !e ? "no reply" : e->error[0] ? e->error : "failed";
     if (ok && npf_msg_parse(&m_listening_d, e->j, e->data, &m, NULL, 0) == 0) {
-        if (c->tun && (r->udp ? npf_udpf_rev_add(call_udp_of(c), (uint32_t)m.listen_id, r->host, r->port)
-                              : npf_tunnel_rev_add(c->tun, (uint32_t)m.listen_id, r->host, r->port)) == 0) {
+        if (c->tun && rev_new(c, (uint32_t)m.listen_id, -1, r->host, r->port, r->udp)) {
             r->fn(c, (int)m.port, (uint32_t)m.listen_id, NULL, r->arg);
             free(r);
             return;
@@ -311,9 +324,7 @@ int npf_call_reverse(npf_call *c, const char *bind_addr, int port, const char *h
 void npf_call_reverse_close(npf_call *c, uint32_t listen_id)
 {
     char data[48];
-    if (c->tun)
-        npf_tunnel_rev_del(c->tun, listen_id);
-    npf_udpf_rev_del(c->udp, listen_id);
+    call_rev_drop(c, listen_id);
     snprintf(data, sizeof data, "{\"listen_id\":%u}", listen_id);
     npf_call_ctl_event(c, "reverse_close", data);  /* an event: no request slot it could fail for */
 }

@@ -65,6 +65,7 @@ void npf_x25519_pub(uint8_t pk[32], const uint8_t sk[32]);
 /* constant-time compare of n bytes, 0 if equal */
 int  npf_ct_eq(const void *a, const void *b, size_t n);
 void npf_wipe(void *p, size_t n);
+void npf_wipe_free(void *p, size_t n);     /* npf_wipe, then free (NULL: nothing) */
 
 /* Base64url without padding. encode returns the string length (out needs
  * 4*ceil(n/3)+1). decode returns the byte count or -1 (bad char, padding,

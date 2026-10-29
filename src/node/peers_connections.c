@@ -18,12 +18,11 @@
 /* ---- public connections: who, how many, how long, how much ---- */
 
 /* an IPv4 visitor on the dual-stack listener (::ffff:a.b.c.d): as IPv4 */
-void peers_unmap_v4(struct sockaddr_storage *ss)
+static void unmap_v4(struct sockaddr_storage *ss)
 {
     const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)ss;
-    static const uint8_t pre[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
     struct sockaddr_in s4;
-    if (ss->ss_family != AF_INET6 || memcmp(s6->sin6_addr.s6_addr, pre, 12) != 0)
+    if (ss->ss_family != AF_INET6 || !IN6_IS_ADDR_V4MAPPED(&s6->sin6_addr))
         return;
     memset(&s4, 0, sizeof s4);
     s4.sin_family = AF_INET;
@@ -77,7 +76,7 @@ static int ip_get(npf_peers *ps, const struct sockaddr_storage *from)
 }
 
 /* NULL and the counts taken, or why it is refused */
-const char *peers_conn_admit(pfwd *f, const struct sockaddr_storage *from, int *ip)
+static const char *conn_admit(pfwd *f, const struct sockaddr_storage *from, int *ip)
 {
     npf_peers *ps = f->p->ps;
     ipent *e;
@@ -114,16 +113,7 @@ const char *peers_conn_admit(pfwd *f, const struct sockaddr_storage *from, int *
     return NULL;
 }
 
-void peers_conn_refused(pfwd *f, const struct sockaddr_storage *from, const char *why)
-{
-    npf_peers *ps = f->p->ps;
-    char a[80];
-    npf_logd("%s: %s: connection from %s refused (%s)", f->p->name, f->spec, npf_addr_str(from, a, sizeof a), why);
-    if (ps->cbs.refused)
-        ps->cbs.refused(f->p, f->ext, f->port, from, why, 0, ps->arg);
-}
-
-uint64_t peers_conn_add(pfwd *f, const struct sockaddr_storage *from, int ip)
+static uint64_t conn_add(pfwd *f, const struct sockaddr_storage *from, int ip)
 {
     npf_peers *ps = f->p->ps;
     pconn *c;
@@ -147,6 +137,53 @@ uint64_t peers_conn_add(pfwd *f, const struct sockaddr_storage *from, int ip)
     if (ps->cbs.opened)
         ps->cbs.opened(f->p, f->ext, f->port, from, ps->arg);
     return c->id;
+}
+
+/* a public connection whose visitor went away (no FIN: off line, a NAT
+ * that forgot it) ends within about 4 minutes, not when the idle check
+ * finds it */
+static void public_keepalive(int fd)
+{
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, sizeof one);
+#ifdef TCP_KEEPIDLE
+    {
+        int idle = 120, intvl = 30, cnt = 4;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (const char *)&idle, sizeof idle);
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (const char *)&intvl, sizeof intvl);
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (const char *)&cnt, sizeof cnt);
+    }
+#endif
+}
+
+uint64_t peers_public_admit(pfwd *f, int fd)
+{
+    npf_peers *ps = f->p->ps;
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof ss;
+    const char *why = "allow_from";
+    char a[80];
+    int ip = -1;
+    uint64_t cid;
+    memset(&ss, 0, sizeof ss);
+    if (getpeername(fd, (struct sockaddr *)&ss, &sl) == 0) {
+        unmap_v4(&ss);
+        if (!f->acl || npf_policy_rules_match(f->acl, f->nacl, (const struct sockaddr *)&ss))
+            why = f->draining ? "quota" : conn_admit(f, &ss, &ip);     /* quota: the account's is used up */
+    }
+    if (why) {
+        npf_sock_close(fd);
+        npf_logd("%s: %s: connection from %s refused (%s)", f->p->name, f->spec, npf_addr_str(&ss, a, sizeof a), why);
+        if (ps->cbs.refused)
+            ps->cbs.refused(f->p, f->ext, f->port, &ss, why, 0, ps->arg);
+        return 0;
+    }
+    if (!(cid = conn_add(f, &ss, ip))) {    /* no memory to track it: not let in untracked (limits, idle) */
+        npf_sock_close(fd);
+        return 0;
+    }
+    public_keepalive(fd);
+    return cid;
 }
 
 /* a connection ends: its counts go back; reported as a connection (it had a
@@ -177,7 +214,6 @@ void peers_conn_gone(npf_peers *ps, uint64_t cid, const char *why)
             return;
         }
 }
-
 
 /* a forward's connection is in its session now: counted until it ends */
 static void sub_add(npf_peers *ps, npf_call *c, uint32_t sid, int fid)
@@ -279,7 +315,7 @@ void peers_conn_open(pfwd *f, int fd, uint64_t cid)
     npf_peer *p = f->p;
     int sid = -1, k;
     if (p->call)
-        sid = npf_call_open_rated(p->call, fd, f->socks, f->host, (uint16_t)f->hostport, f->pub ? (uint32_t)f->id : 0,
+        sid = npf_call_open(p->call, fd, f->socks, f->host, (uint16_t)f->hostport, f->pub ? (uint32_t)f->id : 0,
                                   f->rate);
     if (sid < 0) {
         /* no session, one whose transport is not ready, or one that carries

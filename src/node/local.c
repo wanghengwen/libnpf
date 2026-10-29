@@ -1,11 +1,9 @@
 /* local.json (local.h). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "npf/crypto.h"
 #include "npf/json.h"
@@ -17,8 +15,6 @@
 #include "msgs.h"
 
 #define MAX_TOK 32768
-
-static void ext_clear(npf_ldev *d);
 
 int npf_name_valid(const char *s)
 {
@@ -56,14 +52,8 @@ npf_ldev *npf_local_dev(npf_local *l, const char *target, int create)
             return &l->dev[i];
     if (!create || l->ndev >= NPF_LOCAL_MAX_DEV || strlen(target) >= sizeof l->dev[0].target)
         return NULL;
-    if (l->ndev == l->cap) {                /* grown as needed */
-        int cap = l->cap ? l->cap * 2 : 4;
-        npf_ldev *n = realloc(l->dev, (size_t)cap * sizeof *n);
-        if (!n)
-            return NULL;
-        l->dev = n;
-        l->cap = cap;
-    }
+    if (npf_grow(&l->dev, &l->cap, (size_t)l->ndev + 1, sizeof *l->dev, 4) < 0)
+        return NULL;
     memset(&l->dev[l->ndev], 0, sizeof l->dev[0]);
     snprintf(l->dev[l->ndev].target, sizeof l->dev[0].target, "%s", target);
     return &l->dev[l->ndev++];
@@ -78,19 +68,6 @@ npf_ldev *npf_local_by_name(npf_local *l, const char *name)
     return NULL;
 }
 
-int npf_local_drop(npf_local *l, const char *target)
-{
-    npf_ldev *d = npf_local_dev(l, target, 0);
-    if (!d)
-        return -1;
-    npf_local_fwd_clear(d);
-    free(d->resources);
-    ext_clear(d);
-    memmove(d, d + 1, (size_t)(l->ndev - (d - l->dev) - 1) * sizeof *d);
-    l->ndev--;
-    return 0;
-}
-
 /* ---- the modules' keys ---- */
 
 static void ext_clear(npf_ldev *d)
@@ -103,6 +80,24 @@ static void ext_clear(npf_ldev *d)
     free(d->ext);
     d->ext = NULL;
     d->next = 0;
+}
+
+static void dev_free(npf_ldev *d)
+{
+    npf_local_fwd_clear(d);
+    free(d->resources);
+    ext_clear(d);
+}
+
+int npf_local_drop(npf_local *l, const char *target)
+{
+    npf_ldev *d = npf_local_dev(l, target, 0);
+    if (!d)
+        return -1;
+    dev_free(d);
+    memmove(d, d + 1, (size_t)(l->ndev - (d - l->dev) - 1) * sizeof *d);
+    l->ndev--;
+    return 0;
 }
 
 static int ext_find(const npf_ldev *d, const char *key)
@@ -328,8 +323,7 @@ int npf_local_load(npf_local *l, const char *dir, char *err, size_t errcap)
         return 0;
     }
     rc = parse(l, s, (size_t)n);
-    npf_wipe(s, (size_t)n);                 /* the direct peers' keys */
-    free(s);
+    npf_wipe_free(s, (size_t)n);            /* the direct peers' keys */
     if (rc < 0)
         snprintf(err, errcap, "%s: not readable as npf's JSON (move it away to start afresh)", l->path);
     return rc;
@@ -360,16 +354,14 @@ int npf_local_start_add(npf_local *l, const char *opt)
 void npf_local_free(npf_local *l)
 {
     int i;
-    for (i = 0; i < l->ndev; i++) {
-        npf_local_fwd_clear(&l->dev[i]);
-        free(l->dev[i].resources);
-        ext_clear(&l->dev[i]);
-    }
+    for (i = 0; i < l->ndev; i++)
+        dev_free(&l->dev[i]);
     free(l->resources);
     l->resources = NULL;
     free(l->dev);
     l->dev = NULL;
-    l->ndev = l->cap = 0;
+    l->ndev = 0;
+    l->cap = 0;
     npf_local_start_clear(l);
     npf_conf_free(&l->settings);
 }

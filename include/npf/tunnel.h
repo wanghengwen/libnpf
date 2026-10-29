@@ -1,17 +1,9 @@
-/* Sublinks inside one tunnel transport (data-channel.md 5-8). Two channels:
- *
- *   control (AnLiu default stream 0, strict priority; a byte stream):
- *     unit    = type(1) | len(2) | body                     (little-endian)
- *     JSON=1 (control messages), WINDOW=2 sublink(4) | increment(4),
- *     RESET=3 sublink(4) | reason(1), APP=4 the application's data (libnpf
- *     npf_session_send), UDP=6 the UDP forwards' flows (node/udpfwd.c);
- *     unknown types are skipped (5 was MEDIA, before AnLiu ran on the WS relay)
- *   data (one message stream per direction, priority 2; message boundaries kept):
- *     message = sublink(4) | payload; an empty payload is FIN
- *
- * FIN stays with the data (the control channel would overtake it and cut the
- * last bytes off); WINDOW and RESET take the fast lane. Sublink ids start at
- * 1 (caller odd, callee even) and are never reused.
+/* Sublinks inside one tunnel transport (data-channel.md 5-8; the frames: 5).
+ * Control units, type(1) | len(2) | body, on the AnLiu default stream (strict
+ * priority): JSON, WINDOW, RESET, APP, UDP. Data messages, sublink(4) |
+ * payload, on a stream of their own; an empty one is FIN, which so stays
+ * behind the data. Sublink ids start at 1 (caller odd, callee even), never
+ * reused.
  *
  * Every sublink opened by the caller is a SOCKS5 session served by the callee
  * (CONNECT only); the callee checks each target against its policy. The
@@ -129,8 +121,9 @@ typedef struct npf_tunnel_io {
     void   (*broken)(void *arg, const char *why);                 /* protocol violation */
     /* an APP or UDP unit (type NPF_CU_APP / NPF_CU_UDP); optional */
     void   (*unit)(void *arg, int type, const uint8_t *buf, size_t len);
-    /* a CONNECT target as the caller wrote it (an address or a name), before
-     * the policy: 0 refuses it (REP = 02); optional (security.md 8.4) */
+    /* a CONNECT target as the peer wrote it (an address or a name): 0 refuses
+     * it (REP = 02). The callee: before the policy, optional (security.md
+     * 8.4); the caller: a reverse sublink's, refused without it (7.1) */
     int    (*target_ok)(void *arg, const char *host, uint16_t port);
     /* a sublink opened here (npf_tunnel_open*) ended (npf_sublink_stats);
      * optional */
@@ -164,10 +157,6 @@ int  npf_tunnel_control(npf_tunnel *t, const char *json, size_t len);
 int  npf_tunnel_unit_send(npf_tunnel *t, int type, const void *buf, size_t len);
 int  npf_tunnel_count(const npf_tunnel *t);
 void npf_tunnel_dump(const npf_tunnel *t);     /* debugging, to stderr */
-
-/* caller: allow reverse sublinks to host:port (after reverse_listen succeeded) */
-int  npf_tunnel_rev_add(npf_tunnel *t, uint32_t listen_id, const char *host, uint16_t port);
-void npf_tunnel_rev_del(npf_tunnel *t, uint32_t listen_id);
 
 /* caller: a local TCP connection becomes a sublink: its id (> 0), or -1
  * (the caller keeps fd). passthrough: the application speaks SOCKS5 itself

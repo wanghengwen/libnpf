@@ -9,6 +9,7 @@
 
 #include "npf/conf.h"
 #include "npf/crypto.h"
+#include "npf/out.h"
 #include "npf/sys.h"
 
 #ifdef _WIN32
@@ -175,13 +176,11 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val)
             npf_wipe(c->val[i] + vl + 1, c->room[i] - vl - 1);   /* a longer old value (a password) gone too */
             return 0;
         }
-        o = realloc(c->old, (size_t)(c->nold + 1) * sizeof *o);
-        if (!o || !(v = strdup(val))) {
-            if (o)
-                c->old = o;
+        if (!(o = realloc(c->old, (size_t)(c->nold + 1) * sizeof *o)))
             return -1;
-        }
         c->old = o;
+        if (!(v = strdup(val)))
+            return -1;
         c->old[c->nold++] = c->val[i];      /* a pointer someone read stays valid */
         c->val[i] = v;
         c->room[i] = vl + 1;
@@ -189,20 +188,12 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val)
     }
     if (c->n >= NPF_CONF_MAX || strlen(key) >= NPF_CONF_KEY_MAX)
         return -1;
-    if (c->n == c->cap) {
-        int cap = c->cap ? 2 * c->cap : 16;
-        char **k = realloc(c->key, (size_t)cap * sizeof *k), **vv;
-        size_t *r;
-        if (!k)
+    {
+        size_t kc = c->cap, vc = c->cap;    /* the three grow alike: c->cap once all have */
+        if (npf_grow(&c->key, &kc, (size_t)c->n + 1, sizeof *c->key, 16) < 0
+            || npf_grow(&c->val, &vc, (size_t)c->n + 1, sizeof *c->val, 16) < 0
+            || npf_grow(&c->room, &c->cap, (size_t)c->n + 1, sizeof *c->room, 16) < 0)
             return -1;
-        c->key = k;
-        if (!(vv = realloc(c->val, (size_t)cap * sizeof *vv)))
-            return -1;
-        c->val = vv;
-        if (!(r = realloc(c->room, (size_t)cap * sizeof *r)))
-            return -1;
-        c->room = r;
-        c->cap = cap;
     }
     if (!(c->key[i] = strdup(key)))
         return -1;
@@ -221,12 +212,10 @@ void npf_conf_free(npf_conf *c)
     /* values may be secrets (password, cred, direct_psk): wiped first */
     for (i = 0; i < c->n; i++) {
         free(c->key[i]);
-        npf_wipe(c->val[i], c->room[i]);
-        free(c->val[i]);
+        npf_wipe_free(c->val[i], c->room[i]);
     }
     for (i = 0; i < c->nold; i++) {
-        npf_wipe(c->old[i], strlen(c->old[i]));
-        free(c->old[i]);
+        npf_wipe_free(c->old[i], strlen(c->old[i]));
     }
     free(c->key);
     free(c->val);

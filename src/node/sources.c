@@ -1,11 +1,8 @@
-/* The server list's external channels (security.md 7.5, roadmap phase 2
- * item 2): when no server of the list has been reachable for 10 minutes,
- * or the list has expired, ask the channels the list names, in parallel:
- * DoH (RFC 8484 GET) for TXT records holding the seed list, at public DoH
- * services reached by IP; HTTPS static files holding the full list. None of
- * them needs to be trusted: a list counts only when its signature checks
- * and its serial is newer (node_server_list_update). Rounds back off from 1
- * minute to 1 hour, with jitter. */
+/* The server list's external channels (security.md 7.5): DoH TXT records
+ * holding the seed list, HTTPS files holding the full list, asked in
+ * parallel when no server was reachable for 10 minutes or the list expired.
+ * None is trusted: a list counts only signed and newer
+ * (node_server_list_update). Rounds back off from 1 minute to 1 hour. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif

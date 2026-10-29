@@ -1,12 +1,5 @@
-/* Media streams of a session (media.h; data-channel.md 14).
- *
- * A media stream is a semi-reliable AnLiu stream of its own, whichever
- * carrier the connection is on: opened for it, closed with it (the close
- * tells the peer), its frames as they are - no header of ours; the frame
- * number, key flag and loss counts are AnLiu's. The AnLiu tag says what it
- * is: NPF_TAG_MEDIA + the application's tag, NPF_MEDIA_TAG_RDK set when the
- * receiver should drop non-key frames after a loss. The application's ids:
- * a counter << 1 | the side (callee 1), local only. */
+/* Media streams of a session (media.h; data-channel.md 14). The
+ * application's ids: a counter << 1 | the side (callee 1), local only. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -74,6 +67,13 @@ static void drop_stream(npf_media *m, int i)
     m->st[i] = m->st[--m->nst];
 }
 
+/* stream i closed here (AnLiu tells the peer) and forgotten */
+static void close_at(npf_media *m, int i)
+{
+    anl_stream_close(m->st[i]->s);
+    drop_stream(m, i);
+}
+
 static uint32_t new_id(npf_media *m)
 {
     if (!++m->next_id)
@@ -87,13 +87,12 @@ static int ended(const npf_media *m)
     return m->io.ended && m->io.ended(m->arg) ? -1 : 0;
 }
 
-/* stream i on s is over from the other side (closed or refused there, or a
+/* stream i is over from the other side (closed or refused there, or a
  * frame over the limit): closed here too, the application told */
-static int gone(npf_media *m, int i, anl_stream_t *s)
+static int gone(npf_media *m, int i)
 {
     uint32_t id = m->st[i]->id;
-    anl_stream_close(s);
-    drop_stream(m, i);
+    close_at(m, i);
     m->io.on_closed(m->arg, id);
     return ended(m);
 }
@@ -176,10 +175,8 @@ int npf_media_poll(npf_media *m)
             continue;
         x->asked = 1;
         if (!m->io.on_open(m->arg, id, x->tag)) {
-            if ((i = find(m, id)) >= 0) {
-                anl_stream_close(m->st[i]->s);
-                drop_stream(m, i);
-            }
+            if ((i = find(m, id)) >= 0)
+                close_at(m, i);
             i = -1;                         /* the table changed: from the start */
         }
         if (ended(m) < 0)
@@ -193,25 +190,24 @@ int npf_media_drain(npf_media *m, anl_stream_t *s)
 {
     for (;;) {
         anl_frame_info fi;
-        char small[2048], *buf = small;
+        uint8_t *buf;
         int i = find_s(m, s), sz, r;
         if (i < 0)
             return 0;
         sz = anl_stream_peeksize(s);
         if (sz == ANL_ECLOSED)              /* closed (or refused) by the peer */
-            return gone(m, i, s);
+            return gone(m, i);
         if (sz < 0 || m->st[i]->out || !m->st[i]->asked)
             return 0;                       /* ours sends only; not taken yet: it waits in AnLiu */
         if ((unsigned)sz > NPF_MEDIA_FRAME_MAX)
-            return gone(m, i, s);           /* a frame no application takes: the stream ends */
-        if (sz > (int)sizeof small && !(buf = malloc((size_t)sz)))
+            return gone(m, i);              /* a frame no application takes: the stream ends */
+        if (!(buf = npf_scratch((size_t)sz + 1)))  /* reused, not a malloc per frame (nested use: its own) */
             return 0;
-        r = anl_stream_recv_frame(s, buf, sz > (int)sizeof small ? sz : (int)sizeof small, &fi);
+        r = anl_stream_recv_frame(s, (char *)buf, sz + 1, &fi);
         if (r >= 0)
-            m->io.on_frame(m->arg, m->st[i]->id, (const uint8_t *)buf, (size_t)r, fi.frame_no,
+            m->io.on_frame(m->arg, m->st[i]->id, buf, (size_t)r, fi.frame_no,
                            (fi.flags & ANL_FRAME_KEY) ? NPF_FRAME_KEY : 0, fi.lost_before);
-        if (buf != small)
-            free(buf);
+        npf_scratch_done(buf);
         if (r < 0)
             return 0;
         if (ended(m) < 0)
@@ -326,7 +322,6 @@ int npf_media_close_stream(npf_media *m, uint32_t id)
     int i = find(m, id);
     if (i < 0)
         return NPF_CALL_ENOENT;
-    anl_stream_close(m->st[i]->s);          /* AnLiu tells the peer */
-    drop_stream(m, i);
+    close_at(m, i);
     return 0;
 }

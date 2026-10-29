@@ -17,27 +17,11 @@ static void fwd_start(pfwd *f);
 
 /* ---- forwards ---- */
 
-/* the listening address as given: empty or "*" is every address */
-static const char *bind_of(const char *s)
-{
-    return !*s || strcmp(s, "*") == 0 ? "0.0.0.0" : s;
-}
-
-/* the slot after the last (p->nfwd), allocated, zeroed: counted once taken */
-static pfwd *fwd_slot(npf_peer *p)
-{
-    pfwd *f = p->fwds[p->nfwd];
-    if (!f && !(f = p->fwds[p->nfwd] = malloc(sizeof *f)))
-        return NULL;
-    memset(f, 0, sizeof *f);
-    f->idx = p->nfwd;
-    return f;
-}
-
 /* f from its parts, checked; its spec (for the log) written from them */
 static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
 {
-    const char *bind = fn->bind ? bind_of(fn->bind) : "127.0.0.1";
+    /* none: loopback; empty or "*": every address */
+    const char *bind = !fn->bind ? "127.0.0.1" : !*fn->bind || strcmp(fn->bind, "*") == 0 ? "0.0.0.0" : fn->bind;
     int socks = fn->opt == 'D';
     if (strcmp(bind, "localhost") == 0)
         bind = "127.0.0.1";                 /* as the callee takes it: the spec and the state stay the same */
@@ -62,8 +46,6 @@ static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
     f->socks = socks;
     f->reverse = fn->opt == 'R';
     f->udp = fn->udp;
-    f->fd = -1;
-    f->used = 1;
     snprintf(f->bind, sizeof f->bind, "%s", bind);
     f->port = fn->port;
     snprintf(f->host, sizeof f->host, "%s", socks ? "" : fn->host);
@@ -109,17 +91,6 @@ static const struct kind_reg *kind_of(const npf_peers *ps, char opt)
     return NULL;
 }
 
-/* -X SPEC of a kind: checked by it, the form it keeps in spec */
-static int parse_kind(pfwd *f, const struct kind_reg *r, const char *spec, char *err, size_t errcap)
-{
-    if (r->k->parse(r->arg, spec, f->spec, sizeof f->spec, err, errcap) < 0)
-        return -1;
-    f->kind = r;
-    f->fd = -1;
-    f->used = 1;
-    return 0;
-}
-
 /* the same forward of a kind (as kept) goes through another peer already? */
 static int kind_taken(const npf_peers *ps, const pfwd *f, char *err, size_t errcap)
 {
@@ -133,11 +104,6 @@ static int kind_taken(const npf_peers *ps, const pfwd *f, char *err, size_t errc
                 return 1;
             }
     return 0;
-}
-
-static int kind_check(const pfwd *f, char *err, size_t errcap)
-{
-    return f->kind->k->check ? f->kind->k->check(f->kind->arg, f->spec, err, errcap) : 0;
 }
 
 /* a forward for the log: what it is, or a module's kind in its form */
@@ -166,24 +132,7 @@ static void accept_resume(npf_loop *loop, void *arg)
         npf_loop_mod(loop, f->fd, NPF_EV_READ);
 }
 
-/* a public connection whose visitor went away (no FIN: off line, a NAT
- * that forgot it) ends within about 4 minutes, not when the idle check
- * finds it */
-static void public_keepalive(int fd)
-{
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, sizeof one);
-#ifdef TCP_KEEPIDLE
-    {
-        int idle = 120, intvl = 30, cnt = 4;
-        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (const char *)&idle, sizeof idle);
-        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (const char *)&intvl, sizeof intvl);
-        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (const char *)&cnt, sizeof cnt);
-    }
-#endif
-}
-
-#define ACCEPT_ROUND 64                 /* connections taken per wakeup: the loop's other work goes on */
+#define ACCEPT_ROUND 64                 /* connections (datagrams) taken per wakeup: the loop's other work goes on */
 
 static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
 {
@@ -209,33 +158,8 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
         }
         uint64_t cid = 0;
         if (f->pub) {                       /* a public mapping: who may, how many */
-            struct sockaddr_storage ss;
-            socklen_t sl = sizeof ss;
-            const char *why = NULL;
-            int ip = -1;
-            memset(&ss, 0, sizeof ss);
-            if (getpeername(fd, (struct sockaddr *)&ss, &sl) < 0) {
-                why = "allow_from";
-            } else {
-                peers_unmap_v4(&ss);
-                if (f->acl && !npf_policy_rules_match(f->acl, f->nacl, (const struct sockaddr *)&ss))
-                    why = "allow_from";
-                else if (f->draining)
-                    why = "quota";          /* the account's quota is used up */
-                else
-                    why = peers_conn_admit(f, &ss, &ip);
-            }
-            if (why) {
-                npf_sock_close(fd);
-                peers_conn_refused(f, &ss, why);
+            if (!(cid = peers_public_admit(f, fd)))
                 continue;
-            }
-            cid = peers_conn_add(f, &ss, ip);
-            if (!cid) {                     /* no memory to track it: not let in untracked (limits, idle) */
-                npf_sock_close(fd);
-                continue;
-            }
-            public_keepalive(fd);
         } else if (f->draining) {
             npf_sock_close(fd);
             continue;
@@ -255,15 +179,14 @@ static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     pfwd *f = arg;
     npf_peer *p = f->p;
+    uint8_t *buf = npf_scratch(NPF_UDP_PAYLOAD_MAX + 1);
     int k;
     (void)loop;
     (void)ev;
-    if (!p->ps->ubuf && !(p->ps->ubuf = malloc(NPF_UDP_PAYLOAD_MAX + 1)))
-        return;
-    for (k = 0; k < 64 && f->fd == fd; k++) {
+    for (k = 0; buf && k < ACCEPT_ROUND && f->fd == fd; k++) {
         struct sockaddr_storage ss;
         socklen_t sl = sizeof ss;
-        ssize_t r = recvfrom(fd, p->ps->ubuf, NPF_UDP_PAYLOAD_MAX + 1, 0, (struct sockaddr *)&ss, &sl);
+        ssize_t r = recvfrom(fd, buf, NPF_UDP_PAYLOAD_MAX + 1, 0, (struct sockaddr *)&ss, &sl);
         if (r < 0) {
             if (npf_sock_again())
                 break;
@@ -272,10 +195,11 @@ static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         if (r > NPF_UDP_PAYLOAD_MAX)
             continue;
         if (npf_call_ready(p->call))
-            npf_call_udp_send(p->call, fd, &ss, sl, f->host, (uint16_t)f->hostport, p->ps->ubuf, (size_t)r);
+            npf_call_udp_send(p->call, fd, &ss, sl, f->host, (uint16_t)f->hostport, buf, (size_t)r);
         else if (peer_may_wait(p))
-            peers_udp_wait(f, &ss, sl, p->ps->ubuf, (size_t)r);
+            peers_udp_wait(f, &ss, sl, buf, (size_t)r);
     }
+    npf_scratch_done(buf);
 }
 
 static int fwd_state_of(const pfwd *f)
@@ -467,8 +391,8 @@ static void fwd_start(pfwd *f)
     npf_peer *p = f->p;
     char why[64];
     int in_use, type = f->udp ? SOCK_DGRAM : SOCK_STREAM;
-    if (!f->used || f->up || f->t_retry || (f->pub && p->ps->closing))
-        return;
+    if (!f->used || f->up || f->t_retry || f->suspended || (f->pub && p->ps->closing))
+        return;                             /* (suspended: drained for the quota, npf_peer_forward_drain) */
     if (f->reverse) {
         if (!p->call || npf_call_state(p->call) != NPF_CALL_ESTABLISHED || f->asked)
             return;
@@ -507,17 +431,15 @@ static void fwd_start(pfwd *f)
         socklen_t sl = sizeof ss;
         f->lport = f->port;
         if (getsockname(f->fd, (struct sockaddr *)&ss, &sl) == 0)
-            f->lport = ss.ss_family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&ss)->sin6_port)
-                                                : ntohs(((struct sockaddr_in *)&ss)->sin_port);
+            f->lport = npf_addr_port(&ss);
     }
     f->up = 1;
     f->backoff = 0;
     if (f->socks)
         npf_log("%s: SOCKS5 proxy on %s:%d", p->name, f->bind, f->lport);
-    else if (f->udp)
-        npf_log("%s: forwarding UDP %s:%d -> %s:%d on the callee", p->name, f->bind, f->lport, f->host, f->hostport);
     else
-        npf_log("%s: forwarding %s:%d -> %s:%d on the callee", p->name, f->bind, f->lport, f->host, f->hostport);
+        npf_log("%s: forwarding %s%s:%d -> %s:%d on the callee", p->name, f->udp ? "UDP " : "", f->bind, f->lport,
+                f->host, f->hostport);
     fwd_report(f, 1, NULL);
 }
 
@@ -596,10 +518,9 @@ static int fwd_put(npf_peer *p, pfwd *tmp, int perm, uint64_t ext, char *err, si
             snprintf(err, errcap, "%s: forward #%d is that one already (%s)", p->name, p->fwds[i]->id, p->fwds[i]->spec);
             return -1;
         }
-    if (tmp->kind) {
-        if (kind_taken(p->ps, tmp, err, errcap) || kind_check(tmp, err, errcap) < 0)
-            return -1;
-    }
+    if (tmp->kind && (kind_taken(p->ps, tmp, err, errcap)
+                      || (tmp->kind->k->check && tmp->kind->k->check(tmp->kind->arg, tmp->spec, err, errcap) < 0)))
+        return -1;
     if (o == 'R' && p->idle_ms && !ext) {
         snprintf(err, errcap, "%s: an on-demand node cannot have a reverse forward", p->name);
         return -1;
@@ -619,14 +540,17 @@ static int fwd_put(npf_peer *p, pfwd *tmp, int perm, uint64_t ext, char *err, si
             snprintf(err, errcap, "%s: at most %d mappings", p->name, NPF_PEER_MAX_FWD);
             return -2;
         }
-        if (!(f = fwd_slot(p))) {
+        if (!(f = malloc(sizeof *f))) {     /* (a slot past nfwd was never allocated) */
             snprintf(err, errcap, "no memory");
             return -3;
         }
-        p->nfwd++;
+        f->idx = p->nfwd;
+        p->fwds[p->nfwd++] = f;
     }
     tmp->idx = f->idx;
     *f = *tmp;
+    f->used = 1;
+    f->fd = -1;
     f->p = p;
     f->id = ++p->ps->fwd_seq;
     f->perm = perm;
@@ -666,8 +590,9 @@ int npf_peer_forward_add_kind(npf_peer *p, char opt, const char *spec, int perm,
         return -1;
     }
     memset(&tmp, 0, sizeof tmp);
-    if (parse_kind(&tmp, kind, spec, err, errcap) < 0)
-        return -1;
+    if (kind->k->parse(kind->arg, spec, tmp.spec, sizeof tmp.spec, err, errcap) < 0)
+        return -1;                          /* checked by it, the form it keeps in spec */
+    tmp.kind = kind;
     tmp.opt = opt;
     return fwd_put(p, &tmp, perm, 0, err, errcap);
 }
@@ -780,14 +705,9 @@ int npf_peer_forward_del_at(npf_peer *p, int i)
     peers_demand_drop_slot(p, i);   /* its waiting connections go with it (a forward reusing the slot
                                        got them, past its allow_from), while it still counts them */
     peers_fwd_stop(f);
-    f->used = 0;                    /* a reply still on its way finds the slot unused */
-    f->ext = 0;
-    f->ctx = NULL;
+    f->used = 0;                    /* a reply still on its way finds the slot unused (the rest: reset at its reuse) */
     free(f->acl);
     f->acl = NULL;
-    f->nacl = 0;
-    f->rate = 0;
-    f->pub = f->draining = f->suspended = 0;
     return 0;
 }
 

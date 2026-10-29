@@ -120,7 +120,7 @@ int main(int argc, char **argv)
         while ((A.established < 1 || L.established < 1) && npf_mono_ms() < until) turn(lc, la, 2);
         while (!npf_call_ready(ca) && npf_mono_ms() < until) turn(lc, la, 2);
         socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
-        if (npf_call_open(ca, sp[0], 0, "127.0.0.1", (uint16_t)port) < 0) { fprintf(stderr, "open failed\n"); return 1; }
+        if (npf_call_open(ca, sp[0], 0, "127.0.0.1", (uint16_t)port, 0, 0) < 0) { fprintf(stderr, "open failed\n"); return 1; }
     }
     src_total = mb << 20;
     cpu[0] = cpu[1] = 0; iters[0] = iters[1] = 0;

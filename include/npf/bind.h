@@ -57,11 +57,9 @@ int npf_pkt_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t le
 int npf_bind_req_send(int fd, const void *to, const npf_siv_keys *keys, int type, const uint8_t txid[NPF_TXID_SIZE],
                       int64_t clock_offset_ms, const uint8_t *body, size_t body_len);
 
-/* BIND_RESP body: family(1) | port(2) | addr(4 or 16) | srv_time_ms(8) */
+/* BIND_RESP body: family(1: 4 or 6) | port(2) | addr(4 or 16) | srv_time_ms(8) */
 typedef struct npf_bind_resp {
-    int      family;            /* 4 or 6 */
-    uint16_t port;
-    uint8_t  addr[16];
+    struct sockaddr_storage mapped;     /* a sockaddr_in or sockaddr_in6 */
     uint64_t srv_time_ms;
 } npf_bind_resp;
 

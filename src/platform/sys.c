@@ -640,6 +640,16 @@ int npf_addr_parse(const char *s, struct sockaddr_storage *out)
     }
 }
 
+int npf_if_has(int family, const void *addr)
+{
+    npf_ifaddr ifs[64];
+    int i, n = npf_if_list(ifs, 64);
+    for (i = 0; i < n; i++)
+        if (ifs[i].family == family && memcmp(ifs[i].addr, addr, family == AF_INET ? 4 : 16) == 0)
+            return 1;
+    return 0;
+}
+
 /* ---- scratch buffers (sys.h) ---- */
 
 #define SCRATCH_KEEP 4

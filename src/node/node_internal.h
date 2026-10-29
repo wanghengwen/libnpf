@@ -100,5 +100,4 @@ int  node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const s
 void node_calls_free(npf_node *n);
 void call_key_shares_free(npf_node *n);      /* call.c: the caller keys' shares, after the calls */
 
-
 #endif

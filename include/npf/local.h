@@ -67,7 +67,8 @@ typedef struct npf_local {
     npf_conf  settings;
     int       nstart;
     char    **start;                /* nstart options (npf_local_start_add), at most NPF_LOCAL_MAX_START */
-    int       ndev, cap;
+    int       ndev;
+    size_t    cap;
     npf_ldev *dev;                  /* grown as needed, at most NPF_LOCAL_MAX_DEV */
     char     *resources;            /* what this node publishes: a JSON array, or NULL (none) */
     int       unsaved;              /* the last save failed: what is in memory is not in the file yet */

@@ -26,11 +26,9 @@ int npf_dns_txt_query(const char *name, uint16_t id, uint8_t *out, size_t cap)
         p += l + (dot ? 1 : 0);
     }
     out[o++] = 0;
-    out[o++] = 0;
-    out[o++] = 16;                  /* TXT */
-    out[o++] = 0;
-    out[o++] = 1;                   /* IN */
-    return (int)o;
+    npf_be16(out + o, 16);          /* QTYPE TXT */
+    npf_be16(out + o + 2, 1);       /* QCLASS IN */
+    return (int)o + 4;
 }
 
 /* the offset after a (possibly compressed) name at off, or -1 */

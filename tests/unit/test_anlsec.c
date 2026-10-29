@@ -249,7 +249,7 @@ static int accept_client(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *u
 
 static int u_unit(void *a, const uint8_t *b, size_t l) { (void)a; (void)b; (void)l; return 0; }
 static int u_allowed(void *a) { (void)a; return 1; }
-static const npf_udpf_io uio = {u_unit, m_kick, u_allowed};
+static const npf_udpf_io uio = {u_unit, m_kick, u_allowed, NULL};
 
 /* what the session does after its input (call_transport.c anl_drain): the
  * peer's new media streams, then each readable stream to its owner */

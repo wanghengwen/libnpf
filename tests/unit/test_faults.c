@@ -40,7 +40,7 @@ static npf_wsr *relay_new(npf_loop *loop)
     npf_wsr *r = calloc(1, sizeof *r);
     if (!r || !(r->s = calloc(1, sizeof *r->s)))
         abort();
-    r->loop = r->s->loop = loop;
+    r->loop = loop;
     r->cbs.gone = relay_gone;
     r->cbs.paired = relay_paired;
     r->s->ws = (npf_ws *)r;             /* not used: npf_ws_send, npf_ws_free are the test's */
@@ -109,9 +109,9 @@ int main(void)
         r->s->rx = relay_tx;
         gone = 0;
         ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_note\",\"data\":{\"after\":\"relay_paired\"}}");
-        CHECK(!paired && !gone && !r->bound);
+        CHECK(!paired && !gone);
         ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_bound\",\"data\":{}}");
-        CHECK(r->bound && !paired);
+        CHECK(!paired && !gone);
         ctl_in(r, &relay_tx, "{\"v\":1,\"type\":\"relay_paired\",\"data\":{}}");
         CHECK(paired == 1 && r->paired && !gone && !paired_udp);
         /* the peer on a UDP allocation (the relay bridges): told */

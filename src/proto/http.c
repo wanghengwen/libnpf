@@ -4,8 +4,6 @@
 #endif
 #include "npf/text.h"
 #include "npf/sys.h"
-#include <ctype.h>
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +11,6 @@
 
 #include "npf/http.h"
 #include "npf/out.h"
-#include "npf/platform.h"
 #include "npf/tcp.h"
 
 enum { H_CONNECTING, H_SEND, H_READ };     /* H_CONNECTING: npf_tcp (TLS too) */
@@ -59,44 +56,43 @@ static void h_fail(npf_http *h, const char *err)
 }
 
 /* decode a chunked body in place; -1 when malformed or incomplete */
+/* the first CRLF in b[i..n): its index, n when none */
+static size_t crlf(const uint8_t *b, size_t i, size_t n)
+{
+    for (; i + 1 < n; i++)
+        if (b[i] == '\r' && b[i + 1] == '\n')
+            return i;
+    return n;
+}
+
 static long chunk_body(uint8_t *b, size_t n, int decode)
 {
     size_t r = 0, w = 0;
     for (;;) {
-        size_t sz = 0, digits = 0;
-        const uint8_t *crlf = NULL;
-        size_t i;
-        for (i = r; i + 1 < n; i++)
-            if (b[i] == '\r' && b[i + 1] == '\n') {
-                crlf = b + i;
-                break;
-            }
-        if (!crlf)
+        size_t sz = 0, e = crlf(b, r, n), i;
+        if (e == n)
             return -1;
-        for (i = r; b + i < crlf; i++) {
+        for (i = r; i < e; i++) {
             int v = npf_hexval(b[i]);
             if (v < 0)
                 break;
             if (sz > (SIZE_MAX - (size_t)v) / 16)
                 return -1;
             sz = sz * 16 + v;
-            digits++;
         }
-        if (!digits || (b + i < crlf && b[i] != ';'))
+        if (i == r || (i < e && b[i] != ';'))     /* no digits, or not an extension after them */
             return -1;
-        r = (size_t)(crlf - b) + 2;
+        r = e + 2;
         if (sz == 0) {
             /* The trailer section ends with an empty line. */
             for (;;) {
-                for (i = r; i + 1 < n && !(b[i] == '\r' && b[i + 1] == '\n'); i++)
-                    ;
-                if (i + 1 >= n)
+                if ((e = crlf(b, r, n)) == n)
                     return -1;
-                if (i == r)
+                if (e == r)
                     return (long)w;
-                if (!memchr(b + r, ':', i - r))
+                if (!memchr(b + r, ':', e - r))
                     return -1;
-                r = i + 2;
+                r = e + 2;
             }
         }
         if (n - r < 2 || sz > n - r - 2 || b[r + sz] != '\r' || b[r + sz + 1] != '\n')
@@ -117,7 +113,7 @@ static int h_head(npf_http *h)
     h->length = 0;
     if (!s || !(end = strstr(s, "\r\n\r\n")))
         return 0;
-    if (h->in_len < 12 || (h->status = npf_http_status(s)) < 0)
+    if ((h->status = npf_http_status(s)) < 0)       /* reads s, NUL-terminated, only */
         return -1;
     for (line = strstr(s, "\r\n") + 2; line < end; line = strstr(line, "\r\n") + 2) {
         char *eol = strstr(line, "\r\n");

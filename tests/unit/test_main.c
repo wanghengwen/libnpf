@@ -268,7 +268,7 @@ int main(void)
         CHECK(node_wake_delay(1) == 1 && node_wake_delay(5) >= 4 && node_wake_delay(5) <= 6, "short wake delays");
     }
     { struct in6_addr v6[8]; struct in_addr v4[8];
-      int c6 = npf_gather_host6(v6, 8), c4 = npf_gather_host4(v4, 8);
+      int c6 = npf_gather_host(AF_INET6, v6, 8), c4 = npf_gather_host(AF_INET, v4, 8);
       CHECK(c6 >= 0 && c6 <= 8, "gather host6 count %d", c6);
       CHECK(c4 >= 0 && c4 <= 8, "gather host4 count %d", c4); }
     if (failures) {

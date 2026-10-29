@@ -69,8 +69,7 @@ static int state_changed(npf_callee *d)
     if (d->state_settled || (n = npf_file_read(d->state_path, &s)) < 0)
         return 0;
     npf_kdf(h, NULL, 0, (const uint8_t *)s, (size_t)n);
-    npf_wipe(s, (size_t)n);
-    free(s);
+    npf_wipe_free(s, (size_t)n);
     changed = memcmp(h, d->state_hash, 32) != 0;
     if (!changed && (int64_t)time(NULL) - (int64_t)st.st_mtime > 2)
         d->state_settled = 1;
@@ -118,24 +117,19 @@ static int state_load(npf_callee *d)
             npf_loge("state: %s kept the state in force", d->state_path);
             if (n >= 0) {
                 stamp(d, s, (size_t)n);
-                npf_wipe(s, (size_t)n);
-                free(s);
+                npf_wipe_free(s, (size_t)n);
             }
             return -1;
         } else {
             /* the start: its copy, written after the file at each save */
             int bm;
             stamp(d, n >= 0 ? s : "", n >= 0 ? (size_t)n : 0);    /* safe mode: until the file changes */
-            if (n >= 0) {
-                npf_wipe(s, (size_t)n);
-                free(s);
-            }
+            if (n >= 0)
+                npf_wipe_free(s, (size_t)n);
             snprintf(bak, sizeof bak, "%s.bak", d->state_path);
             if (state_read(bak, &s, &n, &tok, &j, &bm) < 0) {
-                if (n >= 0) {
-                    npf_wipe(s, (size_t)n);
-                    free(s);
-                }
+                if (n >= 0)
+                    npf_wipe_free(s, (size_t)n);
                 if (!d->damaged)
                     npf_loge("state: %s and %s cannot be used: safe mode, every call and pairing refused until "
                              "the file is repaired (or passwd NEW --clear writes a fresh one); never the default "
@@ -150,8 +144,7 @@ static int state_load(npf_callee *d)
     if (!(m = malloc(sizeof *m))) {
         npf_loge("state: no memory");
         if (n >= 0)
-            npf_wipe(s, (size_t)n);
-        free(s);
+            npf_wipe_free(s, (size_t)n);
         free(tok);
         return -1;
     }
@@ -182,8 +175,7 @@ static int state_load(npf_callee *d)
     free(m);
     free(tok);
     if (n >= 0)
-        npf_wipe(s, (size_t)n);             /* the password */
-    free(s);
+        npf_wipe_free(s, (size_t)n);        /* the password */
     if (from_bak)
         state_save(d);                      /* the file from its copy */
     return 0;
@@ -310,27 +302,35 @@ static void report_lock(npf_callee *d)
     npf_node_send(d->node, "lock_report", 0, data);
 }
 
+/* the index of a paired key, or -1 */
+static int paired_at(const npf_callee *d, const uint8_t pub[32])
+{
+    int i;
+    for (i = 0; i < d->npaired; i++)
+        if (npf_ct_eq(d->paired[i].pub, pub, 32) == 0)
+            return i;
+    return -1;
+}
+
+/* the account's grants issued before a revocation of it are void */
+static int revoked(const npf_callee *d, uint64_t account, int64_t issued)
+{
+    int i;
+    for (i = 0; i < d->nrevokes; i++)
+        if (d->revokes[i].account == account && issued < d->revokes[i].before)
+            return 1;
+    return 0;
+}
+
 /* the sessions of callers this state no longer admits end: a key unpaired
  * (also one paired in a session that is still open), grants when hosted
  * trust is off; checked at the handshake only otherwise */
 static int drop_caller(const npf_caller *w, void *arg)
 {
     npf_callee *d = arg;
-    int i;
-    if (w->auth == NPF_AUTH_GRANT) {        /* as op_grant_check: trust off, or the account's grants revoked */
-        if (!d->hosted_trust)
-            return 1;
-        for (i = 0; i < d->nrevokes; i++)
-            if (d->revokes[i].account == w->grant_account && (int64_t)w->grant_issued < d->revokes[i].before)
-                return 1;
-        return 0;
-    }
-    if (w->auth != NPF_AUTH_IK && w->auth != NPF_AUTH_PAKE)
-        return 0;
-    for (i = 0; i < d->npaired; i++)
-        if (npf_ct_eq(d->paired[i].pub, w->pub, 32) == 0)
-            return 0;
-    return 1;
+    if (w->auth == NPF_AUTH_GRANT)          /* as op_grant_check: trust off, or the account's grants revoked */
+        return !d->hosted_trust || revoked(d, w->grant_account, (int64_t)w->grant_issued);
+    return (w->auth == NPF_AUTH_IK || w->auth == NPF_AUTH_PAKE) && paired_at(d, w->pub) < 0;
 }
 
 static void recheck_timer(npf_loop *loop, void *arg)
@@ -357,15 +357,9 @@ void npf_callee_changed(npf_callee *d)
 static int op_authorized(npf_node *n, const uint8_t pub[32], void *arg)
 {
     npf_callee *d = arg;
-    int i;
     (void)n;
     state_refresh(d);
-    if (d->damaged)
-        return 0;                       /* safe mode: who is paired is not known */
-    for (i = 0; i < d->npaired; i++)
-        if (npf_ct_eq(d->paired[i].pub, pub, 32) == 0)
-            return 1;
-    return 0;
+    return !d->damaged && paired_at(d, pub) >= 0;   /* safe mode: who is paired is not known */
 }
 
 static const char *op_password(npf_node *n, void *arg)
@@ -387,15 +381,11 @@ static int op_locked(npf_node *n, void *arg)
 static void op_paired(npf_node *n, const uint8_t pub[32], void *arg)
 {
     npf_callee *d = arg;
-    int i;
     (void)n;
     state_refresh(d);                   /* a local change first: not saved over */
     d->fails = 0;
     d->lock_secs = 0;
-    for (i = 0; i < d->npaired; i++)
-        if (memcmp(d->paired[i].pub, pub, 32) == 0)
-            break;
-    if (i == d->npaired && d->npaired < NPF_MAX_PAIRED) {
+    if (paired_at(d, pub) < 0 && d->npaired < NPF_MAX_PAIRED) {
         memcpy(d->paired[d->npaired].pub, pub, 32);
         d->paired[d->npaired].added = time(NULL);
         d->npaired++;
@@ -434,7 +424,6 @@ static int op_grant_check(npf_node *n, const uint8_t *g, size_t len, const uint8
     npf_cert inter;
     npf_grant gr;
     int64_t now = npf_node_time(n) / 1000;
-    int i;
     state_refresh(d);
     if (d->damaged)
         return -1;                      /* safe mode: the revocations are not known */
@@ -448,9 +437,8 @@ static int op_grant_check(npf_node *n, const uint8_t *g, size_t len, const uint8
         return -1;
     if ((int64_t)gr.expires + 300 < now || (int64_t)gr.issued > now + 300)   /* 5 minutes of clock skew */
         return -1;
-    for (i = 0; i < d->nrevokes; i++)
-        if (d->revokes[i].account == gr.account && (int64_t)gr.issued < d->revokes[i].before)
-            return -1;
+    if (revoked(d, gr.account, (int64_t)gr.issued))
+        return -1;
     *account = gr.account;
     *out = gr;
     return 0;
@@ -611,12 +599,13 @@ void npf_callee_on_login(npf_callee *d)
     }
 }
 
-/* local commands (D21); returns the exit code, or -2 if cmd is not one of them */
 /* safe mode left by writing a fresh state: this password, nobody paired,
  * no owner, no lock (the revocations are lost: grants made before them
  * work again until they expire) */
-static void state_fresh(npf_callee *d, const char *np)
+int npf_callee_fresh(npf_callee *d, const char *np)
 {
+    if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
+        return -1;
     npf_logw("state: %s written afresh (safe mode over): a new password, no paired callers", d->state_path);
     d->damaged = 0;
     d->state_loaded = 1;
@@ -629,13 +618,6 @@ static void state_fresh(npf_callee *d, const char *np)
     d->owner = 0;
     d->nrevokes = 0;
     d->owner_reset_pending = 0;
-}
-
-int npf_callee_fresh(npf_callee *d, const char *np)
-{
-    if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
-        return -1;
-    state_fresh(d, np);
     npf_callee_changed(d);
     return state_save(d) < 0 ? -2 : 0;
 }
@@ -669,9 +651,7 @@ int npf_callee_unpair_key(npf_callee *d, const uint8_t *key)
     if (!key) {
         d->npaired = 0;
     } else {
-        for (k = 0; k < d->npaired && memcmp(d->paired[k].pub, key, 32) != 0; k++)
-            ;
-        if (k == d->npaired)
+        if ((k = paired_at(d, key)) < 0)
             return -1;
         memmove(&d->paired[k], &d->paired[k + 1], (size_t)(d->npaired - k - 1) * sizeof d->paired[0]);
         d->npaired--;

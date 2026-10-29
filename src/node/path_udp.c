@@ -22,15 +22,6 @@ int call_relay_addr_blocked(const npf_node *n, const struct sockaddr_storage *a)
     return n->th.block_relay && call_relay_blocked(n, npf_addr_str(a, s, sizeof s));
 }
 
-/* RELAY_BIND to the address being bound or kept (relay_bind.h) */
-static void relay_bind_send(npf_call *c)
-{
-    uint8_t wire[256];
-    int n = relay_bind_pack(&c->pu.r, c->n, 0, 0, wire);
-    if (n > 0 && !call_relay_addr_blocked(c->n, RELAY_BIND_DST(&c->pu.r)))
-        npf_udp_send(c->n->udp_fd, wire, (size_t)n, RELAY_BIND_DST(&c->pu.r));
-}
-
 /* RELAY_DATA (relay_data.c) to the address in use (cur): a 16-byte header
  * before the AnLiu datagram */
 static void udp_send(npf_path *p, const uint8_t *dgram, size_t len)
@@ -63,7 +54,7 @@ void path_udp_off(npf_call *c)
 static void bind_run(npf_call *c, int probe)
 {
     relay_bind_begin(&c->pu.r, probe, npf_mono_ms());
-    relay_bind_send(c);
+    relay_bind_send(&c->pu.r, c->n, 0, 0);
     call_at(c, c->pu.r.at);
 }
 
@@ -74,7 +65,7 @@ void path_udp_tick(npf_call *c)
 {
     int r = relay_bind_tick(&c->pu.r, npf_mono_ms(), RELAY_KEEPALIVE_MS);
     if (r > 0) {
-        relay_bind_send(c);
+        relay_bind_send(&c->pu.r, c->n, 0, 0);
     } else if (r < 0) {
         npf_log("call %s: UDP relay unreachable%s", c->call_id_s,
                 c->caller && c->st == CS_CALLING ? " before the accept: binding it again then" : "");
@@ -167,7 +158,7 @@ static void relay_ack_in(npf_call *c, const uint8_t *plain, size_t pl)
         return;
     }
     if (call_has_relay(c) && k == 2)
-        relay_bind_send(c);
+        relay_bind_send(&c->pu.r, c->n, 0, 0);
 }
 
 /* The caller binds its relay before it has the session's keys (the accept
@@ -227,7 +218,7 @@ static void relay_data_in(npf_call *c, const uint8_t *dg, size_t len)
         npf_log("call %s: the peer uses the relay again, keeping it", c->call_id_s);
         relay_bind_up(&c->pu.r, npf_mono_ms(), RELAY_KEEPALIVE_MS);
         path_udp_on(c);
-        relay_bind_send(c);
+        relay_bind_send(&c->pu.r, c->n, 0, 0);
         call_at(c, c->pu.r.at);
     } else if (c->pu.r.state != RB_BOUND) {
         /* the relay forwards the peer's data to us: it has our binding,

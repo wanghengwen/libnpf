@@ -14,7 +14,8 @@
  * value read with npf_conf_get stays valid until npf_conf_free: a longer
  * value set later takes a new buffer and the old one is kept until then. */
 typedef struct npf_conf {
-    int     n, cap;
+    int     n;
+    size_t  cap;
     char  **key, **val;         /* n entries */
     size_t *room;               /* bytes each val has */
     char  **old;                /* values replaced by longer ones: freed with the conf */

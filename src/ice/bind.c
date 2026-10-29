@@ -81,20 +81,23 @@ int npf_bind_resp_parse(const npf_pkt *pkt, npf_bind_resp *resp)
 {
     const uint8_t *b = pkt->body;
     size_t alen;
-    if (pkt->type != NPF_PKT_BIND_RESP || pkt->body_len < 1)
+    if (pkt->type != NPF_PKT_BIND_RESP || pkt->body_len < 1 || (b[0] != 4 && b[0] != 6))
         return -1;
-    resp->family = b[0];
-    if (resp->family == 4)
-        alen = 4;
-    else if (resp->family == 6)
-        alen = 16;
-    else
-        return -1;
+    alen = b[0] == 4 ? 4 : 16;
     if (pkt->body_len < 1 + 2 + alen + 8)
         return -1;
-    resp->port = npf_rd16(b + 1);
-    memset(resp->addr, 0, sizeof(resp->addr));
-    memcpy(resp->addr, b + 3, alen);
+    memset(&resp->mapped, 0, sizeof resp->mapped);
+    if (b[0] == 4) {
+        struct sockaddr_in *a = (struct sockaddr_in *)&resp->mapped;
+        a->sin_family = AF_INET;
+        a->sin_port = htons(npf_rd16(b + 1));
+        memcpy(&a->sin_addr, b + 3, 4);
+    } else {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)&resp->mapped;
+        a->sin6_family = AF_INET6;
+        a->sin6_port = htons(npf_rd16(b + 1));
+        memcpy(&a->sin6_addr, b + 3, 16);
+    }
     resp->srv_time_ms = npf_rd64(b + 3 + alen);
     return 0;
 }
@@ -133,12 +136,10 @@ int npf_bind_query(int fd, const struct sockaddr_in *ep, const npf_siv_keys *key
                 continue;
             if (npf_pkt_open(keys, NPF_DIR_RESP, buf, (size_t)r, plain, &pkt) < 0)
                 continue;
-            if (memcmp(pkt.txid, txid, NPF_TXID_SIZE) != 0 || npf_bind_resp_parse(&pkt, &resp) < 0 || resp.family != 4)
+            if (memcmp(pkt.txid, txid, NPF_TXID_SIZE) != 0 || npf_bind_resp_parse(&pkt, &resp) < 0
+                || resp.mapped.ss_family != AF_INET)
                 continue;
-            memset(mapped, 0, sizeof(*mapped));
-            mapped->sin_family = AF_INET;
-            memcpy(&mapped->sin_addr, resp.addr, 4);
-            mapped->sin_port = htons(resp.port);
+            memcpy(mapped, &resp.mapped, sizeof *mapped);
             return 0;
         }
     }

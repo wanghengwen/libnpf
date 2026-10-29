@@ -2,26 +2,16 @@
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <errno.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#ifndef _WIN32
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
-#include "npf/candidates.h"
 #include "npf/cert.h"
 #include "npf/conf.h"
 #include "npf/node.h"
 #include "npf/platform.h"
 
-#include "msgs.h"
 #include "node_internal.h"
-
-static int list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via, npf_server_entry *tmp);
 
 /* ---- server list ---- */
 
@@ -46,11 +36,9 @@ int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, in
         e->id = (int)s->id;
         e->prio = (int)s->prio;
         e->weight = (int)s->weight;
-        e->cdn = strcmp(s->kind, "cdn") == 0;
         memcpy(e->ws, s->ws, sizeof e->ws);
         e->nws = s->nws;
         memcpy(e->dh_pub, s->dh_pub, 32);
-        e->relay = s->relay;
     }
     if (n >= 0) {
         *serial = l->serial;
@@ -68,26 +56,32 @@ int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, in
     return n;
 }
 
-static int load_list_file(npf_node *n, const char *path, int64_t *serial, npf_server_entry *tmp, int *count,
+/* a signed list's servers in tmp: their count (0: none usable), -1 when
+ * the signature does not verify */
+static int list_read(const npf_node *n, const uint8_t *blob, size_t len, npf_server_entry *tmp, int64_t *serial,
+                     npf_list_meta *meta)
+{
+    const uint8_t *pl;
+    size_t plen;
+    int c;
+    if (npf_signed_verify((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, NPF_PERM_SERVERLIST, blob, len, &pl,
+                          &plen) < 0)
+        return -1;
+    c = npf_serverlist_parse((const char *)pl, plen, tmp, serial, meta);
+    return c > 0 ? c : 0;
+}
+
+static int load_list_file(const npf_node *n, const char *path, int64_t *serial, npf_server_entry *tmp,
                           npf_list_meta *meta)
 {
     char *blob;
     long len = npf_file_read(path, &blob);
-    const uint8_t *pl;
-    size_t plen;
-    int r = -1;
+    int c;
     if (len < 0)
-        return -1;
-    if (npf_serverlist_verify((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, (uint8_t *)blob, (size_t)len,
-                              &pl, &plen) == 0) {
-        int c = npf_serverlist_parse((const char *)pl, plen, tmp, serial, meta);
-        if (c > 0) {
-            *count = c;
-            r = 0;
-        }
-    }
+        return 0;
+    c = list_read(n, (const uint8_t *)blob, (size_t)len, tmp, serial, meta);
     free(blob);
-    return r;
+    return c > 0 ? c : 0;
 }
 
 /* *dst: count entries of src (room for one at least); 0, -1 out of memory */
@@ -107,29 +101,22 @@ void node_servers_load(npf_node *n)
 {
     /* scratch on the heap, per call (instances on other threads load theirs at the same time) */
     struct lists {
-        npf_server_entry a[NPF_MAX_SERVERS], b[NPF_MAX_SERVERS];
-        npf_list_meta    ma, mb;
+        npf_server_entry e[2][NPF_MAX_SERVERS];
+        npf_list_meta    m[2];
     } *l = calloc(1, sizeof *l);
-    int64_t sa = -1, sb = -1;
-    int ca = 0, cb = 0;
+    int64_t s[2] = {-1, -1};
+    int c[2] = {0, 0}, k;
     if (!l)
         return;
     if (n->cfg.serverlist_builtin)
-        load_list_file(n, n->cfg.serverlist_builtin, &sa, l->a, &ca, &l->ma);
+        c[0] = load_list_file(n, n->cfg.serverlist_builtin, &s[0], l->e[0], &l->m[0]);
     if (n->cfg.serverlist_saved)
-        load_list_file(n, n->cfg.serverlist_saved, &sb, l->b, &cb, &l->mb);
-    if (ca && (!cb || sa >= sb)) {
-        if (servers_set(&n->servers, l->a, ca) < 0)
-            ca = 0;
-        n->nservers = ca;
-        n->sl_serial = n->sl_full_serial = sa;
-        n->sl_meta = l->ma;
-    } else if (cb) {
-        if (servers_set(&n->servers, l->b, cb) < 0)
-            cb = 0;
-        n->nservers = cb;
-        n->sl_serial = n->sl_full_serial = sb;
-        n->sl_meta = l->mb;
+        c[1] = load_list_file(n, n->cfg.serverlist_saved, &s[1], l->e[1], &l->m[1]);
+    k = c[0] && (!c[1] || s[0] >= s[1]) ? 0 : 1;
+    if (c[k]) {
+        n->nservers = servers_set(&n->servers, l->e[k], c[k]) < 0 ? 0 : c[k];
+        n->sl_serial = n->sl_full_serial = s[k];
+        n->sl_meta = l->m[k];
     }
     free(l);
     n->nlist = servers_set(&n->list, n->servers, n->nservers) == 0 ? n->nservers : 0;
@@ -142,7 +129,6 @@ void node_servers_load(npf_node *n)
         snprintf(e->ws[0], sizeof e->ws[0], "%s", n->cfg.server_url);
         e->nws = 1;
         memcpy(e->dh_pub, n->cfg.server_pub, 32);
-        e->relay = 1;
         n->nservers = 1;
     }
 }
@@ -151,35 +137,22 @@ void node_servers_load(npf_node *n)
  * verify, compare serial, adopt, save a full list. A seed list (full =
  * false, from DNS) is used but not saved: the full list on disk stays
  * (security.md 7.5). Returns 1 when adopted. */
-
 int node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via)
 {
     npf_server_entry *tmp = malloc(NPF_MAX_SERVERS * sizeof *tmp);
-    int r = tmp ? list_update(n, blob, len, via, tmp) : 0;
-    free(tmp);
-    return r;
-}
-
-static int list_update(npf_node *n, const uint8_t *blob, size_t len, const char *via, npf_server_entry *tmp)
-{
     npf_list_meta meta;
-    const uint8_t *pl;
-    size_t plen;
     int64_t serial;
-    int c;
-    if (npf_serverlist_verify((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, blob, len, &pl, &plen) < 0) {
+    int c, r = 0;
+    if (!tmp)
+        return 0;
+    if ((c = list_read(n, blob, len, tmp, &serial, &meta)) < 0)
         npf_logw("server list%s%s: signature check failed, ignored", via ? " from " : "", via ? via : "");
-        return 0;
-    }
-    c = npf_serverlist_parse((const char *)pl, plen, tmp, &serial, &meta);
-    if (c <= 0)
-        return 0;
     /* newer than the list in use; a full list also replaces a seed list of
      * its own publish (the same serial: it was refused, and every login
      * then brought it again for nothing while the node kept the seed's few
      * servers) */
-    if (meta.full ? serial <= n->sl_full_serial || serial < n->sl_serial : serial <= n->sl_serial)
-        return 0;
+    if (c <= 0 || (meta.full ? serial <= n->sl_full_serial || serial < n->sl_serial : serial <= n->sl_serial))
+        goto out;
     if (meta.full) {
         if (n->cfg.serverlist_saved && npf_file_write(n->cfg.serverlist_saved, blob, len, 0644) < 0)
             npf_logw("server list: cannot save %s: %s", n->cfg.serverlist_saved, strerror(errno));
@@ -195,7 +168,7 @@ static int list_update(npf_node *n, const uint8_t *blob, size_t len, const char 
     if (servers_set(&n->list, tmp, c) < 0 || (!n->cfg.server_url && servers_set(&n->servers, tmp, c) < 0)) {
         npf_loge("server list: out of memory");
         n->nlist = n->nlist < c ? n->nlist : c;
-        return 0;
+        goto out;
     }
     n->nlist = c;
     if (!n->cfg.server_url) {
@@ -205,7 +178,10 @@ static int list_update(npf_node *n, const uint8_t *blob, size_t len, const char 
     n->sl_serial = serial;
     npf_log("server list: serial %lld, %d servers%s%s%s", (long long)serial, c, meta.full ? "" : " (seed list)",
             via ? " from " : "", via ? via : "");
-    return 1;
+    r = 1;
+out:
+    free(tmp);
+    return r;
 }
 
 #define SERVER_DEGRADE_MS (3600 * 1000)
@@ -220,9 +196,7 @@ void node_server_failed(npf_server_entry *e, int weight)
 
 static int degraded(const npf_server_entry *e)
 {
-    if (e->fails >= 3 && npf_mono_ms() < e->degraded_until)
-        return 1;
-    return 0;
+    return e->fails >= 3 && npf_mono_ms() < e->degraded_until;
 }
 
 int node_eff_prio(const npf_server_entry *e)

@@ -16,10 +16,6 @@
 #define ANL_MTU            1200
 #define ANL_MSG_MAX        (NPF_DATA_HDR + NPF_FRAME_MAX)   /* the largest message on either stream (a data message) */
 
-static void grant_update(npf_call *c, const m_grant_update *m, const npf_json *j);
-static void anl_schedule(npf_call *c);
-static void anl_kick(npf_call *c);
-
 /* a data message waiting for the stream (callee, data-channel.md 4) */
 typedef struct dmsg {
     struct dmsg *next;
@@ -79,28 +75,28 @@ static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user
 
 /* the callee's data messages that waited for the data stream, now that it
  * is here (in order: tun_write_data queues behind them until then) */
-static void dpend_send(npf_call *c)
-{
-    if (!c->stream || !c->dpend)
-        return;
-    while (c->dpend) {
-        dmsg *m = c->dpend;
-        c->dpend = m->next;
-        anl_stream_send(c->stream, (const char *)m->d, (int)m->len);
-        free(m);
-    }
-    c->dpend_tail = &c->dpend;
-    c->dpend_bytes = 0;
-    anl_kick(c);
-}
-
-
 static void anl_kick(npf_call *c)
 {
     if (!c->flush_pending) {
         c->flush_pending = 1;
         call_at(c, npf_mono_ms());
     }
+}
+
+static void anl_schedule(npf_call *c)
+{
+    call_at(c, tr_due(c, npf_mono_ms()));
+}
+
+static void dpend_send(npf_call *c)
+{
+    const dmsg *m;
+    if (!c->stream || !c->dpend)
+        return;
+    for (m = c->dpend; m; m = m->next)
+        anl_stream_send(c->stream, (const char *)m->d, (int)m->len);
+    call_dpend_free(c);
+    anl_kick(c);
 }
 
 /* control units: AnLiu's default stream 0 (strict priority over the data) */
@@ -216,6 +212,30 @@ static int ctl_id(const char *s)
     return id;
 }
 
+/* grant_update{grant}: a hosted client's new target list (signaling.md
+ * "隧道内控制消息"): the same caller key and account, issued later */
+static void grant_update(npf_call *c, const m_grant_update *m, const npf_json *j)
+{
+    npf_node *n = c->n;
+    npf_grant gr;
+    uint64_t acct = 0;
+    if (c->auth != AUTH_GRANT || !c->hosted_grant || !n->callee || !n->callee->grant_check
+        || n->callee->grant_check(n, m->grant, (size_t)m->grant_len, c->peer_pub, &acct, &gr, n->callee_arg) < 0
+        || gr.kind != NPF_GRANT_HOSTED || acct != c->grant_account || gr.issued < c->grant_issued) {
+        npf_call_ctl_reply(c, "grant_update", j, "error", "forbidden", NULL);
+        return;
+    }
+    if (gr.tlen == c->tlen && (!gr.tlen || memcmp(gr.targets, c->targets, gr.tlen) == 0)) {
+        c->grant_issued = gr.issued;    /* the same list (again: no allocation, no log line each time) */
+    } else if (call_set_targets(c, &gr) < 0) {
+        npf_call_ctl_reply(c, "grant_update", j, "error", "internal_error", NULL);
+        return;
+    } else {
+        npf_log("call %s: platform public mapping: target list updated", c->call_id_s);
+    }
+    npf_call_ctl_reply(c, "grant_update", j, "ok", NULL, NULL);
+}
+
 /* a control message: its table's struct to its handler (refused: a
  * request answered bad_request), a reply to its request's callback. What
  * the peer gets wrong is logged at the debug level only (it could fill the
@@ -258,9 +278,7 @@ void call_control(void *arg, const npf_json *j)
     } else if (!c->caller && (strcmp(e.type, "reverse_listen") == 0 || strcmp(e.type, "reverse_close") == 0)) {
         call_reverse_request(c, &e);
     } else if (c->caller && d == &m_listen_id_d) {
-        if (c->tun)
-            npf_tunnel_rev_del(c->tun, (uint32_t)u.li.listen_id);
-        npf_udpf_rev_del(c->udp, (uint32_t)u.li.listen_id);
+        call_rev_drop(c, (uint32_t)u.li.listen_id);
     } else if (!c->caller && d == &m_grant_update_d) {
         grant_update(c, &u.gu, j);
     } else if (c->caller && strcmp(e.type, "resources") == 0) {
@@ -370,22 +388,6 @@ static void tun_broken(void *arg, const char *why)
     npf_log("call %s: tunnel %s", c->call_id_s, why);
     npf_call_end(c, "error");
 }
-static void anl_drain_with(npf_call *c, char *buf, size_t cap);
-
-static void anl_drain(npf_call *c)
-{
-    char *buf;
-    if (!c->anl)
-        return;
-    dpend_send(c);
-    if (c->media && npf_media_poll(c->media) < 0)  /* the peer's new media streams: taken or not */
-        return;
-    if (!(buf = npf_scratch(ANL_MSG_MAX)))     /* kept by the thread between uses (sys.h): no larger than needed */
-        return;
-    anl_drain_with(c, buf, ANL_MSG_MAX);
-    npf_scratch_done(buf);
-}
-
 static void anl_drain_with(npf_call *c, char *buf, size_t cap)
 {
     anl_stream_t *rd[64];                   /* every stream at once (8: the rest waited for the next datagram) */
@@ -436,7 +438,44 @@ static void anl_drain_with(npf_call *c, char *buf, size_t cap)
         npf_tunnel_kick(c->tun);
 }
 
-static void auth_fail_check(npf_call *c);
+static void anl_drain(npf_call *c)
+{
+    char *buf;
+    if (!c->anl)
+        return;
+    dpend_send(c);
+    if (c->media && npf_media_poll(c->media) < 0)  /* the peer's new media streams: taken or not */
+        return;
+    if (!(buf = npf_scratch(ANL_MSG_MAX)))     /* kept by the thread between uses (sys.h): no larger than needed */
+        return;
+    anl_drain_with(c, buf, ANL_MSG_MAX);
+    npf_scratch_done(buf);
+}
+
+/* datagrams that named this session's conv and failed authentication: a
+ * datagram of another session sharing the conv now and then (two sessions'
+ * convs collide one time in 2^32 per pair), else forged or replayed ones.
+ * The conv goes in the clear (masked): someone on the path can send them,
+ * and each costs a decryption; they never touch the session (no reply, no
+ * state: AnLiu SECURITY_AUDIT.md 3). Told at most once a minute. */
+#define AUTH_FAIL_WARN     100
+#define AUTH_FAIL_EVERY_MS 60000
+
+static void auth_fail_check(npf_call *c)
+{
+    anl_stats st;
+    int64_t now = npf_mono_ms();
+    if (!c->anl || anl_get_stats(c->anl, &st) < 0)
+        return;
+    c->anl_srtt = (int)st.srtt;             /* for the accept callback (anl_accept) */
+    if (st.rx_auth_fail < c->auth_fail_seen + AUTH_FAIL_WARN
+        || (c->auth_fail_at && now - c->auth_fail_at < AUTH_FAIL_EVERY_MS))
+        return;
+    npf_logw("call %s: %llu datagram(s) with this session's conv failed authentication (forged or replayed: dropped)",
+             c->call_id_s, (unsigned long long)(st.rx_auth_fail - c->auth_fail_seen));
+    c->auth_fail_seen = st.rx_auth_fail;
+    c->auth_fail_at = now;
+}
 
 /* the session's part of the call's tick (call_tick): AnLiu's timers, the
  * flush a send asked for, what came in */
@@ -466,11 +505,6 @@ int64_t tr_due(const npf_call *c, int64_t now)
     return now + (d > 0 ? d : 0);
 }
 
-static void anl_schedule(npf_call *c)
-{
-    call_at(c, tr_due(c, npf_mono_ms()));
-}
-
 static void conv_link(npf_call *c)
 {
     npf_call **slot = &c->n->conv_tab[CONV_SLOT(c->conv)];
@@ -487,31 +521,6 @@ void call_conv_unlink(npf_call *c)
             c->conv_next = NULL;
             return;
         }
-}
-
-/* datagrams that named this session's conv and failed authentication: a
- * datagram of another session sharing the conv now and then (two sessions'
- * convs collide one time in 2^32 per pair), else forged or replayed ones.
- * The conv goes in the clear (masked): someone on the path can send them,
- * and each costs a decryption; they never touch the session (no reply, no
- * state: AnLiu SECURITY_AUDIT.md 3). Told at most once a minute. */
-#define AUTH_FAIL_WARN     100
-#define AUTH_FAIL_EVERY_MS 60000
-
-static void auth_fail_check(npf_call *c)
-{
-    anl_stats st;
-    int64_t now = npf_mono_ms();
-    if (!c->anl || anl_get_stats(c->anl, &st) < 0)
-        return;
-    c->anl_srtt = (int)st.srtt;             /* for the accept callback (anl_accept) */
-    if (st.rx_auth_fail < c->auth_fail_seen + AUTH_FAIL_WARN
-        || (c->auth_fail_at && now - c->auth_fail_at < AUTH_FAIL_EVERY_MS))
-        return;
-    npf_logw("call %s: %llu datagram(s) with this session's conv failed authentication (forged or replayed: dropped)",
-             c->call_id_s, (unsigned long long)(st.rx_auth_fail - c->auth_fail_seen));
-    c->auth_fail_seen = st.rx_auth_fail;
-    c->auth_fail_at = now;
 }
 
 /* one datagram for this call's connection; 0 when it was authentic. The
@@ -588,7 +597,13 @@ static int u_allowed(void *arg)
     return !((npf_call *)arg)->hosted_grant;
 }
 
-static const npf_udpf_io udp_io = {u_unit, m_kick, u_allowed};
+static const char *u_rev(void *arg, uint32_t lid, uint16_t *port)
+{
+    const struct rev_map *r = call_rev_target(arg, 1, lid, NULL, 0);
+    return r ? (*port = r->port, r->host) : NULL;
+}
+
+static const npf_udpf_io udp_io = {u_unit, m_kick, u_allowed, u_rev};
 
 npf_udpf *call_udp_of(npf_call *c)
 {
@@ -613,35 +628,15 @@ static void tun_unit(void *arg, int type, const uint8_t *buf, size_t len)
         c->n->hooks.on_app_data(c->n, c, buf, len, c->n->hook_arg);
 }
 
-/* grant_update{grant}: a hosted client's new target list (signaling.md
- * "隧道内控制消息"): the same caller key and account, issued later */
-static void grant_update(npf_call *c, const m_grant_update *m, const npf_json *j)
-{
-    npf_node *n = c->n;
-    npf_grant gr;
-    uint64_t acct = 0;
-    if (c->auth != AUTH_GRANT || !c->hosted_grant || !n->callee || !n->callee->grant_check
-        || n->callee->grant_check(n, m->grant, (size_t)m->grant_len, c->peer_pub, &acct, &gr, n->callee_arg) < 0
-        || gr.kind != NPF_GRANT_HOSTED || acct != c->grant_account || gr.issued < c->grant_issued) {
-        npf_call_ctl_reply(c, "grant_update", j, "error", "forbidden", NULL);
-        return;
-    }
-    if (gr.tlen == c->tlen && (!gr.tlen || memcmp(gr.targets, c->targets, gr.tlen) == 0)) {
-        c->grant_issued = gr.issued;    /* the same list (again: no allocation, no log line each time) */
-    } else if (call_set_targets(c, &gr) < 0) {
-        npf_call_ctl_reply(c, "grant_update", j, "error", "internal_error", NULL);
-        return;
-    } else {
-        npf_log("call %s: platform public mapping: target list updated", c->call_id_s);
-    }
-    npf_call_ctl_reply(c, "grant_update", j, "ok", NULL, NULL);
-}
-
-/* a hosted client opens the targets of its grant only (security.md 8.4) */
+/* the caller: a reverse sublink reaches what a -R registered only
+ * (data-channel.md 7.1); the callee: a hosted client the targets of its
+ * grant only (security.md 8.4) */
 static int tun_target_ok(void *arg, const char *host, uint16_t port)
 {
     npf_call *c = arg;
     npf_grant g;
+    if (c->caller)
+        return call_rev_target(c, 0, 0, host, port) != NULL;
     if (!c->hosted_grant)
         return 1;
     memset(&g, 0, sizeof g);
@@ -723,7 +718,6 @@ npf_tunnel *call_tunnel_new(npf_call *c)
         npf_tunnel_open_early(t);           /* a first pairing waits for the callee's hello (call_hello) */
     return t;
 }
-
 
 /* keys from k1 | k2 (security.md 9.5) and the AnLiu connection */
 int call_start_transport(npf_call *c)

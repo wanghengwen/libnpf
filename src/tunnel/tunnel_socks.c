@@ -2,12 +2,11 @@
  * (data-channel.md 7): Happy Eyeballs, the deadlines, the greeting */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/crypto.h"
 #include "npf/log.h"
-#include "npf/node.h"
 #include "npf/platform.h"
 #include "tunnel_internal.h"
 
@@ -41,7 +40,7 @@ static void connect_timeout(npf_loop *loop, void *arg)
     sublink *s = arg;
     npf_tunnel *t = s->t;
     (void)loop;
-    s->t_connect = NULL;
+    s->hs->t_connect = NULL;
     t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
     socks_fail(s, 6);
     tunnel_leave(t);
@@ -99,7 +98,7 @@ static void he_timer(npf_loop *loop, void *arg)
     sublink *s = arg;
     npf_tunnel *t = s->t;
     (void)loop;
-    s->t_he = NULL;
+    s->hs->t_he = NULL;
     t->depth++;
     connect_next(s);                    /* no answer yet: the next address too */
     tunnel_leave(t);
@@ -110,28 +109,29 @@ static void he_timer(npf_loop *loop, void *arg)
  * Returns -1 when the sublink was released (nothing left to try). */
 static int connect_next(sublink *s)
 {
-    while (s->icand < s->ncand) {
-        int i = s->icand++, fd, one = 1;
-        fd = npf_socket(s->cand[i].ss_family, SOCK_STREAM, 0, 0);
+    sl_hs *h = s->hs;
+    while (h->icand < h->ncand) {
+        int i = h->icand++, fd, one = 1;
+        fd = npf_socket(h->cand[i].ss_family, SOCK_STREAM, 0, 0);
         if (fd < 0) {
-            s->last_err = npf_sock_err();
+            h->last_err = npf_sock_err();
             continue;
         }
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        if (connect(fd, (const struct sockaddr *)&s->cand[i], s->hs->clen[i]) < 0 && !npf_sock_inprogress()) {
-            s->last_err = npf_sock_err();
+        if (connect(fd, (const struct sockaddr *)&h->cand[i], h->clen[i]) < 0 && !npf_sock_inprogress()) {
+            h->last_err = npf_sock_err();
             npf_sock_close(fd);
             continue;
         }
-        s->hs->cfd[s->ncfd++] = fd;
+        h->cfd[h->ncfd++] = fd;
         npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s);
-        if (s->icand < s->ncand && !s->t_he)
-            s->t_he = npf_timer_add(s->t->loop, HE_DELAY_MS, he_timer, s);
+        if (h->icand < h->ncand && !h->t_he)
+            h->t_he = npf_timer_add(s->t->loop, HE_DELAY_MS, he_timer, s);
         return 0;
     }
-    if (s->ncfd)
+    if (h->ncfd)
         return 0;                       /* the ones under way may still answer */
-    socks_fail(s, (uint8_t)map_errno(s->last_err));
+    socks_fail(s, (uint8_t)map_errno(h->last_err));
     return -1;
 }
 
@@ -141,43 +141,32 @@ static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     sublink *s = arg;
     npf_tunnel *t = s->t;
-    int err = 0, i, k;
+    sl_hs *h = s->hs;
+    int err = 0, k;
     socklen_t el = sizeof err;
     (void)ev;
     t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
     getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&err, &el);
-    for (k = 0; k < s->ncfd && s->hs->cfd[k] != fd; k++)
+    for (k = 0; k < h->ncfd && h->cfd[k] != fd; k++)
         ;
-    if (k == s->ncfd)
+    if (k == h->ncfd)
         goto out;
     npf_loop_del(loop, fd);
-    s->hs->cfd[k] = s->hs->cfd[--s->ncfd];
+    h->cfd[k] = h->cfd[--h->ncfd];      /* no longer an attempt: closed here, or the winner */
     if (err) {
         npf_sock_close(fd);
-        s->last_err = err;
+        h->last_err = err;
         /* its turn is now */
-        npf_timer_stop(loop, &s->t_he);
+        npf_timer_stop(loop, &h->t_he);
         connect_next(s);
         goto out;
     }
-    for (i = 0; i < s->ncfd; i++) {     /* the winner: the slower ones go */
-        npf_loop_del(loop, s->hs->cfd[i]);
-        npf_sock_close(s->hs->cfd[i]);
-    }
-    s->ncfd = 0;
-    npf_timer_stop(loop, &s->t_he);
-    npf_timer_stop(loop, &s->t_connect);
-    free(s->cand);
-    s->cand = NULL;
-    s->ncand = s->icand = 0;
     s->fd = fd;
     s->ev = 0;
-    tunnel_hs_done(s);                  /* connected: no more SOCKS bytes or attempts */
+    tunnel_hs_done(s);                  /* connected: the slower attempts and the deadline go */
     socks_reply(s, 0);
     s->state = SL_OPEN;
-    if (tunnel_flush_local(s) < 0)
-        tunnel_sub_reset(s, NPF_RST_LOCAL);
-    else
+    if (tunnel_flush_local(s, NULL, 0) == 0)
         tunnel_update_ev(s);
 out:
     tunnel_leave(t);
@@ -190,7 +179,7 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
     int i;
     /* every resolved address must pass: a name must not smuggle in a denied
      * target. Not a reverse sublink's: the caller's own -R named it */
-    for (i = 0; i < nc && !s->reverse; i++) {
+    for (i = 0; i < nc && !s->t->caller; i++) {
         if (!npf_policy_allowed(s->t->policy, (const struct sockaddr *)&cand[i])) {
             socks_fail(s, 2);
             return -1;
@@ -213,18 +202,17 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
     }
     if (nc > NPF_RESOLVE_MAX)
         nc = NPF_RESOLVE_MAX;
-    if (!(s->cand = malloc((size_t)nc * sizeof *cand))) {
+    if (!(s->hs->cand = malloc((size_t)nc * sizeof *cand))) {
         socks_fail(s, 1);
         return -1;
     }
-    memcpy(s->cand, cand, (size_t)nc * sizeof *cand);
+    memcpy(s->hs->cand, cand, (size_t)nc * sizeof *cand);
     memcpy(s->hs->clen, clen, (size_t)nc * sizeof *clen);
-    npf_he_order(s->cand, s->hs->clen, nc);
-    s->ncand = nc;
-    s->icand = 0;
+    npf_he_order(s->hs->cand, s->hs->clen, nc);
+    s->hs->ncand = nc;
     s->state = SL_CONNECTING;
-    if (!s->t_connect)                  /* a name: the deadline runs since the lookup began */
-        s->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
+    if (!s->hs->t_connect)              /* a name: the deadline runs since the lookup began */
+        s->hs->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
     return connect_next(s);
 }
 
@@ -263,13 +251,12 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
 {
     struct sockaddr_storage cand;
     socklen_t clen;
-    if (s->t->io.target_ok && !s->reverse) {
-        char h[256];
-        atyp_host(atyp, addr, alen, h);
-        if (!s->t->io.target_ok(s->t->arg, h, port)) {
-            socks_fail(s, 2);
-            return -1;
-        }
+    char host[256];
+    atyp_host(atyp, addr, alen, host);
+    if ((s->t->io.target_ok || s->t->caller)
+        && (!s->t->io.target_ok || !s->t->io.target_ok(s->t->arg, host, port))) {
+        socks_fail(s, 2);
+        return -1;
     }
     memset(&cand, 0, sizeof cand);
     if (atyp == 1) {
@@ -285,8 +272,6 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
         a->sin6_port = htons(port);
         clen = sizeof *a;
     } else {
-        char host[256];
-        atyp_host(atyp, addr, alen, host);
         if (npf_tunnel_test_resolve) {     /* tests: the addresses of their choosing, at once */
             struct sockaddr_storage ta[NPF_RESOLVE_MAX];
             socklen_t tl[NPF_RESOLVE_MAX];
@@ -312,7 +297,7 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
         /* one deadline for the lookup and the connection: a lookup that
          * never returns fails the sublink after CONNECT_MS (the worker is
          * released by the system, the request's callback is cancelled) */
-        s->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
+        s->hs->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
         return 0;
     }
     return socks_connect_addrs(s, &cand, &clen, 1);
@@ -340,11 +325,6 @@ static void greet_timeout(npf_loop *loop, void *arg)
 void tunnel_greet_wait(sublink *s)
 {
     s->t_greet = npf_timer_add(s->t->loop, npf_tunnel_greet_ms, greet_timeout, s);
-}
-
-void tunnel_greet_done(sublink *s)
-{
-    npf_timer_stop(s->t->loop, &s->t_greet);
 }
 
 int tunnel_socks_greeting(const uint8_t *b, size_t n, int *noauth)
@@ -412,28 +392,13 @@ int tunnel_socks_parse(sublink *s)
             socks_fail(s, 4);
             return -1;
         }
-        port = (uint16_t)((b[need - 2] << 8) | b[need - 1]);
+        port = npf_rdbe16(b + need - 2);
         /* pipelined data after the request waits in wq until connected */
-        if (s->sl > need && tunnel_wb_put(&s->wq, b + need, s->sl - need) < 0) {
-            tunnel_sub_reset(s, NPF_RST_LIMIT);
+        if (s->sl > need && tunnel_queue(s, b + need, s->sl - need) < 0)
             return -1;
-        }
         s->sl = 0;
         tunnel_credit_back(s, need);
-        tunnel_greet_done(s);
-        if (s->t->caller) {
-            /* reverse sublink: only a target this caller registered (7.1) */
-            char host[256];
-            int i, ok = 0;
-            atyp_host(atyp, addr, alen, host);
-            for (i = 0; i < s->t->nrev && !ok; i++)
-                ok = s->t->rev[i]->port == port && strcmp(s->t->rev[i]->host, host) == 0;
-            if (!ok) {
-                socks_fail(s, 2);
-                return -1;
-            }
-            s->reverse = 1;
-        }
+        npf_timer_stop(s->t->loop, &s->t_greet);
         /* addr stays in hs->sb (nothing writes there now) while socks_connect reads it */
         return socks_connect(s, atyp, addr, alen, port);
     }
@@ -463,15 +428,25 @@ int tunnel_socks_request(const char *host, uint16_t port, uint8_t req[300], size
         memcpy(req + n, host, hl);
         n += hl;
     }
-    req[n++] = (uint8_t)(port >> 8);
-    req[n++] = (uint8_t)port;
-    *len = n;
+    npf_be16(req + n, port);
+    *len = n + 2;
     return 0;
 }
 
 void tunnel_hs_done(sublink *s)
 {
-    free(s->hs);
+    sl_hs *h = s->hs;
+    int i;
+    if (!h)
+        return;
+    for (i = 0; i < h->ncfd; i++) {
+        npf_loop_del(s->t->loop, h->cfd[i]);
+        npf_sock_close(h->cfd[i]);
+    }
+    npf_timer_cancel(s->t->loop, h->t_connect);
+    npf_timer_cancel(s->t->loop, h->t_he);
+    free(h->cand);
+    free(h);
     s->hs = NULL;
 }
 

@@ -1,22 +1,9 @@
-/* UDP forwarding of a session (data-channel.md 15).
- *
- *   - A flow is what one local source address sends to one forward (UDP has
- *     no connections: told apart by the source, as a NAT does): the caller's
- *     -L .../udp (odd numbers) or the callee's listener of a -R .../udp
- *     (even numbers); never reusing a number in the session.
- *   - Every flow shares one semi-reliable AnLiu stream (tag NPF_TAG_UDP),
- *     on whichever carrier the connection is (UDP or the WS relay), that the
- *     caller opens (at its first datagram, or before it asks for a -R .../udp):
- *       frame = flow(4) | flags(1) | [tlen(1) | host | port(2)] | [lid(4)] | payload
- *     flags bit 0: the -L target follows (caller), bit 1: the -R listener's
- *     id (callee); added until the other side said OK, so a lost first frame
- *     still opens the flow. The caller sends a -R flow to the target it
- *     registered for that listener (npf_udpf_rev_add), nothing else.
- *   - UDP units on the control channel: op(1) | flow(4) [| reason(1)],
- *     OK=1 (callee: the flow is open), CLOSE=2 (either side: it is over).
- *   - The callee opens a flow only to a target its "udp" resources cover
- *     (npf_policy_udp_allowed), with a socket of its own connected to the
- *     target; flows idle for NPF_UDP_IDLE_MS end on either side. */
+/* UDP forwarding of a session (data-channel.md 15): the caller's -L .../udp
+ * flows (odd numbers) and the callee's -R .../udp listeners' (even), told
+ * apart by the source address, all on one semi-reliable AnLiu stream
+ * (tag NPF_TAG_UDP) the caller opens:
+ *   frame = flow(4) | flags(1) | [tlen(1) | host | port(2)] | [lid(4)] | payload
+ * and UDP units (OK, CLOSE) on the control channel. */
 #ifndef NPF_UDPFWD_H
 #define NPF_UDPFWD_H
 
@@ -49,6 +36,9 @@ typedef struct npf_udpf_io {
     void   (*kick)(void *arg);
     /* callee: may this session have UDP flows at all (a hosted client's may not)? */
     int    (*allowed)(void *arg);
+    /* caller: the target of the -R .../udp mapping lid (the callee's listen
+     * id), NULL: none */
+    const char *(*rev)(void *arg, uint32_t lid, uint16_t *port);
 } npf_udpf_io;
 
 typedef struct npf_udpf_stats {
@@ -101,9 +91,7 @@ int  npf_udpf_send_rev(npf_udpf *u, int lfd, const struct sockaddr_storage *src,
 void npf_udpf_forget_fd(npf_udpf *u, int lfd);
 /* caller: open the stream now (the callee of a -R .../udp sends on it) */
 void npf_udpf_prepare(npf_udpf *u);
-/* caller: the target of the -R .../udp mapping lid (the callee's listen id);
- * 0, -1. rev_del ends its flows too */
-int  npf_udpf_rev_add(npf_udpf *u, uint32_t lid, const char *host, uint16_t port);
+/* caller: the -R .../udp mapping lid ended: its flows end */
 void npf_udpf_rev_del(npf_udpf *u, uint32_t lid);
 
 void npf_udpf_get_stats(const npf_udpf *u, npf_udpf_stats *out);
