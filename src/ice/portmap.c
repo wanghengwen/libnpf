@@ -115,15 +115,6 @@ static int natpmp_external_ip(int fd, uint8_t ip[4])
     return -1;
 }
 
-int npf_portmap_gateway_v4(struct in_addr *gw)
-{
-    uint32_t a;
-    if (npf_default_gw4(&a) < 0)
-        return -1;
-    gw->s_addr = a;
-    return 0;
-}
-
 static int udp_connect(const struct sockaddr_in *gw, struct in_addr *local)
 {
     struct sockaddr_in la;
@@ -194,6 +185,7 @@ static int try_map(int method, const struct sockaddr_in *gw, uint16_t internal_p
 static int gateway(struct sockaddr_in *gw)
 {
     char gs[INET_ADDRSTRLEN];
+    uint32_t a;
     memset(gw, 0, sizeof(*gw));
     gw->sin_family = AF_INET;
     gw->sin_port = htons(NPF_PORTMAP_PORT);
@@ -206,7 +198,9 @@ static int gateway(struct sockaddr_in *gw)
         }
         if (inet_pton(AF_INET, ip, &gw->sin_addr) != 1)
             return -1;
-    } else if (npf_portmap_gateway_v4(&gw->sin_addr) < 0) {
+    } else if (npf_default_gw4(&a) == 0) {
+        gw->sin_addr.s_addr = a;
+    } else {
         npf_logd("portmap: no default IPv4 gateway");
         return -1;
     }

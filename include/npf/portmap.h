@@ -35,9 +35,6 @@ int  npf_pcp_parse_map(const uint8_t *in, size_t len, const uint8_t nonce[12], n
 int  npf_natpmp_build_map(uint8_t out[12], uint16_t internal_port, uint16_t suggest_ext, uint32_t lifetime);
 int  npf_natpmp_parse_map(const uint8_t *in, size_t len, npf_portmap *res);
 
-/* Default IPv4 gateway (npf_default_gw4). Returns 0 / -1. */
-int  npf_portmap_gateway_v4(struct in_addr *gw);
-
 /* Full attempt: discover gateway, try PCP then NAT-PMP for a UDP mapping of
  * `internal_port`. Returns 0 on success (res filled), -2 without a default
  * IPv4 gateway, -1 otherwise (no answer). */

@@ -499,12 +499,7 @@ int64_t npf_ws_last_rx(const npf_ws *ws)
 
 int npf_ws_send(npf_ws *ws, const void *data, size_t len, int binary)
 {
-    return npf_ws_send2(ws, data, len, NULL, 0, binary);
-}
-
-int npf_ws_send2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len, int binary)
-{
-    return ws->state != ST_OPEN || send_frame2(ws, binary ? 2 : 1, head, hlen, data, len) || flush_out(ws) < 0 ? -1 : 0;
+    return ws->state != ST_OPEN || send_frame(ws, binary ? 2 : 1, data, len) || flush_out(ws) < 0 ? -1 : 0;
 }
 
 int npf_ws_queue2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len)

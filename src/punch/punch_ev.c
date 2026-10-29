@@ -269,12 +269,8 @@ static int64_t spray_ivl(const npf_punch_plan *pl)
  * E2: the caller's spacer, one more mapping) */
 static void s2b_bind_to(npf_punch *p, const struct sockaddr_in *to, const uint8_t txid[NPF_TXID_SIZE])
 {
-    uint8_t wire[NPF_PKT_MAX];
-    size_t len = npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
-    int n = npf_pkt_seal(&p->kprobe, NPF_DIR_REQ, NPF_PKT_BIND_REQ, txid,
-                         (uint32_t)(npf_unix_ms() + p->cfg.clock_offset_ms), p->cfg.ticket, NPF_TICKET_SIZE, len, wire);
-    if (n > 0)
-        (void)npf_udp_send(p->socks[1].fd, wire, (size_t)n, to);
+    npf_bind_req_send(p->socks[1].fd, to, &p->kprobe, NPF_PKT_BIND_REQ, txid, p->cfg.clock_offset_ms, p->cfg.ticket,
+                      NPF_TICKET_SIZE);
 }
 
 /* S2B: the caller's spacer before pass r: one more mapping of the fresh

@@ -46,20 +46,17 @@ static uint32_t wire_ts(int64_t offset)
 
 static void tx_send(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t)
 {
-    uint8_t wire[NPF_PKT_MAX], body[NPF_TICKET_SIZE + sizeof t->extra];
-    size_t len = npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
+    uint8_t body[NPF_TICKET_SIZE + sizeof t->extra];
     int n;
     memcpy(body, cfg->ticket, NPF_TICKET_SIZE);
     memcpy(body + NPF_TICKET_SIZE, t->extra, t->extra_len);
-    n = npf_pkt_seal(keys, NPF_DIR_REQ, t->type, t->txid, wire_ts(cfg->clock_offset_ms),
-                     body, NPF_TICKET_SIZE + t->extra_len, len, wire);
-    if (n > 0)
-        (void)npf_udp_send(t->fd, wire, (size_t)n, &t->dst);
+    n = npf_bind_req_send(t->fd, &t->dst, keys, t->type, t->txid, cfg->clock_offset_ms, body,
+                          NPF_TICKET_SIZE + t->extra_len);
     t->sent++;
     if (npf_log_on(NPF_LOG_TRACE)) {
         char a[64];
-        npf_logt("natprobe: fd %d -> %s %s #%d (%zu bytes)", t->fd, npf_sa_str(&t->dst, a, sizeof(a)),
-                 t->type == NPF_PKT_BOUNCE_REQ ? "BOUNCE_REQ" : "BIND_REQ", t->sent, len);
+        npf_logt("natprobe: fd %d -> %s %s #%d (%d bytes)", t->fd, npf_sa_str(&t->dst, a, sizeof(a)),
+                 t->type == NPF_PKT_BOUNCE_REQ ? "BOUNCE_REQ" : "BIND_REQ", t->sent, n);
     }
 }
 

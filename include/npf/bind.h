@@ -50,6 +50,13 @@ int npf_pkt_seal(const npf_siv_keys *keys, int dir, int type, const uint8_t txid
 int npf_pkt_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t len,
                  uint8_t *plain, npf_pkt *pkt);
 
+/* A request to a probe server (BIND_REQ, BOUNCE_REQ: body = ticket |
+ * extra) sealed at a random length of NPF_BIND_REQ_MIN..MAX and sent on fd
+ * to to; ts_ms is the local clock plus clock_offset_ms. Its length, or -1
+ * (the body does not fit). */
+int npf_bind_req_send(int fd, const void *to, const npf_siv_keys *keys, int type, const uint8_t txid[NPF_TXID_SIZE],
+                      int64_t clock_offset_ms, const uint8_t *body, size_t body_len);
+
 /* BIND_RESP body: family(1) | port(2) | addr(4 or 16) | srv_time_ms(8) */
 typedef struct npf_bind_resp {
     int      family;            /* 4 or 6 */

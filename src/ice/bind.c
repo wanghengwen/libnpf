@@ -66,6 +66,17 @@ int npf_pkt_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t le
     return 0;
 }
 
+int npf_bind_req_send(int fd, const void *to, const npf_siv_keys *keys, int type, const uint8_t txid[NPF_TXID_SIZE],
+                      int64_t clock_offset_ms, const uint8_t *body, size_t body_len)
+{
+    uint8_t wire[NPF_BIND_REQ_MAX];
+    int n = npf_pkt_seal(keys, NPF_DIR_REQ, type, txid, (uint32_t)(npf_unix_ms() + clock_offset_ms), body, body_len,
+                         npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX), wire);
+    if (n > 0)
+        (void)npf_udp_send(fd, wire, (size_t)n, to);
+    return n;
+}
+
 int npf_bind_resp_parse(const npf_pkt *pkt, npf_bind_resp *resp)
 {
     const uint8_t *b = pkt->body;
@@ -105,12 +116,7 @@ int npf_bind_query(int fd, const struct sockaddr_in *ep, const npf_siv_keys *key
         if (now - start >= timeout_ms)
             return -1;
         while (sent < 3 && now - start >= send_at[sent]) {
-            uint8_t wire[NPF_PKT_MAX];
-            size_t len = npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
-            int n = npf_pkt_seal(keys, NPF_DIR_REQ, NPF_PKT_BIND_REQ, txid,
-                                 (uint32_t)(npf_unix_ms() + offset_ms), ticket, ticket_len, len, wire);
-            if (n > 0)
-                (void)npf_udp_send(fd, wire, (size_t)n, ep);
+            npf_bind_req_send(fd, ep, keys, NPF_PKT_BIND_REQ, txid, offset_ms, ticket, ticket_len);
             sent++;
         }
         due = sent < 3 ? start + send_at[sent] : start + timeout_ms;
