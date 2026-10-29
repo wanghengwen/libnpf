@@ -70,10 +70,9 @@ void npf_engine_account_load(npf_t *n);
 /* engine_events.c: the node and the peers with the engine's callbacks */
 int  npf_engine_node_init(npf_t *n);
 npf_peers *npf_engine_peers_new(npf_t *n);
-/* setup.c: npf_setup's fields as configuration keys (c); 0, or -1 with err */
+/* setup.c: npf_setup's fields as configuration keys (c), their values
+ * checked (npf_conf_check); 0, or -1 with err */
 int  npf_setup_conf(const npf_setup *s, int role, const char *data_dir, npf_conf *c, char *err, size_t errcap);
-/* a key of the overrides that is a field of npf_setup, NULL none */
-const char *npf_setup_key_taken(const npf_conf *ov);
 /* the run on the library thread: the node until npf_loop_stop, then its end */
 int  npf_engine_run(npf_t *n);
 void npf_engine_begin(npf_t *n);

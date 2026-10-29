@@ -152,18 +152,21 @@ void npf_node_reverse_recheck(npf_node *n)
             }
 }
 
-void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
+void call_reverse_request(npf_call *c, const m_env *e)
 {
-    int d = npf_json_get(j, 0, "data"), i, fd;
-    int64_t port = 0, tport, lid;
-    char bind_addr[64] = "127.0.0.1", host[256], reply[96];
+    const char *type = e->type;
+    const npf_json *j = e->j;
+    int i, fd, udp, lan;
+    int64_t port;
+    char bind_addr[64], reply[96];
     struct sockaddr_storage ss;
     socklen_t sl;
-    int lan, udp = 0, ut = npf_json_get(j, d, "udp");
+    m_reverse_listen m;
     if (strcmp(type, "reverse_close") == 0) {
-        if (npf_json_get_int(j, d, "listen_id", 1, UINT32_MAX, &lid) == 0)
+        m_listen_id li;
+        if (npf_msg_parse(&m_listen_id_d, j, e->data, &li, NULL, 0) == 0)
             for (i = 0; i < c->nrev; i++)
-                if (c->rev[i]->id == (uint32_t)lid) {
+                if (c->rev[i]->id == (uint32_t)li.listen_id) {
                     rev_close(c, i);
                     break;
                 }
@@ -174,20 +177,21 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
         npf_call_ctl_reply(c, type, j, "error", "forbidden", NULL);
         return;
     }
-    npf_json_get_str(j, d, "bind", bind_addr, sizeof bind_addr);
-    npf_json_get_int(j, d, "port", 0, 65535, &port);
-    if (npf_json_get_str(j, d, "target_host", host, sizeof host) <= 0
-        || npf_json_get_int(j, d, "target_port", 1, 65535, &tport) < 0) {
+    if (npf_msg_parse(&m_reverse_listen_d, j, e->data, &m, reply, sizeof reply) < 0) {
+        npf_logd("call %s: reverse_listen refused (%s)", c->call_id_s, reply);
         npf_call_ctl_reply(c, type, j, "error", "bad_request", NULL);
         return;
     }
+    port = m.port;
+    udp = m.udp;                        /* -R .../udp: a UDP socket (data-channel.md 15) */
+    snprintf(bind_addr, sizeof bind_addr, "%s", m.bind[0] ? m.bind : "127.0.0.1");
     /* policy: a port a "reverse" resource publishes (0, chosen by us: with
      * "*"), on loopback; on every address, or on one of this host's own,
      * only when it says "lan:" (and then from this host and its LAN only);
      * 16 per session */
     if (strcmp(bind_addr, "localhost") == 0)
         strcpy(bind_addr, "127.0.0.1");
-    if (!bind_addr[0] || strcmp(bind_addr, "*") == 0)
+    if (strcmp(bind_addr, "*") == 0)
         strcpy(bind_addr, "0.0.0.0");
     lan = strcmp(bind_addr, "127.0.0.1") != 0 && strcmp(bind_addr, "::1") != 0;
     if ((lan && strcmp(bind_addr, "0.0.0.0") != 0 && strcmp(bind_addr, "::") != 0 && !own_addr(bind_addr))
@@ -204,8 +208,6 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
         snprintf(a, sizeof a, strchr(bind_addr, ':') ? "[%s]:%d" : "%s:%d", bind_addr, (int)port);
         npf_addr_parse(a, &ss);
     }
-    if (ut >= 0)
-        npf_json_bool(j, ut, &udp);         /* -R .../udp: a UDP socket (data-channel.md 15) */
     fd = npf_socket(ss.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0, 0);
     npf_sock_listen_opts(fd, udp ? SOCK_DGRAM : SOCK_STREAM);   /* a UDP port is not shared: no other listener's */
     if (fd >= 0 && strcmp(bind_addr, "::") == 0) {
@@ -232,8 +234,8 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
         l->c = c;
         l->id = ++c->rev_seq;
         l->fd = fd;
-        snprintf(l->host, sizeof l->host, "%s", host);
-        l->port = (uint16_t)tport;
+        snprintf(l->host, sizeof l->host, "%s", m.target_host);
+        l->port = (uint16_t)m.target_port;
         l->lan = lan;
         l->want = (int)port;
         l->udp = udp;
@@ -242,7 +244,8 @@ void call_reverse_request(npf_call *c, const char *type, const npf_json *j)
     snprintf(reply, sizeof reply, "{\"listen_id\":%u,\"port\":%u}", c->rev[i]->id,
              ntohs(ss.ss_family == AF_INET6 ? ((struct sockaddr_in6 *)&ss)->sin6_port : ((struct sockaddr_in *)&ss)->sin_port));
     npf_call_ctl_reply(c, type, j, "ok", NULL, reply);
-    npf_log("call %s: reverse mapping%s %s -> caller %s:%d", c->call_id_s, udp ? " (UDP)" : "", reply, host, (int)tport);
+    npf_log("call %s: reverse mapping%s %s -> caller %s:%d", c->call_id_s, udp ? " (UDP)" : "", reply, m.target_host,
+            (int)m.target_port);
 }
 
 /* ---- reverse mapping, caller side ---- */
@@ -258,22 +261,20 @@ typedef struct rev_req {
 static void rev_reply(npf_call *c, const npf_json *j, int ok, void *arg)
 {
     rev_req *r = arg;
-    int64_t id = 0, port = 0;
-    int d = j ? npf_json_get(j, 0, "data") : -1;
-    char err[32] = "";
-    if (ok && npf_json_get_int(j, d, "listen_id", 1, UINT32_MAX, &id) == 0
-        && npf_json_get_int(j, d, "port", 1, 65535, &port) == 0) {
-        if (c->tun && (r->udp ? npf_udpf_rev_add(call_udp_of(c), (uint32_t)id, r->host, r->port)
-                              : npf_tunnel_rev_add(c->tun, (uint32_t)id, r->host, r->port)) == 0) {
-            r->fn(c, (int)port, (uint32_t)id, NULL, r->arg);
+    m_env e;
+    m_listening m;
+    int got = j && node_env(j, &e) == 0;
+    const char *err = !j ? "no reply" : got && e.error[0] ? e.error : "failed";
+    if (ok && got && npf_msg_parse(&m_listening_d, j, e.data, &m, NULL, 0) == 0) {
+        if (c->tun && (r->udp ? npf_udpf_rev_add(call_udp_of(c), (uint32_t)m.listen_id, r->host, r->port)
+                              : npf_tunnel_rev_add(c->tun, (uint32_t)m.listen_id, r->host, r->port)) == 0) {
+            r->fn(c, (int)m.port, (uint32_t)m.listen_id, NULL, r->arg);
             free(r);
             return;
         }
-        npf_call_reverse_close(c, (uint32_t)id);    /* listening there, not usable here: not left behind */
-    } else if (j) {
-        npf_json_get_str(j, 0, "error", err, sizeof err);
+        npf_call_reverse_close(c, (uint32_t)m.listen_id);  /* listening there, not usable here: not left behind */
     }
-    r->fn(c, -1, 0, err[0] ? err : j ? "failed" : "no reply", r->arg);
+    r->fn(c, -1, 0, err, r->arg);
     free(r);
 }
 

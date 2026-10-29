@@ -359,7 +359,7 @@ fail:                                       /* the credential and the model's se
 /* the callee taken onto the node, with the configuration's hosted trust */
 void npf_engine_callee_attach(npf_t *n)
 {
-    n->callee->hosted_trust = atoi(npf_conf_get(&n->conf, "hosted_trust", "1"));
+    n->callee->hosted_trust = (int)npf_conf_int(&n->conf, "hosted_trust");
     npf_callee_attach(n->callee, &n->node);
 }
 

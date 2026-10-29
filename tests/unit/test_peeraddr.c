@@ -44,12 +44,13 @@ static int start(npf_call *c, int round, const char *cands, const char *pub)
     npf_random(b, 32);
     npf_b64url_encode(b, 8, pid);
     npf_b64url_encode(b, 32, key);
-    len = snprintf(js, sizeof js, "{\"call_id\":\"x\",\"round\":%d,\"punch_id\":\"%s\",\"punch_key\":\"%s\",\"strategy\":\"S3\","
-                   "\"side\":\"easy\",\"peer\":{\"cand\":[%s],\"pub_ip\":\"%s\"},\"m_total\":10,\"timeout_ms\":1000}",
-                   round, pid, key, cands, pub);
+    len = snprintf(js, sizeof js, "{\"v\":1,\"type\":\"punch_start\",\"data\":{\"call_id\":\"%s\",\"round\":%d,"
+                   "\"punch_id\":\"%s\",\"punch_key\":\"%s\",\"strategy\":\"S3\",\"side\":\"easy\","
+                   "\"peer\":{\"cand\":[%s],\"pub_ip\":\"%s\"},\"m_total\":10,\"timeout_ms\":1000}}",
+                   c->call_id_s, round, pid, key, cands, pub);
     if (npf_json_parse(&j, js, (size_t)len, tok, 160) < 0)
         return -1;
-    call_handle_punch_start(c, &j, 0);
+    node_msg(c->n, &j);
     return c->pcfg ? c->pcfg->npeers : -1;
 }
 
@@ -85,7 +86,8 @@ int test_peeraddr(void)
     CHECK(c != NULL, "call");
     if (!c)
         return fails;
-    snprintf(c->call_id_s, sizeof c->call_id_s, "peeraddr-test");
+    npf_random(c->call_id, 16);
+    npf_b64url_encode(c->call_id, 16, c->call_id_s);
     c->keys_ready = 0;                  /* the punch waits for the keys: nothing is sent */
     sin_of(&c->pu.r.addr[0], "203.0.113.5", 9900);
     c->pu.r.naddr = 1;
@@ -123,14 +125,16 @@ int test_peeraddr(void)
         npf_json j;
         int len;
         for (i = 0; i < 4; i++) {
-            len = snprintf(js, sizeof js, "{\"call_id\":\"x\",\"round\":5,\"cand\":{\"t\":\"srflx\",\"a\":\"%s\"}}", bad[i]);
+            len = snprintf(js, sizeof js, "{\"v\":1,\"type\":\"punch_info\",\"data\":{\"call_id\":\"%s\",\"round\":5,"
+                           "\"cand\":{\"t\":\"srflx\",\"a\":\"%s\"}}}", c->call_id_s, bad[i]);
             CHECK(npf_json_parse(&j, js, (size_t)len, tok, 32) >= 0, "JSON");
-            call_handle_punch_info(c, &j, 0);
+            node_msg(&node, &j);
             CHECK(c->tcand.ss_family == 0, "punch_info %s taken", bad[i]);
         }
-        len = snprintf(js, sizeof js, "{\"call_id\":\"x\",\"round\":5,\"cand\":{\"t\":\"srflx\",\"a\":\"198.51.100.20:6000\"}}");
+        len = snprintf(js, sizeof js, "{\"v\":1,\"type\":\"punch_info\",\"data\":{\"call_id\":\"%s\",\"round\":5,"
+                       "\"cand\":{\"t\":\"srflx\",\"a\":\"198.51.100.20:6000\"}}}", c->call_id_s);
         CHECK(npf_json_parse(&j, js, (size_t)len, tok, 32) >= 0, "JSON");
-        call_handle_punch_info(c, &j, 0);
+        node_msg(&node, &j);
         CHECK(c->tcand.ss_family == AF_INET, "a public srflx not taken");
     }
     /* this node's srflx on loopback does not make loopback usable; the tests' switch does */

@@ -4,7 +4,7 @@
 
 本文是 libnpf 逐步重构的依据：先写清现在的结构和问题（第 1 节），再给出目标的分层与接口（第 2 节）、各部分的状态机（第 3 节）、定时方式（第 4 节）、信令消息的描述表（第 5 节）、测试钩子（第 6 节）、库的边界（第 7 节），最后是分步迁移的计划（第 8 节）和不做的事（第 9 节）。重构是渐进的：每一步单独合入、单独现场测试，不做整体重写。
 
-凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）；第 1c 步去掉了 `call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_standby_done`、`pm_standby_start`、`path_ws.c:ws_elsewhere`、`call.c:npf_node_ws_calls_udp_back` 与 `npf_node_calls_to_ws`，路径之间的决定都在 `path_mgr.c:pm_decide`，向平台的请求都经 `call_need`（第 3.6 节"1c 的实现"）；第 1d 步把呼叫的 8 个定时器合成一个（`call.c:call_tick`，`anl_timer`、`timeout_cb`、`punch_timer`、`linger_done`、`direct_retry`、`pm_timer`、`ws_reconnect` / `ws_pair_late` 的定时器、`relay_keepalive_timer` 变成各部分的截止时间与 tick），去掉了 `relay_bind.c` 的 `relay_bind_run`、`relay_bind_probe`（第 4 节"1d 的实现"）；第 2 步给绑定器与备用分配写了显式的状态与一个截止时间（第 3.3、3.4 节"2 的实现"）；第 3 步给呼叫与打洞写了显式的状态（第 3.1、3.2 节"第 3 步的实现"），去掉了 `call.c:call_relay_leave`、`call_accept_seen`、`call_close_quiet`、`call_punch.c:call_start_punch_now`、`call_punch_sockets_back`；之后的瘦身（第 8 节"瘦身实际"）去掉了 `npf_th`、`pm_dead`、`pm_has`、`path_direct_gone`、`call_relay_send_data`、`call_ws_send`、`direct_alive`、`anl_after_input`、`punch_end` 与路径操作表的 `name`。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
+凡是说到现在代码的地方都给出 `文件:函数`，路径相对于 `client/lib/src`（另注明的除外）。行数、个数都是在 `ee2f0f7` 上数出来的，第 1.1 节说明了怎么数。第 1、3 节的位置是 `ee2f0f7` 上的：第 1a 步之后 `call_path.c` 的内容在 `path_direct.c`，`call_relay.c` 的客户端部分在 `path_udp.c`、路径之间的决定在 `path_mgr.c`（`relay_gave_up` 改名 `call_relay_gave_up`），`call_ws.c` 在 `path_ws.c`；第 1b 步去掉了 `call_check_p2p`、`call_check_relay`（第 2.4 节"1b 的实现"）；第 1c 步去掉了 `call_relay_gave_up`、`ws_wait_done`、`call_ws_wait_end`、`call_ask_ws_relay`、`call_standby_done`、`pm_standby_start`、`path_ws.c:ws_elsewhere`、`call.c:npf_node_ws_calls_udp_back` 与 `npf_node_calls_to_ws`，路径之间的决定都在 `path_mgr.c:pm_decide`，向平台的请求都经 `call_need`（第 3.6 节"1c 的实现"）；第 1d 步把呼叫的 8 个定时器合成一个（`call.c:call_tick`，`anl_timer`、`timeout_cb`、`punch_timer`、`linger_done`、`direct_retry`、`pm_timer`、`ws_reconnect` / `ws_pair_late` 的定时器、`relay_keepalive_timer` 变成各部分的截止时间与 tick），去掉了 `relay_bind.c` 的 `relay_bind_run`、`relay_bind_probe`（第 4 节"1d 的实现"）；第 2 步给绑定器与备用分配写了显式的状态与一个截止时间（第 3.3、3.4 节"2 的实现"）；第 3 步给呼叫与打洞写了显式的状态（第 3.1、3.2 节"第 3 步的实现"），去掉了 `call.c:call_relay_leave`、`call_accept_seen`、`call_close_quiet`、`call_punch.c:call_start_punch_now`、`call_punch_sockets_back`；之后的瘦身（第 8 节"瘦身实际"）去掉了 `npf_th`、`pm_dead`、`pm_has`、`path_direct_gone`、`call_relay_send_data`、`call_ws_send`、`direct_alive`、`anl_after_input`、`punch_end` 与路径操作表的 `name`。第 4、5 步把收到的信令与隧道控制消息改为按描述表解析（第 5 节，`call.c:node_dispatch`、`call_find`、`relay_bind.c:relay_obj_parse` 去掉，分发在 `node/msgs.c:node_msg`），配置键收进一张表（第 7.1 节，`conf.c` 的 `known_keys` 等与 `cmd.c` 的 `settable` 去掉）。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)，库的接口见 [libnpf 开发者指南](libnpf.md)。
 
 ## 1. 现状
 
@@ -583,117 +583,106 @@ struct npf_path {
 
 ## 5. 信令消息描述表
 
+（第 4、5 步实现，2026-10-29；原来的草案见下面 5.4 末尾的"与草案的差别"。）
+
 ### 5.1 格式
 
+机制在 `include/npf/msg.h` 与 `proto/msg.c`，与消息无关：一个字段一行，一条消息一张表，一个解析器。
+
 ```c
-enum { F_STR = 1, F_INT, F_BOOL, F_B64, F_B64V, F_ADDR, F_OBJ, F_ARR, F_TOK, F_RAW };   /* F_TOK：只记下值的 token；F_RAW：写出时原样放入的 JSON */
-enum { F_REQ = 1, F_SECRET = 2 };              /* 必需；解析后要擦除（alloc_key、hs、cpace） */
+enum { NPF_F_STR = 1, NPF_F_INT, NPF_F_BOOL, NPF_F_B64, NPF_F_ADDR, NPF_F_OBJ, NPF_F_ARR, NPF_F_TOK };
+enum { NPF_F_REQ = 1, NPF_F_SECRET = 2, NPF_F_SKIP = 4, NPF_F_V4 = 8 };
 
 typedef struct npf_field {
     const char *key;
     uint8_t     type, flags;
-    uint16_t    off;                           /* offsetof(消息结构, 字段) */
-    uint16_t    size;                          /* 字符串缓冲；F_B64 的确切长度；F_B64V 的上限 */
-    uint16_t    aux;                           /* F_B64V 的长度字段、F_ARR 的计数字段的 offsetof */
-    int64_t     min, max, def;                 /* F_INT 的范围与缺省（缺失时用 def） */
-    const struct npf_msgdesc *sub;             /* F_OBJ 的结构、F_ARR 的元素 */
+    uint16_t    off, size, aux;                /* 在结构里的位置；缓冲或数组的大小；长度或个数的位置 */
+    int64_t     min, max, def;                 /* NPF_F_INT 的范围与缺省；NPF_F_B64 的最短；NPF_F_TOK 的 JSON 类型 */
+    const struct npf_msgdesc *sub;             /* NPF_F_OBJ 的结构、NPF_F_ARR 的元素 */
 } npf_field;
+typedef struct npf_msgdesc { const char *name; const npf_field *f; uint16_t nf, size; } npf_msgdesc;
 
-typedef struct npf_msgdesc {
-    const char      *type;                     /* "punch_start" */
-    size_t           size;                     /* 消息结构的大小 */
-    const npf_field *f;
-    int              nf;
-    uint16_t         max_items;                /* 作为数组元素时的上限 */
-} npf_msgdesc;
+int  npf_msg_parse(const npf_msgdesc *d, const npf_json *j, int obj, void *out, char *err, size_t cap);
+int  npf_msg_data(const npf_msgdesc *d, const npf_json *j, void *out, char *err, size_t cap);   /* 根的 "data" */
+void npf_msg_wipe(const npf_msgdesc *d, void *msg);                                            /* NPF_F_SECRET 的字段 */
+```
 
-/* 解析：一遍走过对象的键，按表查（今天每个 npf_json_get 都从头扫一遍对象）；
- * 缺必需字段、类型不对、F_B64 长度不对：-1 并在 err 里说是哪个字段；
- * 越界的可选整数：用 def（与今天 punch_start 的做法相同，signaling.md）；未知键忽略 */
-int npf_msg_parse(const npf_msgdesc *d, const npf_json *j, int obj, void *out, char *err, size_t cap);
-/* 写出：用 npf_jw；可选字段为"未设置"时不写 */
-int npf_msg_emit(const npf_msgdesc *d, const void *in, npf_jw *w);
-void npf_msg_wipe(const npf_msgdesc *d, void *msg);    /* F_SECRET 的字段 */
+| 类型 | 结构里 | 规则 |
+|---|---|---|
+| `STR` | `char k[cap]` | 字符串，解码后最多 `cap − 1` 字节，没有控制字符（日志不会被拆成几行）、没有 NUL；必需的不能为空 |
+| `INT` | `int64_t k` | 不带小数与指数的整数，在 `[min, max]` 内；缺失为 `def` |
+| `BOOL` | `int k` | `true` / `false` |
+| `B64` | `uint8_t k[cap]` 与 `int k_len` | Base64url，解码后 `min`–`cap` 字节；`k_len` 为 0 即缺失。必需、只有一种长度的（`call_id`、`relay_id`、`alloc_key`）没有 `k_len` |
+| `ADDR` | `struct sockaddr_storage k` | `"ip:port"`、`"[ip6]:port"`（`npf_addr_parse`）；`V4`：只要 IPv4 |
+| `OBJ` | 子结构 | 按子表解析 |
+| `ARR` | `S k[cap]` 与 `int nk` | 元素按子表（单值的元素：子表只有一个没有键的字段）；`SKIP`：不合格的元素跳过 |
+| `TOK` | `int k` | 只记下值的 token（`-1` 缺失），检查 JSON 类型：64 KB 的服务器列表由处理器解码到堆上，`upgrade` 对象与 `packages` 原样交给钩子 |
+
+规则对每条消息相同：未知键忽略；重复的键到不了这里（`npf_json_parse` 拒绝）；`null` 即缺失；必需字段缺失或不合格时整条拒绝，错误写成"字段：原因"（嵌套的写成 `relay.alloc_key: missing`），**从不带值**（可能是秘密）；可选字段不合格时按缺失（在 debug 级别记一行）；数组只取到上限，多出的忽略；只扫一遍对象（原来每个 `npf_json_get` 从头扫）。解析失败时已解出的部分也要擦：分发在处理器之后（解析失败时就在失败之后）总调用 `npf_msg_wipe`。
+
+**消息本身**在 `node/msgs.h`：每条消息只写一次，是它的字段的列表；同一个列表在 `msgs.h` 里展开成结构，在 `msgs.c` 里展开成表（`F_*` 宏在两处的定义不同），结构与检查不会不一致，处理器读到的正是检查过的：
+
+```c
+#define M_PUNCH_INFO(T) F_B64X(T, call_id, 16, 0) F_INT(T, round, F_REQ, 0, 1000, 0) F_INT(T, port, 0, 1024, 65535, 0) \
+    F_BOOL(T, stop) F_OBJ(T, cand, m_cand, 0)
+NODE_MSG(m_punch_info, M_PUNCH_INFO)      /* msgs.h: typedef struct m_punch_info {...} m_punch_info; 与 m_punch_info_d */
+TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 ```
 
 ### 5.2 例子
 
-`call_accepted`（主叫收到；`nat`、`cand` 是对方的，节点不用，不列）：
+中转分配（`call` 应答、`incoming`、`call_accepted`、`relay_switch`、`relay_spare`、`home_open` 应答共用）：
 
 ```c
-typedef struct m_call_accepted {
-    uint8_t call_id[16];
-    uint8_t hs[512];   int hs_len;
-    uint8_t cpace[32]; int has_cpace;
-    int     secure;
-    int     relay;                             /* F_TOK：relay 对象的 token，交给 relay 的描述表 */
-} m_call_accepted;
-
-static const npf_field f_call_accepted[] = {
-    {"call_id", F_B64,  F_REQ,    offsetof(m_call_accepted, call_id), 16},
-    {"hs",      F_B64V, F_REQ | F_SECRET, offsetof(m_call_accepted, hs), 512, offsetof(m_call_accepted, hs_len)},
-    {"cpace",   F_B64,  F_SECRET, offsetof(m_call_accepted, cpace), 32},
-    {"secure",  F_BOOL, 0,        offsetof(m_call_accepted, secure)},
-    {"relay",   F_TOK,  0,        offsetof(m_call_accepted, relay)},
-};
+#define M_WS(T) F_STR(T, url, 256, F_REQ) F_INT(T, server_id, 0, 0, 1 << 30, 0)
+#define M_RELAY(T) F_STR(T, mode, 8, F_REQ) F_B64X(T, relay_id, 8, 0) F_B64X(T, alloc_key, 32, F_SECRET) \
+    F_ARR(T, udp, m_addr4, 4, F_SKIP) F_OBJ(T, ws, m_ws, 0) F_BOOL(T, spare)
 ```
 
-`punch_start`（今天 `call_punch.c:call_handle_punch_start` 约 130 行，其中解析约 70 行；范围与缺省照抄现在的代码）：
+`udp` 的 IPv6 地址与写错的地址跳过（`SKIP`、元素 `m_addr4` 只要 IPv4），与原来 `relay_obj_parse` 相同；`mode` 必需，所以没有 `mode` 的 `relay` 整个按缺失（原来也不用它）；处理器以 `relay.mode[0]` 判断有没有分配。
 
-| 键 | 类型 | 必需 | 范围 / 长度 | 缺省 |
-|---|---|---|---|---|
-| `call_id` | B64 | 是 | 16 | — |
-| `round` | INT | 是 | 1–1000 | — |
-| `skip` | STR | | 16 | — |
-| `punch_id`、`punch_key` | B64 | 是（`skip` 时否） | 8、32（`punch_key` 秘密） | — |
-| `strategy`、`side` | STR | | 8 | `S1`、`easy` |
-| `peer` | OBJ | | `{cand: ARR ≤ 16 {t: STR 8, a: ADDR}, pub_ip: STR 64}` | — |
-| `range` | ARR | | 2 个 INT 1–65535 | 无 |
-| `m_total`、`pps`、`n_sockets` | INT | | 0–4000、1–1000、0–256 | 1024、200、0 |
-| `timeout_ms` | INT | | 1000–600000 | 8000 |
-| `delta`、`peer_delta` | INT | | −64–64 | 0 |
-| `window`、`passes`、`peer_n` | INT | | 1–128、1–8、1–256 | 32、4、0 |
-| `start_at` | INT | | 0–INT64_MAX | 现在（服务器时间） |
-
-（"`skip` 时 `punch_id` 不必需"这类字段间的条件留在处理器里，描述表只管单个字段。）
-
-`relay_spare`（`home.c:node_home_spare`）与它里面的 `relay` 对象（`relay_bind.c:relay_obj_parse`，`call` 应答、`incoming`、`call_accepted`、`relay_switch`、`home_open` 应答共用）：
+`punch_start`：signaling.md 的数值表就是这张表（`tests/unit/test_msg.c:doc_ranges` 读 signaling.md 对照 9 个可选数值的范围与缺省）：
 
 ```c
-static const npf_field f_relay[] = {
-    {"mode",      F_STR, 0,        offsetof(m_relay, mode), 8},
-    {"relay_id",  F_B64, F_REQ,    offsetof(m_relay, id), 8},
-    {"alloc_key", F_B64, F_REQ | F_SECRET, offsetof(m_relay, key), 32},
-    {"udp",       F_ARR, 0,        offsetof(m_relay, udp), 0, offsetof(m_relay, nudp), .sub = &d_addr4},  /* ≤ 4 个 IPv4 */
-    {"ws",        F_OBJ, 0,        offsetof(m_relay, ws), .sub = &d_ws},     /* {url: STR 256, server_id: INT 0–2^30} */
-    {"spare",     F_BOOL, 0,       offsetof(m_relay, spare)},
-};
-static const npf_field f_relay_spare[] = {
-    {"relay", F_OBJ, F_REQ, offsetof(m_relay_spare, relay), .sub = &d_relay},
-    {"why",   F_STR, 0,     offsetof(m_relay_spare, why), 16},
-};
+#define M_PUNCH_START(T) F_B64X(T, call_id, 16, 0) F_INT(T, round, F_REQ, 1, 1000, 0) F_STR(T, skip, 16, 0) \
+    F_STR(T, strategy, 8, 0) F_STR(T, side, 8, 0) F_B64(T, punch_id, 8, 0, 8) F_B64(T, punch_key, 32, F_SECRET, 32) \
+    F_OBJ(T, peer, m_peer, 0) F_ARR(T, range, m_port, 2, 0) F_INT(T, m_total, 0, 0, 4000, 1024) \
+    F_INT(T, pps, 0, 1, 1000, 200) ... F_INT(T, start_at, 0, 0, F_TIME_MAX, -1)
 ```
 
-注意 `udp` 里的 IPv6 地址今天是**跳过**而不是报错（`relay_obj_parse` 只保留 IPv4）：`d_addr4` 的元素类型要有"不合适就跳过"的标志，行为与今天相同。
+"`skip` 时 `punch_id`、`punch_key` 不必需"这类字段之间的条件留在处理器里（`punch_id_len` 为 0 即缺失），表只管单个字段。处理器从约 70 行解析变成赋值。
 
-### 5.3 用法与过渡
+### 5.3 分发
 
-- **解析**：信令客户端按 `type` 找到描述表，解析成结构，再交给处理器；带 `call_id` 的按它找呼叫（今天 `call.c:node_dispatch` 的路由不变）。处理器拿到的是类型正确、范围检查过的结构，只写业务。
-- **校验**：表里的范围即协议约定；signaling.md 的字段表可以从描述表生成或对照检查（一个测试比较两者）。
-- **写出**：`npf_msg_emit` 建在 `npf_jw` 之上；`snprintf` 拼的 22 处逐个换掉（它们多是一两个字段的事件，如 `call.c:npf_call_end` 的 `close`、`call_path.c` 的 `relay_switch`）。
-- **过渡**：一条消息一条消息地换；没换的照旧手写，`npf_jw` 一直保留（描述表用它，`npf_node_write_nat`、`npf_node_write_cands` 这类大块也继续用它，作为 `F_RAW` 写入）。用一个脚本数 `node/` 下 `npf_json_get*` 与 `snprintf("{\"` 的个数，每一步只减不增。
-- **好处不在行数**：缺必需字段报错并记日志（今天有的静默返回，P8）、同一字段在不同消息里范围一致、秘密字段统一擦除、解析只扫一遍对象。
+`msgs.c:node_msg` 是信令客户端唯一的入口（`node_signal.c:sig_msg` 只转给它）：
 
-### 5.4 改动量
+1. 信封按 `M_ENV` 检查：`v` 必须为 1，`type` 非空，`data` 为对象，`id`、`reply_to`、`status`、`error`、`message` 有上限；trace 级别只记信封（R10）；
+2. 带 `reply_to` 的先找等它的请求（`node_signal.c:node_sig_reply`，`npf_reply_fn` 的签名不变：模块与 `api/` 用它）；
+3. 按 `type` 查分发表 `{type, 表, 处理器}`：节点的处理器 `node_on_*(n, 信封, 结构)`；给呼叫的（结构以 `call_id` 开头，`msgs.c` 里有一个编译期检查）找到它的呼叫再交给 `call_on_*(c, 结构)`，没有或已结束的丢弃；
+4. 解析失败：记一行 WARN（类型与"字段：原因"），请求回 `bad_request`（原来只有 `incoming` 这样回，其他的静默返回，P8）；
+5. 表里没有的类型：不是应答、没有 `call_id` 的交给 `hooks.on_event`（`mappings_changed` 这类给程序的事件），与原来相同。
 
-| 类别 | 消息 | 今天的代码 |
+隧道内的控制消息（`call_transport.c:tun_control`）用同一个信封与各自的表（`close`、`reverse_closed`、`grant_update`；`reverse_listen` / `reverse_close` 在 `call_reverse.c`，`bind_approve` 在 `callee.c`），请求不合格同样回 `bad_request`。等平台应答的回调（`enroll`、`home_open`、`reverse_listen` 的应答）用 `node_env` 与各自的表读应答。
+
+`welcome.time`、`punch_start.start_at` 的上限是 `F_TIME_MAX`（2^50 毫秒）：原来到 `INT64_MAX`，`time + RTT/2`、`npf_mono_ms() + (start_at − 现在)` 在平台给出极大值时会溢出（未定义行为）。
+
+### 5.4 迁移了什么、改动量
+
+| 类别 | 走描述表 | 仍是手写 |
 |---|---|---|
-| 平台 → 节点 | `welcome`（`login` 应答）、`server_list`、`upgrade`、`probe`、`replaced`、`keys`、`redirect`、`relay_spare`、`incoming`、`punch_request`、`revoke`、`bind_committed`、`call`（应答）、`call_accepted`、`call_rejected`、`handshake`、`punch_start`、`punch_info`、`relay_switch`、`call_ended`，以及 `home_open`、`enroll`、`grant_get` 等的应答：约 24 种 | `node_signal.c`、`call.c`、`call_handshake.c`、`call_punch.c`、`call_relay.c`、`home.c`，约 140 处 `npf_json_get*` |
-| 节点 → 平台 | `login`、`enroll`、`call`、`incoming`（应答）、`handshake`、`handshake_done`、`call_established`、`call_end`、`punch_result`、`punch_update`、`punch_info`、`punch_request`（应答）、`relay_switch`、`relay_release`、`home_open`、`home_close`、`nat_report`、`revoke`（应答）、`lock_report`、`paired_sync`、`owner_reset`、`grant_get`：约 22 种 | `npf_jw` 与 `snprintf` |
-| 隧道内控制 | `close`、`reverse_listen`、`reverse_close`、`reverse_closed`、`grant_update`、`resources`：6 种 | `call_transport.c`、`call_reverse.c` |
-| WS 中转控制 | `relay_bind`、`relay_bound`、`relay_paired`、`relay_peer_gone`、`relay_error`：5 种 | `proto/wsrelay.c` |
+| 平台 → 节点 | `welcome`（`login` 应答，及 `upgrade_required` 的 `data`）、`server_list`、`upgrade`、`probe`、`keys`（后两者用 `welcome` 的表）、`replaced`、`redirect`、`relay_spare`、`home_open` 应答、`enroll` 应答、`incoming`、`punch_request`、`revoke`、`bind_committed`、`call` 应答、`call_accepted`、`call_rejected`、`handshake`、`punch_start`、`punch_info`、`relay_switch`、`call_ended`：22 种 | `api/` 里等平台应答的回调（`engine_identity.c`、`platform.c`、`publish.c`，另一条线在整理 `api/`）；服务器列表的内容（`node_servers.c`）|
+| 隧道内控制 | `close`、`reverse_listen` 及其应答、`reverse_close`、`reverse_closed`、`grant_update`、`bind_approve`：7 种 | `hello`（`tunnel/`）、`resources`（原样交给钩子） |
+| WS 中转控制 | — | `proto/wsrelay.c` 的 5 种（`proto/` 由另一条线整理） |
+| 节点 → 平台、写出 | — | 全部：`npf_jw` 与 `snprintf`（见下） |
+| 文件 | — | `local.json`（`local.c`）、`state.json`（`callee.c:state_load`）：原计划就不在这两步里，以后用同一机制 |
 
-合计约 57 种消息、50 个左右的处理器。估计：描述表每种 8–15 行，共约 600 行；去掉的解析与拼写约 700–800 行；净减 100–200 行（按今天处理器里解析部分的行数估，误差 ±30 %）。local.json、state.json、服务器列表的解析（`local.c`、`callee.c`、`node_servers.c`，约 50 处）可以之后用同一机制，不在本文的步骤里。
+`src/node` 里 `npf_json_get*` 与同类函数在信令处理器（`node_signal.c`、`call*.c`、`home.c`、`relay_bind.c`、`path_*.c`）中由约 140 处减到 3 处（服务器列表的解码、`npf_call_ctl_reply` 取请求的 `id`、未知类型有没有 `call_id`）。
+
+**写出没有走描述表**：草案的 `npf_msg_emit` 要求每条发出的消息先有结构与表，再逐个字段赋值，行数与它要替换的 `npf_jw_k*` 调用相同，还多了结构；发出的消息的值都是本节点自己的，不是输入校验的问题。`snprintf` 拼的 13 处（`call_id` 是 Base64url、`reason` 经 `reason_code` 只剩 `a-z 0-9 _`）照旧。
+
+**改动量**（库的 `src` + `include`，`git diff 2491715`，同一个脚本数前后两版）：见第 8 节"4、5 实际"。
+
+**与草案的差别**：草案写的是每条消息手写一个结构、一张表（估计每种 8–15 行）；实际用一个列表同时生成两者（每种 1–4 行），结构里的长度字段与数组个数由宏得出；`F_RAW`、`npf_msg_emit` 没有做；`hs`、`cpace` 不算秘密（Noise 与 CPace 的消息本来就是明文发送的）；`d_addr4` 的"不合适就跳过"是数组的 `SKIP` 标志。
 
 ## 6. 测试钩子
 
@@ -782,6 +771,14 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 
 **对公开接口的影响**：npf.h、`npf_setup`、`npf_config_*` 的行为不变；module.h 不变（可以加一个只读访问 `const npf_cfg *npf_mod_cfg(npf_t *)`，今天模块经 `npf_conf_get` 读键，`client/` 里 32 处）。
 
+**第 5 步的实现**（2026-10-29）：做了键表，没有做 `npf_cfg`。
+
+- 一张表（`node/conf.c` 的 `keys[]`，`npf/conf.h` 的 `npf_key`）：每个键的名字、类型（`STR`、`INT` 带范围、`0`–`1` 的开关、`ENUM` 带它的几个值）、缺省值（文字）和标志 `FILE`（只能来自 npf.conf、`overrides` 或 `npf_setup`）、`LIVE`（`npf_config_set` 即时生效）、`SECRET`（`(hidden)`，不记日志）、`SETUP`（有对应的 `npf_setup` 字段：不能再写在 `overrides` 里）、`PATH`（相对配置文件的目录）、`MULTI`（可以多行）、`UNLISTED`（即时生效、不在 `/v1/config` 的列表里：npf-hosted 的三个限额）。它取代了 `conf.c` 的 `multi_keys`、`path_keys`、`known_keys`、`file_only_keys`，`cmd.c` 的 `settable`、`settable_hosted`、`int_keys`、`npf_cmd_is_secret` 与 `check_value` 里的逐键检查，`api/setup.c` 的 `setup_keys` 与范围检查，`node/setup.c` 里各键的缺省值。
+- 函数：`npf_key_find`、`npf_key_next`、`npf_key_is(名字, 标志)`（`npf_conf_known`、`npf_conf_file_only`、`npf_cmd_is_settable`、`npf_cmd_is_secret` 去掉了）、`npf_key_check`（"`max_calls: a number from 0 to 4096`"、"`connect_mode: p2p or secure`"）、`npf_conf_check`（一个来源的全部值）、`npf_conf_int`（整数键的值，没有或不合格时用表里的缺省；`ENUM` 返回它在值里的序号，`log_level` 的序号就是 `NPF_LOG_*`）。
+- **每个来源都按表检查**（原来只有 `npf_config_set` 检查，npf.conf 与 `overrides` 的值 `atoi` 了事）：npf.conf、`overrides`、`npf_setup` 不合格时 `npf_create` 返回 `NPF_EINVAL` 并说明哪个键；`local.json` 的 `settings` 里只能来自 npf.conf 的、不合格的都记一行 WARN 后忽略。`hosted_exec` 是 64 位的指纹，按字符串（`strtoull`）。
+- `npf_node_cfg_from_conf` 用 `npf_conf_int` 读，缺省值只在表里（原来散在各处的 `"0"`、`"-1"`、`"600"`、`"128"`……）；npf 的模块读库的整数键也用它（`modules/mappings.c` 的三个限额），`cli_basic.c` 与 `app/main.c` 用 `npf_key_is`。
+- **没有做的**：类型化的 `npf_cfg` 与"`npf_setup` 直接填结构"。`npf_node_cfg` 本来就是节点的类型化配置，现在由键表读出；`npf_setup` 的字段仍转成键（每个字段一行），因为 `npf_config_get`、状态与模块都按键读，直接填结构就要为每个键另写一个"从结构读回文字"的函数，行数比转换多。npf 自己的键（`control`、`control_token`、`web_dir`、`log`、`pidfile`、`keep_awake`）仍在库的表里，标为 npf 的，移到 npf 的模块是第 7 步。
+
 ## 8. 迁移步骤
 
 **估计方法**：用 awk 量出要移动或去掉的函数的行数（例如路径相关的函数今天约 1 090 行：`call_path.c` 261、`call_ws.c` 206、`call_relay.c` 中约 430、`call.c` 中约 100、`call_transport.c` 中约 55、`call_punch.c` 中约 40），再按第 2–5 节的草图估新代码；误差 ±30 %。测试代码另计。
@@ -794,8 +791,8 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 | **1d** 呼叫的单一截止时间 | `call.c`、`call_transport.c`、`call_punch.c`、`path_*`：13 个定时器 → 1 个（加 2 个下一轮回调） | −80 | 中：时序、热路径 | `npf_cpuprobe`（含 S 个空闲会话的开销）；RN-16（长时间、空闲唤醒）；check.sh | 不变式测试（每个状态有截止）；空闲会话的唤醒次数（不多于保活所需） | 标志依赖定时器存在（`accepted` 那类）；状态没有定时器 |
 | **2** 绑定器与备用分配 | `relay_bind.c`（状态枚举，保活显式）、`home.c`（一个截止时间） | −60 | 中 | homebind；natlab `home*`、`learn`、`stale-nospare`；`test_home.c`、`test_relay.c` | 第 3.3、3.4 节逐行，不用套接字 | BACKOFF 没有定时器（10-27 (6)）；一直续用已回收的分配（int-1031） |
 | **3** 打洞与呼叫的状态机 | `call_punch.c`、`call.c`、`call_handshake.c` | −120 | 中 | punch、callsetup、loopback；natlab 各策略 | 第 3.1、3.2 节逐行 | 漏记接受而丢掉 `punch_update`（10-27 (1)）；端口给错轮次（10-27 (4)） |
-| **4** 描述表：呼叫相关的消息 | 新 `proto/msg.c`；`call*.c`、`home.c`、`relay_bind.c` 约 25 种消息 | −100（±100） | 低–中：解析的边界 | `test_json`、`tests/fuzz`；`test_home.c` 里平台的向量；集成全部 | 每张表的往返（解析 → 写出 → 解析）；按表生成的模糊输入；对照 signaling.md 的字段表 | 缺必需字段被静默忽略；同一字段两处范围不同；秘密字段忘了擦除 |
-| **5** 描述表：其余消息；配置键表 | `node_signal.c`、`call_reverse.c`、`call_transport.c`（控制）、`proto/wsrelay.c`；`conf.c`、`api/engine_config.c`、`api/setup.c`、`node/setup.c`、`api/cmd.c` | −250 | 中：配置的优先次序 | `test_conf`；API 测试（`test_contract`、`test_api` 的 `npf_config_*`）；`test_module` | 每个键的来源优先次序；`npf_setup` 与 `overrides` 冲突 | 一个键在两处有不同的解析；只能来自 npf.conf 的键从别处进来 |
+| **4** 描述表：呼叫相关的消息（实际见下文"4、5 实际"） | 新 `proto/msg.c`；`call*.c`、`home.c`、`relay_bind.c` 约 25 种消息 | −100（±100） | 低–中：解析的边界 | `test_json`、`tests/fuzz`；`test_home.c` 里平台的向量；集成全部 | 每张表的往返（解析 → 写出 → 解析）；按表生成的模糊输入；对照 signaling.md 的字段表 | 缺必需字段被静默忽略；同一字段两处范围不同；秘密字段忘了擦除 |
+| **5** 描述表：其余消息；配置键表（实际见下文） | `node_signal.c`、`call_reverse.c`、`call_transport.c`（控制）、`proto/wsrelay.c`；`conf.c`、`api/engine_config.c`、`api/setup.c`、`node/setup.c`、`api/cmd.c` | −250 | 中：配置的优先次序 | `test_conf`；API 测试（`test_contract`、`test_api` 的 `npf_config_*`）；`test_module` | 每个键的来源优先次序；`npf_setup` 与 `overrides` 冲突 | 一个键在两处有不同的解析；只能来自 npf.conf 的键从别处进来 |
 | **6** 测试钩子 | 新 `platform/testhooks.c`；13 个文件里的 `getenv` | −20 | 低 | 全部（它们用这些开关） | `NPF_TEST_HOOKS=OFF` 的构建里没有 `getenv`（检查符号） | 每个数据报或每个呼叫读环境变量；钩子悄悄地开着 |
 | **7** 库的边界 | npf 的键移到模块；对端层只用 `npf_call_*` | −100（npf +100） | 中：npf 的模块 | npf 的客户端测试、`test_module`、API 测试 | — | 库认得程序自己的键 |
 | **8** 主被叫的不对称 | `call*.c` 的 47 处 `c->caller` 收进一个"角色"表 | −50 | 低 | 全部 | 角色表的单元测试 | — |
@@ -813,6 +810,8 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 **3 实际**（2026-10-29）：库的 `src` + `include` 38 390 → 38 354 行（−36；不计注释与空行 31 874 → 31 831，−43），`src/node` 15 915 → 15 879 行（`git diff` +275 −311），计划是 −120。去掉的：`npf_call` 的 12 个成员（`state` 换成 `st`；`accepted`、`peer_hello`、`up_told`、`ended`、`peer_closed`、`punched`、`punch_of`、`punch_wait_keys`、`info_port`、`info_round`、`linger_at`）与读写它们的各处，`call_relay_leave`、`call_accept_seen`、`call_close_quiet`、`call_ended`（并入 `call_close`），`tun_ready` 里的 `call_established`（移进转移），`call_punch_sockets_back` 与打洞结束回调里重复的交还（`socks_back` 一处），`call_punch_tick` 的两套截止判断，`punch_info` 的两种轮次匹配，`call_handle_incoming` 自己的会话计数（用 `key_sessions`），打洞回调里"呼叫已结束、已有直连"的检查（状态保证不会）；加的：两个状态枚举与三个判断（约 15 行，含注释），`call_set_state` 的状态对照与转移（约 25 行，含注释），`call_close` 的三种方式（约 10 行），`call_punch_to`（约 12 行，含注释），`punch_port`，以及一行调试日志（`call_established`，单元测试据此检查）。−120 的估计以为 `call.c`、`call_handshake.c` 里有更多可以随状态去掉的代码；实际上那里的判断大多是会话与路径的（`keys_ready`、`tun`、`anl`），`ended` 的 75 处只是换成 `call_over`。新增单元测试约 390 行（`test_call_state.c`），`test_call.c` 移走约 140 行。热路径没有动：`npf_cpuprobe`、`npf_relayprobe`、`tests/bench/relay.sh udp` 前后持平（数字见 npf 的 `docs/implementation.md`）。
 
 **瘦身实际**（2026-10-29，第 3 步之后、第 4 步之前，不改行为）：1a–3 合起来比计划多了约 500 行（库的 `src` + `include` 37 848 → 38 354，+506，计划 −360），这一遍收回一半。库的 `src` + `include` 38 354 → 38 093 行（−261；不计注释与空行 31 832 → 31 736，−96，用同一个脚本数的前后两版），`src/node` 15 879 → 15 638 行（−241）；1a–3 连同瘦身合计 +245 行（不计注释 +164）。去掉的：重复第 2.4、3.1–3.6 节与 nat-traversal.md 10.3、data-channel.md 3 / 10 的注释（规则、决定表、状态说明、当初的测量，约 165 行，改为指向章节）；测试开关的进程级副本与一次性锁（`npf_th`，改为每个节点读一份，−23）；路径操作表的 `name`（`pm_name` 按种类查表）与各文件的前置声明；`pm_dead`（就是 `pm_health(DEAD)`）、`pm_has`、`path_direct_gone`（就是对不属于路径的套接字的 `call_p2p_drop`，`call_free` 也经它关自己的套接字）；只有一个调用者的 `call_ws_send`、`call_relay_send_data`、`direct_alive`、`anl_after_input`、`punch_end`；`wsr_gone` 里重复 `call_ws_leave_conn` 的几行；呼叫与备用分配各写一遍的"中转地址被测试屏蔽"（`call_relay_addr_blocked`）；主叫在密钥之前经中转收到的数据报改为定长数组（最多 8 个，原来是链表）。考虑过而保留的：`pm_tick` 里两处相同的探测（合成一个函数反而多 2 行）；`path_direct_up` 与 `path_direct_fixed` 的公共部分（合并不省行）；`testhooks.c` 并进 `node.c`（第 6 步要在这里收齐 25 个开关）；`call_tick` 的部件表（条件各不相同，表不比现在短）。线上格式、npf.h、module.h、日志都不变；热路径只少了一次指针间接（`n->th` 在节点里）：`npf_cpuprobe`、`npf_relayprobe`、`tests/bench/relay.sh udp` 前后持平（数字见 npf 的 `docs/implementation.md`）。
+
+**4、5 实际**（2026-10-29）：库的 `src` + `include` 38 093 → 38 556 行（+463；不计注释与空行 31 733 → 32 066，+333），计划是两步合计 −350。第 4 步（描述表与全部收到的消息，第 5 节）38 093 → 38 528（+435；不计注释 +312）：新的机制 `proto/msg.c` 与 `npf/msg.h` 约 265 行，消息的列表与分发 `node/msgs.h`、`node/msgs.c` 约 320 行；去掉的是各处理器的手写解析、`node_dispatch`、`call_find`、`relay_obj_parse`、`parse_daykeys` 与 `sig_msg` 里的类型判断（`src/node` 原有文件 −357 行）。第 5 步（键表，第 7.1 节）38 528 → 38 556（+28；不计注释 +21）：键表与 `npf_key_*`、`npf_conf_check`、`npf_conf_int` 约 110 行，去掉的是四张键名单、`cmd.c` 的可设置表、整数范围表、逐键检查与秘密判断、`api/setup.c` 的字段键表与范围检查、`node/setup.c` 里各键的缺省值（`api/` −66 行）。比计划多出的原因：计划把"写出"也算进去（草案的 `npf_msg_emit` 替换约 22 处 `snprintf` 与各处 `npf_jw`，估计去掉 700–800 行里的大半），实际写出没有走描述表，因为每条发出的消息先要有结构与表、再逐字段赋值，行数不比 `npf_jw_k*` 少（第 5.4 节）；收到的消息里，处理器的业务本身（证书的验证、呼叫与路径的决定）占了大部分，解析只是其中的一部分。得到的是表中第 4、5 行最后一列那些"从此不可能"的错误：必需字段缺失时整条拒绝并记日志（原来多处静默返回，P8）、同一字段在所有消息里的范围相同（`relay` 的六处共用一张表）、秘密字段统一擦除（原来 `call_relay_setup` 留着 `alloc_key`，`grant`、`ticket` 不擦）、一个键只有一处解析（npf.conf、`overrides`、`npf_setup`、`local.json`、`npf_config_set` 都按同一张表检查）。测试净增约 330 行（`test_msg.c` 198 行，`test_conf.c` 的键表约 50 行，模糊测试的目标 `msg` 约 60 行，`test_contract.c` 的三项；处理器的测试改为经 `node_msg` 送整条消息）。`msg` 目标：变异模糊 2 000 万条与 libFuzzer（clang 18，覆盖引导）1 000 万条，都没有报告。热路径没有动（数据报、隧道、中转的封装不经过这里）。
 
 合计库净减约 800 行（±30 %），新增单元测试约 1 500 行。1a–1d 合起来就是"第 1 步：路径抽象及其截止时间与状态机"；四个小步各自可以合入、现场测试，任何一步都可以单独回退。
 

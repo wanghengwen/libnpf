@@ -186,15 +186,13 @@ void call_ws_failed(npf_call *c, const char *why)
 /* the platform's WS relay allocation (call_relay_setup): the AnLiu
  * connection's datagrams go there from now on, the UDP paths go (the
  * session moves because UDP does not work) */
-int call_ws_setup(npf_call *c, const npf_json *j, int r)
+int call_ws_setup(npf_call *c, const m_relay *r)
 {
-    int w = npf_json_get(j, r, "ws"), i;
-    int64_t sid = 0;
-    char url[256];
+    int64_t sid = r->ws.server_id;
     const uint8_t *pub = NULL;
-    if (w < 0 || npf_json_get_str(j, w, "url", url, sizeof url) <= 0)
+    int i;
+    if (!r->ws.url[0])
         return -1;
-    npf_json_get_int(j, w, "server_id", 0, 1 << 30, &sid);
     for (i = 0; i < c->n->nlist; i++)
         if (c->n->list[i].id == sid)
             pub = c->n->list[i].dh_pub;
@@ -216,11 +214,11 @@ int call_ws_setup(npf_call *c, const npf_json *j, int r)
     if (call_has_p2p(c))
         call_p2p_drop(c);
     call_ws_leave_conn(c);
-    snprintf(c->pw.url, sizeof c->pw.url, "%s", url);
+    snprintf(c->pw.url, sizeof c->pw.url, "%s", r->ws.url);
     memcpy(c->pw.pub, pub, 32);
     if (ws_open(c) < 0)
         return -1;
-    npf_log("call %s: WS relay %s", c->call_id_s, url);
+    npf_log("call %s: WS relay %s", c->call_id_s, c->pw.url);
     return 0;
 }
 

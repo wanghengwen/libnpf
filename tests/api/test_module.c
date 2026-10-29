@@ -11,10 +11,10 @@
 #include <unistd.h>
 
 #include "npf.h"
+#include "npf/conf.h"
 #include "npf/module.h"
 #include "npf/out.h"
 
-int npf_cmd_is_secret(const char *k);  /* src/api (npf_int.h): get hides these */
 
 #define NPF_MOD_LIMIT 8                     /* npf_register_module */
 
@@ -207,8 +207,9 @@ int main(void)
     check(rc >= 0 && npf_config_get(n, "acme_mode", val, sizeof val) == NPF_OK, "the module's key is known");
     check(!acme_set[0] && npf_config_set(n, "peer_idle", "7", 0, err, sizeof err) >= 0 && strcmp(acme_set, "peer_idle=7") == 0,
           "a live key set: the module hears it (conf_set), not its own key (not live)");
-    check(npf_cmd_is_secret("password") && npf_cmd_is_secret("cred") && npf_cmd_is_secret("model_cred")
-          && !npf_cmd_is_secret("log_level"), "the credentials and the password are hidden in get");
+    check(npf_key_is("password", NPF_K_SECRET) && npf_key_is("cred", NPF_K_SECRET) && npf_key_is("model_cred", NPF_K_SECRET)
+          && npf_key_is("direct_psk", NPF_K_SECRET) && !npf_key_is("log_level", NPF_K_SECRET),
+          "the credentials and the password are hidden in get");
     npf_destroy(n);
     check(destroyed == 1, "the module's destroy");
 

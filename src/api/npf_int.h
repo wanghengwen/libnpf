@@ -140,7 +140,5 @@ int  npf_cmd_builtin(const char *name);     /* one of libnpf's own commands? */
 void npf_cmd_config_json(npf_t *n, npf_out *o);
 int  npf_cmd_set(npf_t *n, const char *k, const char *v, int save, npf_out *o);
 const char *npf_cmd_get(npf_t *n, const char *k, char *buf, size_t cap);
-int  npf_cmd_is_settable(const char *k);
-int  npf_cmd_is_secret(const char *k);
 
 #endif

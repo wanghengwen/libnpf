@@ -28,16 +28,133 @@ static char *trim(char *s)
     return s;
 }
 
-/* keys that may appear several times; each line adds a value */
-static const char *const multi_keys[] = {"node", "resource", NULL};
+/* ---- the keys (architecture.md 7.1): what each is, where it may come from ----
+ * NPF_K_FILE: where to connect, what to trust or run, the files the program
+ * writes: only in npf.conf (whoever may write it may run the program), never
+ * set through the control interface or taken from local.json (a Windows
+ * service's control token is every local user's) */
 
-static int is_multi(const char *key)
+#define S(name, fl)                {name, NPF_K_STR, fl, 0, 0, "", NULL}
+#define I(name, fl, lo, hi, def)   {name, NPF_K_INT, fl, lo, hi, def, NULL}
+#define B(name, fl, def)           {name, NPF_K_INT, fl, 0, 1, def, NULL}
+#define E(name, fl, def, vals)     {name, NPF_K_ENUM, fl, 0, 0, def, vals}
+enum { F = NPF_K_FILE, L = NPF_K_LIVE, X = NPF_K_SECRET, U = NPF_K_SETUP, P = NPF_K_PATH, M = NPF_K_MULTI,
+       H = NPF_K_UNLISTED };
+static const npf_key keys[] = {
+    /* the platform, the identity: npf.conf (or npf_setup) only, except the password and the serial */
+    S("root", F | U), S("server", F | U), S("server_pub", F | U), S("serverlist", F | U | P),
+    S("serverlist_saved", F | U | P), S("doh_servers", F | U), B("report_host", F | U, "1"), S("cred", F | X | U),
+    S("model_cred", F | X | U), S("model", F | U), S("password", X | U), S("serial", U), S("serial_file", F | U),
+    S("hw_info", U), S("direct", F | U), S("direct_psk", F | X | U), S("direct_psk_file", F | U | P),
+    /* the files */
+    S("dir", F | P), S("state", F | P), S("log", F | P), S("pidfile", F | P),
+    /* the network */
+    I("udp_port", U, 0, 65535, "0"), B("portmap", U, "1"), E("connect_mode", L | U, "p2p", "p2p|secure"),
+    I("max_calls", L | U, 0, 4096, "0"), I("punch_lead_ms", L | U, -1, 5000, "-1"), I("punch_sockets", L | U, 0, 4096, "0"),
+    E("home_bind", 0, "auto", "auto|off"), B("test_one_host", F, "0"),
+    /* sessions; the log (its values in the order of NPF_LOG_*) */
+    B("hosted_trust", L | U, "1"), I("peer_idle", L | U, 0, 86400, "0"),
+    E("log_level", L, "info", "trace|debug|info|warn|error"), S("node", F | M), S("resource", F | M),
+    /* npf-hosted (security.md 8.4) */
+    B("hosted_service", F, "0"), S("hosted_exec", F), S("hosted_ports", F),
+    I("hosted_max_conns", L | H, 0, 100000, "128"), I("hosted_ip_conns", L | H, 0, 100000, "32"),
+    I("hosted_ip_rate", L | H, 0, 100000, "120"), I("sig_idle_s", 0, 0, 86400, "0"), I("sig_wake_s", 0, 0, 86400, "600"),
+    B("udp_on_demand", 0, "0"), B("udp_public", 0, "0"),
+    /* npf's own (architecture.md 7: its module's, later) */
+    S("control", F), S("control_token", F), S("web_dir", F), E("keep_awake", L, "busy", "busy|ac|always|off"),
+    {NULL, 0, 0, 0, 0, NULL, NULL},
+};
+#undef S
+#undef I
+#undef B
+#undef E
+
+const npf_key *npf_key_find(const char *name)
+{
+    const npf_key *k;
+    for (k = keys; k->name && strcmp(k->name, name) != 0; k++)
+        ;
+    return k->name ? k : NULL;
+}
+
+int npf_key_is(const char *name, int flag)
+{
+    const npf_key *k = npf_key_find(name);
+    return k && (k->flags & flag);
+}
+
+const npf_key *npf_key_next(const npf_key *k)
+{
+    k = k ? k + 1 : keys;
+    return k->name ? k : NULL;
+}
+
+/* an NPF_K_ENUM value's index in vals ("a|b"), -1 none */
+static int enum_index(const char *vals, const char *v)
+{
+    size_t l = strlen(v);
+    int i;
+    for (i = 0; *vals; i++) {
+        const char *e = strchr(vals, '|');
+        size_t n = e ? (size_t)(e - vals) : strlen(vals);
+        if (n == l && strncmp(vals, v, l) == 0)
+            return i;
+        vals += n + (e != NULL);
+    }
+    return -1;
+}
+
+/* v as k's value: an NPF_K_INT's number, an NPF_K_ENUM's index; -1 not one */
+static int value_of(const npf_key *k, const char *v, int64_t *out)
+{
+    char *e;
+    if (k->type == NPF_K_ENUM)
+        return (*out = enum_index(k->vals, v)) < 0 ? -1 : 0;
+    *out = strtoll(v, &e, 10);
+    return k->type == NPF_K_STR || (*v && !*e && *out >= k->lo && *out <= k->hi) ? 0 : -1;
+}
+
+int npf_key_check(const npf_key *k, const char *v, char *err, size_t cap)
+{
+    char list[96];
+    const char *p, *last = k->vals ? strrchr(k->vals, '|') : NULL;
+    size_t o = 0;
+    int64_t x;
+    if (value_of(k, v, &x) == 0)
+        return 0;
+    if (k->type == NPF_K_INT) {
+        snprintf(err, cap, "%s: a number from %lld to %lld", k->name, (long long)k->lo, (long long)k->hi);
+        return -1;
+    }
+    for (p = k->vals; *p && o + 5 < sizeof list; p++) {     /* "a|b|c": "a, b or c" */
+        if (*p != '|')
+            list[o++] = *p;
+        else
+            o += (size_t)snprintf(list + o, sizeof list - o, p == last ? " or " : ", ");
+    }
+    list[o] = 0;
+    snprintf(err, cap, "%s: %s", k->name, list);
+    return -1;
+}
+
+int npf_conf_check(const npf_conf *c, char *err, size_t cap)
 {
     int i;
-    for (i = 0; multi_keys[i]; i++)
-        if (strcmp(multi_keys[i], key) == 0)
-            return 1;
+    for (i = 0; i < c->n; i++) {
+        const npf_key *k = npf_key_find(c->key[i]);
+        if (k && npf_key_check(k, c->val[i], err, cap) < 0)
+            return -1;
+    }
     return 0;
+}
+
+int64_t npf_conf_int(const npf_conf *c, const char *key)
+{
+    const npf_key *k = npf_key_find(key);
+    int64_t x = 0;
+    if (k && k->type != NPF_K_STR && value_of(k, npf_conf_get(c, key, k->def), &x) < 0)
+        value_of(k, k->def, &x);
+    return x;
 }
 
 int npf_conf_set(npf_conf *c, const char *key, const char *val)
@@ -45,10 +162,10 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val)
     size_t vl = strlen(val);
     char *v, **o;
     int i;
-    for (i = 0; i < c->n && !is_multi(key); i++)
+    for (i = 0; i < c->n && !npf_key_is(key, NPF_K_MULTI); i++)
         if (strcmp(c->key[i], key) == 0)
             break;
-    if (is_multi(key))
+    if (npf_key_is(key, NPF_K_MULTI))
         i = c->n;
     if (vl >= NPF_CONF_VAL_MAX) {
         if (!c->bad[0])
@@ -156,17 +273,11 @@ const char *npf_conf_get_path(const npf_conf *c, const char *key, const char *de
     return out;
 }
 
-static const char *const path_keys[] = {"dir", "state", "serverlist", "serverlist_saved", "direct_psk_file",
-                                        "log", "pidfile", NULL};
-
 void npf_conf_set_rel(npf_conf *c, const char *conf_path, const char *k, const char *v)
 {
     char dir[1024], full[1024];
     const char *slash;
-    int i;
-    for (i = 0; path_keys[i] && strcmp(path_keys[i], k) != 0; i++)
-        ;
-    if (!path_keys[i] || !*v || strcmp(v, "off") == 0 || npf_path_is_abs(v) || npf_abspath(conf_path, dir, sizeof dir) < 0) {
+    if (!npf_key_is(k, NPF_K_PATH) || !*v || strcmp(v, "off") == 0 || npf_path_is_abs(v) || npf_abspath(conf_path, dir, sizeof dir) < 0) {
         npf_conf_set(c, k, v);
         return;
     }
@@ -205,43 +316,6 @@ int npf_conf_load(npf_conf *c, const char *path)
             npf_conf_set_rel(c, path, k, v);
     }
     fclose(f);
-    return 0;
-}
-
-static const char *const known_keys[] = {
-    "control", "control_token", "cred", "dir", "direct", "direct_psk_file", "hosted_trust",
-    "hosted_service", "hosted_exec", "hosted_ports", "hosted_max_conns", "hosted_ip_conns", "hosted_ip_rate", "sig_idle_s", "sig_wake_s",
-    "udp_on_demand", "udp_public",
-    "doh_servers", "hw_info", "keep_awake", "log", "log_level", "max_calls", "model", "model_cred", "password", "node",
-    "peer_idle", "pidfile", "portmap", "web_dir", "punch_lead_ms", "punch_sockets", "report_host", "resource", "root", "serial", "serial_file", "server", "server_pub",
-    "serverlist", "serverlist_saved", "state", "connect_mode", "udp_port", "test_one_host",
-    "home_bind", NULL};
-
-/* keys that say where to connect, what to trust or run, and which files
- * the program writes: only in npf.conf (whoever may write it may run the
- * program), never set through the control interface or taken from
- * local.json (a Windows service's control token is every local user's) */
-static const char *const file_only_keys[] = {
-    "control", "control_token", "web_dir", "log", "pidfile", "dir", "state", "root", "server", "server_pub",
-    "serverlist", "serverlist_saved", "doh_servers", "report_host", "serial_file", "direct", "direct_psk",
-    "direct_psk_file", "hosted_exec", "hosted_service", "hosted_ports", "model", "model_cred", "cred", "node", "resource",
-    "test_one_host", NULL};
-
-int npf_conf_file_only(const char *key)
-{
-    int i;
-    for (i = 0; file_only_keys[i]; i++)
-        if (strcmp(file_only_keys[i], key) == 0)
-            return 1;
-    return 0;
-}
-
-int npf_conf_known(const char *key)
-{
-    int i;
-    for (i = 0; known_keys[i]; i++)
-        if (strcmp(known_keys[i], key) == 0)
-            return 1;
     return 0;
 }
 

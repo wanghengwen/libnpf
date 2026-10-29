@@ -244,54 +244,46 @@ static int cand_skipped(const npf_call *c, const struct sockaddr_storage *to, co
 
 /* the peer's new srflx (the platform's: its spare's mapping toward the relay
  * moved, signaling.md punch_info): into the round running, else kept for the next */
-static void peer_cand(npf_call *c, const npf_json *j, int o)
+static void peer_cand(npf_call *c, const m_cand *k)
 {
     char a[80];
-    struct sockaddr_storage ss;
-    if (call_over(c) || call_has_p2p(c) || call_has_ws(c) || call_no_p2p(c))
+    if (call_over(c) || call_has_p2p(c) || call_has_ws(c) || call_no_p2p(c) || strcmp(k->t, "srflx") != 0
+        || k->a.ss_family != AF_INET || cand_skipped(c, &k->a, npf_addr_str(&k->a, a, sizeof a)))
         return;
-    memset(&ss, 0, sizeof ss);
-    if (!npf_json_eq(j, npf_json_get(j, o, "t"), "srflx") || npf_json_get_str(j, o, "a", a, sizeof a) <= 0
-        || npf_addr_parse(a, &ss) != 0 || ss.ss_family != AF_INET || cand_skipped(c, &ss, a))
+    if (c->tcand.ss_family && call_same_addr(&k->a, &c->tcand))
         return;
-    if (c->tcand.ss_family && call_same_addr(&ss, &c->tcand))
-        return;
-    c->tcand = ss;
+    c->tcand = k->a;
     npf_log("call %s: the peer's new srflx %s", c->call_id_s, a);
     if (c->punch_st == PN_RUNNING)
-        npf_punch_add_peer(c->punch, &ss, 1);
+        npf_punch_add_peer(c->punch, &k->a, 1);
 }
 
 /* S2B: the peer's fresh mapping; its new srflx (cand) */
-void call_handle_punch_info(npf_call *c, const npf_json *j, int d)
+void call_on_punch_info(npf_call *c, const void *msg)
 {
-    int64_t round, port;
-    int stop = 0;
-    int cand = npf_json_get(j, d, "cand");
-    if (npf_json_get_int(j, d, "round", 0, 1000, &round) < 0)
-        return;
-    if (cand >= 0) {
-        peer_cand(c, j, cand);
+    const m_punch_info *m = msg;
+    if (m->cand.a.ss_family) {
+        peer_cand(c, &m->cand);
         return;
     }
-    if (round != c->punch_round)
+    if (m->round != c->punch_round)
         return;                     /* another round's: not this one's (an old one ended at the new punch_start) */
-    if (npf_json_bool(j, npf_json_get(j, d, "stop"), &stop) == 0 && stop) {
+    if (m->stop) {
         /* the caller let this round go (its hard-side punches one at a
          * time): no spray into nothing for the round's time */
         if (c->punch_st == PN_SCHEDULED || c->punch_st == PN_WAIT_KEYS) {
             call_punch_to(c, PN_NONE, 0);
-            npf_log("call %s: punch round %lld let go by the peer: not started", c->call_id_s, (long long)round);
+            npf_log("call %s: punch round %lld let go by the peer: not started", c->call_id_s, (long long)m->round);
         } else if (c->punch_st == PN_RUNNING && !npf_punch_finished(c->punch))
             npf_punch_stop(c->punch);
         return;
     }
-    if (npf_json_get_int(j, d, "port", 1024, 65535, &port) < 0)
+    if (!m->port)
         return;
     if (c->punch_st == PN_RUNNING)
-        npf_punch_peer_port(c->punch, (uint16_t)port);
+        npf_punch_peer_port(c->punch, (uint16_t)m->port);
     else if (c->punch_st == PN_SCHEDULED || c->punch_st == PN_WAIT_KEYS)
-        c->punch_port = (uint16_t)port;     /* the punch starts later (its time, the keys) */
+        c->punch_port = (uint16_t)m->port;  /* the punch starts later (its time, the keys) */
 }
 
 /* nothing from the peer yet where it would have come (punch_ev.c, the
@@ -524,13 +516,13 @@ static int cand_skipped(const npf_call *c, const struct sockaddr_storage *to, co
     return c->n->skip_cand && c->n->skip_cand(c->n->skip_cand_arg, to, shown, c->call_id_s);
 }
 
-void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
+void call_on_punch_start(npf_call *c, const void *msg)
 {
+    const m_punch_start *m = msg;
+    const char *strat = m->strategy[0] ? m->strategy : "S1";
     npf_punch_plan *pl;
-    int peer = npf_json_get(j, d, "peer"), arr, i;
     int64_t v, start_at;
-    uint8_t pid[8];
-    char s[64], strat[8] = "S1";
+    int i;
     if (!c->caller)
         call_accept(c);
     if (call_has_p2p(c) || call_has_ws(c))       /* a WS relay session cannot move to a direct path */
@@ -541,23 +533,24 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
     }
     /* an old or repeated round changes nothing (it wiped the plan of the
      * round waiting for its start time: that one then probed no one) */
-    if (npf_json_get_int(j, d, "round", 1, 1000, &v) < 0 || v <= c->punch_round)
+    if (m->round <= c->punch_round)
         return;
     /* the platform plans PUNCH_ROUNDS_MAX counted rounds and some let go;
      * far more is not ours to spray (a platform using the device to flood
      * addresses) */
-    if (v > 4 * PUNCH_ROUNDS_MAX) {
-        npf_logw("call %s: punch round %lld refused (more rounds than the platform plans)", c->call_id_s, (long long)v);
+    if (m->round > 4 * PUNCH_ROUNDS_MAX) {
+        npf_logw("call %s: punch round %lld refused (more rounds than the platform plans)", c->call_id_s,
+                 (long long)m->round);
         return;
     }
-    c->punch_round = (int)v;
+    c->punch_round = (int)m->round;
     call_punch_to(c, PN_NONE, 0);               /* the last round's punch ends: this one replaces it */
     c->punch_port = 0;
     if (!c->pcfg && !(c->pcfg = malloc(sizeof *c->pcfg)))
         return;
     memset(c->pcfg, 0, sizeof *c->pcfg);
     pl = &c->pcfg->plan;
-    if (npf_json_eq(j, npf_json_get(j, d, "skip"), "no_strategy")) {
+    if (strcmp(m->skip, "no_strategy") == 0) {
         /* both NATs hard, nothing that can work between them (nat-traversal.md
          * 7.1): no round, none comes until the platform hears of a network
          * change (punch_update) */
@@ -567,39 +560,34 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         pm_check(c);
         return;
     }
-    if (npf_json_get_b64(j, d, "punch_id", pid, 8) != 8 || npf_json_get_b64(j, d, "punch_key", pl->punch_key, 32) != 32)
+    if (!m->punch_id_len || !m->punch_key_len)
         return;
-    pl->session_id = npf_rd64(pid);
+    memcpy(pl->punch_key, m->punch_key, 32);
+    pl->session_id = npf_rd64(m->punch_id);
     pl->role = c->caller ? NPF_PUNCH_CONTROLLING : NPF_PUNCH_CONTROLLED;
     pl->family = AF_INET;
-    npf_json_get_str(j, d, "strategy", strat, sizeof strat);
     /* S2 (sequential allocation) is S3 over the predicted ports: the range says
      * which; S4 is S3 with a hard sprayer (its main socket sprays, the other
      * side's fresh sockets catch); S2B is its own (two sequential NATs) */
     pl->strategy = strcmp(strat, "S3") == 0 || strcmp(strat, "S2") == 0 || strcmp(strat, "S4") == 0
                        ? NPF_PUNCH_S3 : strcmp(strat, "S2B") == 0 ? NPF_PUNCH_S2B : NPF_PUNCH_S1;
-    pl->side = npf_json_eq(j, npf_json_get(j, d, "side"), "hard") ? NPF_PUNCH_HARD : NPF_PUNCH_EASY;
-    arr = npf_json_get(j, peer, "cand");
-    for (i = 0; arr >= 0 && i < j->tok[arr].size && c->pcfg->npeers < NPF_PUNCH_MAX_PEERS; i++) {
+    pl->side = strcmp(m->side, "hard") == 0 ? NPF_PUNCH_HARD : NPF_PUNCH_EASY;
+    for (i = 0; i < m->peer.ncand && c->pcfg->npeers < NPF_PUNCH_MAX_PEERS; i++) {
+        const m_cand *k = &m->peer.cand[i];
         char a[80];
-        if (npf_json_get_str(j, npf_json_item(j, arr, i), "a", a, sizeof a) > 0
-            && npf_addr_parse(a, &c->pcfg->peers[c->pcfg->npeers]) == 0
-            && (c->pcfg->peers[c->pcfg->npeers].ss_family == AF_INET
-                || (c->pcfg->peers[c->pcfg->npeers].ss_family == AF_INET6 && c->n->udp6_fd >= 0))
-            && !cand_skipped(c, &c->pcfg->peers[c->pcfg->npeers], a)) {
-            int t = npf_json_get(j, npf_json_item(j, arr, i), "t");
-            if (!pl->peer_srflx_len && npf_json_eq(j, t, "srflx")) {
-                pl->peer_srflx = c->pcfg->peers[c->pcfg->npeers];
-                pl->peer_srflx_len = sizeof(struct sockaddr_in);
-            }
-            /* the pairs' priority (nat-traversal.md 10.1): nominated first */
-            c->pcfg->prio[c->pcfg->npeers] = npf_json_eq(j, t, "host6") ? 4 : npf_json_eq(j, t, "mapped") ? 3
-                                             : npf_json_eq(j, t, "host4") ? 2 : 1;
-            c->pcfg->npeers++;
+        if ((k->a.ss_family != AF_INET && (k->a.ss_family != AF_INET6 || c->n->udp6_fd < 0))
+            || cand_skipped(c, &k->a, npf_addr_str(&k->a, a, sizeof a)))
+            continue;
+        c->pcfg->peers[c->pcfg->npeers] = k->a;
+        if (!pl->peer_srflx_len && strcmp(k->t, "srflx") == 0) {
+            pl->peer_srflx = k->a;
+            pl->peer_srflx_len = sizeof(struct sockaddr_in);
         }
+        /* the pairs' priority (nat-traversal.md 10.1): nominated first */
+        c->pcfg->prio[c->pcfg->npeers++] = strcmp(k->t, "host6") == 0 ? 4 : strcmp(k->t, "mapped") == 0 ? 3
+                                           : strcmp(k->t, "host4") == 0 ? 2 : 1;
     }
-    if (npf_json_get_str(j, peer, "pub_ip", s, sizeof s) > 0 && inet_pton(AF_INET, s, &pl->peer_ip4) == 1
-        && !call_peer_spray_ok(c, pl->peer_ip4)) {
+    if (inet_pton(AF_INET, m->peer.pub_ip, &pl->peer_ip4) == 1 && !call_peer_spray_ok(c, pl->peer_ip4)) {
         /* said once a call, when the plan sprays: a WARN when the address
          * is none to send to at all, INFO when it is the platform's (a peer
          * on a server's host: nothing wrong) */
@@ -607,34 +595,30 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         if (sprays && !c->spray_refused_said) {
             c->spray_refused_said = 1;
             if (call_peer_ip4_usable(c->n, pl->peer_ip4))
-                npf_log("call %s: the peer's public IP %s is the platform's: none sprayed at it", c->call_id_s, s);
+                npf_log("call %s: the peer's public IP %s is the platform's: none sprayed at it", c->call_id_s,
+                        m->peer.pub_ip);
             else
-                npf_logw("call %s: the peer's public IP %s is not an address to spray: none sprayed", c->call_id_s, s);
+                npf_logw("call %s: the peer's public IP %s is not an address to spray: none sprayed", c->call_id_s,
+                         m->peer.pub_ip);
         }
         pl->peer_ip4.s_addr = 0;
     }
-    arr = npf_json_get(j, d, "range");
-    if (arr >= 0 && j->tok[arr].size == 2) {
-        int64_t lo, hi;
-        if (npf_json_int(j, npf_json_item(j, arr, 0), 1, 65535, &lo) == 0
-            && npf_json_int(j, npf_json_item(j, arr, 1), 1, 65535, &hi) == 0) {
-            pl->range_lo = (uint16_t)lo;
-            pl->range_hi = (uint16_t)hi;
-        }
+    if (m->nrange == 2) {
+        pl->range_lo = (uint16_t)m->range[0];
+        pl->range_hi = (uint16_t)m->range[1];
     }
-    pl->m_total = npf_json_get_int(j, d, "m_total", 0, 4000, &v) == 0 ? (int)v : 1024;
-    pl->pps = npf_json_get_int(j, d, "pps", 1, 1000, &v) == 0 ? (int)v : 200;
-    pl->n_sockets = npf_json_get_int(j, d, "n_sockets", 0, 256, &v) == 0 ? (int)v : 0;
-    pl->timeout_ms = npf_json_get_int(j, d, "timeout_ms", 1000, 600000, &v) == 0 ? (int)v : 8000;
-    pl->own_delta = npf_json_get_int(j, d, "delta", -64, 64, &v) == 0 ? (int)v : 0;
-    pl->peer_delta = npf_json_get_int(j, d, "peer_delta", -64, 64, &v) == 0 ? (int)v : 0;
-    pl->window = npf_json_get_int(j, d, "window", 1, 128, &v) == 0 ? (int)v : 32;
-    pl->passes = npf_json_get_int(j, d, "passes", 1, 8, &v) == 0 ? (int)v : 4;
+    pl->m_total = (int)m->m_total;
+    pl->pps = (int)m->pps;
+    pl->n_sockets = (int)m->n_sockets;
+    pl->timeout_ms = (int)m->timeout_ms;
+    pl->own_delta = (int)m->delta;
+    pl->peer_delta = (int)m->peer_delta;
+    pl->window = (int)m->window;
+    pl->passes = (int)m->passes;
     /* S2 (nat-traversal.md 7.3): the hard side measures its port, the easy
      * side sprays after it (the hard side's step and sockets) */
     pl->measure = strcmp(strat, "S2") == 0 && pl->side == NPF_PUNCH_HARD;
-    pl->peer_n = strcmp(strat, "S2") == 0 && pl->side == NPF_PUNCH_EASY
-                 && npf_json_get_int(j, d, "peer_n", 1, 256, &v) == 0 ? (int)v : 0;
+    pl->peer_n = strcmp(strat, "S2") == 0 && pl->side == NPF_PUNCH_EASY ? (int)m->peer_n : 0;
     if (getenv("NPF_TEST_PUNCH_FAIL"))  /* tests: NPF_TEST_PUNCH_FAIL=ms: every round fails, after ms */
         pl->timeout_ms = atoi(getenv("NPF_TEST_PUNCH_FAIL"));
     if (getenv("NPF_TEST_S3_HARD")) {   /* tests: this side opens N sockets (the node budget) */
@@ -642,12 +626,9 @@ void call_handle_punch_start(npf_call *c, const npf_json *j, int d)
         pl->side = NPF_PUNCH_HARD;
         pl->n_sockets = atoi(getenv("NPF_TEST_S3_HARD"));
     }
-    if (npf_json_get_int(j, d, "start_at", 0, INT64_MAX, &start_at) < 0)
-        start_at = npf_node_time(c->n);
-    npf_log("call %s: punch round %d %s %s, %d peer candidates, start in %lld ms", c->call_id_s,
-                c->punch_round, strat,
-                pl->side == NPF_PUNCH_HARD ? "hard" : "easy", c->pcfg->npeers,
-                (long long)(start_at - npf_node_time(c->n)));
+    start_at = m->start_at >= 0 ? m->start_at : npf_node_time(c->n);
+    npf_log("call %s: punch round %d %s %s, %d peer candidates, start in %lld ms", c->call_id_s, c->punch_round, strat,
+            pl->side == NPF_PUNCH_HARD ? "hard" : "easy", c->pcfg->npeers, (long long)(start_at - npf_node_time(c->n)));
     /* a host whose firewall blocks a flow that starts with an unsolicited
      * inbound packet (macOS application firewall) sends its first probes
      * before the peer's can arrive; the peer drops what comes before its own

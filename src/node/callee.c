@@ -18,6 +18,8 @@
 #include "npf/loop.h"
 #include "npf/node.h"
 
+#include "msgs.h"
+
 /* ---- state file ---- */
 
 #define STATE_MAX 32768     /* the largest is about 25 KB (256 paired, 64 revocations, a cert) */
@@ -519,39 +521,37 @@ static void op_bind_committed(npf_node *n, uint64_t account, const uint8_t op[16
 static void op_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
 {
     npf_callee *d = arg;
-    char type[32], a[32], reply[256];
-    int dd = npf_json_get(j, 0, "data");
-    uint8_t op[16], ch[16], msg[64], sig[64];
-    int64_t expires;
+    char reply[256];
+    uint8_t msg[64], sig[64];
     npf_cert inter, leaf;
     npf_identity id;
-    if (npf_json_get_str(j, 0, "type", type, sizeof type) <= 0)
+    m_env e;
+    m_bind_approve m;
+    if (node_env(j, &e) < 0)
         return;
-    if (strcmp(type, "bind_approve") != 0) {
-        npf_call_ctl_reply(c, type, j, "error", "unsupported_type", NULL);
+    if (strcmp(e.type, "bind_approve") != 0) {
+        npf_call_ctl_reply(c, e.type, j, "error", "unsupported_type", NULL);
         return;
     }
     state_refresh(d);
     if (npf_call_auth(c) != NPF_AUTH_IK && npf_call_auth(c) != NPF_AUTH_PAKE) {   /* paired callers only */
-        npf_call_ctl_reply(c, type, j, "error", "forbidden", NULL);
+        npf_call_ctl_reply(c, e.type, j, "error", "forbidden", NULL);
         return;
     }
     if (d->owner) {
-        npf_call_ctl_reply(c, type, j, "error", "conflict", NULL);
+        npf_call_ctl_reply(c, e.type, j, "error", "conflict", NULL);
         return;
     }
-    if (npf_json_get_str(j, dd, "account_id", a, sizeof a) <= 0 || npf_json_get_b64(j, dd, "operation_id", op, 16) != 16
-        || npf_json_get_b64(j, dd, "challenge", ch, 16) != 16
-        || npf_json_get_int(j, dd, "expires", 0, INT64_MAX, &expires) < 0
+    if (npf_msg_parse(&m_bind_approve_d, j, e.data, &m, NULL, 0) < 0
         || npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, n->cert, n->cert_len, &inter,
                                 &leaf, 0) < 0) {
-        npf_call_ctl_reply(c, type, j, "error", "bad_request", NULL);
+        npf_call_ctl_reply(c, e.type, j, "error", "bad_request", NULL);
         return;
     }
-    d->pending_owner = strtoull(a, NULL, 10);
-    memcpy(d->pending_op, op, 16);
+    d->pending_owner = strtoull(m.account_id, NULL, 10);
+    memcpy(d->pending_op, m.operation_id, 16);
     d->pending_until = time(NULL) + 600;
-    npf_bind_proof_msg(msg, d->number, leaf.key_gen, d->pending_owner, op, ch, expires);
+    npf_bind_proof_msg(msg, d->number, leaf.key_gen, d->pending_owner, m.operation_id, m.challenge, m.expires);
     npf_identity_from_seed(&id, d->seed);
     npf_sign2(sig, id.sign_sk, "npf-bind-v1", 11, msg, 60);
     npf_identity_wipe(&id);
@@ -560,8 +560,8 @@ static void op_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
         npf_b64url_encode(sig, 64, b);
         snprintf(reply, sizeof reply, "{\"proof\":\"%s\",\"key_gen\":%u}", b, leaf.key_gen);
     }
-    npf_call_ctl_reply(c, type, j, "ok", NULL, reply);
-    npf_log("bind requested for account %s", a);
+    npf_call_ctl_reply(c, e.type, j, "ok", NULL, reply);
+    npf_log("bind requested for account %s", m.account_id);
 }
 
 static void on_cert(npf_node *n, void *arg)

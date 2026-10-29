@@ -81,15 +81,14 @@ static npf_json j;
 static npf_jtok tok[64];
 static char jbuf[1024];
 
-/* the platform's message: its data at the returned index */
-static int msg(const char *fmt, const char *id, long long a)
+/* the platform's message of this type to n: fmt is the rest of the object */
+static void sig(npf_node *n, const char *type, const char *fmt, const char *id, long long a)
 {
-    char f[1024];
+    char f[900];
     snprintf(f, sizeof f, fmt, id, a);
-    snprintf(jbuf, sizeof jbuf, "%s", f);
-    if (npf_json_parse(&j, jbuf, strlen(jbuf), tok, 64) != 0)
-        return -1;
-    return npf_json_get(&j, 0, "data") >= 0 ? npf_json_get(&j, 0, "data") : 0;
+    snprintf(jbuf, sizeof jbuf, "{\"v\":1,\"type\":\"%s\",%s", type, f + 1);
+    if (npf_json_parse(&j, jbuf, strlen(jbuf), tok, 64) == 0)
+        node_msg(n, &j);
 }
 
 static npf_call *new_call(npf_node *n, int caller, int st)
@@ -126,7 +125,6 @@ static void call_rows(npf_node *n)
 {
     npf_call *c, *d;
     int64_t t0;
-    int k;
 
     /* caller: CALLING, the reply, call_accepted */
     clear();
@@ -136,8 +134,7 @@ static void call_rows(npf_node *n)
         return;
     t0 = c->limit_at;
     c->call_req = 7;
-    k = msg("{\"type\":\"call\",\"reply_to\":\"r7\",\"status\":\"ok\",\"data\":{\"x\":\"%s%lld\"}}", "", 0);
-    node_dispatch(n, "call", &j, k);
+    sig(n, "call", "{\"reply_to\":\"r7\",\"status\":\"ok\",\"data\":{\"x\":\"%s%lld\"}}", "", 0);
     CHECK(c->st == CS_CALLING && c->limit_at == t0, "the call's reply: CALLING, the limit kept");
     call_accept(c);
     CHECK(c->st == CS_CONNECTING && call_accepted(c) && c->limit_at >= npf_mono_ms() + 24000
@@ -164,9 +161,8 @@ static void call_rows(npf_node *n)
     d = new_call(n, 1, CS_CONNECTING);
     if (!c || !d)
         return;
-    k = msg("{\"data\":{\"call_id\":\"%s\",\"error\":\"busy%lld\"}}", c->call_id_s, 0);
     clear();
-    node_dispatch(n, "call_rejected", &j, k);
+    sig(n, "call_rejected", "{\"data\":{\"call_id\":\"%s\",\"error\":\"busy%lld\"}}", c->call_id_s, 0);
     CHECK(call_over(c) && !end_of(n, c) && strcmp(states, "4") == 0, "call_rejected: closed quietly");
     node_sig_lost(n);
     CHECK(call_over(d) && !end_of(n, d), "the signaling lost while connecting: closed quietly");
@@ -193,12 +189,11 @@ static void call_rows(npf_node *n)
     call_punch_report(c, "network");
     CHECK(npf_call_state(c) == NPF_CALL_CONNECTING && !call_accepted(c) && !strstr(seen, "punch_update"),
           "a callee not accepted told the platform: %s", seen);
-    k = msg("{\"data\":{\"call_id\":\"%s\",\"round\":%lld}}", c->call_id_s, 1);
-    call_handle_punch_start(c, &j, k);
+    sig(n, "punch_start", "{\"data\":{\"call_id\":\"%s\",\"round\":%lld}}", c->call_id_s, 1);
     CHECK(c->st == CS_CONNECTING && call_accepted(c) && c->limit_at >= t0 && !states[0],
           "the first punch_start: accepted, the limit from now (%s)", states);
     t0 = c->limit_at;
-    call_handle_punch_start(c, &j, k);
+    sig(n, "punch_start", "{\"data\":{\"call_id\":\"%s\",\"round\":%lld}}", c->call_id_s, 1);
     CHECK(c->limit_at == t0, "a second punch_start moved the limit");
     call_set_state(c, CS_UP, NULL);
     CHECK(!c->limit_at && strstr(seen, "call_established") && strcmp(states, "3") == 0, "UP: call_established not sent");
@@ -236,21 +231,17 @@ static int pn_ok(const npf_call *c)
 static void punch_start(npf_call *c, int round, const char *extra)
 {
     char f[512];
-    int k;
     snprintf(f, sizeof f,
              "{\"data\":{\"call_id\":\"%%s\",\"round\":%%lld,\"punch_id\":\"%s\",\"punch_key\":\"%s\",\"peer\":{}%s}}",
              pid, pkey, extra);
-    k = msg(f, c->call_id_s, round);
-    call_handle_punch_start(c, &j, k);
+    sig(c->n, "punch_start", f, c->call_id_s, round);
 }
 
 static void punch_info(npf_call *c, int round, const char *what)
 {
     char f[256];
-    int k;
     snprintf(f, sizeof f, "{\"data\":{\"call_id\":\"%%s\",\"round\":%%lld,%s}}", what);
-    k = msg(f, c->call_id_s, round);
-    call_handle_punch_info(c, &j, k);
+    sig(c->n, "punch_info", f, c->call_id_s, round);
 }
 
 static void keys(npf_call *c)

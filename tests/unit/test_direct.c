@@ -97,12 +97,10 @@ static const npf_vend_io vio = {v_read, v_write, v_ready, v_shutdown, v_closed};
 
 static int ws_move(npf_call *c)
 {
-    static const char js[] = "{\"ws\":{\"url\":\"wss://127.0.0.1:9/r\",\"server_id\":0}}";
-    npf_jtok tok[16];
-    npf_json j;
-    if (npf_json_parse(&j, js, sizeof js - 1, tok, 16) < 0)
-        return -2;
-    return call_ws_setup(c, &j, 0);
+    m_relay r;
+    memset(&r, 0, sizeof r);
+    snprintf(r.ws.url, sizeof r.ws.url, "wss://127.0.0.1:9/r");
+    return call_ws_setup(c, &r);
 }
 
 static void test_tunnel_move(npf_loop *loop, const struct sockaddr_storage *to, const uint8_t psk[32], side *L)

@@ -209,40 +209,35 @@ void node_reconnect_now(npf_node *n)
 }
 
 /* The platform's upgrade policy for this program, from a welcome's
- * "upgrade", an "upgrade" event or the data of upgrade_required (d: the
- * object; d < 0: none, which clears what was offered) */
+ * "upgrade", an "upgrade" event or the data of upgrade_required (j[d]: the
+ * object; d < 0: none, which clears what was offered); notify: tell the
+ * modules of an offer (the "upgrade" event does reach them by itself; a
+ * welcome's does not) */
 #define UPGRADE_PACKAGES_MAX 16384
 
-/* notify: tell the modules of an offer (the "upgrade" event does reach them
- * by itself; a welcome's does not) */
 static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int required, int notify)
 {
-    int r = required, was = n->upgrade.latest[0] || n->upgrade.required;
+    int was = n->upgrade.latest[0] || n->upgrade.required;
+    m_upgrade u;
     free(n->upgrade.packages);
     memset(&n->upgrade, 0, sizeof n->upgrade);
-    if (d >= 0) {
-        npf_json_bool(j, npf_json_get(j, d, "required"), &r);
-        n->upgrade.required = r;
-        npf_json_get_str(j, d, "min", n->upgrade.min, sizeof n->upgrade.min);
-        npf_json_get_str(j, d, "latest", n->upgrade.latest, sizeof n->upgrade.latest);
-        npf_json_get_str(j, d, "url", n->upgrade.url, sizeof n->upgrade.url);
-        npf_json_get_str(j, d, "notes", n->upgrade.notes, sizeof n->upgrade.notes);
-        {
-            int pk = npf_json_get(j, d, "packages");
-            size_t len;
-            if (pk >= 0 && j->tok[pk].type == NPF_JT_ARRAY && (len = j->tok[pk].end - j->tok[pk].start) <= UPGRADE_PACKAGES_MAX
-                && (n->upgrade.packages = malloc(len + 1))) {
-                memcpy(n->upgrade.packages, j->s + j->tok[pk].start, len);
-                n->upgrade.packages[len] = 0;
-            }
+    if (npf_msg_parse(&m_upgrade_d, j, d, &u, NULL, 0) == 0) {
+        const npf_jtok *pk = u.packages >= 0 ? &j->tok[u.packages] : NULL;
+        n->upgrade.required = u.required || required;
+        memcpy(n->upgrade.min, u.min, sizeof u.min);
+        memcpy(n->upgrade.latest, u.latest, sizeof u.latest);
+        memcpy(n->upgrade.url, u.url, sizeof u.url);
+        memcpy(n->upgrade.notes, u.notes, sizeof u.notes);
+        if (pk && pk->end - pk->start <= UPGRADE_PACKAGES_MAX && (n->upgrade.packages = malloc(pk->end - pk->start + 1))) {
+            memcpy(n->upgrade.packages, j->s + pk->start, pk->end - pk->start);
+            n->upgrade.packages[pk->end - pk->start] = 0;
         }
-        if (r)
-            npf_logw("upgrade: this version is too old for the platform (%s needed%s%s)", n->upgrade.min,
-                     n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
-        else if (n->upgrade.latest[0])
-            npf_log("upgrade: version %s is available%s%s", n->upgrade.latest, n->upgrade.url[0] ? ", see " : "",
-                    n->upgrade.url);
-        if (notify && (r || n->upgrade.latest[0]) && n->hooks.on_event)
+        if (n->upgrade.required)
+            npf_logw("upgrade: this version is too old for the platform (%s needed%s%s)", u.min,
+                     u.url[0] ? ", see " : "", u.url);
+        else if (u.latest[0])
+            npf_log("upgrade: version %s is available%s%s", u.latest, u.url[0] ? ", see " : "", u.url);
+        if (notify && (n->upgrade.required || u.latest[0]) && n->hooks.on_event)
             n->hooks.on_event(n, "upgrade", j, d, n->hook_arg);
     } else if (was) {
         npf_log("upgrade: no newer version offered any more");
@@ -532,13 +527,13 @@ static const char *enroll_why(const char *err, const char *reason)
  * identity's key that the roots signed. Its validity period is not looked
  * at: an enrolment comes before the login sets the clock (a board without
  * a clock of its own starts in 1970); welcome's checks it */
-static int enroll_got(npf_node *n, const npf_json *j, int d, char num[24], uint8_t cert[1024], int *cl)
+static int enroll_got(npf_node *n, const m_enrolled *m)
 {
     npf_cert inter, leaf;
-    if (npf_json_get_str(j, d, "number", num, 24) <= 0 || !npf_number_parse(num)
-        || (*cl = npf_json_get_b64(j, d, "cert", cert, 1024)) <= 0)
+    if (!npf_number_parse(m->number))
         return -1;
-    if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, cert, (size_t)*cl, &inter, &leaf, 0) < 0
+    if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, m->cert, (size_t)m->cert_len, &inter,
+                             &leaf, 0) < 0
         || leaf.type != NPF_CERT_NODE || memcmp(leaf.dh_pub, n->id.dh_pub, 32) != 0) {
         npf_loge("enrol: the certificate given does not verify");
         return -1;
@@ -548,27 +543,22 @@ static int enroll_got(npf_node *n, const npf_json *j, int d, char num[24], uint8
 
 static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
 {
-    char num[24], err[32] = "no reply", reason[24] = "";
-    uint8_t cert[sizeof n->cert];
-    int d, cl = 0;
+    m_env e;
+    m_enrolled m;
     (void)arg;
-    if (!j)
+    if (!j || node_env(j, &e) < 0)
         return;                             /* the connection went: enrol again on the next one */
-    d = npf_json_get(j, 0, "data");
-    if (!ok || enroll_got(n, j, d, num, cert, &cl) < 0) {
-        if (ok)
-            snprintf(err, sizeof err, "bad_reply");
-        npf_json_get_str(j, 0, "error", err, sizeof err);
-        npf_json_get_str(j, 0, "message", reason, sizeof reason);
-        npf_loge("enrol: refused (%s%s%s): %s", err, reason[0] ? ", " : "", reason, enroll_why(err, reason));
+    if (!ok || npf_msg_parse(&m_enrolled_d, j, e.data, &m, NULL, 0) < 0 || enroll_got(n, &m) < 0) {
+        const char *err = !ok ? (e.error[0] ? e.error : "no reply") : "bad_reply";
+        npf_loge("enrol: refused (%s%s%s): %s", err, e.message[0] ? ", " : "", e.message, enroll_why(err, e.message));
         if (n->backoff_ms < 10000)
             n->backoff_ms = 10000;          /* enrol again later, not every second */
         n->enroll_state = NPF_ENROLL_REFUSED;
         snprintf(n->enroll_error, sizeof n->enroll_error, "%s", err);
-        snprintf(n->enroll_reason, sizeof n->enroll_reason, "%s", reason);
+        snprintf(n->enroll_reason, sizeof n->enroll_reason, "%.23s", e.message);
         n->enroll_at_unix_ms = npf_unix_ms();
         if (n->hooks.on_enroll_failed)
-            n->hooks.on_enroll_failed(n, err, reason, n->backoff_ms / 1000, n->hook_arg);
+            n->hooks.on_enroll_failed(n, err, n->enroll_reason, n->backoff_ms / 1000, n->hook_arg);
         if (n->sig)                         /* the platform's answer: not the server's fault, nor the network's */
             sig_refused(n, 0);
         return;
@@ -576,11 +566,11 @@ static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
     n->enroll_state = NPF_ENROLL_DONE;
     n->enroll_error[0] = n->enroll_reason[0] = 0;
     n->enroll_at_unix_ms = npf_unix_ms();
-    memcpy(n->cert, cert, (size_t)cl);
-    n->cert_len = (size_t)cl;
-    n->cfg.number = npf_number_parse(num);
+    memcpy(n->cert, m.cert, (size_t)m.cert_len);
+    n->cert_len = (size_t)m.cert_len;
+    n->cfg.number = npf_number_parse(m.number);
     n->cfg.callable = 1;
-    npf_log("enrol: number %.3s %.3s %.3s", num, num + 3, num + 6);
+    npf_log("enrol: number %.3s %.3s %.3s", m.number, m.number + 3, m.number + 6);
     if (n->hooks.on_enrolled)
         n->hooks.on_enrolled(n, n->cfg.number, n->hook_arg);
     send_login(n);                          /* on the same connection */
@@ -646,19 +636,6 @@ static void send_enroll(npf_node *n)
         n->enroll_state = NPF_ENROLL_SENT;  /* a refusal stays until the next answer */
 }
 
-static void parse_daykeys(const npf_json *j, int arr, npf_daykey out[2])
-{
-    int i;
-    memset(out, 0, 2 * sizeof *out);
-    for (i = 0; arr >= 0 && i < j->tok[arr].size && i < 2; i++) {
-        int it = npf_json_item(j, arr, i);
-        int64_t d;
-        if (npf_json_get_int(j, it, "day", 0, INT32_MAX, &d) == 0
-            && npf_json_get_b64(j, it, "key", out[i].key, 32) == 32)
-            out[i].day = d;
-    }
-}
-
 const uint8_t *node_day_key(const npf_node *n, const npf_daykey keys[2])
 {
     int64_t day = npf_node_time(n) / 86400000;
@@ -672,20 +649,15 @@ const uint8_t *node_day_key(const npf_node *n, const npf_daykey keys[2])
 /* the address probes the server names (login, "keys", "probe"): E1, E2 on
  * one probe server, E3 on another; none: no probe there. Returns 1 when
  * they changed */
-static int node_apply_probe(npf_node *n, const npf_json *j, int d)
+static int node_apply_probe(npf_node *n, const m_welcome *m)
 {
     struct sockaddr_in old[3];
-    int pr = npf_json_get(j, d, "probe"), k, nold = n->nprobe_ep;
+    int k, nold = n->nprobe_ep;
     memcpy(old, n->probe_ep, sizeof old);
     memset(n->probe_ep, 0, sizeof n->probe_ep);
-    n->nprobe_ep = 0;
-    for (k = 0; pr >= 0 && j->tok[pr].type == NPF_JT_ARRAY && k < j->tok[pr].size && n->nprobe_ep < 3; k++) {
-        char a[64];
-        struct sockaddr_storage ss;
-        if (npf_json_str(j, npf_json_item(j, pr, k), a, sizeof a) > 0 && npf_addr_parse(a, &ss) == 0
-            && ss.ss_family == AF_INET)
-            memcpy(&n->probe_ep[n->nprobe_ep++], &ss, sizeof(struct sockaddr_in));
-    }
+    for (k = 0; k < m->nprobe; k++)
+        memcpy(&n->probe_ep[k], &m->probe[k], sizeof n->probe_ep[k]);
+    n->nprobe_ep = m->nprobe;
     return n->nprobe_ep != nold || memcmp(old, n->probe_ep, sizeof old) != 0;
 }
 
@@ -696,12 +668,16 @@ static void probe_changed(npf_node *n)
         node_nat_refresh(n);
 }
 
-static void apply_keys(npf_node *n, const npf_json *j, int d)
+static void apply_keys(npf_node *n, const m_welcome *m)
 {
-    uint8_t t[64];
-    if (npf_json_get_b64(j, d, "ticket", t, sizeof t) == 28)
-        memcpy(n->ticket, t, 28);
-    parse_daykeys(j, npf_json_get(j, d, "probe_keys"), n->probe_keys);
+    int i;
+    if (m->ticket_len)
+        memcpy(n->ticket, m->ticket, 28);
+    memset(n->probe_keys, 0, sizeof n->probe_keys);
+    for (i = 0; i < m->nprobe_keys; i++) {
+        n->probe_keys[i].day = m->probe_keys[i].day;
+        memcpy(n->probe_keys[i].key, m->probe_keys[i].key, 32);
+    }
 }
 
 /* a renewed account (client) certificate from welcome: keep it and tell the program */
@@ -723,25 +699,28 @@ static void node_accept_account_cert(npf_node *n, const uint8_t *blob, size_t bl
         n->on_account_cert(n, n->on_account_cert_arg);
 }
 
-static void handle_welcome(npf_node *n, const npf_json *j, int d)
+/* a server list sent as base64url (welcome, server_list) at token t */
+static void server_list_in(npf_node *n, const npf_json *j, int t)
 {
-    int64_t t, v;
-    char buf[64];
-    uint8_t *blob = malloc(65536);      /* per call: other instances' threads */
-    const size_t blob_cap = 65536;
-    int bl;
-    if (!blob)
-        return;
-    if (npf_json_get_int(j, d, "time", 0, INT64_MAX, &t) == 0) {
+    uint8_t *blob = t >= 0 ? malloc(65536) : NULL;     /* per call: other instances' threads */
+    int bl = blob ? npf_json_b64(j, t, blob, 65536) : -1;
+    if (bl > 0)
+        node_server_list_update(n, blob, (size_t)bl, NULL);
+    free(blob);
+}
+
+static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
+{
+    if (m->time >= 0) {
         /* welcome.time was read half a round trip ago (punch start_at needs this) */
         int64_t rtt = npf_mono_ms() - n->login_sent_ms;
-        n->clock_offset_ms = t + (rtt > 0 && rtt < 10000 ? rtt / 2 : 0) - npf_unix_ms();
+        n->clock_offset_ms = m->time + (rtt > 0 && rtt < 10000 ? rtt / 2 : 0) - npf_unix_ms();
     }
-    if (npf_json_get_int(j, d, "server_id", 0, 1 << 30, &v) == 0)
-        n->server_id = (int)v;
-    if (npf_json_get_str(j, d, "client_id", buf, sizeof buf) > 0)
-        n->client_id = strtoull(buf, NULL, 10);
-    n->account_id = npf_json_get_str(j, d, "account_id", buf, sizeof buf) > 0 ? strtoull(buf, NULL, 10) : 0;
+    if (m->server_id >= 0)
+        n->server_id = (int)m->server_id;
+    if (m->client_id[0])
+        n->client_id = strtoull(m->client_id, NULL, 10);
+    n->account_id = strtoull(m->account_id, NULL, 10);
     if (!n->account_id && n->account_cert_len) {
         /* the platform no longer accepts our account session */
         npf_logw("login: account session expired or revoked, log in again");
@@ -749,41 +728,36 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
         if (n->on_account_lost)
             n->on_account_lost(n, n->hook_arg);
     }
-    if (npf_json_get_int(j, d, "ping_s", 5, 3600, &v) == 0)
-        n->ping_s = (int)v;
-    node_upgrade_apply(n, j, npf_json_get(j, d, "upgrade"), 0, 1);
-    apply_keys(n, j, d);
-    node_apply_probe(n, j, d);          /* measured below (node_nat_login) */
+    if (m->ping_s)
+        n->ping_s = (int)m->ping_s;
+    node_upgrade_apply(n, j, m->upgrade, 0, 1);
+    apply_keys(n, m);
+    node_apply_probe(n, m);             /* measured below (node_nat_login) */
     /* a (re)issued certificate: a node's own certificate in "cert"; the
      * account (client) certificate in "account_cert" for nodes, in "cert" for
      * pure clients (signaling.md "welcome") */
-    bl = npf_json_get_b64(j, d, "cert", blob, blob_cap);
-    if (bl > 0 && (size_t)bl <= sizeof n->cert) {
+    if (m->cert_len) {
         npf_cert inter, leaf;
-        if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, blob, (size_t)bl,
+        if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, m->cert, (size_t)m->cert_len,
                                  &inter, &leaf, npf_node_time(n) / 1000) < 0
             || memcmp(leaf.dh_pub, n->id.dh_pub, 32) != 0) {
             npf_log("login: received certificate does not verify, ignored");
         } else if (n->cfg.callable && leaf.type == NPF_CERT_NODE) {
-            memcpy(n->cert, blob, (size_t)bl);
-            n->cert_len = (size_t)bl;
+            memcpy(n->cert, m->cert, (size_t)m->cert_len);
+            n->cert_len = (size_t)m->cert_len;
             npf_log("login: certificate issued (expires in %lld days)",
                     (long long)(leaf.not_after - npf_node_time(n) / 1000) / 86400);
             if (n->on_cert)
                 n->on_cert(n, n->on_cert_arg);
         } else if (!n->cfg.callable && leaf.type == NPF_CERT_CLIENT) {
-            node_accept_account_cert(n, blob, (size_t)bl);
+            node_accept_account_cert(n, m->cert, (size_t)m->cert_len);
         } else {
             npf_logw("login: certificate of the wrong type, ignored");
         }
     }
-    bl = npf_json_get_b64(j, d, "account_cert", blob, blob_cap);
-    if (bl > 0 && (size_t)bl <= sizeof n->account_cert)
-        node_accept_account_cert(n, blob, (size_t)bl);
-    bl = npf_json_get_b64(j, d, "server_list", blob, blob_cap);
-    if (bl > 0)
-        node_server_list_update(n, blob, (size_t)bl, NULL);
-    free(blob);
+    if (m->account_cert_len)
+        node_accept_account_cert(n, m->account_cert, (size_t)m->account_cert_len);
+    server_list_in(n, j, m->server_list);
     n->online = 1;
     n->logins++;
     n->last_login_unix_ms = npf_unix_ms();
@@ -802,7 +776,100 @@ static void handle_welcome(npf_node *n, const npf_json *j, int d)
     ends_flush(n);                      /* call ends from while signaling was down */
     idle_watch(n);
     node_home_login(n);                 /* the spare allocation, while the NAT is measured */
-    node_nat_login(n);                  /* calls hooks.on_login, at once or after the first probe */
+    node_nat_login(n);                  /* calls hooks.on_login at once, or after the first probe */
+}
+
+/* login's reply: welcome, or a refusal */
+void node_on_login(npf_node *n, const m_env *e, const void *m)
+{
+    if (!e->reply_to[0])
+        return;
+    if (strcmp(e->status, "ok") == 0) {
+        welcome(n, e->j, m);
+        return;
+    }
+    npf_logw("login: rejected (%s)", e->error);
+    if (strcmp(e->error, "upgrade_required") == 0) {
+        node_upgrade_apply(n, e->j, e->data, 1, 1);
+        snprintf(n->sig_error, sizeof n->sig_error, "this version is too old for the platform: upgrade to %s%s",
+                 n->upgrade.min[0] ? n->upgrade.min : "the newest version", n->upgrade.url[0] ? " (see the download page)" : "");
+    } else {
+        snprintf(n->sig_error, sizeof n->sig_error, "server %d refused the login (%s)",
+                 n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, e->error);
+    }
+    n->sig_refused = 1;
+    sig_refused(n, 3);
+}
+
+void node_on_server_list(npf_node *n, const m_env *e, const void *m)
+{
+    server_list_in(n, e->j, ((const m_server_list *)m)->blob);
+}
+
+/* the policy changed; the application hears of it too */
+void node_on_upgrade(npf_node *n, const m_env *e, const void *m)
+{
+    (void)m;
+    node_upgrade_apply(n, e->j, e->data, 0, 0);
+    if (n->hooks.on_event)
+        n->hooks.on_event(n, e->type, e->j, e->data, n->hook_arg);
+}
+
+void node_on_probe(npf_node *n, const m_env *e, const void *m)
+{
+    (void)e;
+    if (node_apply_probe(n, m))
+        probe_changed(n);
+}
+
+void node_on_keys(npf_node *n, const m_env *e, const void *m)
+{
+    apply_keys(n, m);
+    node_on_probe(n, e, m);
+}
+
+/* the server closes this connection next */
+void node_on_replaced(npf_node *n, const m_env *e, const void *m)
+{
+    (void)e, (void)m;
+    n->replaced_ms = npf_mono_ms();
+}
+
+void node_on_redirect(npf_node *n, const m_env *e, const void *msg)
+{
+    const m_redirect *m = msg;
+    int i, was_online = n->online;
+    (void)e;
+    for (i = 0; i < n->nservers && n->servers[i].id != m->server_id; i++)
+        ;
+    if (i == n->nservers)
+        return;                         /* not in the signed list: ignore */
+    npf_log("redirect to server %lld", (long long)m->server_id);
+    /* a disconnect like any other, not the server's failure (it kept its
+     * ping and watch running, its requests waiting, and told the
+     * application nothing) */
+    n->cur_server = i;
+    node_sig_close(n);
+    n->backoff_ms = 1000;
+    sig_gone(n, "redirected", was_online);
+}
+
+int node_sig_reply(npf_node *n, const m_env *e)
+{
+    int i;
+    for (i = 0; i < NPF_PENDING_MAX && e->reply_to[0] == 'r'; i++) {
+        char expected[24];
+        npf_reply_fn fn = n->pending[i].fn;
+        if (!fn)
+            continue;
+        snprintf(expected, sizeof expected, "r%d", n->pending[i].id);
+        if (strcmp(e->reply_to, expected) == 0) {
+            n->pending[i].fn = NULL;
+            fn(n, e->j, strcmp(e->status, "ok") == 0, n->pending[i].arg);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 /* the first access point to finish the Noise handshake stays, the other one
@@ -830,117 +897,8 @@ static void sig_ready(npf_sig *s, void *arg)
 
 static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
 {
-    npf_node *n = arg;
-    int d = npf_json_get(j, 0, "data");
-    int reply = npf_json_get(j, 0, "reply_to") >= 0;
-    char type[32];
     (void)s;
-    if (npf_json_get_str(j, 0, "type", type, sizeof type) < 0 || d < 0 || j->tok[d].type != NPF_JT_OBJECT)
-        return;
-    if (npf_log_on(NPF_LOG_TRACE)) {     /* the envelope only (R10) */
-        char id[24] = "", rt[24] = "", st[16] = "", er[32] = "";
-        npf_json_get_str(j, 0, "id", id, sizeof id);
-        npf_json_get_str(j, 0, "reply_to", rt, sizeof rt);
-        npf_json_get_str(j, 0, "status", st, sizeof st);
-        npf_json_get_str(j, 0, "error", er, sizeof er);
-        npf_logt("sig < %s%s%s%s%s%s%s%s%s, %zu bytes", type, id[0] ? " id=" : "", id, rt[0] ? " reply_to=" : "", rt,
-                 st[0] ? " " : "", st, er[0] ? " " : "", er, (size_t)j->len);
-    }
-    if (reply) {
-        char rt[24];
-        int i;
-        if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) > 0 && rt[0] == 'r') {
-            for (i = 0; i < NPF_PENDING_MAX; i++) {
-                char expected[24];
-                if (!n->pending[i].fn)
-                    continue;
-                snprintf(expected, sizeof expected, "r%d", n->pending[i].id);
-                if (strcmp(rt, expected) == 0) {
-                    npf_reply_fn fn = n->pending[i].fn;
-                    n->pending[i].fn = NULL;
-                    fn(n, j, npf_json_eq(j, npf_json_get(j, 0, "status"), "ok"), n->pending[i].arg);
-                    return;
-                }
-            }
-        }
-    }
-    if (strcmp(type, "login") == 0 && reply) {
-        if (npf_json_eq(j, npf_json_get(j, 0, "status"), "ok")) {
-            handle_welcome(n, j, d);
-        } else {
-            char err[32] = "";
-            npf_json_get_str(j, 0, "error", err, sizeof err);
-            npf_logw("login: rejected (%s)", err);
-            if (strcmp(err, "upgrade_required") == 0) {
-                node_upgrade_apply(n, j, npf_json_get(j, 0, "data"), 1, 1);
-                n->upgrade.required = 1;
-                snprintf(n->sig_error, sizeof n->sig_error, "this version is too old for the platform: upgrade to %s%s",
-                         n->upgrade.min[0] ? n->upgrade.min : "the newest version",
-                         n->upgrade.url[0] ? " (see the download page)" : "");
-            } else {
-                snprintf(n->sig_error, sizeof n->sig_error, "server %d refused the login (%s)",
-                         n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, err);
-            }
-            n->sig_refused = 1;
-            sig_refused(n, 3);
-        }
-        return;
-    }
-    if (strcmp(type, "server_list") == 0) {
-        uint8_t *blob = malloc(65536);
-        int bl = blob ? npf_json_get_b64(j, d, "blob", blob, 65536) : -1;
-        if (bl > 0)
-            node_server_list_update(n, blob, (size_t)bl, NULL);
-        free(blob);
-        return;
-    }
-    if (strcmp(type, "upgrade") == 0) {     /* the policy changed; the application hears of it too */
-        node_upgrade_apply(n, j, d, 0, 0);
-        node_dispatch(n, type, j, d);
-        return;
-    }
-    if (strcmp(type, "probe") == 0) {
-        if (node_apply_probe(n, j, d))
-            probe_changed(n);
-        return;
-    }
-    if (strcmp(type, "replaced") == 0) {    /* the server closes this connection next */
-        n->replaced_ms = npf_mono_ms();
-        return;
-    }
-    if (strcmp(type, "relay_spare") == 0) {
-        node_home_spare(n, j, d);
-        return;
-    }
-    if (strcmp(type, "keys") == 0) {
-        apply_keys(n, j, d);
-        if (node_apply_probe(n, j, d))
-            probe_changed(n);
-        return;
-    }
-    if (strcmp(type, "redirect") == 0) {
-        int64_t sid;
-        int i;
-        if (npf_json_get_int(j, d, "server_id", 0, 1 << 30, &sid) < 0)
-            return;
-        for (i = 0; i < n->nservers; i++)
-            if (n->servers[i].id == sid)
-                break;
-        if (i == n->nservers)
-            return;     /* not in the signed list: ignore */
-        npf_log("redirect to server %lld", (long long)sid);
-        {   /* a disconnect like any other, not the server's failure (it kept
-             * its ping and watch running, its requests waiting, and told the
-             * application nothing) */
-            int was_online = n->online;
-            n->cur_server = i;
-            node_sig_close(n);
-            n->backoff_ms = 1000;
-            sig_gone(n, "redirected", was_online);
-        }
-        return;
-    }
-    node_dispatch(n, type, j, d);
+    node_msg(arg, j);
 }
 
 static void sig_down(npf_sig *s, const char *why, void *arg)

@@ -8,6 +8,7 @@ target_include_directories(npf_fuzz PRIVATE ${NPF_LIB_DIR}/src/node)
 npf_target_options(npf_fuzz)
 
 add_test(NAME npf_fuzz_json COMMAND npf_fuzz json 20000 1)
+add_test(NAME npf_fuzz_msg COMMAND npf_fuzz msg 20000 1)
 add_test(NAME npf_fuzz_tunnel COMMAND npf_fuzz tunnel 10000 1)
 add_test(NAME npf_fuzz_noise COMMAND npf_fuzz noise 3000 1)
 add_test(NAME npf_fuzz_cert COMMAND npf_fuzz cert 20000 1)

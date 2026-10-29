@@ -190,9 +190,11 @@ static void to_home(npf_node *n, const char *m, int ok, int event)
 {
     npf_jtok tok[48];
     npf_json j;
-    CHECK(npf_json_parse(&j, m, strlen(m), tok, 48) >= 0, "JSON %s", m);
+    char e[1200];
+    snprintf(e, sizeof e, "{\"v\":1,\"type\":\"%s\",%s", event ? "relay_spare" : "home_open", m + 1);
+    CHECK(npf_json_parse(&j, e, strlen(e), tok, 48) >= 0, "JSON %s", e);
     if (event)
-        node_home_spare(n, &j, npf_json_get(&j, 0, "data"));
+        node_msg(n, &j);
     else
         open_reply(n, &j, ok, n->home);
 }
@@ -327,10 +329,11 @@ static void test_client(void)
         npf_b64url_encode(nkey, 32, kb);
         memset(&ss, 0, sizeof ss);
         memcpy(&ss, &relay, sizeof relay);
-        len = snprintf(ev, sizeof ev, "{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\","
-                       "\"udp\":[\"%s\"],\"spare\":true},\"why\":\"taken\"}", rb, kb, npf_addr_str(&ss, ra, sizeof ra));
+        len = snprintf(ev, sizeof ev, "{\"v\":1,\"type\":\"relay_spare\",\"data\":{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\","
+                       "\"alloc_key\":\"%s\",\"udp\":[\"%s\"],\"spare\":true},\"why\":\"taken\"}}", rb, kb,
+                       npf_addr_str(&ss, ra, sizeof ra));
         CHECK(npf_json_parse(&j, ev, (size_t)len, tok, 32) >= 0, "relay_spare JSON");
-        node_home_spare(&node, &j, 0);
+        node_msg(&node, &j);
         CHECK(node.home->r.state == RB_BINDING && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
               "the next spare binds");
         CHECK(npf_node_home_status(&node, js, sizeof js) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
@@ -349,7 +352,7 @@ static void test_client(void)
     {
         npf_jtok tok[16];
         npf_json j;
-        char m[] = "{\"v\":1,\"type\":\"reply\",\"status\":\"error\",\"error\":\"rate_limited\"}";
+        char m[] = "{\"v\":1,\"type\":\"reply\",\"status\":\"error\",\"error\":\"rate_limited\",\"data\":{}}";
         CHECK(npf_json_parse(&j, m, strlen(m), tok, 16) == 0, "reply JSON");
         open_reply(&node, &j, 0, node.home);
         CHECK(node.home->r.state == RB_GAVE_UP && node.home->at && node.home->t_due,
@@ -425,9 +428,9 @@ static void test_table(void)
     CHECK(h->state == H_OPENING && home_due(h) == INT64_MAX, "the answer lost");
     /* OPENING, refused: OFF, home_open again 60 s on (rate_limited), else 300 s */
     t = npf_mono_ms();
-    to_home(&node, "{\"error\":\"rate_limited\"}", 0, 0);
+    to_home(&node, "{\"error\":\"rate_limited\",\"data\":{}}", 0, 0);
     CHECK(h->state == H_OFF && h->at >= t + 60000 && h->at < t + 61000 && home_due(h) == h->at, "refused, rate limited");
-    to_home(&node, "{\"error\":\"unavailable\"}", 0, 0);
+    to_home(&node, "{\"error\":\"unavailable\",\"data\":{}}", 0, 0);
     CHECK(h->state == H_OFF && h->at >= t + 300000 && h->at < t + 301000, "refused");
     /* OFF at its deadline, online: OPENING */
     asks = node.req_seq;

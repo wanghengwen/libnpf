@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "npf/conf.h"
+#include "npf/log.h"
 #include "npf/sys.h"
 
 static int fails;
@@ -16,6 +17,54 @@ static int fails;
     if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
                    fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
 } while (0)
+
+/* the key table: where a key may come from, its values, its defaults */
+static void key_table(void)
+{
+    static const char *const file[] = {"root", "server", "cred", "dir", "state", "log", "control", "node", "resource",
+                                       "direct_psk", "hosted_exec", "test_one_host", NULL};
+    static const char *const live[] = {"log_level", "max_calls", "punch_lead_ms", "punch_sockets", "hosted_trust",
+                                       "connect_mode", "peer_idle", "keep_awake", "hosted_max_conns", NULL};
+    npf_conf c;
+    char err[96];
+    const npf_key *k = NULL;
+    int i, n = 0;
+    for (i = 0; file[i]; i++)
+        CHECK(npf_key_is(file[i], NPF_K_FILE) && !npf_key_is(file[i], NPF_K_LIVE), "%s: npf.conf only", file[i]);
+    for (i = 0; live[i]; i++)
+        CHECK(npf_key_is(live[i], NPF_K_LIVE) && !npf_key_is(live[i], NPF_K_FILE), "%s: live", live[i]);
+    CHECK(npf_key_is("password", NPF_K_SECRET) && !npf_key_is("password", NPF_K_FILE) && npf_key_is("dir", NPF_K_PATH)
+          && !npf_key_is("serial_file", NPF_K_PATH) && npf_key_is("resource", NPF_K_MULTI)
+          && npf_key_is("hosted_ip_rate", NPF_K_UNLISTED) && npf_key_is("peer_idle", NPF_K_SETUP)
+          && !npf_key_is("log_level", NPF_K_SETUP), "the flags");
+    while ((k = npf_key_next(k))) {
+        char e2[96];
+        n++;
+        CHECK(k->def && (k->type == NPF_K_STR || npf_key_check(k, k->def, e2, sizeof e2) == 0), "%s: its default", k->name);
+    }
+    CHECK(n == 48, "%d keys", n);
+    CHECK(npf_key_check(npf_key_find("max_calls"), "4097", err, sizeof err) < 0
+          && strcmp(err, "max_calls: a number from 0 to 4096") == 0, "max_calls: %s", err);
+    CHECK(npf_key_check(npf_key_find("punch_lead_ms"), "-1", err, sizeof err) == 0
+          && npf_key_check(npf_key_find("udp_port"), "12x", err, sizeof err) < 0
+          && npf_key_check(npf_key_find("portmap"), "off", err, sizeof err) < 0
+          && npf_key_check(npf_key_find("connect_mode"), "relay", err, sizeof err) < 0
+          && strcmp(err, "connect_mode: p2p or secure") == 0
+          && npf_key_check(npf_key_find("home_bind"), "off", err, sizeof err) == 0, "the values");
+    memset(&c, 0, sizeof c);
+    CHECK(npf_conf_int(&c, "hosted_ip_conns") == 32 && npf_conf_int(&c, "punch_lead_ms") == -1
+          && npf_conf_int(&c, "log_level") == NPF_LOG_INFO && npf_conf_int(&c, "portmap") == 1, "the defaults");
+    npf_conf_set(&c, "connect_mode", "secure");
+    npf_conf_set(&c, "log_level", "trace");
+    npf_conf_set(&c, "sig_wake_s", "90000");            /* not checked: the default */
+    npf_conf_set(&c, "tun_mtu", "x");                   /* a module's: not libnpf's to check */
+    CHECK(npf_conf_int(&c, "connect_mode") == 1 && npf_conf_int(&c, "log_level") == NPF_LOG_TRACE
+          && npf_conf_int(&c, "sig_wake_s") == 600, "the values read");
+    CHECK(npf_conf_check(&c, err, sizeof err) < 0 && strstr(err, "sig_wake_s"), "npf_conf_check: %s", err);
+    npf_conf_set(&c, "sig_wake_s", "60");
+    CHECK(npf_conf_check(&c, err, sizeof err) == 0, "npf_conf_check: %s", err);
+    npf_conf_free(&c);
+}
 
 int test_conf(void)
 {
@@ -103,7 +152,8 @@ int test_conf(void)
 
     CHECK(npf_conf_value_ok("10.0.0.0/8, 192.168.1.2:80-443") && !npf_conf_value_ok("a\tb")
           && !npf_conf_value_ok("info\ncred = x") && !npf_conf_value_ok("x # y"), "npf_conf_value_ok");
-    CHECK(npf_conf_known("punch_sockets") && npf_conf_known("node") && !npf_conf_known("verbose"), "npf_conf_known");
+    CHECK(npf_key_find("punch_sockets") && npf_key_find("node") && !npf_key_find("verbose"), "npf_key_find");
+    key_table();
 
     /* private, atomic file write */
     snprintf(path, sizeof path, "%s/secret", dir);

@@ -345,29 +345,23 @@ void pm_check(npf_call *c)
 /* the platform's relay allocation (the reply to the call, incoming,
  * call_accepted, relay_switch): the UDP relay's (path_udp_setup) or the WS
  * relay's (call_ws_setup) */
-void call_relay_setup(npf_call *c, const npf_json *j, int d)
+void call_relay_setup(npf_call *c, const m_relay *r)
 {
-    int r = npf_json_get(j, d, "relay"), naddr;
-    char mode[8];
-    uint8_t id[8], key[32];
-    struct sockaddr_storage addr[4];
-    if (r < 0 || j->tok[r].type != NPF_JT_OBJECT || (naddr = relay_obj_parse(j, r, mode, id, key, addr)) < 0)
-        return;
-    if (strcmp(mode, "ws") == 0) {
-        if (call_has_ws(c) && (c->pw.wsr || c->pw.p.health == PH_DEAD) && memcmp(id, c->pw.id, 8) == 0)
+    if (strcmp(r->mode, "ws") == 0) {
+        if (call_has_ws(c) && (c->pw.wsr || c->pw.p.health == PH_DEAD) && memcmp(r->relay_id, c->pw.id, 8) == 0)
             return;                 /* the one in use, sent again (both sides asked; the reply to the
                                      * call, then call_accepted): its sublinks stay */
-        memcpy(c->pw.id, id, 8);    /* (the UDP relay's binder keeps its own allocation) */
-        if (call_ws_setup(c, j, r) < 0)
+        memcpy(c->pw.id, r->relay_id, 8);   /* (the UDP relay's binder keeps its own allocation) */
+        if (call_ws_setup(c, r) < 0)
             call_ws_failed(c, "cannot connect");
         return;
     }
-    if (strcmp(mode, "udp") != 0 || !naddr)
+    if (strcmp(r->mode, "udp") != 0 || !r->nudp)
         return;
     /* from the WS relay back to UDP (udp_back): the same AnLiu connection,
      * a datagram carrier again; punching rounds come again too */
     call_ws_leave(c);
-    path_udp_setup(c, id, key, addr, naddr);
+    path_udp_setup(c, r->relay_id, r->alloc_key, r->udp, r->nudp);
 }
 
 /* What the session needs of the platform (architecture.md 2.4), each time

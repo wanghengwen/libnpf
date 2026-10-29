@@ -2,6 +2,7 @@ add_executable(npf_unit_tests
   test_main.c
   test_crypto.c
   test_json.c
+  test_msg.c
   test_tunnel.c
   test_policy.c
   test_conf.c
@@ -31,6 +32,7 @@ if(NPF_PORTMAP)
 endif()
 target_link_libraries(npf_unit_tests PRIVATE npf_common)
 target_include_directories(npf_unit_tests PRIVATE ${NPF_LIB_DIR}/src/node)
+target_compile_definitions(npf_unit_tests PRIVATE NPF_LIB_DIR="${NPF_LIB_DIR}")
 npf_target_options(npf_unit_tests)
 
 add_test(NAME npf_unit_tests COMMAND npf_unit_tests)

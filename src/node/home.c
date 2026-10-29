@@ -198,26 +198,21 @@ static void home_arm(struct npf_home *h)
 
 /* ---- the platform ---- */
 
-/* the relay object at j[r] as the spare (home_open, relay_spare), bound from
- * the first of its addresses (after a loss: the NAT measured again once
- * bound); 0, or -1 */
-static int spare_take(struct npf_home *h, const npf_json *j, int r)
+/* a relay allocation as the spare (home_open, relay_spare), bound from the
+ * first of its addresses (after a loss: the NAT measured again once bound);
+ * 0, or -1 */
+static int spare_take(struct npf_home *h, const m_relay *r)
 {
-    uint8_t id[8], key[32];
-    char mode[8];
-    struct sockaddr_storage addr[4];
-    int naddr = relay_obj_parse(j, r, mode, id, key, addr), ok = naddr > 0 && strcmp(mode, "udp") == 0 ? 0 : -1;
-    if (ok == 0) {
-        relay_bind_take(&h->r, h->n, id, key, addr, naddr);
-        h->at = 0;
-        h->server = h->n->server_id;
-        h->srv_seen = 0;
-        h->bound_ms = 0;
-        bind_send(h, 0, 0);
-        home_arm(h);
-    }
-    npf_wipe(key, sizeof key);
-    return ok;
+    if (!r->nudp || strcmp(r->mode, "udp") != 0)
+        return -1;
+    relay_bind_take(&h->r, h->n, r->relay_id, r->alloc_key, r->udp, r->nudp);
+    h->at = 0;
+    h->server = h->n->server_id;
+    h->srv_seen = 0;
+    h->bound_ms = 0;
+    bind_send(h, 0, 0);
+    home_arm(h);
+    return 0;
 }
 
 /* {"key": "<relay_id>"} */
@@ -233,33 +228,29 @@ static const char *id_json(const struct npf_home *h, const char *key, char *out,
 static void open_reply(npf_node *n, const npf_json *j, int ok, void *arg)
 {
     struct npf_home *h = arg;
-    uint8_t id[8];
-    int resumed = 0, d;
-    char err[32] = "";
+    m_env e;
+    m_home_open m;
+    char err[96];
     h->opening = 0;
-    if (!j)
+    if (!j || node_env(j, &e) < 0)
         return;                             /* the connection went: the next login asks again */
     if (!ok) {
-        npf_json_get_str(j, 0, "error", err, sizeof err);
-        npf_log("home: home_open refused (%s)%s", err, h->r.state ? ": the spare kept" : "");
+        npf_log("home: home_open refused (%s)%s", e.error, h->r.state ? ": the spare kept" : "");
         if (!h->r.state) {
             h->state = H_OFF;
-            h->at = npf_mono_ms() + (strcmp(err, "rate_limited") == 0 ? 60000 : 300000);
+            h->at = npf_mono_ms() + (strcmp(e.error, "rate_limited") == 0 ? 60000 : 300000);
             home_arm(h);
         }
         return;
     }
-    d = npf_json_get(j, 0, "data");
-    npf_json_bool(j, npf_json_get(j, d, "resumed"), &resumed);
-    if (resumed) {
-        if (h->r.state && npf_json_get_b64(j, d, "relay_id", id, 8) == 8 && memcmp(id, h->r.relay_id, 8) == 0) {
-            npf_log("home: spare resumed (server %d)", n->server_id);
-            h->server = n->server_id;       /* backing off: bound again at its deadline (D11) */
-        }
-        return;
-    }
-    if (spare_take(h, j, npf_json_get(j, d, "relay")) == 0)
+    if (npf_msg_parse(&m_home_open_d, j, e.data, &m, err, sizeof err) < 0)
+        npf_logw("home: home_open's reply refused (%s)", err);
+    else if (m.resumed && h->r.state && m.relay_id_len && memcmp(m.relay_id, h->r.relay_id, 8) == 0) {
+        npf_log("home: spare resumed (server %d)", n->server_id);
+        h->server = n->server_id;           /* backing off: bound again at its deadline (D11) */
+    } else if (!m.resumed && spare_take(h, &m.relay) == 0)
         npf_logd("home: a spare allocation (server %d)", n->server_id);
+    npf_msg_wipe(&m_home_open_d, &m);
 }
 
 static void home_open_send(struct npf_home *h)
@@ -386,15 +377,12 @@ int node_home_adopt(npf_node *n, const uint8_t id[8], relay_c *dst)
     return 1;
 }
 
-void node_home_spare(npf_node *n, const npf_json *j, int d)
+void node_on_relay_spare(npf_node *n, const m_env *e, const void *msg)
 {
-    struct npf_home *h = n->home;
-    char why[16] = "";
-    if (!h)                                 /* sent only to a node that asked for a spare */
-        return;
-    npf_json_get_str(j, d, "why", why, sizeof why);   /* taken: after the call's relay (the reply, incoming) */
-    if (spare_take(h, j, npf_json_get(j, d, "relay")) == 0)
-        npf_log("home: another spare allocation (%s)", why[0] ? why : "?");
+    const m_relay_spare *m = msg;
+    (void)e;
+    if (n->home && spare_take(n->home, &m->relay) == 0)  /* sent only to a node that asked for a spare */
+        npf_log("home: another spare allocation (%s)", m->why[0] ? m->why : "?");   /* taken: after the call's relay */
 }
 
 /* ---- what comes from the relay ---- */

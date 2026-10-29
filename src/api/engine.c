@@ -121,7 +121,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     if (n->role == NPF_ROLE_DIRECT) {
         memset(&n->cfg, 0, sizeof n->cfg);
         n->cfg.offline = 1;
-        n->cfg.udp_port = atoi(npf_conf_get(&n->conf, "udp_port", "0"));
+        n->cfg.udp_port = (int)npf_conf_int(&n->conf, "udp_port");
     } else if (npf_node_cfg_from_conf(&n->cfg, &n->conf) < 0) {
         snprintf(err, errcap, "config: root keys and a server list are needed");
         goto fail;
@@ -161,9 +161,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     if (n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS)
         npf_peers_no_cache(n->peers);
     {   /* peer_idle = S: the peers on demand without an idle time of their own end S s after their last connection */
-        int idle = atoi(npf_conf_get(&n->conf, "peer_idle", "0"));
-        if (idle > 86400)
-            idle = 86400;                   /* the command's range: and idle * 1000 fits an int */
+        int idle = (int)npf_conf_int(&n->conf, "peer_idle");
         npf_peers_set_idle(n->peers, (idle > 0 ? idle : 300) * 1000);
     }
     /* the modules, before the peers come: their forwards' callbacks go to them */

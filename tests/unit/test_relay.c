@@ -193,6 +193,7 @@ int test_relay(void)
     npf_jtok tok[32];
     npf_json j;
     int64_t t1;
+    m_relay rel;
     bind_seen b1, b2, b3;
     npf_call *c;
     int fr, fc, len;
@@ -222,8 +223,9 @@ int test_relay(void)
     npf_b64url_encode(akey, 32, kb);
     len = snprintf(js, sizeof js, "{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\",\"udp\":[\"%s\"]}}",
                    rb, kb, npf_addr_str(&relay, ra, sizeof ra));
-    CHECK(npf_json_parse(&j, js, (size_t)len, tok, 32) >= 0, "relay JSON");
-    call_relay_setup(c, &j, 0);
+    CHECK(npf_json_parse(&j, js, (size_t)len, tok, 32) >= 0
+          && npf_msg_parse(&m_relay_d, &j, npf_json_get(&j, 0, "relay"), &rel, NULL, 0) == 0, "relay JSON");
+    call_relay_setup(c, &rel);
     CHECK(call_has_relay(c) && c->pu.r.state == RB_BINDING, "the relay taken");
 
     /* the first bind; a challenge to a txid it never sent, and ones with its
@@ -342,6 +344,7 @@ static npf_call *relay_call(npf_node *n, npf_json *j, npf_jtok *tok, const uint8
     static int k;
     char rb[16], kb[48], ra[64];
     char *s = js[k++ & 1];
+    m_relay rel;
     npf_call *c = call_new(n, 1);
     int len;
     if (!c)
@@ -351,9 +354,10 @@ static npf_call *relay_call(npf_node *n, npf_json *j, npf_jtok *tok, const uint8
     npf_b64url_encode(key, 32, kb);
     len = snprintf(s, 512, "{\"relay\":{\"mode\":\"udp\",\"relay_id\":\"%s\",\"alloc_key\":\"%s\",\"udp\":[\"%s\"]}}",
                    rb, kb, npf_addr_str(addr, ra, sizeof ra));
-    if (npf_json_parse(j, s, (size_t)len, tok, 32) < 0)
+    if (npf_json_parse(j, s, (size_t)len, tok, 32) < 0
+        || npf_msg_parse(&m_relay_d, j, npf_json_get(j, 0, "relay"), &rel, NULL, 0) < 0)
         return NULL;
-    call_relay_setup(c, j, 0);
+    call_relay_setup(c, &rel);
     return c;
 }
 
