@@ -69,6 +69,33 @@ int npf_text_mac(const char *s, unsigned char out[6])
     return *s ? -1 : 0;
 }
 
+int npf_hostport(const char *s, char *host, size_t cap, uint16_t *port)
+{
+    const char *h = s, *colon;
+    long p = 0;
+    size_t n;
+    if (*s == '[') {
+        const char *rb = strchr(s, ']');
+        if (!rb || rb[1] != ':')
+            return -1;
+        h = s + 1;
+        colon = rb + 1;
+    } else if (!(colon = strrchr(s, ':'))) {
+        return -1;
+    }
+    n = (size_t)((*s == '[' ? colon - 1 : colon) - h);
+    if (!n || n >= cap || (colon[1] == '0' && colon[2]))
+        return -1;
+    for (s = colon + 1; *s >= '0' && *s <= '9' && p <= 65535; s++)
+        p = p * 10 + *s - '0';
+    if (s == colon + 1 || *s || p > 65535)
+        return -1;
+    memcpy(host, h, n);
+    host[n] = 0;
+    *port = (uint16_t)p;
+    return 0;
+}
+
 int npf_http_status(const char *s)
 {
     int code = 0, i;

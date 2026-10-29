@@ -10,6 +10,7 @@
 
 #include "api_internal.h"
 #include "npf/resources.h"
+#include "npf/text.h"
 
 /* npf.h's NPF_RES_TCP .. NPF_RES_REVERSE (1 .. 5) by their names in the resources */
 static const char *const res_types[] = {NULL, "tcp", "udp", "net", "socks", "reverse"};
@@ -98,7 +99,7 @@ static void res_info(const npf_res *r, int flags, int saved, npf_resource_info *
     snprintf(i->name, sizeof i->name, "%s", r->name);
     snprintf(i->svc, sizeof i->svc, "%s", r->svc);
     if (npf_res_is_service(r))
-        npf_hostport_split(r->target, i->host, sizeof i->host, &i->port);
+        npf_hostport(r->target, i->host, sizeof i->host, &i->port);
     else
         snprintf(i->rule, sizeof i->rule, "%s", r->target);
     snprintf(i->path, sizeof i->path, "%s", r->path);
