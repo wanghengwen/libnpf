@@ -19,7 +19,10 @@
  *
  * The reliable layer: 16-bit segment numbers, cumulative acks, 32 segments
  * in flight, an RTO (RFC 6298, Karn) of 200 ms .. 1 s that resends the
- * oldest segment only; the receiver keeps segments out of order. Every
+ * oldest segment only; the receiver keeps segments out of order. After an
+ * RTO, until what was in flight then is acked, an ack that moves but leaves
+ * some of it unacked resends the new oldest at once (NewReno's partial
+ * ack): k holes cost an RTO and k round trips, not k RTOs. Every
  * datagram with a segment is answered with the current ack (a segment of
  * ours rides along when there is one); an empty message is a ping. Nothing
  * reaches the reliable layer or the JSON parser before the AEAD and the
@@ -97,6 +100,8 @@ typedef struct sigudp {
     omsg              *q, **q_end;
     int                nq;
     uint16_t           snd_una, snd_nxt, sn_tail;
+    uint16_t           recover;         /* after an RTO: snd_nxt then (recovering: partial acks resend) */
+    int                recovering;
     int64_t            seg_at[WND];
     uint8_t            seg_once[WND];   /* sent once: an RTT sample (Karn) */
     int                has_rtt, srtt, rttvar, rto;
@@ -394,6 +399,8 @@ static void rto_due(npf_sig *s)
     if (in_flight(u)) {
         seg_send(s, u->snd_una, 0);     /* the oldest only */
         u->retrans++;
+        u->recover = u->snd_nxt;
+        u->recovering = 1;
     }
     npf_logt("sig udp: rto %d ms: resent%s%s (sn %u)", u->rto, u->state == SU_FINISH ? " message 3" : "",
              in_flight(u) ? " the oldest segment" : "", (unsigned)u->snd_una);
@@ -425,6 +432,11 @@ static void ack_in(npf_sig *s, uint16_t a)
         u->nq--;
         npf_wipe_free(m, sizeof *m + m->len);
     }
+    if (u->recovering && (int16_t)(uint16_t)(a - u->recover) < 0) {
+        seg_send(s, a, 0);              /* a partial ack: the next hole now */
+        u->retrans++;
+    } else
+        u->recovering = 0;
     arm(s);
 }
 

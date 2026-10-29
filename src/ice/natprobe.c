@@ -14,7 +14,12 @@
 static const int k_send_at[] = { 0, 200, 600, 1400 };
 #define TX_SENDS     4
 #define TX_GIVEUP_MS 2200
-#define ALLOC_SPREAD_MS 200     /* the K allocation requests are spread over 200 ms */
+/* the K allocation requests within 15 ms: the step is the smallest gap
+ * between their ports, and the others behind a busy NAT take ports between
+ * them (10 a second: every gap of 50 ms had one in 6 % of the measurements,
+ * a step of 2 for a sequential NAT's 1, every S2B round missed; natlab
+ * s2b-busy, 2026-10-30) */
+#define ALLOC_SPREAD_MS 15
 #define FILTER_WAIT_MS  600     /* a bounce comes with the server's acknowledgement: so long after it at most */
 
 typedef struct tx {

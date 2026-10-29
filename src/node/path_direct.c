@@ -126,6 +126,7 @@ static void direct_suspect(npf_path *p, int64_t quiet)
     else
         snprintf(why, sizeof why, "nothing from the peer on the direct path for %lld s", (long long)quiet / 1000);
     direct_doubt(c, why);
+    node_sig_udp_check(c->n);
 }
 
 /* in doubt 10 s, no echo: lost (pm_decide drops it) */

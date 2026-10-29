@@ -365,6 +365,7 @@ struct npf_node {
     int64_t       watch_boot_ms;    /* npf_boot_ms of the last tick */
     uint32_t      watch_addrs;      /* digest of the interfaces' addresses, 0 not yet */
     int64_t       netcheck_ms;      /* monotonic: a check's signaling ping went out */
+    int           netcheck_path;    /* the check is a call's: its UDP path went silent (node_sig_udp_check) */
     int           repunch_on_nat;   /* a network check: relayed calls report again once the NAT is measured */
     void        (*on_udp_ready)(npf_node *n, void *arg);
     struct sockaddr_in srflx;

@@ -307,8 +307,30 @@ static void netcheck_cb(npf_loop *loop, void *arg)
     n->t_netcheck = NULL;
     if (n->sig && n->online && npf_sig_last_rx(n->sig) < n->netcheck_ms) {
         n->backoff_ms = 0;
-        node_sig_abort(n, "no answer after a network change");
+        if (n->netcheck_path) {
+            n->udp_bad = 1;                 /* the WebSocket at once */
+            npf_log("signaling: no answer over udp either, using ws; udp again in 10 min");
+        }
+        node_sig_abort(n, n->netcheck_path ? "no answer over udp" : "no answer after a network change");
+        if (n->netcheck_path)
+            node_reconnect_now(n);          /* not after the reconnect's second */
     }
+}
+
+/* a call's UDP path (direct, the UDP relay) silent while relied on: the
+ * node's UDP may be cut, signaling over UDP with it, and the call's request
+ * for the WS relay would wait for the signaling watchdog (35 s at most) and
+ * a reconnect. A ping that must be answered as after a network change, else
+ * the WebSocket at once (the calls send again at its login: node_calls_relogin) */
+void node_sig_udp_check(npf_node *n)
+{
+    if (!n->sig || !n->online || npf_sig_via(n->sig)[0] != 'u' || n->t_netcheck)
+        return;
+    npf_log("signaling: a call's udp path went silent: pinging the server over udp (%d s)", NETCHECK_UDP_MS / 1000);
+    n->netcheck_ms = npf_mono_ms();
+    n->netcheck_path = 1;
+    npf_sig_ping(n->sig);
+    n->t_netcheck = npf_timer_add(n->loop, NETCHECK_UDP_MS, netcheck_cb, n);
 }
 
 static void node_net_check(npf_node *n, const char *why)
@@ -326,6 +348,7 @@ static void node_net_check(npf_node *n, const char *why)
              * session is likely gone when it does not answer in 3 s */
             int udp = npf_sig_via(n->sig)[0] == 'u';
             n->netcheck_ms = npf_mono_ms();
+            n->netcheck_path = 0;
             npf_sig_ping(n->sig);
             npf_timer_cancel(n->loop, n->t_netcheck);
             n->t_netcheck = npf_timer_add(n->loop, udp ? NETCHECK_UDP_MS : NETCHECK_MS, netcheck_cb, n);

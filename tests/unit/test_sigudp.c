@@ -22,6 +22,7 @@
 #include "npf/noise.h"
 #include "npf/sig.h"
 #include "npf/siv.h"
+#include "node_internal.h"
 #include "test.h"
 
 #ifdef NPF_SIG_UDP
@@ -611,6 +612,40 @@ static void t_reliable(npf_loop *loop)
     srv_free(&v);
 }
 
+/* after an RTO, partial acks: each the next hole at once (NewReno), not
+ * an RTO each; the recovery over once all sent before the RTO is acked */
+static void t_partial(npf_loop *loop)
+{
+    srv v = {0};
+    int i;
+    int64_t t0;
+    srv_init(&v, 7);
+    REQUIRE_V(open_cli(loop, &v, NULL));
+    pump(&v, 0);
+    pump(&v, 0);                        /* message 3 */
+    ack_send(&v);                       /* the server's first transport packet: up */
+    for (i = 0; i < 3; i++)
+        npf_sig_send(cli, "{\"x\":1}", 7);
+    nq = 0;                             /* all three lost */
+    t0 = npf_mono_ms();
+    while (nq == 0 && npf_mono_ms() - t0 < 2000)
+        npf_loop_once(loop, 5);
+    CHECK(nq == 1, "after the RTO: %d datagrams", nq);  /* the oldest */
+    t0 = npf_mono_ms();
+    for (i = 0; i < 3 && nq; i++)
+        pump(&v, 0);                    /* its ack: the next one at once, and again */
+    CHECK(v.nmsg == 3 && nq == 0 && npf_mono_ms() - t0 < 50, "%d messages, %d left", v.nmsg, nq);
+    npf_sig_send(cli, "{\"x\":2}", 7);
+    npf_sig_send(cli, "{\"x\":3}", 7);
+    v.no_ack = 1;
+    pump(&v, 0);
+    v.no_ack = 0;
+    ack_send(&v);                       /* covers both; then one alone: no resend without an RTO */
+    EXPECT(nq == 0 && v.nmsg == 5);
+    close_cli();
+    srv_free(&v);
+}
+
 static void t_ping(npf_loop *loop)
 {
     srv v = {0};
@@ -1081,6 +1116,33 @@ static void t_node(npf_loop *loop)
     NODE_UNTIL(v.closes, 500);
     EXPECT(v.closes == 1);
 
+    /* a call's UDP path went silent (path_udp.c, path_direct.c): a ping;
+     * answered, UDP stays; unanswered (the node's UDP cut, natlab udp-lost)
+     * the WebSocket 3 s later at once (not UDP first), udp_bad */
+    srv_init(&v, 12);
+    v.fd = lo_socket(SOCK_DGRAM, 0, &v.addr, sizeof v.addr);
+    log_clear();
+    REQUIRE_V(node_up(n, loop, &v, &w, url, sizeof url) == 0);
+    NODE_UNTIL(n->online, 3000);
+    node_sig_udp_check(n);
+    NODE_UNTIL(0, 3500);
+    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0 && w.conns == 0 && !n->udp_bad,
+          "path silent, udp answers: stays (%s)", logged);
+    v.silent = 1;
+    {
+        int64_t t0 = npf_mono_ms();
+        node_sig_udp_check(n);
+        NODE_UNTIL(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0, 5000);
+        CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0 && n->udp_bad
+              && npf_mono_ms() - t0 >= 2900 && npf_mono_ms() - t0 < 3800, "path silent, no udp: ws after %lld ms (%s)",
+              (long long)(npf_mono_ms() - t0), logged);
+    }
+    EXPECT(count_of(logged, "pinging the server over udp") == 2 && count_of(logged, "no answer over udp either") == 1);
+    EXPECT(count_of(logged, "signaling: connecting to server 0 udp") == 1);   /* not UDP again first */
+    npf_node_stop(n);
+    ws_drop(&w);
+    close(v.fd);
+
     /* UDP silent: the WebSocket after a second, udp_bad; then UDP answers
      * and the idle node moves to it, the WebSocket replaced */
     srv_init(&v, 12);
@@ -1165,6 +1227,7 @@ int test_sigudp(void)
     t_txid(loop);
     t_m3_lost(loop);
     t_reliable(loop);
+    t_partial(loop);
     t_ping(loop);
     t_close(loop);
     t_replay(loop);

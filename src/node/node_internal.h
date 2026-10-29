@@ -37,6 +37,7 @@ void node_sig_connect(npf_node *n);
 /* something seems lost (a call of ours timed out): ask the server with a ping;
  * no answer in time and the signaling is made again */
 void node_sig_probe(npf_node *n);
+void node_sig_udp_check(npf_node *n);
 /* a call is being set up (needs the signaling connection as it is) */
 int  node_calls_setting_up(const npf_node *n);
 /* a call is up: the signaling reconnects to the same server (its calls are rebound there) */

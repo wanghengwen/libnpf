@@ -91,6 +91,7 @@ static void udp_suspect(npf_path *p, int64_t quiet)
     npf_logw("call %s: the UDP relay silent for %lld ms while the session relies on it: probing it, %s first",
              c->call_id_s, (long long)quiet, c->pu.r.naddr > 1 ? "its address in use" : "its address");
     bind_run(c, 1);
+    node_sig_udp_check(c->n);
 }
 
 /* its probe is a bind and its verdict the binder's: none by time */
