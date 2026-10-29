@@ -175,9 +175,9 @@ void npf_cmd_config_json(npf_t *c, npf_out *o)
 {
     char b[NPF_CONF_VAL_MAX];
     const npf_key *k = NULL;
-    npf_out_jopen(o, '{');
+    npf_out_jobj(o);
     while ((k = npf_key_next(k)))
         if ((k->flags & (NPF_K_LIVE | NPF_K_UNLISTED)) == NPF_K_LIVE)
             npf_out_kstr(o, k->name, npf_cmd_get(c, k->name, b, sizeof b));
-    npf_out_jclose(o, '}');
+    npf_out_jend(o);
 }

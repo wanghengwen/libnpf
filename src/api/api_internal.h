@@ -193,7 +193,6 @@ static inline void list_put(op_arg *x, const void *e, size_t esize)
 /* ops.c: the peers saved in local.json brought back with their forwards,
  * after the modules (their forward kinds); "HOST:PORT", "[V6]:PORT" split */
 void npf_ops_restore(npf_t *n);
-int  npf_hostport_split(const char *s, char *host, size_t cap, uint16_t *port);
 
 static inline void err_clear(char *err, size_t errcap)
 {

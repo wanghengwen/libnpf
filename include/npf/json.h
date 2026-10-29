@@ -66,36 +66,4 @@ int npf_json_get_str(const npf_json *j, int obj, const char *key, char *buf, siz
 int npf_json_get_int(const npf_json *j, int obj, const char *key, int64_t min, int64_t max, int64_t *out);
 int npf_json_get_b64(const npf_json *j, int obj, const char *key, uint8_t *out, size_t cap);
 
-/* ---- writer ---- */
-
-typedef struct npf_jw {
-    char   *buf;
-    size_t  cap, len;
-    int     err;
-    int     depth;
-    uint8_t first[NPF_JSON_MAX_DEPTH + 2];
-    uint8_t kind[NPF_JSON_MAX_DEPTH + 2];
-    int     after_key;
-} npf_jw;
-
-void npf_jw_init(npf_jw *w, char *buf, size_t cap);
-void npf_jw_obj(npf_jw *w);                 /* { */
-void npf_jw_arr(npf_jw *w);                 /* [ */
-void npf_jw_end(npf_jw *w);                 /* } or ] */
-void npf_jw_key(npf_jw *w, const char *k);
-void npf_jw_str(npf_jw *w, const char *v);
-void npf_jw_strn(npf_jw *w, const char *v, size_t n);
-void npf_jw_int(npf_jw *w, int64_t v);
-void npf_jw_bool(npf_jw *w, int v);
-void npf_jw_null(npf_jw *w);
-void npf_jw_b64(npf_jw *w, const uint8_t *v, size_t n);
-void npf_jw_raw(npf_jw *w, const char *json, size_t n);   /* pre-encoded value */
-/* key + value shortcuts */
-void npf_jw_kstr(npf_jw *w, const char *k, const char *v);
-void npf_jw_kint(npf_jw *w, const char *k, int64_t v);
-void npf_jw_kbool(npf_jw *w, const char *k, int v);
-void npf_jw_kb64(npf_jw *w, const char *k, const uint8_t *v, size_t n);
-/* Returns the length (NUL-terminated in buf) or -1 on overflow / misuse. */
-int  npf_jw_finish(npf_jw *w);
-
 #endif

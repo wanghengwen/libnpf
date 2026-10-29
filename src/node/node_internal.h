@@ -63,20 +63,20 @@ int  node_portmap_cand(const npf_node *n, struct sockaddr_storage *out);
 /* a network change: on another network (gateway, address) the mapping again */
 void node_portmap_net_change(npf_node *n);
 /* the nat profile's "pm": what the gateway did (PCP / NAT-PMP), no address */
-void node_portmap_write(const npf_node *n, npf_jw *w);
+void node_portmap_write(const npf_node *n, npf_out *w);
 #else
 static inline void node_portmap_start(npf_node *n) { (void)n; }
 static inline void node_portmap_stop(npf_node *n) { (void)n; }
 static inline void node_portmap_restart(npf_node *n) { (void)n; }
 static inline int  node_portmap_cand(const npf_node *n, struct sockaddr_storage *out) { (void)n, (void)out; return 0; }
 static inline void node_portmap_net_change(npf_node *n) { (void)n; }
-static inline void node_portmap_write(const npf_node *n, npf_jw *w)
+static inline void node_portmap_write(const npf_node *n, npf_out *w)
 {
     (void)n;
-    npf_jw_key(w, "pm");
-    npf_jw_obj(w);
-    npf_jw_kstr(w, "gw", "off");
-    npf_jw_end(w);
+    npf_out_jkey(w, "pm");
+    npf_out_jobj(w);
+    npf_out_kstr(w, "gw", "off");
+    npf_out_jend(w);
 }
 #endif
 /* nat.c: candidates again (a port mapping came or went) */

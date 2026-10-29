@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "npf/resources.h"
+#include "npf/text.h"
 
 /* no control characters (UTF-8 itself the JSON parser checks) */
 static int text_ok(const char *s)
@@ -22,35 +23,14 @@ static int text_ok(const char *s)
  * part (brackets off) in host, the port in *port; 0 or -1 */
 static int split_target(const char *t, char *host, size_t cap, int *port)
 {
-    const char *colon;
-    char *e;
-    long p;
     uint8_t a[16];
-    if (t[0] == '[') {
-        const char *rb = strchr(t, ']');
-        if (!rb || rb[1] != ':' || (size_t)(rb - t - 1) >= cap)
-            return -1;
-        memcpy(host, t + 1, (size_t)(rb - t - 1));
-        host[rb - t - 1] = 0;
-        if (inet_pton(AF_INET6, host, a) != 1)
-            return -1;
-        colon = rb + 1;
-    } else {
-        colon = strrchr(t, ':');
-        if (!colon || (size_t)(colon - t) >= cap || colon == t)
-            return -1;
-        memcpy(host, t, (size_t)(colon - t));
-        host[colon - t] = 0;
-        if (strcmp(host, "localhost") != 0 && inet_pton(AF_INET, host, a) != 1)
-            return -1;
-    }
-    if (colon[1] < '1' || colon[1] > '9')
-        return -1;                          /* digits only: not "+80", " 80" or "080" */
-    p = strtol(colon + 1, &e, 10);
-    if (*e || p < 1 || p > 65535)
+    uint16_t p;
+    if (npf_hostport(t, host, cap, &p) < 0 || !p)
         return -1;
-    *port = (int)p;
-    return 0;
+    *port = p;
+    if (t[0] == '[')
+        return inet_pton(AF_INET6, host, a) == 1 ? 0 : -1;
+    return strcmp(host, "localhost") == 0 || inet_pton(AF_INET, host, a) == 1 ? 0 : -1;
 }
 
 /* one service: tcp, or a udp resource of one HOST:PORT (a udp resource may
@@ -273,7 +253,7 @@ void npf_res_json(npf_out *o, const npf_res *r, int n)
 int npf_res_rules(npf_policy *p, const npf_res *r, int n)
 {
     char host[64], spec[96];
-    int i, k, port;
+    int i, k, port = 0;
     npf_policy_clear(p);
     for (i = 0; i < n; i++) {
         const char *t = r[i].target;

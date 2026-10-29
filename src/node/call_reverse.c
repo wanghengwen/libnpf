@@ -281,8 +281,8 @@ static void rev_reply(npf_call *c, const npf_json *j, int ok, void *arg)
 int npf_call_reverse(npf_call *c, const char *bind_addr, int port, const char *host, uint16_t hostport, int udp,
                      npf_rev_fn fn, void *arg)
 {
-    char data[512];
-    npf_jw w;
+    npf_out w = {0};
+    int rc;
     rev_req *r = calloc(1, sizeof *r);
     if (!r || strlen(host) >= sizeof r->host) {
         free(r);
@@ -293,22 +293,21 @@ int npf_call_reverse(npf_call *c, const char *bind_addr, int port, const char *h
     r->udp = udp;
     r->fn = fn;
     r->arg = arg;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "bind", bind_addr);
-    npf_jw_kint(&w, "port", port);
-    npf_jw_kstr(&w, "target_host", host);
-    npf_jw_kint(&w, "target_port", hostport);
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "bind", bind_addr);
+    npf_out_kint(&w, "port", port);
+    npf_out_kstr(&w, "target_host", host);
+    npf_out_kint(&w, "target_port", hostport);
     if (udp) {
-        npf_jw_kbool(&w, "udp", 1);
+        npf_out_kbool(&w, "udp", 1);
         npf_udpf_prepare(call_udp_of(c));   /* the stream the callee sends on */
     }
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) < 0 || npf_call_ctl_request(c, "reverse_listen", data, rev_reply, r) < 0) {
+    npf_out_jend(&w);
+    rc = w.failed ? -1 : npf_call_ctl_request(c, "reverse_listen", w.p, rev_reply, r);
+    npf_out_free(&w);
+    if (rc < 0)
         free(r);
-        return -1;
-    }
-    return 0;
+    return rc < 0 ? -1 : 0;
 }
 
 void npf_call_reverse_close(npf_call *c, uint32_t listen_id)

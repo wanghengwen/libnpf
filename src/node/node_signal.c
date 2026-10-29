@@ -35,51 +35,31 @@ int64_t npf_node_time(const npf_node *n)
     return npf_unix_ms() + n->clock_offset_ms;
 }
 
-/* room for a string field escaped (\u00XX: 6 bytes a character at most) */
-static size_t env_room(const char *v)
-{
-    return v ? 16 + 6 * strlen(v) : 0;
-}
-
 static int send_env(npf_node *n, const char *type, const char *id, const char *reply_to, const char *status,
                     const char *error, const char *data_json)
 {
-    char *buf;
-    npf_jw w;
-    int len, r;
-    /* what this envelope needs, not NPF_JSON_MAX_SIZE for each one (most
-     * are a call_end or a reply: a few hundred bytes) */
-    size_t cap = 64 + (data_json ? strlen(data_json) : 2) + env_room(type) + env_room(id) + env_room(reply_to)
-                 + env_room(status) + env_room(error);
-    if (cap > NPF_JSON_MAX_SIZE)
-        cap = NPF_JSON_MAX_SIZE;
-    if (!n->sig || !(buf = malloc(cap)))
+    npf_out w = {.max = NPF_JSON_MAX_SIZE, .secret = 1};    /* data carries passwords, codes, keys */
+    int r = -1;
+    if (!n->sig)
         return -1;
-    npf_jw_init(&w, buf, cap);
-    npf_jw_obj(&w);
-    npf_jw_kint(&w, "v", 1);
-    npf_jw_kstr(&w, "type", type);
-    if (id) npf_jw_kstr(&w, "id", id);
-    if (reply_to) npf_jw_kstr(&w, "reply_to", reply_to);
-    if (status) npf_jw_kstr(&w, "status", status);
-    if (error) npf_jw_kstr(&w, "error", error);
-    npf_jw_key(&w, "data");
-    if (data_json)
-        npf_jw_raw(&w, data_json, strlen(data_json));
-    else
-        npf_jw_raw(&w, "{}", 2);
-    npf_jw_end(&w);
-    len = npf_jw_finish(&w);
-    if (len < 0) {
-        free(buf);
-        return -1;
+    npf_out_jobj(&w);
+    npf_out_kint(&w, "v", 1);
+    npf_out_kstr(&w, "type", type);
+    if (id) npf_out_kstr(&w, "id", id);
+    if (reply_to) npf_out_kstr(&w, "reply_to", reply_to);
+    if (status) npf_out_kstr(&w, "status", status);
+    if (error) npf_out_kstr(&w, "error", error);
+    npf_out_jkey(&w, "data");
+    npf_out_jraw(&w, data_json ? data_json : "{}");
+    npf_out_jend(&w);
+    if (!w.failed) {
+        /* the envelope only, never data (R10) */
+        npf_logt("sig > %s%s%s%s%s%s%s%s%s, %d bytes", type, id ? " id=" : "", id ? id : "",
+                 reply_to ? " reply_to=" : "", reply_to ? reply_to : "", status ? " " : "", status ? status : "",
+                 error ? " " : "", error ? error : "", (int)w.len);
+        r = npf_sig_send(n->sig, w.p, w.len);
     }
-    /* the envelope only, never data: it carries passwords, codes, keys (R10) */
-    npf_logt("sig > %s%s%s%s%s%s%s%s%s, %d bytes", type, id ? " id=" : "", id ? id : "", reply_to ? " reply_to=" : "",
-             reply_to ? reply_to : "", status ? " " : "", status ? status : "", error ? " " : "", error ? error : "", len);
-    r = npf_sig_send(n->sig, buf, (size_t)len);
-    npf_wipe(buf, (size_t)len);
-    free(buf);
+    npf_out_free(&w);
     return r;
 }
 
@@ -424,70 +404,61 @@ static void ping_cb(npf_loop *loop, void *arg)
     n->t_ping = npf_timer_add(n->loop, ivl, ping_cb, n);
 }
 
-/* login and enrol: two certificates of 1 KB in base64 and the host's
- * record may not fit in 4 KB, and a login that never fits never logs in */
-#define LOGIN_JSON_MAX 8192
-
 static void send_login(npf_node *n)
 {
-    char *data = malloc(LOGIN_JSON_MAX), num[24];
-    npf_jw w;
-    if (!data) {
-        npf_logw("login: no memory");
-        return;
-    }
-    npf_jw_init(&w, data, LOGIN_JSON_MAX);
-    npf_jw_obj(&w);
+    char num[24];
+    npf_out w = {0};
+    npf_out_jobj(&w);
     if (n->cfg.callable) {
-        npf_jw_kstr(&w, "role", "node");
+        npf_out_kstr(&w, "role", "node");
         snprintf(num, sizeof num, "%llu", (unsigned long long)n->cfg.number);
-        npf_jw_kstr(&w, "number", num);
+        npf_out_kstr(&w, "number", num);
         if (n->cert_len)
-            npf_jw_kb64(&w, "cert", n->cert, n->cert_len);
+            npf_out_kb64(&w, "cert", n->cert, n->cert_len);
         if (n->account_cert_len)
-            npf_jw_kb64(&w, "account_cert", n->account_cert, n->account_cert_len);
+            npf_out_kb64(&w, "account_cert", n->account_cert, n->account_cert_len);
     } else if (n->cfg.hosted_service) {
-        npf_jw_kstr(&w, "role", "hosted");          /* npf-hosted itself (its key: hosted_keys) */
+        npf_out_kstr(&w, "role", "hosted");          /* npf-hosted itself (its key: hosted_keys) */
     } else {
-        npf_jw_kstr(&w, "role", "client");
+        npf_out_kstr(&w, "role", "client");
         if (n->account_cert_len)
-            npf_jw_kb64(&w, "cert", n->account_cert, n->account_cert_len);
+            npf_out_kb64(&w, "cert", n->account_cert, n->account_cert_len);
     }
-    if (n->cfg.callable && n->cfg.model) npf_jw_kstr(&w, "model", n->cfg.model);
-    if (n->cfg.callable && n->cfg.fw) npf_jw_kstr(&w, "fw", n->cfg.fw);
+    if (n->cfg.callable && n->cfg.model) npf_out_kstr(&w, "model", n->cfg.model);
+    if (n->cfg.callable && n->cfg.fw) npf_out_kstr(&w, "fw", n->cfg.fw);
     if (n->cfg.app_name) {
-        npf_jw_key(&w, "app");
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "name", n->cfg.app_name);
-        npf_jw_kstr(&w, "ver", n->cfg.app_ver);
-        npf_jw_end(&w);
+        npf_out_jkey(&w, "app");
+        npf_out_jobj(&w);
+        npf_out_kstr(&w, "name", n->cfg.app_name);
+        npf_out_kstr(&w, "ver", n->cfg.app_ver);
+        npf_out_jend(&w);
     }
     /* the full list's serial: after a seed list from DNS the server still
      * sends the full one */
-    npf_jw_kint(&w, "sl_serial", n->sl_full_serial ? n->sl_full_serial : n->sl_serial);
+    npf_out_kint(&w, "sl_serial", n->sl_full_serial ? n->sl_full_serial : n->sl_serial);
     if (!n->cfg.no_host_report) {
         /* the platform's connection record: OS, machine, interfaces (report_host = 0: none) */
         npf_host_info h;
         int i;
         npf_host_info_get(&h);
-        npf_jw_key(&w, "host");
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "os", h.os);
-        npf_jw_kstr(&w, "arch", h.arch);
-        npf_jw_kstr(&w, "hostname", h.hostname);
-        npf_jw_kstr(&w, "machine_id", h.machine_id);
-        npf_jw_key(&w, "macs");
-        npf_jw_arr(&w);
+        npf_out_jkey(&w, "host");
+        npf_out_jobj(&w);
+        npf_out_kstr(&w, "os", h.os);
+        npf_out_kstr(&w, "arch", h.arch);
+        npf_out_kstr(&w, "hostname", h.hostname);
+        npf_out_kstr(&w, "machine_id", h.machine_id);
+        npf_out_jkey(&w, "macs");
+        npf_out_jarr(&w);
         for (i = 0; i < h.nmacs; i++)
-            npf_jw_str(&w, h.macs[i]);
-        npf_jw_end(&w);
-        npf_jw_end(&w);
+            npf_out_jstr(&w, h.macs[i]);
+        npf_out_jend(&w);
+        npf_out_jend(&w);
     }
-    npf_jw_end(&w);
+    npf_out_jend(&w);
     n->login_sent_ms = npf_mono_ms();
-    if (npf_jw_finish(&w) < 0 || npf_node_send(n, "login", 1, data) < 0)
+    if (w.failed || npf_node_send(n, "login", 1, w.p) < 0)
         npf_logw("login: send failed");
-    free(data);
+    npf_out_free(&w);
 }
 
 /* ---- one key per model: enrol (security.md 5.2) ---- */
@@ -579,15 +550,10 @@ static void send_enroll(npf_node *n)
     const npf_enroll_req *e = n->cfg.enroll;
     uint8_t msg[64 + 1 + 64 + 32 + 32], sv[64], sd[64];   /* h is the 64-byte BLAKE2b handshake hash */
     size_t sl = strlen(e->serial), ml;
-    char *data;
     int i;
-    npf_jw w;
+    npf_out w = {0};
     if (sl == 0 || sl > 64) {
         npf_loge("enrol: no serial number (serial / serial_file)");
-        return;
-    }
-    if (!(data = malloc(LOGIN_JSON_MAX))) {
-        npf_logw("enrol: no memory");
         return;
     }
     memcpy(msg, npf_sig_hash(n->sig), 64);
@@ -598,25 +564,24 @@ static void send_enroll(npf_node *n)
     ml = 129 + sl;
     npf_sign2(sv, e->model_sk, "npf-enroll-v1", 13, msg, ml);
     npf_sign2(sd, n->id.sign_sk, "npf-enroll-v1", 13, msg, ml);
-    npf_jw_init(&w, data, LOGIN_JSON_MAX);
-    npf_jw_obj(&w);
-    npf_jw_kb64(&w, "model_chain", e->model_chain, e->model_chain_len);
-    npf_jw_kstr(&w, "serial", e->serial);
-    npf_jw_key(&w, "hw");
-    npf_jw_arr(&w);
+    npf_out_jobj(&w);
+    npf_out_kb64(&w, "model_chain", e->model_chain, e->model_chain_len);
+    npf_out_kstr(&w, "serial", e->serial);
+    npf_out_jkey(&w, "hw");
+    npf_out_jarr(&w);
     for (i = 0; i < e->nhw; i++) {
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "k", e->hw_kind[i]);
-        npf_jw_kb64(&w, "h", e->hw_hash[i], 16);
-        npf_jw_end(&w);
+        npf_out_jobj(&w);
+        npf_out_kstr(&w, "k", e->hw_kind[i]);
+        npf_out_kb64(&w, "h", e->hw_hash[i], 16);
+        npf_out_jend(&w);
     }
-    npf_jw_end(&w);
-    npf_jw_kb64(&w, "sign_pub", n->id.sign_pub, 32);
-    npf_jw_kb64(&w, "sig_v", sv, 64);
-    npf_jw_kb64(&w, "sig_d", sd, 64);
-    if (n->cfg.model) npf_jw_kstr(&w, "model", n->cfg.model);
-    if (n->cfg.fw) npf_jw_kstr(&w, "fw", n->cfg.fw);
-    npf_jw_end(&w);
+    npf_out_jend(&w);
+    npf_out_kb64(&w, "sign_pub", n->id.sign_pub, 32);
+    npf_out_kb64(&w, "sig_v", sv, 64);
+    npf_out_kb64(&w, "sig_d", sd, 64);
+    if (n->cfg.model) npf_out_kstr(&w, "model", n->cfg.model);
+    if (n->cfg.fw) npf_out_kstr(&w, "fw", n->cfg.fw);
+    npf_out_jend(&w);
     {
         char kinds[8 * 17] = "";
         size_t o = 0;
@@ -624,8 +589,8 @@ static void send_enroll(npf_node *n)
             o += (size_t)snprintf(kinds + o, sizeof kinds - o, "%s%s", i ? ", " : "", e->hw_kind[i]);
         npf_log("enrol: serial %s with the model credential, hardware items: %s", e->serial, kinds);
     }
-    i = npf_jw_finish(&w) < 0 || npf_node_request(n, "enroll", data, enroll_reply, NULL) < 0;
-    free(data);
+    i = w.failed || npf_node_request(n, "enroll", w.p, enroll_reply, NULL) < 0;
+    npf_out_free(&w);
     if (i) {
         npf_logw("enrol: send failed");
         return;

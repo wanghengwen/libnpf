@@ -82,5 +82,10 @@ static inline void npf_le64(uint8_t *p, uint64_t v) { int i; for (i = 0; i < 8; 
 static inline uint16_t npf_rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static inline uint32_t npf_rd32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 static inline uint64_t npf_rd64(const uint8_t *p) { return (uint64_t)npf_rd32(p) | ((uint64_t)npf_rd32(p + 4) << 32); }
+/* big-endian (network order: DNS, PCP, NAT-PMP, IPv4 addresses) */
+static inline void npf_be16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+static inline void npf_be32(uint8_t *p, uint32_t v) { npf_be16(p, (uint16_t)(v >> 16)); npf_be16(p + 2, (uint16_t)v); }
+static inline uint16_t npf_rdbe16(const uint8_t *p) { return (uint16_t)(p[0] << 8 | p[1]); }
+static inline uint32_t npf_rdbe32(const uint8_t *p) { return (uint32_t)npf_rdbe16(p) << 16 | npf_rdbe16(p + 2); }
 
 #endif

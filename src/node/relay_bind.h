@@ -122,7 +122,6 @@ int  relay_bind_tick(relay_c *r, int64_t now, int ka);
 int  relay_bind_up(relay_c *r, int64_t now, int ka);
 /* where the binds go */
 #define RELAY_BIND_DST(r) (&(r)->addr[(r)->bi])
-int  call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b);
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable (path_udp.c) */
 int  call_relay_blocked(const npf_node *n, const char *what);
 int  call_relay_addr_blocked(const npf_node *n, const struct sockaddr_storage *a);

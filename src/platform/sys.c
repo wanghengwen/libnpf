@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "npf/crypto.h"
 #include "npf/log.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
@@ -88,37 +89,9 @@ void npf_sock_listen_opts(int fd, int type)
         setsockopt((SOCKET)fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&one, sizeof one);
 }
 
-int npf_sock_again(void)
+int npf_sock_err(void)
 {
-    int e = WSAGetLastError();
-    return e == WSAEWOULDBLOCK || e == WSAEINTR;
-}
-
-int npf_sock_in_use(void)
-{
-    int e = WSAGetLastError();
-    return e == WSAEADDRINUSE || e == WSAEACCES;
-}
-
-int npf_sock_broken_code(int e)
-{
-    return e == WSAENOTSOCK || e == WSAEBADF || e == WSAENOTCONN || e == WSAESHUTDOWN || e == WSAENETDOWN;
-}
-
-int npf_sock_broken(void)
-{
-    return npf_sock_broken_code(WSAGetLastError());
-}
-
-int npf_sock_inprogress(void)
-{
-    int e = WSAGetLastError();
-    return e == WSAEWOULDBLOCK || e == WSAEINPROGRESS;
-}
-
-const char *npf_sock_strerror(void)
-{
-    return npf_sock_strerror_code(WSAGetLastError());
+    return WSAGetLastError();
 }
 
 const char *npf_sock_strerror_code(int e)
@@ -313,36 +286,9 @@ void npf_sock_listen_opts(int fd, int type)
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
 }
 
-int npf_sock_again(void)
+int npf_sock_err(void)
 {
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
-}
-
-int npf_sock_in_use(void)
-{
-    return errno == EADDRINUSE || errno == EACCES;
-}
-
-int npf_sock_broken_code(int e)
-{
-    /* a defunct socket (XNU: a suspended app's, reclaimed) fails with
-     * ENOTCONN or EBADF; EPIPE and ECONNABORTED after a shutdown */
-    return e == EBADF || e == ENOTSOCK || e == ENOTCONN || e == EPIPE || e == ECONNABORTED || e == ENETDOWN;
-}
-
-int npf_sock_broken(void)
-{
-    return npf_sock_broken_code(errno);
-}
-
-int npf_sock_inprogress(void)
-{
-    return errno == EINPROGRESS;
-}
-
-const char *npf_sock_strerror(void)
-{
-    return strerror(errno);
+    return errno;
 }
 
 const char *npf_sock_strerror_code(int err)
@@ -585,25 +531,74 @@ int npf_mkdir_p(const char *path)
     return npf_mkdir(buf);
 }
 
+/* ---- socket errors (sys.h); a plain E... code that Winsock never
+ * returns (EPIPE, ENFILE, ENOMEM) is harmless in the lists on Windows ---- */
+
+int npf_sock_again(void)
+{
+    int e = npf_sock_err();
+    return e == NPF_SE(WOULDBLOCK) || e == NPF_SE(INTR) || e == EAGAIN;
+}
+
+int npf_sock_in_use(void)
+{
+    int e = npf_sock_err();
+    return e == NPF_SE(ADDRINUSE) || e == NPF_SE(ACCES);
+}
+
+int npf_sock_inprogress(void)
+{
+    int e = npf_sock_err();
+#ifdef _WIN32
+    if (e == WSAEWOULDBLOCK)            /* Winsock's non-blocking connect() */
+        return 1;
+#endif
+    return e == NPF_SE(INPROGRESS);
+}
+
+int npf_sock_broken_code(int e)
+{
+    /* a defunct socket (XNU: a suspended app's, reclaimed) fails with
+     * ENOTCONN or EBADF; EPIPE, ECONNABORTED, ESHUTDOWN after a shutdown */
+    return e == NPF_SE(BADF) || e == NPF_SE(NOTSOCK) || e == NPF_SE(NOTCONN) || e == NPF_SE(NETDOWN)
+           || e == NPF_SE(SHUTDOWN) || e == NPF_SE(CONNABORTED) || e == EPIPE;
+}
+
+int npf_sock_broken(void)
+{
+    return npf_sock_broken_code(npf_sock_err());
+}
+
+int npf_sock_starved(void)
+{
+    int e = npf_sock_err();
+    return e == NPF_SE(MFILE) || e == NPF_SE(NOBUFS) || e == ENFILE || e == ENOMEM;
+}
+
+const char *npf_sock_strerror(void)
+{
+    return npf_sock_strerror_code(npf_sock_err());
+}
+
 /* ---- socket addresses (sys.h) ---- */
 
-socklen_t npf_sa_len(const void *sa)
+socklen_t npf_addr_len(const void *sa)
 {
     return ((const struct sockaddr *)sa)->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6)
                                                                 : sizeof(struct sockaddr_in);
 }
 
-uint16_t npf_sa_port(const void *sa)
+uint16_t npf_addr_port(const void *sa)
 {
     const struct sockaddr *a = sa;
     return ntohs(a->sa_family == AF_INET6 ? ((const struct sockaddr_in6 *)sa)->sin6_port
                                           : ((const struct sockaddr_in *)sa)->sin_port);
 }
 
-int npf_sa_eq(const void *a, const void *b)
+int npf_addr_eq(const void *a, const void *b)
 {
     int f = ((const struct sockaddr *)a)->sa_family;
-    if (f != ((const struct sockaddr *)b)->sa_family || npf_sa_port(a) != npf_sa_port(b))
+    if (f != ((const struct sockaddr *)b)->sa_family || npf_addr_port(a) != npf_addr_port(b))
         return 0;
     if (f == AF_INET6)
         return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0;
@@ -611,14 +606,38 @@ int npf_sa_eq(const void *a, const void *b)
            && ((const struct sockaddr_in *)a)->sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
 }
 
-const char *npf_sa_str(const void *sa, char *buf, size_t cap)
+const char *npf_addr_str(const void *sa, char *buf, size_t cap)
 {
     char ip[INET6_ADDRSTRLEN] = "?";
-    int v6 = ((const struct sockaddr *)sa)->sa_family == AF_INET6;
-    inet_ntop(v6 ? AF_INET6 : AF_INET, v6 ? (const void *)&((const struct sockaddr_in6 *)sa)->sin6_addr
-                                          : (const void *)&((const struct sockaddr_in *)sa)->sin_addr, ip, sizeof ip);
-    snprintf(buf, cap, "%s:%u", ip, npf_sa_port(sa));
+    int f = ((const struct sockaddr *)sa)->sa_family;
+    if (f != AF_INET && f != AF_INET6) {
+        snprintf(buf, cap, "-");
+        return buf;
+    }
+    inet_ntop(f, f == AF_INET6 ? (const void *)&((const struct sockaddr_in6 *)sa)->sin6_addr
+                               : (const void *)&((const struct sockaddr_in *)sa)->sin_addr, ip, sizeof ip);
+    snprintf(buf, cap, f == AF_INET6 ? "[%s]:%u" : "%s:%u", ip, npf_addr_port(sa));
     return buf;
+}
+
+int npf_addr_parse(const char *s, struct sockaddr_storage *out)
+{
+    char host[64];
+    uint16_t port;
+    memset(out, 0, sizeof *out);
+    if (npf_hostport(s, host, sizeof host, &port) < 0)
+        return -1;
+    if (strchr(host, ':')) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)out;
+        a->sin6_family = AF_INET6;
+        a->sin6_port = htons(port);
+        return inet_pton(AF_INET6, host, &a->sin6_addr) == 1 ? 0 : -1;
+    } else {
+        struct sockaddr_in *a = (struct sockaddr_in *)out;
+        a->sin_family = AF_INET;
+        a->sin_port = htons(port);
+        return inet_pton(AF_INET, host, &a->sin_addr) == 1 ? 0 : -1;
+    }
 }
 
 /* ---- scratch buffers (sys.h) ---- */
@@ -715,7 +734,7 @@ static int quiet(send_err *e, int err, int64_t now)
 static void report(send_err *e, int level, int err, int64_t now, const struct sockaddr *to, const char *hint)
 {
     char d[80];
-    npf_sa_str(to, d, sizeof d);
+    npf_addr_str(to, d, sizeof d);
     if (e->more)
         npf_log_at(level, __FILE__, __LINE__,
                    "udp: sending to %s failed: %s%s (and %u more failures of this kind in the last minute)", d,
@@ -747,8 +766,7 @@ static int on_local_subnet(const struct sockaddr *to)
         uint32_t b, m;
         if (ifs[i].family != AF_INET || ifs[i].loopback || ifs[i].prefix <= 0 || ifs[i].prefix > 32)
             continue;
-        b = (uint32_t)ifs[i].addr[0] << 24 | (uint32_t)ifs[i].addr[1] << 16 | (uint32_t)ifs[i].addr[2] << 8
-            | ifs[i].addr[3];
+        b = npf_rdbe32(ifs[i].addr);
         m = ifs[i].prefix == 32 ? 0xffffffffu : ~(0xffffffffu >> ifs[i].prefix);
         if ((a & m) == (b & m))
             return 1;
@@ -777,19 +795,12 @@ static void send_failed(const struct sockaddr *to, int err)
         return;
     }
 #endif
-#ifdef _WIN32
-    if (err == WSAENETUNREACH || err == WSAEHOSTUNREACH || err == WSAEADDRNOTAVAIL || err == WSAEAFNOSUPPORT)
-        level = NPF_LOG_DEBUG;
-#else
     /* punching tries every candidate of the peer: some are not routable
-     * from here (another family, a LAN that is not ours, a host gone) */
-    if (err == ENETUNREACH || err == EHOSTUNREACH || err == EADDRNOTAVAIL || err == EAFNOSUPPORT)
+     * from here (another family, a LAN that is not ours, a host gone;
+     * EHOSTDOWN, macOS: no ARP answer on the LAN, not the privacy block) */
+    if (err == NPF_SE(NETUNREACH) || err == NPF_SE(HOSTUNREACH) || err == NPF_SE(ADDRNOTAVAIL)
+        || err == NPF_SE(AFNOSUPPORT) || err == NPF_SE(HOSTDOWN))
         level = NPF_LOG_DEBUG;
-#ifdef EHOSTDOWN
-    if (err == EHOSTDOWN)           /* macOS: no ARP answer on the LAN (not the privacy block) */
-        level = NPF_LOG_DEBUG;
-#endif
-#endif
     if (!quiet(&t_send_err, err, now))
         report(&t_send_err, level, err, now, to, "");
 }
@@ -821,8 +832,8 @@ static int sendto_loopback(int fd, const void *buf, size_t len, const struct soc
     DWORD cur = 0, none = 0;
     if (getsockopt((SOCKET)fd, lvl, opt, (char *)&cur, &cl) != 0 || cur == 0
         || setsockopt((SOCKET)fd, lvl, opt, (const char *)&none, sizeof none) != 0)
-        return sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_sa_len(sa));
-    r = sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_sa_len(sa));
+        return sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_addr_len(sa));
+    r = sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_addr_len(sa));
     err = WSAGetLastError();
     setsockopt((SOCKET)fd, lvl, opt, (const char *)&cur, sizeof cur);
     WSASetLastError(err);
@@ -881,17 +892,11 @@ int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
             return 0;
     } else
 #endif
-    if (sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_sa_len(sa)) >= 0)
+    if (sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_addr_len(sa)) >= 0)
         return 0;
-#ifdef _WIN32
-    err = WSAGetLastError();
-    if (err == WSAEWOULDBLOCK || err == WSAEINTR)
-        return -1;
-#else
-    err = errno;
-    if (err == EAGAIN || err == EWOULDBLOCK || err == EINTR || err == ENOBUFS)
+    err = npf_sock_err();
+    if (npf_sock_again() || err == NPF_SE(NOBUFS))
         return -1;                  /* a full queue: the datagram is lost, nothing to tell */
-#endif
     send_failed(sa, err);
     return -1;
 }

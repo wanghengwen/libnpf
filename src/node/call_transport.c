@@ -291,27 +291,24 @@ void call_ctl_fail_all(npf_call *c)
 static int ctl_send(npf_call *c, const char *type, const char *id_key, const char *id,
                     const char *status, const char *error, const char *data_json)
 {
-    char *buf;
-    npf_jw w;
-    int n, r;
-    if (!c->tun || !(buf = npf_scratch(NPF_CTRL_MAX)))
+    npf_out w = {.max = NPF_CTRL_MAX};
+    int r;
+    if (!c->tun)
         return -1;
-    npf_jw_init(&w, buf, NPF_CTRL_MAX);
-    npf_jw_obj(&w);
-    npf_jw_kint(&w, "v", 1);
-    npf_jw_kstr(&w, "type", type);
+    npf_out_jobj(&w);
+    npf_out_kint(&w, "v", 1);
+    npf_out_kstr(&w, "type", type);
     if (id_key)
-        npf_jw_kstr(&w, id_key, id);
+        npf_out_kstr(&w, id_key, id);
     if (status)
-        npf_jw_kstr(&w, "status", status);
+        npf_out_kstr(&w, "status", status);
     if (error)
-        npf_jw_kstr(&w, "error", error);
-    npf_jw_key(&w, "data");
-    npf_jw_raw(&w, data_json ? data_json : "{}", data_json ? strlen(data_json) : 2);
-    npf_jw_end(&w);
-    n = npf_jw_finish(&w);
-    r = n < 0 ? -1 : npf_tunnel_control(c->tun, buf, (size_t)n);
-    npf_scratch_done(buf);
+        npf_out_kstr(&w, "error", error);
+    npf_out_jkey(&w, "data");
+    npf_out_jraw(&w, data_json ? data_json : "{}");
+    npf_out_jend(&w);
+    r = w.failed ? -1 : npf_tunnel_control(c->tun, w.p, w.len);
+    npf_out_free(&w);
     return r;
 }
 

@@ -322,55 +322,54 @@ void node_nat_login(npf_node *n)
 
 void npf_node_report_nat(npf_node *n)
 {
-    char data[1024];
-    npf_jw w;
+    npf_out w = {0};
     if (!n->cfg.callable || !n->online)
         return;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
+    npf_out_jobj(&w);
     npf_node_write_nat(n, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_send(n, "nat_report", 0, data);
+    npf_out_jend(&w);
+    if (!w.failed)
+        npf_node_send(n, "nat_report", 0, w.p);
+    npf_out_free(&w);
 }
 
-void npf_node_write_nat(npf_node *n, npf_jw *w)
+void npf_node_write_nat(npf_node *n, npf_out *w)
 {
     char ip[INET_ADDRSTRLEN];
-    npf_jw_key(w, "nat");
-    npf_jw_obj(w);
+    npf_out_jkey(w, "nat");
+    npf_out_jobj(w);
     /* no probe servers configured: assume UDP works (local tests) */
-    npf_jw_kbool(w, "udp", n->th.no_udp ? 0 : n->nat_valid ? n->nat_udp : 1);   /* tests: force the WS relay */
+    npf_out_kbool(w, "udp", n->th.no_udp ? 0 : n->nat_valid ? n->nat_udp : 1);   /* tests: force the WS relay */
     node_portmap_write(n, w);       /* the router's port mapping: enums only, secure too */
     if (n->cfg.secure) {            /* connect_mode secure: relays only, nothing of the addresses */
-        npf_jw_kbool(w, "secure", 1);
-        npf_jw_end(w);
+        npf_out_kbool(w, "secure", 1);
+        npf_out_jend(w);
         return;
     }
-    npf_jw_kstr(w, "map", n->nat_valid && n->nat_udp ? npf_nat_mapping_str(n->nat.mapping) : "UNKNOWN");
-    npf_jw_kstr(w, "alloc", n->nat_valid && n->nat_udp ? npf_nat_alloc_str(n->nat.allocation) : "UNKNOWN");
-    npf_jw_kint(w, "delta", n->nat.seq_delta);
-    npf_jw_kstr(w, "filter", n->nat_valid && n->nat_udp ? npf_nat_filter_str(n->nat.filtering) : "UNKNOWN");
+    npf_out_kstr(w, "map", n->nat_valid && n->nat_udp ? npf_nat_mapping_str(n->nat.mapping) : "UNKNOWN");
+    npf_out_kstr(w, "alloc", n->nat_valid && n->nat_udp ? npf_nat_alloc_str(n->nat.allocation) : "UNKNOWN");
+    npf_out_kint(w, "delta", n->nat.seq_delta);
+    npf_out_kstr(w, "filter", n->nat_valid && n->nat_udp ? npf_nat_filter_str(n->nat.filtering) : "UNKNOWN");
     if (n->nat.allocation == NPF_ALLOC_BLOCK) {
-        npf_jw_key(w, "block");
-        npf_jw_arr(w);
-        npf_jw_int(w, n->nat.block_lo);
-        npf_jw_int(w, n->nat.block_hi);
-        npf_jw_end(w);
+        npf_out_jkey(w, "block");
+        npf_out_jarr(w);
+        npf_out_jint(w, n->nat.block_lo);
+        npf_out_jint(w, n->nat.block_hi);
+        npf_out_jend(w);
     }
-    npf_jw_kbool(w, "open", n->nat.open);
-    npf_jw_kbool(w, "ip_varies", n->nat.ip_varies);
+    npf_out_kbool(w, "open", n->nat.open);
+    npf_out_kbool(w, "ip_varies", n->nat.ip_varies);
     if (n->punch_lead_ms > 0)       /* a host firewall: this side sends first, S1 keeps the agreed start */
-        npf_jw_kbool(w, "lead", 1);
+        npf_out_kbool(w, "lead", 1);
     if (n->th.pub_ip)                   /* tests: a forged public IP (the platform must not spray it) */
-        npf_jw_kstr(w, "pub_ip", n->th.pub_ip);
+        npf_out_kstr(w, "pub_ip", n->th.pub_ip);
     else if (n->nat_valid && n->nat_udp)
-        npf_jw_kstr(w, "pub_ip", inet_ntop(AF_INET, &n->pub_ip, ip, sizeof ip));
-    npf_jw_kint(w, "at", n->nat.measured_at);
-    npf_jw_end(w);
+        npf_out_kstr(w, "pub_ip", inet_ntop(AF_INET, &n->pub_ip, ip, sizeof ip));
+    npf_out_kint(w, "at", n->nat.measured_at);
+    npf_out_jend(w);
 }
 
-void npf_node_write_cands(npf_node *n, npf_jw *w)
+void npf_node_write_cands(npf_node *n, npf_out *w)
 {
     int i, none = n->cfg.secure;      /* secure: none, the peer learns no address */
     char a[64];
@@ -380,13 +379,13 @@ void npf_node_write_cands(npf_node *n, npf_jw *w)
             first = npf_mono_ms();
         none |= npf_mono_ms() - first < n->th.cands_late_ms;
     }
-    npf_jw_key(w, "cand");
-    npf_jw_arr(w);
+    npf_out_jkey(w, "cand");
+    npf_out_jarr(w);
     for (i = 0; i < n->ncands && !none; i++) {     /* secure: none, the peer learns no address */
-        npf_jw_obj(w);
-        npf_jw_kstr(w, "t", n->cands[i].t);
-        npf_jw_kstr(w, "a", npf_addr_str(&n->cands[i].a, a, sizeof a));
-        npf_jw_end(w);
+        npf_out_jobj(w);
+        npf_out_kstr(w, "t", n->cands[i].t);
+        npf_out_kstr(w, "a", npf_addr_str(&n->cands[i].a, a, sizeof a));
+        npf_out_jend(w);
     }
     if (n->th.cands_extra && !none) {      /* tests: forged candidates "t=addr,..." */
         char buf[512], *tok, *save, *eq;
@@ -394,11 +393,11 @@ void npf_node_write_cands(npf_node *n, npf_jw *w)
         for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
             if ((eq = strchr(tok, '=')) != NULL) {
                 *eq = 0;
-                npf_jw_obj(w);
-                npf_jw_kstr(w, "t", tok);
-                npf_jw_kstr(w, "a", eq + 1);
-                npf_jw_end(w);
+                npf_out_jobj(w);
+                npf_out_kstr(w, "t", tok);
+                npf_out_kstr(w, "a", eq + 1);
+                npf_out_jend(w);
             }
     }
-    npf_jw_end(w);
+    npf_out_jend(w);
 }

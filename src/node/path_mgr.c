@@ -375,8 +375,7 @@ void call_need(npf_call *c, int need, int64_t now)
     static const char *const how[] = {"", "\"mode\":\"udp\"", "\"mode\":\"ws\"", "\"unreachable\":true",
                                       "\"mode\":\"udp\""};
     npf_pm *m = &c->pm;
-    char data[1024];
-    npf_jw w;
+    char data[96];
     if (need == PM_NEED_PATH_LOST) {    /* once: no answer to wait for (a round, or none) */
         call_punch_report(c, "path_lost");
         return;
@@ -405,14 +404,15 @@ void call_need(npf_call *c, int need, int64_t now)
                 what[need]);
     m->ask_at = now + (m->asks++ ? RELAY_ASK_LATER_MS : RELAY_ASK_AGAIN_MS);
     if (need == PM_NEED_UDP_BACK) {
-        npf_jw_init(&w, data, sizeof data);
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "call_id", c->call_id_s);
-        npf_jw_kstr(&w, "why", "udp_back");
+        npf_out w = {0};
+        npf_out_jobj(&w);
+        npf_out_kstr(&w, "call_id", c->call_id_s);
+        npf_out_kstr(&w, "why", "udp_back");
         npf_node_write_nat(c->n, &w);
-        npf_jw_end(&w);
-        if (npf_jw_finish(&w) > 0)
-            npf_node_send(c->n, "punch_update", 0, data);
+        npf_out_jend(&w);
+        if (!w.failed)
+            npf_node_send(c->n, "punch_update", 0, w.p);
+        npf_out_free(&w);
     }
     snprintf(data, sizeof data, "{\"call_id\":\"%s\",%s}", c->call_id_s, how[need]);
     npf_node_send(c->n, "relay_switch", 0, data);

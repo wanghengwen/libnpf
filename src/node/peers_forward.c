@@ -1,7 +1,6 @@
 /* Forward definitions, listeners, retries and state. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -167,19 +166,6 @@ static void accept_resume(npf_loop *loop, void *arg)
         npf_loop_mod(loop, f->fd, NPF_EV_READ);
 }
 
-/* accept failed for want of descriptors or memory: the connection stays
- * queued and the listener readable, so it waits a moment (else the loop
- * would spin on it) */
-static int accept_starved(void)
-{
-#ifdef _WIN32
-    int e = WSAGetLastError();
-    return e == WSAEMFILE || e == WSAENOBUFS;
-#else
-    return errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM;
-#endif
-}
-
 /* a public connection whose visitor went away (no FIN: off line, a NAT
  * that forgot it) ends within about 4 minutes, not when the idle check
  * finds it */
@@ -212,7 +198,9 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
             break;
         fd = npf_accept(lfd);
         if (fd < 0) {
-            if (accept_starved() && !f->t_accept) {
+            /* the connection stays queued and the listener readable: a
+             * moment's wait, else the loop would spin on it */
+            if (npf_sock_starved() && !f->t_accept) {
                 npf_logw("%s: %s: out of descriptors, not accepting for 250 ms", f->p->name, f->spec);
                 npf_loop_mod(loop, lfd, 0);
                 f->t_accept = npf_timer_add(loop, 250, accept_resume, f);

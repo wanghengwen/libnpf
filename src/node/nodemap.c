@@ -248,20 +248,20 @@ void node_portmap_net_change(npf_node *n)
 }
 
 /* the "pm" object of the nat profile: enums only (no address: secure mode too) */
-void node_portmap_write(const npf_node *n, npf_jw *w)
+void node_portmap_write(const npf_node *n, npf_out *w)
 {
     static const char *const gws[] = {NULL, "map", "private", "none", "nogw"};
-    npf_jw_key(w, "pm");
-    npf_jw_obj(w);
+    npf_out_jkey(w, "pm");
+    npf_out_jobj(w);
     if (n->cfg.offline || n->cfg.no_portmap) {
-        npf_jw_kstr(w, "gw", "off");
+        npf_out_kstr(w, "gw", "off");
     } else {
         if (n->pm_m)
-            npf_jw_kstr(w, "m", n->pm_m == NPF_PORTMAP_PCP ? "pcp" : "natpmp");
+            npf_out_kstr(w, "m", n->pm_m == NPF_PORTMAP_PCP ? "pcp" : "natpmp");
         if (gws[n->pm_gw])
-            npf_jw_kstr(w, "gw", gws[n->pm_gw]);
+            npf_out_kstr(w, "gw", gws[n->pm_gw]);
     }
-    npf_jw_end(w);
+    npf_out_jend(w);
 }
 
 int node_portmap_cand(const npf_node *n, struct sockaddr_storage *out)

@@ -194,62 +194,57 @@ static int state_load(npf_callee *d)
 
 static int state_save(npf_callee *d)
 {
-    char *buf, bak[1100];
-    npf_jw w;
-    int i, n;
+    char bak[1100];
+    npf_out w = {.max = STATE_MAX - 1, .secret = 1};    /* the password */
+    int i;
     if (d->damaged)
         return -1;                      /* safe mode: the damaged file stays for its repair */
-    if (!(buf = malloc(STATE_MAX)))
-        return -1;
-    npf_jw_init(&w, buf, STATE_MAX);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "password", d->password);
-    npf_jw_key(&w, "paired");
-    npf_jw_arr(&w);
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "password", d->password);
+    npf_out_jkey(&w, "paired");
+    npf_out_jarr(&w);
     for (i = 0; i < d->npaired; i++) {
-        npf_jw_obj(&w);
-        npf_jw_kb64(&w, "pub", d->paired[i].pub, 32);
-        npf_jw_kint(&w, "added", d->paired[i].added);
-        npf_jw_end(&w);
+        npf_out_jobj(&w);
+        npf_out_kb64(&w, "pub", d->paired[i].pub, 32);
+        npf_out_kint(&w, "added", d->paired[i].added);
+        npf_out_jend(&w);
     }
-    npf_jw_end(&w);
-    npf_jw_kint(&w, "fails", d->fails);
-    npf_jw_kint(&w, "locked_until", d->locked_until);
-    npf_jw_kint(&w, "lock_secs", d->lock_secs);
+    npf_out_jend(&w);
+    npf_out_kint(&w, "fails", d->fails);
+    npf_out_kint(&w, "locked_until", d->locked_until);
+    npf_out_kint(&w, "lock_secs", d->lock_secs);
     if (d->cert_len)
-        npf_jw_kb64(&w, "cert", d->cert, d->cert_len);
+        npf_out_kb64(&w, "cert", d->cert, d->cert_len);
     if (d->owner) {
         char a[24];
         snprintf(a, sizeof a, "%llu", (unsigned long long)d->owner);
-        npf_jw_kstr(&w, "owner", a);
+        npf_out_kstr(&w, "owner", a);
     }
-    npf_jw_kint(&w, "owner_reset_pending", d->owner_reset_pending);
-    npf_jw_key(&w, "revokes");
-    npf_jw_arr(&w);
+    npf_out_kint(&w, "owner_reset_pending", d->owner_reset_pending);
+    npf_out_jkey(&w, "revokes");
+    npf_out_jarr(&w);
     for (i = 0; i < d->nrevokes; i++) {
         char a[24];
         snprintf(a, sizeof a, "%llu", (unsigned long long)d->revokes[i].account);
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "account", a);
-        npf_jw_kint(&w, "before", d->revokes[i].before);
-        npf_jw_end(&w);
+        npf_out_jobj(&w);
+        npf_out_kstr(&w, "account", a);
+        npf_out_kint(&w, "before", d->revokes[i].before);
+        npf_out_jend(&w);
     }
-    npf_jw_end(&w);
-    npf_jw_end(&w);
-    n = npf_jw_finish(&w);
-    if (n < 0 || npf_file_write(d->state_path, buf, (size_t)n, 0600) < 0) {
+    npf_out_jend(&w);
+    npf_out_jend(&w);
+    if (w.failed || npf_file_write(d->state_path, w.p, w.len, 0600) < 0) {
         npf_loge("state: cannot write %s: %s", d->state_path, strerror(errno));
-        free(buf);
+        npf_out_free(&w);
         return -1;
     }
-    stamp(d, buf, (size_t)n);
+    stamp(d, w.p, w.len);
     /* its copy, after it: taken at the start when the file cannot be used
      * (the medium damaged it); the same content, so no change is undone */
     snprintf(bak, sizeof bak, "%s.bak", d->state_path);
-    if (npf_file_write(bak, buf, (size_t)n, 0600) < 0)
+    if (npf_file_write(bak, w.p, w.len, 0600) < 0)
         npf_logw("state: cannot write its copy %s: %s", bak, strerror(errno));
-    npf_wipe(buf, (size_t)n);           /* the password */
-    free(buf);
+    npf_out_free(&w);
     return 0;
 }
 
@@ -288,22 +283,21 @@ static void state_watch_start(npf_callee *d)
 
 static void sync_paired(npf_callee *d)
 {
-    char data[8192];
-    npf_jw w;
+    npf_out w = {0};
     int i;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_key(&w, "fps");
-    npf_jw_arr(&w);
+    npf_out_jobj(&w);
+    npf_out_jkey(&w, "fps");
+    npf_out_jarr(&w);
     for (i = 0; i < d->npaired; i++) {
         uint8_t fp[8];
         npf_le64(fp, npf_fp(d->paired[i].pub));
-        npf_jw_b64(&w, fp, 8);
+        npf_out_jb64(&w, fp, 8);
     }
-    npf_jw_end(&w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_send(d->node, "paired_sync", 0, data);
+    npf_out_jend(&w);
+    npf_out_jend(&w);
+    if (!w.failed)
+        npf_node_send(d->node, "paired_sync", 0, w.p);
+    npf_out_free(&w);
 }
 
 /* the lock in the platform's time: the device's clock may be off (a NAS

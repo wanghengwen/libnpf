@@ -38,9 +38,9 @@ void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
 static void emit_text(npf_t *n, const char *name, const char *key, const char *text)
 {
     npf_out o = {0};
-    npf_out_jopen(&o, '{');
+    npf_out_jobj(&o);
     npf_out_kstr(&o, key, text);
-    npf_out_jclose(&o, '}');
+    npf_out_jend(&o);
     emit_out(n, name, &o);
 }
 
@@ -51,11 +51,11 @@ static void emit_account(npf_t *n, const char *name, int server)
     npf_out o = {0};
     char a[24];
     snprintf(a, sizeof a, "%llu", (unsigned long long)n->node.account_id);
-    npf_out_jopen(&o, '{');
+    npf_out_jobj(&o);
     if (server >= 0)
         npf_out_kint(&o, "server", server);
     npf_out_kstr(&o, "account_id", n->node.account_id ? a : NULL);
-    npf_out_jclose(&o, '}');
+    npf_out_jend(&o);
     emit_out(n, name, &o);
 }
 
@@ -97,15 +97,9 @@ static uint32_t sess_add(npf_t *n, npf_call *call)
 {
     npf_peer *p = npf_peer_of_call(n, call);
     npf_sess *s;
-    if (n->nsess == n->capsess) {           /* an instance has a few at a time, a node up to the limit */
-        int cap = n->capsess ? 2 * n->capsess : 4;
-        if (cap > NPF_MAX_SESS)
-            cap = NPF_MAX_SESS;
-        if (n->nsess == cap || !(s = realloc(n->sess, (size_t)cap * sizeof *s)))
-            return 0;
-        n->sess = s;
-        n->capsess = cap;
-    }
+    /* an instance has a few at a time, a node up to the limit */
+    if (n->nsess >= NPF_MAX_SESS || npf_grow(&n->sess, &n->capsess, (size_t)n->nsess + 1, sizeof *n->sess, 4) < 0)
+        return 0;
     if (!++n->next_sess)
         n->next_sess = 1;
     s = &n->sess[n->nsess++];
@@ -147,9 +141,9 @@ static void sess_end(npf_t *n, npf_call *call, const char *why)
     }
     if (n->cb.session) {
         npf_out o = {0};
-        npf_out_jopen(&o, '{');
+        npf_out_jobj(&o);
         npf_out_kstr(&o, "why", why ? why : "closed");
-        npf_out_jclose(&o, '}');
+        npf_out_jend(&o);
         if (!o.failed)
             n->cb.session(n->cb.user, id, 0, o.p);
         npf_out_free(&o);
@@ -188,11 +182,11 @@ static void on_enroll_failed(npf_node *node, const char *error, const char *reas
     npf_t *n = arg;
     npf_out o = {0};
     (void)node;
-    npf_out_jopen(&o, '{');
+    npf_out_jobj(&o);
     npf_out_kstr(&o, "error", error);
     npf_out_kstr(&o, "reason", reason);
     npf_out_kint(&o, "retry_in", retry_s);
-    npf_out_jclose(&o, '}');
+    npf_out_jend(&o);
     emit_out(n, "enroll_failed", &o);
 }
 
@@ -434,12 +428,12 @@ static void peer_fwd(npf_peer *p, int i, int up, const char *why, void *arg)
     if (!npf_peer_forward_info(p, i, &opt, &spec, &perm, st, sizeof st))
         return;
     snprintf(sp, sizeof sp, "-%c %s", opt, spec);
-    npf_out_jopen(&o, '{');
+    npf_out_jobj(&o);
     npf_out_kstr(&o, "peer", npf_peer_name(p));
     npf_out_kstr(&o, "spec", sp);
     npf_out_kbool(&o, "up", up);
     npf_out_kstr(&o, "why", why ? why : "");
-    npf_out_jclose(&o, '}');
+    npf_out_jend(&o);
     emit_out(n, "forward", &o);
 }
 
@@ -450,10 +444,10 @@ static void peer_done(npf_peer *p, const char *why, void *arg)
     if (n->role == NPF_ROLE_NODE)
         npf_logw("%s: gave up (%s)", npf_peer_name(p), why);
     npf_mods_peer_done(n, p, why);
-    npf_out_jopen(&o, '{');
+    npf_out_jobj(&o);
     npf_out_kstr(&o, "peer", npf_peer_name(p));
     npf_out_kstr(&o, "why", why ? why : "");
-    npf_out_jclose(&o, '}');
+    npf_out_jend(&o);
     emit_out(n, "peer_done", &o);
 }
 

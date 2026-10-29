@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "npf/crypto.h"
+#include "npf/out.h"
 #include "npf/platform.h"
 #include "npf/tcp.h"
 #include "npf/ws.h"
@@ -45,25 +46,7 @@ static void real_free(npf_ws *ws);
 /* at least n bytes free after len */
 static int buf_room(buf *b, size_t n)
 {
-    if (n > SIZE_MAX - b->len)
-        return -1;
-    if (b->len + n > b->cap) {
-        size_t c = b->cap ? b->cap : 4096;
-        uint8_t *q;
-        while (c < b->len + n) {
-            if (c > SIZE_MAX / 2) {
-                c = b->len + n;
-                break;
-            }
-            c *= 2;
-        }
-        q = realloc(b->p, c);
-        if (!q)
-            return -1;
-        b->p = q;
-        b->cap = c;
-    }
-    return 0;
+    return n > SIZE_MAX - b->len ? -1 : npf_grow(&b->p, &b->cap, b->len + n, 1, 4096);
 }
 
 static int buf_put(buf *b, const void *p, size_t n)

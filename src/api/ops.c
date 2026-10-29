@@ -16,6 +16,7 @@
 
 #include "api_internal.h"
 #include "npf/module.h"
+#include "npf/text.h"
 
 /* ---- the structures' defaults ---- */
 
@@ -147,25 +148,6 @@ int npf_ops_record_fwd(npf_t *n, npf_peer *p, int i, int add)
     return saved_rc(n);
 }
 
-/* "HOST:PORT" or "[V6]:PORT" into its parts; -1 without a port 1..65535 */
-int npf_hostport_split(const char *s, char *host, size_t cap, uint16_t *port)
-{
-    const char *colon = strrchr(s, ':');
-    char *end;
-    long p;
-    if (!colon || (s[0] == '[' && (colon < s + 2 || colon[-1] != ']')))
-        return -1;
-    p = strtol(colon + 1, &end, 10);
-    if (end == colon + 1 || *end || p < 1 || p > 65535)
-        return -1;
-    if (s[0] == '[')
-        snprintf(host, cap, "%.*s", (int)(colon - s - 2), s + 1);
-    else
-        snprintf(host, cap, "%.*s", (int)(colon - s), s);
-    *port = (uint16_t)p;
-    return 0;
-}
-
 /* a record's forwards onto its peer brought back (one that does not make
  * a forward is left out, with a warning) */
 static void restore_fwds(npf_peer *p, const npf_ldev *d)
@@ -207,7 +189,7 @@ void npf_ops_restore(npf_t *n)
         memset(&pn, 0, sizeof pn);
         memset(psk, 0, sizeof psk);
         if (!(pn.number = npf_number_parse(d->target))) {      /* a direct peer, with its key */
-            if (npf_hostport_split(d->target, host, sizeof host, &pn.port) < 0)
+            if (npf_hostport(d->target, host, sizeof host, &pn.port) < 0 || !pn.port)
                 continue;
             pn.host = host;
             if (d->psk_file[0] && npf_path_is_abs(d->psk_file))

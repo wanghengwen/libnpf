@@ -18,6 +18,7 @@
 #include "npf/json.h"
 #include "npf/loop.h"
 #include "npf/natprobe.h"
+#include "npf/out.h"
 #include "npf/portmap.h"
 #include "npf/sig.h"
 #include "npf/testhooks.h"
@@ -600,22 +601,17 @@ int64_t npf_node_time(const npf_node *n);
 int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int64_t *serial, npf_list_meta *meta);
 
 /* write the "nat" and "cand" fields into an open JSON object */
-struct npf_jw;
-void npf_node_write_nat(npf_node *n, struct npf_jw *w);
-void npf_node_write_cands(npf_node *n, struct npf_jw *w);
+void npf_node_write_nat(npf_node *n, npf_out *w);
+void npf_node_write_cands(npf_node *n, npf_out *w);
 /* nat_report: the profile (or, connect_mode secure, only that) to the platform */
 void npf_node_report_nat(npf_node *n);
-/* the spare allocation (home.c): the status's "home" object into buf; its
- * length, 0 (buf "") when there is none */
-size_t npf_node_home_status(npf_node *n, char *buf, size_t cap);
+/* the spare allocation (home.c): the status's "home" object; 0 (nothing
+ * written) when there is none */
+int npf_node_home_status(npf_node *n, npf_out *o);
 /* connect_mode: 0 p2p (direct paths first, around a VPN), 1 secure (relays
  * only, no address to the peer, the VPN kept): the platform hears it, the
  * sessions open again under it */
 void npf_node_set_secure(npf_node *n, int on);
-
-/* format / parse "1.2.3.4:5" and "[::1]:5" */
-int  npf_addr_parse(const char *s, struct sockaddr_storage *out);
-const char *npf_addr_str(const struct sockaddr_storage *a, char *buf, size_t n);
 
 
 /* ---- setup helpers (setup.c) ---- */

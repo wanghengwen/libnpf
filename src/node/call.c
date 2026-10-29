@@ -407,18 +407,17 @@ void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *
 /* the callee's profile and candidates, before the platform's next round */
 void node_on_punch_request(npf_node *n, const m_env *e, const void *m)
 {
-    char data[2048];
-    npf_jw w;
+    npf_out w = {0};
     (void)m;
     if (!e->id[0])
         return;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
+    npf_out_jobj(&w);
     npf_node_write_nat(n, &w);
     npf_node_write_cands(n, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_reply(n, e->type, e->id, "ok", NULL, data);
+    npf_out_jend(&w);
+    if (!w.failed)
+        npf_node_reply(n, e->type, e->id, "ok", NULL, w.p);
+    npf_out_free(&w);
 }
 
 void node_on_revoke(npf_node *n, const m_env *e, const void *msg)
@@ -535,7 +534,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
             if (call_over(c) || c->conv != conv)
                 continue;
             matched = 1;
-            on_p2p = call_has_p2p(c) && call_same_addr(from, &c->pd.addr);
+            on_p2p = call_has_p2p(c) && npf_addr_eq(from, &c->pd.addr);
             if (on_p2p && call_p2p_cut(c))
                 return 1;
             if (call_anl_feed(c, buf, len) == 0) {
@@ -547,7 +546,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
     }
     if (len == PATH_PKT_LEN)
         for (c = n->calls; c; c = c->next)
-            if (!call_over(c) && call_has_p2p(c) && fd == c->pd.fd && call_same_addr(from, &c->pd.addr) && call_path_input(c, buf, len))
+            if (!call_over(c) && call_has_p2p(c) && fd == c->pd.fd && npf_addr_eq(from, &c->pd.addr) && call_path_input(c, buf, len))
                 return 1;
     /* a direct listener's answer (Noise message 2) to a connection being
      * made: after the sessions already up with that listener, whose every
@@ -555,7 +554,7 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
      * sessions' keepalives cost one each while a 17th connected) */
     for (c = n->calls; c; c = c->next)
         if (!call_over(c) && c->direct && c->caller && !c->keys_ready && fd == n->udp_fd
-            && call_same_addr(from, &c->pd.addr) && call_direct_reply(c, buf, len, from))
+            && npf_addr_eq(from, &c->pd.addr) && call_direct_reply(c, buf, len, from))
             return 1;
     /* relayed data (data-channel.md 9.2): its hint names the allocation,
      * no session's keys are tried */

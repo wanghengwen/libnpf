@@ -21,18 +21,18 @@
  * short of ports lately (call_port_pressure) and when the last hard-side
  * punch ended; tests: NPF_TEST_PUNCH_GAP_MS (a gap of that length, a test
  * platform only), NPF_TEST_REPUNCH_MS (its backoff) */
-static void write_pressure(const npf_call *c, npf_jw *w)
+static void write_pressure(const npf_call *c, npf_out *w)
 {
     const npf_node *n = c->n;
     int64_t now = npf_mono_ms();
     if ((n->port_pressure && now - n->port_pressure < PRESSURE_KEEP_MS) || n->th.punch_gap_ms) {
-        npf_jw_kbool(w, "pressure", 1);
-        npf_jw_kint(w, "hard_ago_ms", n->hard_punch_end ? now - n->hard_punch_end : -1);
+        npf_out_kbool(w, "pressure", 1);
+        npf_out_kint(w, "hard_ago_ms", n->hard_punch_end ? now - n->hard_punch_end : -1);
     }
     if (n->th.punch_gap_ms)
-        npf_jw_kint(w, "test_gap_ms", n->th.punch_gap_ms);
+        npf_out_kint(w, "test_gap_ms", n->th.punch_gap_ms);
     if (n->th.repunch_ms)
-        npf_jw_kint(w, "test_backoff_ms", n->th.repunch_ms);
+        npf_out_kint(w, "test_backoff_ms", n->th.repunch_ms);
 }
 
 /* no punching in this session: connect_mode secure on either side (relays
@@ -50,45 +50,44 @@ int call_no_p2p(const npf_call *c)
  * mapping it sees itself (its relay, the spare's address) */
 void call_punch_report(npf_call *c, const char *why)
 {
-    char data[4096];
-    npf_jw w;
+    npf_out w = {0};
     if (call_over(c) || call_has_p2p(c) || call_has_ws(c) || c->direct || call_no_p2p(c) || !call_accepted(c))
         return;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kstr(&w, "why", why);
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "call_id", c->call_id_s);
+    npf_out_kstr(&w, "why", why);
     npf_node_write_nat(c->n, &w);
     npf_node_write_cands(c->n, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0) {
+    npf_out_jend(&w);
+    if (!w.failed) {
         npf_logd("call %s: punch_update (%s)", c->call_id_s, why);
-        npf_node_send(c->n, "punch_update", 0, data);
+        npf_node_send(c->n, "punch_update", 0, w.p);
     }
+    npf_out_free(&w);
 }
 
 /* a punch_result (signaling.md): its head, the round's counts, the end */
-static void result_begin(const npf_call *c, npf_jw *w, char *buf, size_t cap, int round, int ok)
+static void result_begin(const npf_call *c, npf_out *w, int ok)
 {
-    npf_jw_init(w, buf, cap);
-    npf_jw_obj(w);
-    npf_jw_kstr(w, "call_id", c->call_id_s);
-    npf_jw_kint(w, "round", round);
-    npf_jw_kbool(w, "ok", ok);
+    npf_out_jobj(w);
+    npf_out_kstr(w, "call_id", c->call_id_s);
+    npf_out_kint(w, "round", c->punch_round);
+    npf_out_kbool(w, "ok", ok);
 }
 
-static void result_counts(npf_jw *w, const npf_punch_result *res)
+static void result_counts(npf_out *w, const npf_punch_result *res)
 {
-    npf_jw_kint(w, "elapsed_ms", res->elapsed_ms);
-    npf_jw_kint(w, "probes_sent", res->probes_sent);
-    npf_jw_kint(w, "probes_recv", res->probes_recv);
+    npf_out_kint(w, "elapsed_ms", res->elapsed_ms);
+    npf_out_kint(w, "probes_sent", res->probes_sent);
+    npf_out_kint(w, "probes_recv", res->probes_recv);
 }
 
-static void result_send(npf_call *c, npf_jw *w, const char *buf)
+static void result_send(npf_call *c, npf_out *w)
 {
-    npf_jw_end(w);
-    if (npf_jw_finish(w) > 0)
-        npf_node_send(c->n, "punch_result", 0, buf);
+    npf_out_jend(w);
+    if (!w->failed)
+        npf_node_send(c->n, "punch_result", 0, w->p);
+    npf_out_free(w);
 }
 
 /* a punch gave its sockets (the NAT's ports) back: the relays that could
@@ -113,33 +112,33 @@ static void socks_back(npf_call *c)
 void call_punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *arg)
 {
     npf_call *c = arg;
-    char data[768], a[64], la[64];
+    char a[64], la[64];
     struct sockaddr_storage ls;
     socklen_t ll = sizeof ls;
-    npf_jw w;
+    npf_out w = {0};
     (void)p;
     socks_back(c);                  /* finish() closed the extra sockets */
-    result_begin(c, &w, data, sizeof data, c->punch_round, res->ok);
+    result_begin(c, &w, res->ok);
     if (res->ok) {
         getsockname(fd, (struct sockaddr *)&ls, &ll);
-        npf_jw_key(&w, "path");
-        npf_jw_obj(&w);
-        npf_jw_kstr(&w, "local", npf_addr_str(&ls, la, sizeof la));
-        npf_jw_kstr(&w, "peer", npf_addr_str(&res->peer, a, sizeof a));
-        npf_jw_end(&w);
+        npf_out_jkey(&w, "path");
+        npf_out_jobj(&w);
+        npf_out_kstr(&w, "local", npf_addr_str(&ls, la, sizeof la));
+        npf_out_kstr(&w, "peer", npf_addr_str(&res->peer, a, sizeof a));
+        npf_out_jend(&w);
     }
     result_counts(&w, res);
-    npf_jw_kint(&w, "rtt_ms", res->rtt_ms);
+    npf_out_kint(&w, "rtt_ms", res->rtt_ms);
     if (res->nseen > 0) {           /* the peer's NAT as this round showed it (nat-traversal.md 7.8) */
         int i;
-        npf_jw_key(&w, "seen");
-        npf_jw_arr(&w);
+        npf_out_jkey(&w, "seen");
+        npf_out_jarr(&w);
         for (i = 0; i < res->nseen; i++)
-            npf_jw_int(&w, res->seen[i]);
-        npf_jw_end(&w);
+            npf_out_jint(&w, res->seen[i]);
+        npf_out_jend(&w);
     }
     write_pressure(c, &w);
-    result_send(c, &w, data);
+    result_send(c, &w);
     if (!res->ok) {
         npf_logw("call %s: punching failed after %d ms (%d probes sent, %d received)", c->call_id_s,
                 res->elapsed_ms, res->probes_sent, res->probes_recv);
@@ -226,17 +225,16 @@ void call_punch_to(npf_call *c, int st, int64_t at)
 static void punch_info_send(npf_punch *p, uint16_t port, void *arg)
 {
     npf_call *c = arg;
-    char data[160];
-    npf_jw w;
+    npf_out w = {0};
     (void)p;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kint(&w, "round", c->punch_round);
-    npf_jw_kint(&w, "port", port);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_send(c->n, "punch_info", 0, data);
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "call_id", c->call_id_s);
+    npf_out_kint(&w, "round", c->punch_round);
+    npf_out_kint(&w, "port", port);
+    npf_out_jend(&w);
+    if (!w.failed)
+        npf_node_send(c->n, "punch_info", 0, w.p);
+    npf_out_free(&w);
 }
 
 static int cand_skipped(const npf_call *c, const struct sockaddr_storage *to, const char *shown);
@@ -249,7 +247,7 @@ static void peer_cand(npf_call *c, const m_cand *k)
     if (call_over(c) || call_has_p2p(c) || call_has_ws(c) || call_no_p2p(c) || strcmp(k->t, "srflx") != 0
         || k->a.ss_family != AF_INET || cand_skipped(c, &k->a, npf_addr_str(&k->a, a, sizeof a)))
         return;
-    if (c->tcand.ss_family && call_same_addr(&k->a, &c->tcand))
+    if (c->tcand.ss_family && npf_addr_eq(&k->a, &c->tcand))
         return;
     c->tcand = k->a;
     npf_log("call %s: the peer's new srflx %s", c->call_id_s, a);
@@ -294,15 +292,14 @@ void call_on_punch_info(npf_call *c, const void *msg)
 static void punch_quiet(npf_punch *p, const npf_punch_result *res, void *arg)
 {
     npf_call *c = arg;
-    char data[256];
-    npf_jw w;
+    npf_out w = {0};
     (void)p;
     if (c->pm.wait == PM_IN_PUNCH)
         return;
-    result_begin(c, &w, data, sizeof data, c->punch_round, 0);
-    npf_jw_kbool(&w, "early", 1);
+    result_begin(c, &w, 0);
+    npf_out_kbool(&w, "early", 1);
     result_counts(&w, res);
-    result_send(c, &w, data);
+    result_send(c, &w);
 }
 
 /* this round let go (the caller's hard-side punches one at a time): the
@@ -311,18 +308,17 @@ static void punch_quiet(npf_punch *p, const npf_punch_result *res, void *arg)
  * busy); not a failed round */
 static void punch_busy(npf_call *c)
 {
-    char data[256];
     int64_t now = npf_mono_ms(), ends = 0;
     const npf_call *o;
-    npf_jw w;
+    npf_out w = {0};
     for (o = c->n->calls; o; o = o->next)
         if (o != c && o->punch_socks > 0 && npf_punch_ends_at(o->punch) - now > ends)
             ends = npf_punch_ends_at(o->punch) - now;
-    result_begin(c, &w, data, sizeof data, c->punch_round, 0);
-    npf_jw_kbool(&w, "busy", 1);
-    npf_jw_kint(&w, "ends_in_ms", ends);
+    result_begin(c, &w, 0);
+    npf_out_kbool(&w, "busy", 1);
+    npf_out_kint(&w, "ends_in_ms", ends);
     write_pressure(c, &w);
-    result_send(c, &w, data);
+    result_send(c, &w);
 }
 
 void call_punch_go(npf_call *c)

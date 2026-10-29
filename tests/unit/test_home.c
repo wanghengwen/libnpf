@@ -186,6 +186,15 @@ static void ping(npf_node *n, const npf_siv_keys *keys, const struct sockaddr_in
 
 /* the platform's message m to the spare: a reply to home_open (ok, or
  * refused) or relay_spare (event) */
+/* the spare's status JSON in js ("" none) */
+static const char *home_js(npf_node *n, char *js, size_t cap)
+{
+    npf_out o = {0};
+    snprintf(js, cap, "%s", npf_node_home_status(n, &o) && !o.failed ? o.p : "");
+    npf_out_free(&o);
+    return js;
+}
+
 static void to_home(npf_node *n, const char *m, int ok, int event)
 {
     npf_jtok tok[48];
@@ -292,8 +301,7 @@ static void test_client(void)
     ping(&node, &keys, &relay, &R2, t0 + 3000, 0x2002, 36, RELAY_LEARNED);
     next_bind(fr, &keys, bid, 300, &b2);
     {
-        size_t l = npf_node_home_status(&node, js, sizeof js);
-        CHECK(l > 0 && strstr(js, "\"state\":\"bound\"") && strstr(js, "\"iv_s\":36") && strstr(js, "\"learn\":\"learned\"")
+        CHECK(*home_js(&node, js, sizeof js) && strstr(js, "\"state\":\"bound\"") && strstr(js, "\"iv_s\":36") && strstr(js, "\"learn\":\"learned\"")
               && strstr(js, "\"moved\":1") && strstr(js, "\"keepalives\":4") && strstr(js, "\"drops\":0"), "status %s", js);
         CHECK(strstr(js, "\"relay\":\"127.0.0.1:"), "the relay it is bound via %s", js);
     }
@@ -336,7 +344,7 @@ static void test_client(void)
         node_msg(&node, &j);
         CHECK(node.home->r.state == RB_BINDING && next_bind(fr, &keys, nid, 300, &b1) == 1 && b1.cookie[0] == 0,
               "the next spare binds");
-        CHECK(npf_node_home_status(&node, js, sizeof js) > 0 && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
+        CHECK(*home_js(&node, js, sizeof js) && strstr(js, "\"taken\":1") && strstr(js, "\"iv_s\":36"),
               "status %s", js);
     }
     /* backing off when the node logs in again (home_open with resume): the

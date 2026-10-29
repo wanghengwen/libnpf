@@ -1,6 +1,5 @@
 #include <string.h>
 
-#include "monocypher.h"
 #include "npf/cert.h"
 #include "npf/crypto.h"
 
@@ -10,12 +9,6 @@ static const char cert_domain[] = "npf-cert-v1";
 static const char list_domain[] = "npf-serverlist-v1";
 static const char update_domain[] = "npf-update-v1";
 
-static uint32_t npf_key_id(const uint8_t sign_pub[32])
-{
-    uint8_t h[32];
-    crypto_blake2b(h, 32, sign_pub, 32);
-    return npf_rd32(h);
-}
 
 int npf_cert_parse(const uint8_t *b, size_t len, npf_cert *c)
 {
@@ -63,7 +56,7 @@ int npf_cert_parse(const uint8_t *b, size_t len, npf_cert *c)
 /* signature check against an issuer key (key id must match); 0 if valid */
 static int npf_cert_check_sig(const npf_cert *c, const uint8_t issuer_pub[32])
 {
-    if (npf_key_id(issuer_pub) != c->issuer_key)
+    if ((uint32_t)npf_fp(issuer_pub) != c->issuer_key)
         return -1;
     return npf_verify2(c->sig, issuer_pub, cert_domain, sizeof cert_domain - 1, c->raw, c->raw_len - 64);
 }
@@ -85,9 +78,8 @@ static int npf_cert_chain_verify(const uint8_t (*roots)[32], int nroots, const n
     if (!ok || inter->type != NPF_CERT_INTERMEDIATE || !(inter->perms & perm) || !valid_at(inter, now))
         return -1;
     if (leaf) {
+        /* the leaf's type is perm's bit (npf_cert_chain_parse) */
         if (npf_cert_check_sig(leaf, inter->sign_pub) || !valid_at(leaf, now))
-            return -1;
-        if (leaf->type < 16 && !(inter->perms & (1u << leaf->type)))
             return -1;
     }
     return 0;
@@ -177,7 +169,7 @@ int npf_grant_verify(const uint8_t *b, size_t len, const uint8_t issuer_pub[32],
         q += 1 + hl + 2;
     }
     p += tl;
-    if (npf_rd32(b + p) != npf_key_id(issuer_pub))
+    if (npf_rd32(b + p) != (uint32_t)npf_fp(issuer_pub))
         return -1;
     p += 4;
     dom = g->kind == NPF_GRANT_HOSTED ? "npf-grant-hosted-v1" : "npf-grant-v1";

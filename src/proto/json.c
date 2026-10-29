@@ -2,7 +2,6 @@
 
 #include "npf/crypto.h"
 #include "npf/json.h"
-#include "npf/out.h"
 #include "npf/text.h"
 
 typedef struct parser {
@@ -167,33 +166,38 @@ static int parse_number(parser *p)
 
 static int parse_value(parser *p);
 
-/* two string tokens equal after unescaping? */
+/* a string token as it reads unescaped: its length and *s its text (the
+ * input's, else x); -1 escaped and longer than x, or a NUL in it */
+static int str_view(const npf_json *j, int t, char x[256], const char **s)
+{
+    const npf_jtok *k = &j->tok[t];
+    if (!k->escaped) {
+        *s = j->s + k->start;
+        return (int)(k->end - k->start);
+    }
+    *s = x;
+    return npf_json_str(j, t, x, 256);
+}
+
+/* two string tokens equal after unescaping? (one str_view refuses: a
+ * clash, the message is rejected) */
 static int key_equal(const npf_json *j, int a, int b)
 {
     char x[256], y[256];
-    const npf_jtok *ta = &j->tok[a], *tb = &j->tok[b];
-    if (!ta->escaped && !tb->escaped)
-        return ta->end - ta->start == tb->end - tb->start
-            && memcmp(j->s + ta->start, j->s + tb->start, ta->end - ta->start) == 0;
-    if (npf_json_str(j, a, x, sizeof x) < 0 || npf_json_str(j, b, y, sizeof y) < 0)
-        return 1;   /* oversized or NUL keys: treat as a clash, the message is rejected */
-    return strcmp(x, y) == 0;
+    const char *s, *u;
+    int n = str_view(j, a, x, &s), m = str_view(j, b, y, &u);
+    return n < 0 || m < 0 || (n == m && memcmp(s, u, (size_t)n) == 0);
 }
 
-/* FNV-1a of a key as it reads unescaped; -1: one key_equal would refuse
- * (oversized, or a NUL in it) */
+/* FNV-1a of a key as it reads unescaped; -1: str_view refuses it */
 static int key_hash(const npf_json *j, int k, uint32_t *out)
 {
-    const npf_jtok *t = &j->tok[k];
-    const char *s = j->s + t->start;
+    const char *s;
     char x[256];
-    int n = (int)(t->end - t->start), i;
+    int n = str_view(j, k, x, &s), i;
     uint32_t h = 2166136261u;
-    if (t->escaped) {
-        if ((n = npf_json_str(j, k, x, sizeof x)) < 0)
-            return -1;
-        s = x;
-    }
+    if (n < 0)
+        return -1;
     for (i = 0; i < n; i++)
         h = (h ^ (unsigned char)s[i]) * 16777619u;
     *out = h;
@@ -336,16 +340,11 @@ int npf_json_get(const npf_json *j, int obj, const char *key)
         return -1;
     t = obj + 1;
     for (i = 0; i < j->tok[obj].size; i++) {
-        const npf_jtok *k = &j->tok[t];
-        int v = t + 1;
-        if (!k->escaped) {
-            if (k->end - k->start == kl && memcmp(j->s + k->start, key, kl) == 0)
-                return v;
-        } else {
-            char buf[256];
-            if (npf_json_str(j, t, buf, sizeof buf) >= 0 && strcmp(buf, key) == 0)
-                return v;
-        }
+        char x[256];
+        const char *s;
+        int v = t + 1, n = str_view(j, t, x, &s);
+        if (n >= 0 && (size_t)n == kl && memcmp(s, key, kl) == 0)
+            return v;
         t = j->tok[v].next;
     }
     return -1;
@@ -436,6 +435,7 @@ int npf_json_int(const npf_json *j, int t, int64_t min, int64_t max, int64_t *ou
     size_t i;
     int neg = 0;
     uint64_t v = 0;
+    int64_t r;
     if (!k)
         return -1;
     i = k->start;
@@ -448,16 +448,12 @@ int npf_json_int(const npf_json *j, int t, int64_t min, int64_t max, int64_t *ou
             return -1;
         v = v * 10 + (uint64_t)(c - '0');
     }
-    if (!neg && v > (uint64_t)INT64_MAX)
+    if (v > (uint64_t)INT64_MAX + (uint64_t)neg)    /* -2^63 .. 2^63 - 1 */
         return -1;
-    if (neg && v > (uint64_t)INT64_MAX + 1)
+    r = neg ? (int64_t)(0 - v) : (int64_t)v;
+    if (r < min || r > max)
         return -1;
-    {
-        int64_t s = neg ? (int64_t)(0 - v) : (int64_t)v;
-        if (s < min || s > max)
-            return -1;
-        *out = s;
-    }
+    *out = r;
     return 0;
 }
 
@@ -491,150 +487,4 @@ int npf_json_get_int(const npf_json *j, int obj, const char *key, int64_t min, i
 int npf_json_get_b64(const npf_json *j, int obj, const char *key, uint8_t *out, size_t cap)
 {
     return npf_json_b64(j, npf_json_get(j, obj, key), out, cap);
-}
-
-/* ---- writer ---- */
-
-static void put(npf_jw *w, const char *s, size_t n)
-{
-    if (w->err || w->len >= w->cap || n > w->cap - w->len - 1) {
-        w->err = 1;
-        return;
-    }
-    memcpy(w->buf + w->len, s, n);
-    w->len += n;
-}
-
-static void sep(npf_jw *w)
-{
-    if (w->after_key) {
-        w->after_key = 0;
-        return;
-    }
-    if (w->depth > 0) {
-        if (!w->first[w->depth])
-            put(w, ",", 1);
-        w->first[w->depth] = 0;
-    }
-}
-
-void npf_jw_init(npf_jw *w, char *buf, size_t cap)
-{
-    memset(w, 0, sizeof *w);
-    w->buf = buf;
-    w->cap = cap;
-}
-
-static void open_c(npf_jw *w, char c)
-{
-    sep(w);
-    put(w, &c, 1);
-    if (w->depth >= NPF_JSON_MAX_DEPTH) {
-        w->err = 1;
-        return;
-    }
-    w->depth++;
-    w->first[w->depth] = 1;
-    w->kind[w->depth] = (uint8_t)c;
-}
-
-void npf_jw_obj(npf_jw *w) { open_c(w, '{'); }
-void npf_jw_arr(npf_jw *w) { open_c(w, '['); }
-
-void npf_jw_end(npf_jw *w)
-{
-    if (w->depth <= 0 || w->after_key) {
-        w->err = 1;
-        return;
-    }
-    put(w, w->kind[w->depth] == '[' ? "]" : "}", 1);
-    w->depth--;
-}
-
-static void put_str(npf_jw *w, const char *v, size_t n)
-{
-    size_t i, run = 0, el;
-    char e[6];
-    put(w, "\"", 1);
-    for (i = 0; i < n; i++)
-        if ((el = npf_json_esc((unsigned char)v[i], e))) {
-            put(w, v + run, i - run);
-            put(w, e, el);
-            run = i + 1;
-        }
-    put(w, v + run, n - run);
-    put(w, "\"", 1);
-}
-
-void npf_jw_key(npf_jw *w, const char *k)
-{
-    if (w->depth <= 0 || w->kind[w->depth] != '{' || w->after_key) {
-        w->err = 1;
-        return;
-    }
-    sep(w);
-    put_str(w, k, strlen(k));
-    put(w, ":", 1);
-    w->after_key = 1;
-}
-
-void npf_jw_strn(npf_jw *w, const char *v, size_t n)
-{
-    sep(w);
-    put_str(w, v, n);
-}
-
-void npf_jw_str(npf_jw *w, const char *v)
-{
-    npf_jw_strn(w, v, strlen(v));
-}
-
-void npf_jw_raw(npf_jw *w, const char *json, size_t n)
-{
-    sep(w);
-    put(w, json, n);
-}
-
-void npf_jw_int(npf_jw *w, int64_t v)
-{
-    char b[24];
-    int i = 23;
-    uint64_t u = v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
-    b[i] = 0;
-    do {
-        b[--i] = (char)('0' + u % 10);
-        u /= 10;
-    } while (u);
-    if (v < 0)
-        b[--i] = '-';
-    npf_jw_raw(w, b + i, (size_t)(23 - i));
-}
-
-void npf_jw_bool(npf_jw *w, int v) { npf_jw_raw(w, v ? "true" : "false", v ? 4 : 5); }
-void npf_jw_null(npf_jw *w) { npf_jw_raw(w, "null", 4); }
-
-void npf_jw_b64(npf_jw *w, const uint8_t *v, size_t n)
-{
-    size_t need = NPF_B64_LEN(n) + 2;
-    if (w->err || w->len + need + 2 > w->cap) {
-        w->err = 1;
-        return;
-    }
-    sep(w);
-    w->buf[w->len++] = '"';
-    w->len += npf_b64url_encode(v, n, w->buf + w->len);
-    w->buf[w->len++] = '"';
-}
-
-void npf_jw_kstr(npf_jw *w, const char *k, const char *v) { npf_jw_key(w, k); npf_jw_str(w, v); }
-void npf_jw_kint(npf_jw *w, const char *k, int64_t v) { npf_jw_key(w, k); npf_jw_int(w, v); }
-void npf_jw_kbool(npf_jw *w, const char *k, int v) { npf_jw_key(w, k); npf_jw_bool(w, v); }
-void npf_jw_kb64(npf_jw *w, const char *k, const uint8_t *v, size_t n) { npf_jw_key(w, k); npf_jw_b64(w, v, n); }
-
-int npf_jw_finish(npf_jw *w)
-{
-    if (w->err || w->depth != 0 || w->len >= w->cap)
-        return -1;
-    w->buf[w->len] = 0;
-    return (int)w->len;
 }

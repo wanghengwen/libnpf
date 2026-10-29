@@ -1,5 +1,5 @@
 /* Fixed-format parsers replacing scanf: cursor/buffer bounds, HTTP status,
- * route/MAC fields. */
+ * route/MAC fields, HOST:PORT. */
 #include <limits.h>
 #include <stdio.h>
 #include <string.h>
@@ -51,6 +51,18 @@ int test_text(void)
     CHECK(npf_text_mac("01:23:45:67:89", mac) < 0);
     CHECK(npf_text_mac("01:23:45:67:89:100", mac) < 0);
     CHECK(npf_text_mac("01:23:45:67:89:ab:cd", mac) < 0);
+
+    {   /* HOST:PORT, [V6]:PORT: digits only, no leading zero, 0..65535, a host that fits */
+        static const char *const bad[] = {"h", "h:", ":80", "[]:80", "[::1]80", "[::1:80", "h:+80", "h: 80", "h:080",
+                                          "h:00", "h:65536", "h:99999999999", "h:80x", "toolonghost:1"};
+        char h[8];
+        uint16_t port;
+        CHECK(npf_hostport("a.b:65535", h, sizeof h, &port) == 0 && !strcmp(h, "a.b") && port == 65535);
+        CHECK(npf_hostport("[::1]:0", h, sizeof h, &port) == 0 && !strcmp(h, "::1") && port == 0);
+        CHECK(npf_hostport("::1:5", h, sizeof h, &port) == 0 && !strcmp(h, "::1") && port == 5);
+        for (i = 0; i < sizeof bad / sizeof bad[0]; i++)
+            CHECK(npf_hostport(bad[i], h, sizeof h, &port) < 0);
+    }
 
     CHECK(npf_http_status("HTTP/1.1 200 OK\r\n") == 200);
     CHECK(npf_http_status("HTTP/1.0 404\r\n") == 404);

@@ -66,6 +66,10 @@ static void test_parse(void)
           "int overflow");
     CHECK(parse("{\"n\":-9223372036854775808}", &j) == 0 && npf_json_get_int(&j, 0, "n", INT64_MIN, 0, &v) == 0
           && v == INT64_MIN, "int64 min");
+    CHECK(parse("{\"a\":9223372036854775807,\"b\":9223372036854775808,\"c\":-9223372036854775809}", &j) == 0
+          && npf_json_get_int(&j, 0, "a", 0, INT64_MAX, &v) == 0 && v == INT64_MAX
+          && npf_json_get_int(&j, 0, "b", 0, INT64_MAX, &v) < 0 && npf_json_get_int(&j, 0, "c", INT64_MIN, 0, &v) < 0,
+          "int64 bounds");
     /* structure */
     CHECK(parse("{\"a\":[[[[[[1]]]]]]}", &j) < 0, "depth > 6");
     CHECK(parse("{\"a\":[[[[1]]]]}", &j) == 0, "depth 5");
@@ -82,38 +86,58 @@ static void test_parse(void)
     }
 }
 
+/* the messages we send: escaping, base64url, the size limit, a secret's growth */
 static void test_writer(void)
 {
-    char buf[256];
-    npf_jw w;
+    npf_out w = {0};
     npf_json j;
     char s[64];
-    npf_jw_init(&w, buf, sizeof buf);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "q", "a\"b\\c\n");
-    npf_jw_kint(&w, "n", -42);
-    npf_jw_key(&w, "arr");
-    npf_jw_arr(&w);
-    npf_jw_int(&w, 1);
-    npf_jw_obj(&w);
-    npf_jw_kbool(&w, "t", 1);
-    npf_jw_end(&w);
-    npf_jw_null(&w);
-    npf_jw_end(&w);
-    npf_jw_end(&w);
-    CHECK(npf_jw_finish(&w) > 0, "writer finish");
-    CHECK(strcmp(buf, "{\"q\":\"a\\\"b\\\\c\\n\",\"n\":-42,\"arr\":[1,{\"t\":true},null]}") == 0, "writer output %s", buf);
-    CHECK(parse(buf, &j) == 0 && npf_json_get_str(&j, 0, "q", s, sizeof s) == 6 && strcmp(s, "a\"b\\c\n") == 0,
-          "writer round trip");
-    npf_jw_init(&w, buf, 8);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "long", "value");
-    npf_jw_end(&w);
-    CHECK(npf_jw_finish(&w) < 0, "writer overflow detected");
-    npf_jw_init(&w, buf, sizeof buf);
-    npf_jw_obj(&w);
-    npf_jw_kint(&w, "a", 1);
-    CHECK(npf_jw_finish(&w) < 0, "unclosed object detected");
+    uint8_t b[5];
+    int i;
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "q", "a\"b\\c\n\x01");
+    npf_out_kint(&w, "n", -42);
+    npf_out_kb64(&w, "b", (const uint8_t *)"\xfb\xff\x01\x02\x03", 5);
+    npf_out_jkey(&w, "k\"");                   /* keys escaped too */
+    npf_out_jarr(&w);
+    npf_out_jint(&w, 1);
+    npf_out_jobj(&w);
+    npf_out_kbool(&w, "t", 1);
+    npf_out_jend(&w);
+    npf_out_jstr(&w, NULL);
+    npf_out_jb64(&w, NULL, 0);
+    npf_out_jend(&w);
+    npf_out_jend(&w);
+    CHECK(!w.failed && strcmp(w.p, "{\"q\":\"a\\\"b\\\\c\\n\\u0001\",\"n\":-42,\"b\":\"-_8BAgM\",\"k\\\"\":[1,{\"t\":true},"
+                                   "null,\"\"]}") == 0, "writer output %s", w.p);
+    CHECK(parse(w.p, &j) == 0 && npf_json_get_str(&j, 0, "q", s, sizeof s) == 7 && strcmp(s, "a\"b\\c\n\x01") == 0
+          && npf_json_get_b64(&j, 0, "b", b, sizeof b) == 5 && b[0] == 0xfb, "writer round trip");
+    npf_out_free(&w);
+    npf_out_jend(&w);
+    CHECK(w.failed, "an end with nothing open fails");
+    npf_out_free(&w);
+    w.max = 16;                                 /* at most 16 bytes: 16 fit, 17 do not */
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "long", "value");
+    npf_out_jend(&w);
+    CHECK(!w.failed && w.len == 16, "16 bytes within a limit of 16 (%d)", (int)w.len);
+    npf_out_free(&w);
+    CHECK(w.max == 16, "the limit stays after free");
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "long", "value!");
+    npf_out_jend(&w);
+    CHECK(w.failed, "17 bytes over a limit of 16");
+    npf_out_kint(&w, "more", 1);
+    CHECK(w.failed && w.len <= 16, "failed stays failed");
+    npf_out_free(&w);
+    w = (npf_out){.secret = 1};                 /* grows by copies, the old ones wiped */
+    npf_out_jarr(&w);
+    for (i = 0; i < 200; i++)
+        npf_out_jstr(&w, "password");
+    npf_out_jend(&w);
+    CHECK(!w.failed && w.len == 2 + 200 * 10 + 199 && w.cap >= w.len + 1 && parse(w.p, &j) == 0, "a secret grown");
+    npf_out_free(&w);
+    CHECK(!w.p && w.secret, "a secret freed");
 }
 
 /* npf_out's JSON: commas by themselves, text of one's own after a key */
@@ -121,28 +145,28 @@ static void test_out(void)
 {
     npf_out o = {0};
     npf_json j;
-    npf_out_jopen(&o, '{');
+    npf_out_jobj(&o);
     npf_out_kstr(&o, "s", "a\"b");
     npf_out_kstr(&o, "none", NULL);
     npf_out_jkey(&o, "raw");
     npf_out_printf(&o, "{\"x\":1}");          /* a writer of its own */
     npf_out_kint(&o, "n", -7);
     npf_out_jkey(&o, "arr");
-    npf_out_jopen(&o, '[');
-    npf_out_jitem(&o, "i");
+    npf_out_jarr(&o);
+    npf_out_jstr(&o, "i");
     npf_out_jraw(&o, "2");
-    npf_out_jopen(&o, '{');
+    npf_out_jobj(&o);
     npf_out_kbool(&o, "t", 1);
-    npf_out_jclose(&o, '}');
-    npf_out_jclose(&o, ']');
+    npf_out_jend(&o);
+    npf_out_jend(&o);
     npf_out_kbool(&o, "f", 0);
-    npf_out_jclose(&o, '}');
+    npf_out_jend(&o);
     CHECK(!o.failed && strcmp(o.p, "{\"s\":\"a\\\"b\",\"none\":null,\"raw\":{\"x\":1},\"n\":-7,"
                                   "\"arr\":[\"i\",2,{\"t\":true}],\"f\":false}") == 0, "out JSON %s", o.p);
     CHECK(parse(o.p, &j) == 0, "out JSON parses");
     npf_out_free(&o);
-    npf_out_jopen(&o, '[');
-    npf_out_jclose(&o, ']');
+    npf_out_jarr(&o);
+    npf_out_jend(&o);
     npf_out_printf(&o, " ");
     npf_out_jstr(&o, "top");                    /* the top level: as it is */
     npf_out_jstr(&o, "level");

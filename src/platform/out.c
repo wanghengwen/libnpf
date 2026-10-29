@@ -1,4 +1,4 @@
-/* Growable output text (npf/out.h). */
+/* Growable buffers and output text (npf/out.h). */
 #include "npf/sys.h"
 #include <stdarg.h>
 #include <stdio.h>
@@ -6,40 +6,50 @@
 #include <string.h>
 #include <stdint.h>
 
+#include "npf/crypto.h"
 #include "npf/out.h"
 
 #ifdef __MINGW32__
 #define vsnprintf __mingw_vsnprintf     /* C99 formats (%zu) */
 #endif
 
+int npf_grow(void *pp, size_t *cap, size_t need, size_t size, size_t first)
+{
+    size_t c = *cap ? *cap : first;
+    void *p;
+    if (need <= *cap)
+        return 0;
+    while (c < need)
+        c = c > SIZE_MAX / 2 ? need : 2 * c;
+    if (c > SIZE_MAX / size || !(p = realloc(*(void **)pp, c * size)))
+        return -1;
+    *(void **)pp = p;
+    *cap = c;
+    return 0;
+}
 
 static int out_grow(npf_out *o, size_t more)
 {
-    size_t cap = o->cap ? o->cap : 256;
+    size_t cap = o->cap;
     char *p;
-    if (o->failed)
-        return -1;
-    if (more > SIZE_MAX - o->len - 1) {
-        o->failed = 1;
-        return -1;
-    }
-    if (o->len + more + 1 <= o->cap)
+    if (o->failed || more > SIZE_MAX - o->len - 1 || (o->max && o->len + more > o->max))
+        goto fail;
+    if (o->len + more + 1 <= cap)
         return 0;
-    while (o->len + more + 1 > cap) {
-        if (cap > SIZE_MAX / 2) {
-            cap = o->len + more + 1;
-            break;
-        }
-        cap *= 2;
-    }
-    p = realloc(o->p, cap);
-    if (!p) {
-        o->failed = 1;
-        return -1;
+    p = o->secret ? NULL : o->p;        /* a secret: a new buffer, the old one wiped (realloc leaves it behind) */
+    if (npf_grow(&p, &cap, o->len + more + 1, 1, 256) < 0)
+        goto fail;
+    if (o->secret && o->p) {
+        memcpy(p, o->p, o->len + 1);
+        npf_wipe(o->p, o->cap);
+        free(o->p);
     }
     o->p = p;
     o->cap = cap;
     return 0;
+fail:
+    o->failed = 1;
+    return -1;
 }
 
 void npf_out_write(npf_out *o, const char *s, size_t n)
@@ -77,7 +87,9 @@ void npf_out_printf(npf_out *o, const char *fmt, ...)
     va_end(ap);
 }
 
-size_t npf_json_esc(unsigned char c, char e[6])
+/* the JSON escape of byte c into e (\" \\ \n \r \t, other control bytes
+ * \u00xx): its length, 0 when c goes as it is */
+static size_t json_esc(unsigned char c, char e[6])
 {
     static const char hex[] = "0123456789abcdef";
     e[0] = '\\';
@@ -109,24 +121,32 @@ static void jsep(npf_out *o)
     o->jmore |= 1u << o->jdepth;
 }
 
-void npf_out_jopen(npf_out *o, char c)
+static void jopen(npf_out *o, char c)
 {
+    uint32_t bit;
     jsep(o);
-    if (o->jdepth >= 31) {                  /* deeper than the mask: never in our replies */
+    if (o->jdepth >= 31) {                  /* deeper than the masks: never in ours */
         o->failed = 1;
         return;
     }
     npf_out_write(o, &c, 1);
-    o->jdepth++;
-    o->jmore &= ~(1u << o->jdepth);
+    bit = 1u << ++o->jdepth;
+    o->jmore &= ~bit;
+    o->jarr = c == '[' ? o->jarr | bit : o->jarr & ~bit;
 }
 
-void npf_out_jclose(npf_out *o, char c)
+void npf_out_jobj(npf_out *o) { jopen(o, '{'); }
+void npf_out_jarr(npf_out *o) { jopen(o, '['); }
+
+void npf_out_jend(npf_out *o)
 {
     o->jkey = 0;
-    if (o->jdepth)
-        o->jdepth--;
-    npf_out_write(o, &c, 1);
+    if (!o->jdepth) {
+        o->failed = 1;
+        return;
+    }
+    npf_out_write(o, o->jarr >> o->jdepth & 1 ? "]" : "}", 1);
+    o->jdepth--;
 }
 
 /* the member counts from here, so a value written with printf after it
@@ -135,7 +155,8 @@ void npf_out_jkey(npf_out *o, const char *k)
 {
     o->jkey = 0;
     jsep(o);
-    npf_out_printf(o, "\"%s\":", k);
+    npf_out_json_str(o, k, strlen(k));
+    npf_out_write(o, ":", 1);
     o->jkey = 1;
 }
 
@@ -145,7 +166,7 @@ void npf_out_json_str(npf_out *o, const char *s, size_t n)
     char e[6];
     npf_out_write(o, "\"", 1);
     for (i = 0; i < n; i++)
-        if ((el = npf_json_esc((unsigned char)s[i], e))) {
+        if ((el = json_esc((unsigned char)s[i], e))) {
             npf_out_write(o, s + run, i - run);
             npf_out_write(o, e, el);
             run = i + 1;
@@ -156,13 +177,33 @@ void npf_out_json_str(npf_out *o, const char *s, size_t n)
 
 void npf_out_jstr(npf_out *o, const char *s)
 {
-    npf_out_json_str(o, s ? s : "", s ? strlen(s) : 0);
+    jsep(o);
+    if (s)
+        npf_out_json_str(o, s, strlen(s));
+    else
+        npf_out_write(o, "null", 4);
 }
 
-void npf_out_jitem(npf_out *o, const char *s)
+void npf_out_jint(npf_out *o, long long v)
 {
     jsep(o);
-    npf_out_jstr(o, s);
+    npf_out_printf(o, "%lld", v);
+}
+
+void npf_out_jbool(npf_out *o, int v)
+{
+    npf_out_jraw(o, v ? "true" : "false");
+}
+
+void npf_out_jb64(npf_out *o, const uint8_t *v, size_t n)
+{
+    jsep(o);
+    if (n > SIZE_MAX / 2 || out_grow(o, NPF_B64_LEN(n) + 1) < 0)   /* the quotes, the text */
+        return;
+    o->p[o->len++] = '"';
+    o->len += npf_b64url_encode(v, n, o->p + o->len);
+    o->p[o->len++] = '"';
+    o->p[o->len] = 0;
 }
 
 void npf_out_jraw(npf_out *o, const char *json)
@@ -171,30 +212,15 @@ void npf_out_jraw(npf_out *o, const char *json)
     npf_out_write(o, json, strlen(json));
 }
 
-void npf_out_kstr(npf_out *o, const char *k, const char *v)
-{
-    npf_out_jkey(o, k);
-    if (v)
-        npf_out_jstr(o, v);
-    else
-        npf_out_jraw(o, "null");
-}
-
-void npf_out_kint(npf_out *o, const char *k, long long v)
-{
-    npf_out_jkey(o, k);
-    jsep(o);
-    npf_out_printf(o, "%lld", v);
-}
-
-void npf_out_kbool(npf_out *o, const char *k, int v)
-{
-    npf_out_jkey(o, k);
-    npf_out_jraw(o, v ? "true" : "false");
-}
+void npf_out_kstr(npf_out *o, const char *k, const char *v) { npf_out_jkey(o, k); npf_out_jstr(o, v); }
+void npf_out_kint(npf_out *o, const char *k, long long v) { npf_out_jkey(o, k); npf_out_jint(o, v); }
+void npf_out_kbool(npf_out *o, const char *k, int v) { npf_out_jkey(o, k); npf_out_jbool(o, v); }
+void npf_out_kb64(npf_out *o, const char *k, const uint8_t *v, size_t n) { npf_out_jkey(o, k); npf_out_jb64(o, v, n); }
 
 void npf_out_free(npf_out *o)
 {
+    if (o->secret && o->p)
+        npf_wipe(o->p, o->cap);
     free(o->p);
-    memset(o, 0, sizeof *o);
+    *o = (npf_out){.max = o->max, .secret = o->secret};     /* the settings stay for its next use */
 }

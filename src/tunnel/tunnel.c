@@ -35,22 +35,8 @@ int tunnel_wb_put(wbuf *b, const void *p, size_t n)
         memmove(b->p, b->p + b->off, b->len);
         b->off = 0;
     }
-    if (b->off + b->len + n > b->cap) {
-        size_t c = b->cap ? b->cap : 16384;
-        uint8_t *q;
-        while (c < b->off + b->len + n) {
-            if (c > SIZE_MAX / 2) {
-                c = b->off + b->len + n;
-                break;
-            }
-            c *= 2;
-        }
-        q = realloc(b->p, c);
-        if (!q)
-            return -1;
-        b->p = q;
-        b->cap = c;
-    }
+    if (b->off + b->len + n > b->cap && npf_grow(&b->p, &b->cap, b->off + b->len + n, 1, 16384) < 0)
+        return -1;
     memcpy(b->p + b->off + b->len, p, n);
     b->len += n;
     return 0;
@@ -284,18 +270,10 @@ static void rx_add(npf_tunnel *t, int64_t d)
 static sublink *sub_new(npf_tunnel *t, uint32_t id, int fd, int server)
 {
     sublink *s;
-    if (t->nsubs == t->cap) {
-        int c = t->cap ? t->cap * 2 : 16;
-        sublink **ns = realloc(t->subs, (size_t)c * sizeof *ns);
-        uint32_t *ni;
-        if (!ns)
-            return NULL;
-        t->subs = ns;
-        if (!(ni = realloc(t->ids, (size_t)c * sizeof *ni)))
-            return NULL;
-        t->ids = ni;
-        t->cap = c;
-    }
+    size_t cap = t->cap;                    /* the ids beside the subs: the same capacity */
+    if (npf_grow(&t->subs, &cap, (size_t)t->nsubs + 1, sizeof *t->subs, 16) < 0
+        || npf_grow(&t->ids, &t->cap, (size_t)t->nsubs + 1, sizeof *t->ids, 16) < 0)
+        return NULL;
     if (!(s = calloc(1, sizeof *s)))
         return NULL;
     if (server && !(s->hs = calloc(1, sizeof *s->hs))) {   /* its SOCKS server's handshake */
@@ -715,22 +693,6 @@ static int handle_unit(npf_tunnel *t, int type, const uint8_t *p, size_t n)
     }
 }
 
-/* room in rb for a unit of need bytes (NPF_CU_HDR + NPF_CTRL_MAX at most) */
-static int rb_room(npf_tunnel *t, size_t need)
-{
-    size_t c = t->rcap ? t->rcap : 512;
-    uint8_t *q;
-    if (need <= t->rcap)
-        return 0;
-    while (c < need)
-        c *= 2;
-    if (!(q = realloc(t->rb, c)))
-        return -1;
-    t->rb = q;
-    t->rcap = c;
-    return 0;
-}
-
 /* the control units in one read of the control stream, handled from the
  * read's buffer; only a unit the read cut (its head in one read, the rest in
  * the next) is gathered in rb, which holds nothing between units (an idle
@@ -741,7 +703,7 @@ static int input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len)
     while (t->rl && off < len) {            /* the tail of the unit the last read cut */
         size_t need = t->rl < NPF_CU_HDR ? NPF_CU_HDR : NPF_CU_HDR + npf_rd16(t->rb + 1);
         size_t take = need - t->rl < len - off ? need - t->rl : len - off;
-        if (rb_room(t, t->rl + take) < 0)
+        if (npf_grow(&t->rb, &t->rcap, t->rl + take, 1, 512) < 0)
             return -1;
         memcpy(t->rb + t->rl, buf + off, take);
         t->rl += take;
@@ -773,7 +735,7 @@ static int input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len)
         off += NPF_CU_HDR + n;
     }
     if (off < len) {                        /* a unit cut here: its head, the rest in the next read */
-        if (rb_room(t, len - off) < 0)
+        if (npf_grow(&t->rb, &t->rcap, len - off, 1, 512) < 0)
             return -1;
         memcpy(t->rb, buf + off, len - off);
         t->rl = len - off;

@@ -12,6 +12,7 @@
 
 #include "npf/log.h"
 #include "npf/loop.h"
+#include "npf/out.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
 
@@ -104,10 +105,12 @@ typedef struct posted {
 
 struct npf_loop {
     handler   *h;               /* the nh entries (idx: fd -> entry) */
-    int        nh, cap;
+    int        nh;
+    size_t     cap;
     int        hfree;           /* no free entry in h below this one */
     npf_timer **heap;           /* timers: min-heap by (due, seq) */
-    int        nheap, capheap;
+    int        nheap;
+    size_t     capheap;
     uint64_t   tseq;
     int64_t    now;
     volatile int stop;
@@ -125,7 +128,8 @@ struct npf_loop {
     int        idx_tomb;        /* deleted slots still occupying the table */
     /* a shared runtime (loop.h): the host's children, or a child's host */
     npf_loop **kids;
-    int        nkids, capkids;
+    int        nkids;
+    size_t     capkids;
     npf_loop  *host;
     npf_child_fns cf;
     void      *carg;
@@ -140,7 +144,7 @@ struct npf_loop {
     WSAPOLLFD *pfd;
     unsigned  *pgen;            /* pfd entry -> the registration it was taken from */
     int       *own;             /* pfd entry -> its loop's child (-1: the host's own) */
-    int        npfd;            /* pfd, pgen and own have room for this many */
+    size_t     npfd;            /* pfd, pgen and own have room for this many */
 #endif
 };
 
@@ -631,15 +635,9 @@ static void attach_run(npf_loop *h, void *arg)
 {
     npf_loop *c = arg;
     npf_log_ctx *prev;
-    if (h->nkids == h->capkids) {
-        int cap = h->capkids ? 2 * h->capkids : 16;
-        npf_loop **k = realloc(h->kids, (size_t)cap * sizeof *k);
-        if (!k) {                       /* the child cannot run: it ends at once */
-            c->cf.done(c, c->carg);
-            return;
-        }
-        h->kids = k;
-        h->capkids = cap;
+    if (npf_grow(&h->kids, &h->capkids, (size_t)h->nkids + 1, sizeof *h->kids, 16) < 0) {
+        c->cf.done(c, c->carg);         /* the child cannot run: it ends at once */
+        return;
     }
     h->kids[h->nkids++] = c;
     c->attached = 1;
@@ -741,14 +739,8 @@ int npf_loop_add(npf_loop *l, int fd, unsigned events, npf_io_fn fn, void *arg)
     for (i = l->hfree < l->nh ? l->hfree : l->nh; i < l->nh && l->h[i].active; i++)
         ;
     if (i == l->nh) {
-        if (l->nh == l->cap) {
-            int n = l->cap ? l->cap * 2 : 64;
-            handler *nh = realloc(l->h, (size_t)n * sizeof *nh);
-            if (!nh)
-                return -1;
-            l->h = nh;
-            l->cap = n;
-        }
+        if (npf_grow(&l->h, &l->cap, (size_t)l->nh + 1, sizeof *l->h, 64) < 0)
+            return -1;
         memset(&l->h[l->nh], 0, sizeof l->h[0]);
         l->nh++;
     }
@@ -853,25 +845,12 @@ static void wait_io(npf_loop *l, int wait)
 }
 #else
 /* pfd and its parallel arrays (pgen, own) for need entries */
-static int pfd_room(npf_loop *l, int need)
+static int pfd_room(npf_loop *l, size_t need)
 {
-    int cap = need + 64;
-    WSAPOLLFD *p;
-    unsigned *g;
-    int *o;
-    if (l->npfd >= need)
-        return 0;
-    if (!(p = realloc(l->pfd, (size_t)cap * sizeof *p)))
+    size_t c1 = l->npfd, c2 = l->npfd;     /* the same capacity for each */
+    if (npf_grow(&l->pfd, &c1, need, sizeof *l->pfd, 64) < 0 || npf_grow(&l->pgen, &c2, need, sizeof *l->pgen, 64) < 0)
         return -1;
-    l->pfd = p;
-    if (!(g = realloc(l->pgen, (size_t)cap * sizeof *g)))
-        return -1;
-    l->pgen = g;
-    if (!(o = realloc(l->own, (size_t)cap * sizeof *o)))
-        return -1;
-    l->own = o;
-    l->npfd = cap;
-    return 0;
+    return npf_grow(&l->own, &l->npfd, need, sizeof *l->own, 64);
 }
 
 static void wait_io(npf_loop *l, int wait)
@@ -879,7 +858,7 @@ static void wait_io(npf_loop *l, int wait)
     int i, k, n = 0, total = l->nh + 1;
     for (k = 0; k < l->nkids; k++)
         total += l->kids[k]->nh;
-    if (pfd_room(l, total) < 0)
+    if (pfd_room(l, (size_t)total) < 0)
         return;
     l->pfd[n].fd = l->wake_fd;
     l->pfd[n].events = POLLRDNORM;
@@ -1016,14 +995,8 @@ npf_timer *npf_timer_add(npf_loop *l, int64_t delay_ms, npf_timer_fn fn, void *a
 {
     npf_timer *t;
     int64_t now;
-    if (l->nheap == l->capheap) {
-        int cap = l->capheap ? 2 * l->capheap : 64;
-        npf_timer **h = realloc(l->heap, (size_t)cap * sizeof *h);
-        if (!h)
-            return NULL;
-        l->heap = h;
-        l->capheap = cap;
-    }
+    if (npf_grow(&l->heap, &l->capheap, (size_t)l->nheap + 1, sizeof *l->heap, 64) < 0)
+        return NULL;
     t = calloc(1, sizeof *t);
     if (!t)
         return NULL;
