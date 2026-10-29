@@ -1,5 +1,5 @@
-/* The signaling connection (npf/sig.h), and the Noise_XK initiator over a
- * WebSocket that the WS relay's connection uses too. */
+/* The signaling connection (npf/sig.h), on which the WS relay's connection
+ * runs too (wsrelay.c). */
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,36 +30,19 @@ static void sig_down(npf_sig *s, const char *why)
     npf_sig_close(s);
 }
 
-int npf_sig_xk_first(npf_ws *ws, npf_noise_hs *hs)
-{
-    uint8_t m[64];
-    int n = npf_noise_write(hs, NULL, 0, m, sizeof m);
-    return n < 0 || npf_ws_send(ws, m, (size_t)n, 1) < 0 ? -1 : 0;
-}
-
-const char *npf_sig_xk_finish(npf_ws *ws, npf_noise_hs *hs, const uint8_t *msg, size_t len, npf_noise_cs *tx,
-                              npf_noise_cs *rx, uint8_t hash[64])
-{
-    uint8_t m[128], p[64];
-    int n;
-    if (npf_noise_read(hs, msg, len, p, sizeof p) < 0)
-        return "server authentication failed";
-    n = npf_noise_write(hs, NULL, 0, m, sizeof m);
-    if (n < 0 || npf_noise_split(hs, tx, rx, NULL, NULL, hash) < 0 || npf_ws_send(ws, m, (size_t)n, 1) < 0)
-        return "noise handshake failed";
-    return NULL;
-}
-
+/* Noise_XK as the initiator: the first message once the WebSocket is open */
 static void ws_open(npf_ws *ws, void *arg)
 {
     npf_sig *s = arg;
-    if (npf_sig_xk_first(ws, &s->hs) < 0)
+    uint8_t m[64];
+    int n = npf_noise_write(&s->hs, NULL, 0, m, sizeof m);
+    if (n < 0 || npf_ws_send(ws, m, (size_t)n, 1) < 0)
         sig_down(s, "noise write failed");
 }
 
 /* Every WebSocket message is a binary one: the Noise handshake message or
- * a transport ciphertext as it is (signaling.md); a text message ends the
- * connection */
+ * a transport ciphertext as it is (signaling.md), after a type byte with
+ * on_raw (0; the others raw); a text message ends the connection */
 static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void *arg)
 {
     npf_sig *s = arg;
@@ -72,10 +55,17 @@ static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         sig_down(s, "message too large");
         return;
     }
-    if (!s->ready) {
-        const char *why = npf_sig_xk_finish(s->ws, &s->hs, data, len, &s->tx, &s->rx, s->hash);
-        if (why) {
-            sig_down(s, why);
+    if (!s->ready) {                    /* the server's answer, our last message */
+        uint8_t m[128], p[64];
+        int n;
+        if (npf_noise_read(&s->hs, data, len, p, sizeof p) < 0) {
+            sig_down(s, "server authentication failed");
+            return;
+        }
+        n = npf_noise_write(&s->hs, NULL, 0, m, sizeof m);
+        if (n < 0 || npf_noise_split(&s->hs, &s->tx, &s->rx, NULL, NULL, s->hash) < 0
+            || npf_ws_send(s->ws, m, (size_t)n, 1) < 0) {
+            sig_down(s, "noise handshake failed");
             return;
         }
         s->ready = 1;
@@ -83,6 +73,12 @@ static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
             s->cbs.on_ready(s, s->arg);
         return;
     }
+    if (s->cbs.on_raw && (!len || data[0])) {
+        s->cbs.on_raw(s, data, len, s->arg);
+        return;
+    }
+    if (s->cbs.on_raw)
+        data++, len--;
     {
         /* a token takes two characters at least ("1,") */
         size_t ntok = len / 2 + 2 < NPF_JSON_MAX_TOKENS ? len / 2 + 2 : NPF_JSON_MAX_TOKENS;
@@ -140,12 +136,13 @@ npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[
 int npf_sig_send(npf_sig *s, const char *json, size_t len)
 {
     uint8_t *out;               /* not on the stack (sys.h, npf_scratch) */
-    int n, r = -1;
+    int pre = s->cbs.on_raw != NULL, n, r = -1;
     if (!s->ready || !s->ws || len > NPF_JSON_MAX_SIZE || !(out = malloc(len + 64)))
         return -1;
-    n = npf_noise_encrypt(&s->tx, NULL, 0, (const uint8_t *)json, len, out);
+    out[0] = 0;                 /* the type byte with on_raw */
+    n = npf_noise_encrypt(&s->tx, NULL, 0, (const uint8_t *)json, len, out + pre);
     if (n >= 0)
-        r = npf_ws_send(s->ws, out, (size_t)n, 1);
+        r = npf_ws_send(s->ws, out, (size_t)n + pre, 1);
     free(out);
     return r;
 }
@@ -158,6 +155,11 @@ int npf_sig_ping(npf_sig *s)
 int64_t npf_sig_last_rx(const npf_sig *s)
 {
     return s->ws ? npf_ws_last_rx(s->ws) : 0;
+}
+
+npf_ws *npf_sig_ws(const npf_sig *s)
+{
+    return s->ws;
 }
 
 const uint8_t *npf_sig_hash(const npf_sig *s)

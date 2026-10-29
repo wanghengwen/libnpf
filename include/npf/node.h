@@ -33,7 +33,7 @@
 typedef struct npf_list_meta {
     int64_t expires;                            /* Unix s, 0 none */
     int     full;                               /* 0: a seed list (DNS) */
-    char    doh[NPF_SOURCES_MAX][128];          /* names with the seed in TXT records */
+    char    doh[NPF_SOURCES_MAX][256];          /* names with the seed in TXT records */
     int     ndoh;
     char    https[NPF_SOURCES_MAX][256];        /* static files with the full list */
     int     nhttps;
@@ -598,10 +598,9 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason, int
 /* server time in ms (wall clock corrected by welcome.time) */
 int64_t npf_node_time(const npf_node *n);
 
-/* Parse a server-list payload into entries and, meta not NULL, its
- * expiry, fullness and channels; returns the count or -1. */
-int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int max, int64_t *serial,
-                         npf_list_meta *meta);
+/* a server list's payload into entries (out: NPF_MAX_SERVERS), its serial
+ * and its expiry, fullness and channels: the count, or -1 (logged) */
+int npf_serverlist_parse(const char *json, size_t len, npf_server_entry *out, int64_t *serial, npf_list_meta *meta);
 
 /* write the "nat" and "cand" fields into an open JSON object */
 struct npf_jw;

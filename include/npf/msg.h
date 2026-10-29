@@ -7,7 +7,7 @@
  * unknown keys are ignored; duplicate keys never get here (npf_json_parse
  * refuses them); null is absent; a required field missing or wrong refuses
  * the message; an optional field that is wrong is absent (logged at the
- * debug level); arrays keep at most their size, the rest is ignored; the
+ * debug level) unless it is NPF_F_STRICT; arrays keep at most their size, the rest is ignored; the
  * error says which field and why, never its value (it may be a secret). */
 #ifndef NPF_MSG_H
 #define NPF_MSG_H
@@ -20,13 +20,13 @@
 enum {
     NPF_F_STR = 1,  /* char[size]: no control characters, NUL-terminated; "" absent */
     NPF_F_INT,      /* int64_t in [min, max]; absent: def */
-    NPF_F_BOOL,     /* int 1 (true) or 0 (false, absent) */
+    NPF_F_BOOL,     /* int 1 (true) or 0 (false); absent: def */
     NPF_F_B64,      /* uint8_t[size] from base64url, min..size bytes; the length in the int at aux (0:
                        absent); no length for a required field of one length (min == size, aux 0) */
     NPF_F_ADDR,     /* struct sockaddr_storage from "ip:port" or "[ip6]:port"; family 0 absent */
     NPF_F_OBJ,      /* the struct of sub; zeroed when absent */
     NPF_F_ARR,      /* up to size elements of sub (its one field without a key: single values), the
-                       count in the int at aux */
+                       count in the int at aux; a required one is not empty */
     NPF_F_TOK,      /* int: the value's token, of the JSON type min (NPF_JT_*, 0 any); -1 absent */
 };
 enum {
@@ -34,6 +34,7 @@ enum {
     NPF_F_SECRET = 2,   /* a key, a token: npf_msg_wipe clears it */
     NPF_F_SKIP = 4,     /* NPF_F_ARR: an element that does not parse is left out, the rest kept */
     NPF_F_V4 = 8,       /* NPF_F_ADDR: IPv4 only */
+    NPF_F_STRICT = 16,  /* optional, but a value that is wrong refuses the message */
 };
 
 struct npf_msgdesc;

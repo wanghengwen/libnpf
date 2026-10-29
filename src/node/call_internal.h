@@ -236,6 +236,7 @@ npf_udpf *call_udp_of(npf_call *c);
 npf_tunnel *call_tunnel_new(npf_call *c);
 void call_ctl_fail_all(npf_call *c);
 int call_start_transport(npf_call *c);
+void call_control(void *c, const npf_json *j);         /* the tunnel's control message (and the fuzzer's) */
 
 /* the call of one of its paths (path.h): p is &c->member */
 #define CALL_OF(p, member) ((npf_call *)(void *)((char *)(p) - offsetof(npf_call, member)))

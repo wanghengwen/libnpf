@@ -14,6 +14,8 @@
 #include "npf/out.h"
 #include "npf/platform.h"
 
+#include "msgs.h"
+
 #define MAX_TOK 32768
 
 static void ext_clear(npf_ldev *d);
@@ -204,22 +206,55 @@ int npf_local_fwd_del(npf_ldev *d, const npf_lfwd *f)
     return -1;
 }
 
-static void get_str(const npf_json *j, int obj, const char *k, char *buf, size_t cap)
+/* a device's record at token v of j over s (m: room to read it into): 0,
+ * -1 out of memory */
+static int device(npf_local *l, const char *s, const npf_json *j, int v, const char *target, m_device *m)
 {
-    if (npf_json_get_str(j, obj, k, buf, cap) < 0)
-        buf[0] = 0;
-}
-
-/* the keys of a device's record read above */
-static int core_key(const char *k)
-{
-    static const char *const keys[] = {"name", "nick", "save", "connect", "idle_ms", "psk_file", "psk", "forwards", "key",
-                                       "resources", NULL};
-    int i;
-    for (i = 0; keys[i]; i++)
-        if (strcmp(keys[i], k) == 0)
-            return 1;
-    return 0;
+    npf_ldev *d;
+    int i, q, rc = 0;
+    if (npf_msg_parse(&m_device_d, j, v, m, NULL, 0) < 0 || !(d = npf_local_dev(l, target, 1)))
+        return 0;                           /* not an object: not carried over */
+    if (npf_name_valid(m->name))
+        snprintf(d->name, sizeof d->name, "%s", m->name);
+    snprintf(d->nick, sizeof d->nick, "%s", m->nick);
+    d->save = m->save;
+    d->on_demand = strcmp(m->connect, "on_demand") == 0;
+    d->idle_ms = (int)m->idle_ms;
+    snprintf(d->psk_file, sizeof d->psk_file, "%s", m->psk_file);
+    snprintf(d->psk, sizeof d->psk, "%s", m->psk);
+    for (i = 0; i < m->nforwards && rc == 0; i++) {
+        const m_forward *f = &m->forwards[i];
+        npf_lfwd lf = {0};
+        lf.opt = strcmp(f->kind, "local") == 0 ? 'L' : strcmp(f->kind, "socks") == 0 ? 'D'
+               : strcmp(f->kind, "remote") == 0 ? 'R' : f->kind[0] >= 'A' && f->kind[0] <= 'Z' && !f->kind[1] ? f->kind[0] : 0;
+        lf.udp = strcmp(f->proto, "udp") == 0;
+        snprintf(lf.bind, sizeof lf.bind, "%s", f->listen);
+        snprintf(lf.host, sizeof lf.host, "%s", f->host);
+        snprintf(lf.spec, sizeof lf.spec, "%s", f->spec);
+        lf.port = (int)f->port;
+        lf.hostport = (int)f->hostport;
+        if (lf.opt)                         /* else an earlier version's: not carried over */
+            rc = npf_local_fwd_add(d, &lf);
+    }
+    if ((d->has_key = m->key_len == 32))
+        memcpy(d->key, m->key, 32);
+    if (m->resources >= 0)
+        d->resources = npf_res_normalize(s + j->tok[m->resources].start,
+                                         j->tok[m->resources].end - j->tok[m->resources].start);
+    for (i = 0, q = v + 1; i < j->tok[v].size && rc == 0; i++, q = j->tok[q + 1].next) {
+        /* the keys not in the table are the modules': kept as they are (a string's text with its quotes) */
+        char key[48];
+        int k, str = j->tok[q + 1].type == NPF_JT_STRING;
+        size_t vs = j->tok[q + 1].start - (str ? 1 : 0), vl = j->tok[q + 1].end + (str ? 1 : 0) - vs;
+        if (npf_json_str(j, q, key, sizeof key) < 0)
+            continue;
+        for (k = 0; k < m_device_d.nf && strcmp(key, m_device_d.f[k].key) != 0; k++)
+            ;
+        if (k == m_device_d.nf)
+            rc = ext_put(d, key, s + vs, vl);
+    }
+    npf_msg_wipe(&m_device_d, m);
+    return rc;
 }
 
 static int parse(npf_local *l, const char *s, size_t len)
@@ -228,10 +263,11 @@ static int parse(npf_local *l, const char *s, size_t len)
      * file of a few hundred tokens */
     int cap = len / 2 + 8 < MAX_TOK ? (int)(len / 2 + 8) : MAX_TOK;
     npf_jtok *tok = malloc((size_t)cap * sizeof *tok);
+    m_device *m = malloc(sizeof *m);
     npf_json j;
-    int t, i, n, rc = -1;
-    if (!tok)
-        return -1;
+    int t, i, rc = -1;
+    if (!tok || !m)
+        goto out;
     if (npf_json_parse_file(&j, s, len, tok, cap) < 0 || j.tok[0].type != NPF_JT_OBJECT)
         goto out;
     if ((t = npf_json_get(&j, 0, "settings")) >= 0 && j.tok[t].type == NPF_JT_OBJECT) {
@@ -251,67 +287,9 @@ static int parse(npf_local *l, const char *s, size_t len)
     if ((t = npf_json_get(&j, 0, "devices")) >= 0 && j.tok[t].type == NPF_JT_OBJECT) {
         int k = t + 1;
         for (i = 0; i < j.tok[t].size; i++, k = j.tok[k + 1].next) {
-            char target[300], b[64];
-            int v = k + 1, f;
-            npf_ldev *d;
-            if (npf_json_str(&j, k, target, sizeof target) < 0 || j.tok[v].type != NPF_JT_OBJECT
-                || !(d = npf_local_dev(l, target, 1)))
-                continue;
-            get_str(&j, v, "name", d->name, sizeof d->name);
-            if (d->name[0] && !npf_name_valid(d->name))
-                d->name[0] = 0;
-            get_str(&j, v, "nick", d->nick, sizeof d->nick);
-            if ((f = npf_json_get(&j, v, "save")) >= 0 && npf_json_bool(&j, f, &d->save) < 0)
-                d->save = 0;
-            d->on_demand = npf_json_eq(&j, npf_json_get(&j, v, "connect"), "on_demand");
-            {
-                int64_t ms;
-                if (npf_json_get_int(&j, v, "idle_ms", 0, 86400000, &ms) == 0)
-                    d->idle_ms = (int)ms;
-            }
-            get_str(&j, v, "psk_file", d->psk_file, sizeof d->psk_file);
-            get_str(&j, v, "psk", d->psk, sizeof d->psk);
-            if ((f = npf_json_get(&j, v, "forwards")) >= 0 && j.tok[f].type == NPF_JT_ARRAY)
-                for (n = 0; n < j.tok[f].size && d->nfwd < NPF_LOCAL_MAX_FWD; n++) {
-                    int e = npf_json_item(&j, f, n);
-                    npf_lfwd lf;
-                    char kind[16] = "", proto[8] = "";
-                    int64_t x;
-                    if (e < 0 || j.tok[e].type != NPF_JT_OBJECT)
-                        continue;           /* an earlier version's text: not carried over */
-                    memset(&lf, 0, sizeof lf);
-                    npf_json_get_str(&j, e, "kind", kind, sizeof kind);
-                    npf_json_get_str(&j, e, "proto", proto, sizeof proto);
-                    lf.opt = strcmp(kind, "local") == 0 ? 'L' : strcmp(kind, "socks") == 0 ? 'D'
-                           : strcmp(kind, "remote") == 0 ? 'R'
-                           : kind[0] >= 'A' && kind[0] <= 'Z' && !kind[1] ? kind[0] : 0;
-                    if (!lf.opt)
-                        continue;
-                    lf.udp = strcmp(proto, "udp") == 0;
-                    get_str(&j, e, "listen", lf.bind, sizeof lf.bind);
-                    get_str(&j, e, "host", lf.host, sizeof lf.host);
-                    get_str(&j, e, "spec", lf.spec, sizeof lf.spec);
-                    if (npf_json_get_int(&j, e, "port", 0, 65535, &x) == 0)
-                        lf.port = (int)x;
-                    if (npf_json_get_int(&j, e, "hostport", 0, 65535, &x) == 0)
-                        lf.hostport = (int)x;
-                    if (npf_local_fwd_add(d, &lf) < 0)
-                        goto out;
-                }
-            if (npf_json_get_str(&j, v, "key", b, sizeof b) > 0 && npf_b64url_decode(b, strlen(b), d->key, 32) == 32)
-                d->has_key = 1;
-            if ((f = npf_json_get(&j, v, "resources")) >= 0 && j.tok[f].type == NPF_JT_ARRAY)
-                d->resources = npf_res_normalize(s + j.tok[f].start, j.tok[f].end - j.tok[f].start);
-            {   /* the other keys are the modules': kept as they are */
-                int q = v + 1;
-                for (n = 0; n < j.tok[v].size; n++, q = j.tok[q + 1].next) {
-                    char key[48];
-                    int str = j.tok[q + 1].type == NPF_JT_STRING;  /* the value's text: a string's with its quotes */
-                    size_t vs = j.tok[q + 1].start - (str ? 1 : 0), vl = j.tok[q + 1].end + (str ? 1 : 0) - vs;
-                    if (npf_json_str(&j, q, key, sizeof key) >= 0 && !core_key(key) && ext_put(d, key, s + vs, vl) < 0)
-                        goto out;
-                }
-            }
+            char target[300];
+            if (npf_json_str(&j, k, target, sizeof target) >= 0 && device(l, s, &j, k + 1, target, m) < 0)
+                goto out;
         }
     }
     if ((t = npf_json_get(&j, 0, "resources")) >= 0) {
@@ -322,6 +300,9 @@ static int parse(npf_local *l, const char *s, size_t len)
     rc = 0;
 out:
     free(tok);
+    if (m)
+        npf_msg_wipe(&m_device_d, m);       /* the last record's psk, on every path */
+    free(m);
     return rc;
 }
 
@@ -329,6 +310,7 @@ int npf_local_load(npf_local *l, const char *dir, char *err, size_t errcap)
 {
     char *s = NULL;
     long n;
+    int rc;
     memset(l, 0, sizeof *l);
     snprintf(l->path, sizeof l->path, "%s/local.json", dir);
     snprintf(l->settings.path, sizeof l->settings.path, "%s", l->path);
@@ -345,13 +327,12 @@ int npf_local_load(npf_local *l, const char *dir, char *err, size_t errcap)
         }
         return 0;
     }
-    if (parse(l, s, (size_t)n) < 0) {
-        snprintf(err, errcap, "%s: not readable as npf's JSON (move it away to start afresh)", l->path);
-        free(s);
-        return -1;
-    }
+    rc = parse(l, s, (size_t)n);
+    npf_wipe(s, (size_t)n);                 /* the direct peers' keys */
     free(s);
-    return 0;
+    if (rc < 0)
+        snprintf(err, errcap, "%s: not readable as npf's JSON (move it away to start afresh)", l->path);
+    return rc;
 }
 
 void npf_local_start_clear(npf_local *l)

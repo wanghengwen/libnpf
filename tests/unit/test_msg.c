@@ -9,6 +9,7 @@
 
 #include "npf/json.h"
 #include "npf/msg.h"
+#include "npf/node.h"
 #include "msgs.h"
 
 static int fails;
@@ -41,17 +42,17 @@ static size_t bytes(const npf_field *f)
 }
 
 /* each table's fields within its struct, apart; lengths where they must be */
-static void tables(const npf_msgdesc *d)
+static void tables(const npf_msgdesc *d, size_t max)
 {
-    uint64_t used[64] = {0};
+    uint64_t used[1024] = {0};
     int i;
-    CHECK(d->nf >= 1 && d->nf <= 64 && d->size <= NODE_MSG_MAX, "%s: %d fields, %u bytes", d->name, d->nf, d->size);
+    CHECK(d->nf >= 1 && d->nf <= 64 && d->size <= max, "%s: %d fields, %u bytes", d->name, d->nf, d->size);
     for (i = 0; i < d->nf; i++) {
         const npf_field *f = &d->f[i];
         size_t k, b = bytes(f);
         CHECK(f->key || d->nf == 1, "%s: a field without a key", d->name);
         CHECK(f->off + b <= d->size && (!f->aux || f->aux + sizeof(int) <= d->size), "%s.%s outside", d->name, f->key);
-        for (k = f->off; k < f->off + b && k < 64 * 64; k++) {
+        for (k = f->off; k < f->off + b && k < 1024 * 64; k++) {
             CHECK(!(used[k / 64] & (1ull << (k % 64))), "%s.%s overlaps", d->name, f->key);
             used[k / 64] |= 1ull << (k % 64);
         }
@@ -63,7 +64,7 @@ static void tables(const npf_msgdesc *d)
         if (f->type == NPF_F_INT)
             CHECK(f->min <= f->max, "%s.%s: a range", d->name, f->key);
         if (f->type == NPF_F_OBJ || f->type == NPF_F_ARR)
-            tables(f->sub);
+            tables(f->sub, max);
     }
 }
 
@@ -150,6 +151,84 @@ static void rules(void)
     CHECK(w.probe_keys[0].key[0] == 0 && w.probe_keys[1].key[5] == 0 && w.probe_keys[1].day == 2, "the day keys wiped");
 }
 
+/* an absent object's fields absent too; a strict optional field refuses
+ * the message; a required array is not empty; a boolean's default */
+static void more_rules(void)
+{
+    typedef struct { struct { int t; int64_t i; } o; } nest;
+    static const npf_field sub_f[] = {{"t", NPF_F_TOK, 0, 0, 0, 0, 0, 0, 0, NULL},
+                                      {"i", NPF_F_INT, 0, 8, 0, 0, 0, 9, 5, NULL}};
+    static const npf_msgdesc sub_d = {"sub", sub_f, 2, 16};
+    static const npf_field nest_f[] = {{"o", NPF_F_OBJ, 0, 0, 0, 0, 0, 0, 0, &sub_d}};
+    static const npf_msgdesc nest_d = {"nest", nest_f, 1, sizeof(nest)};
+    nest x;
+    m_reverse_listen rl;
+    m_list *l = malloc(sizeof *l);
+    char err[128];
+    CHECK(sizeof x.o == 16 && parse(&nest_d, "{}", &x, err, sizeof err) == 0 && x.o.t == -1 && x.o.i == 5
+          && parse(&nest_d, "{\"o\":7}", &x, err, sizeof err) == 0 && x.o.t == -1 && x.o.i == 5,
+          "an absent object's fields: %d, %lld", x.o.t, (long long)x.o.i);
+    CHECK(parse(&m_reverse_listen_d, "{\"target_host\":\"h\",\"target_port\":22}", &rl, err, sizeof err) == 0
+          && !rl.bind[0] && rl.port == 0 && !rl.udp, "reverse_listen's optional fields absent: %s", err);
+    CHECK(parse(&m_reverse_listen_d, "{\"target_host\":\"h\",\"target_port\":22,\"udp\":\"true\"}", &rl, err, sizeof err)
+          == -1 && strncmp(err, "udp:", 4) == 0, "reverse_listen's udp as a string: %s", err);
+    CHECK(parse(&m_reverse_listen_d, "{\"target_host\":\"h\",\"target_port\":22,\"port\":70000}", &rl, err, sizeof err) == -1
+          && parse(&m_reverse_listen_d, "{\"target_host\":\"h\",\"target_port\":22,\"bind\":\"a\\tb\"}", &rl, err, sizeof err) == -1,
+          "reverse_listen's port, bind wrong");
+    CHECK(l != NULL, "memory");
+    if (!l)
+        return;
+    CHECK(parse(&m_list_d, "{\"serial\":1,\"servers\":[{\"id\":1,\"dh_pub\":\"q7NcAXdtz5mHUsjvYH0h9Ur3K4YQqsvT8h4mlj_5Ecc\","
+                "\"ws\":[\"\",1]}]}", l, err, sizeof err) == -1 && strncmp(err, "servers:", 8) == 0,
+          "a list without a server that has an address: %s", err);
+    CHECK(parse(&m_list_d, "{\"serial\":1,\"servers\":[{\"id\":1,\"dh_pub\":\"q7NcAXdtz5mHUsjvYH0h9Ur3K4YQqsvT8h4mlj_5Ecc\","
+                "\"ws\":[\"\",\"wss://a/s\"]}]}", l, err, sizeof err) == 0 && l->full == 1 && l->nservers == 1
+          && l->servers[0].nws == 1 && l->servers[0].prio == 1 && l->servers[0].weight == 1, "a seed list: %s", err);
+    free(l);
+}
+
+/* the server list's entries and channels; state.json; local.json's devices */
+static void files(void)
+{
+    static const char list[] =
+        "{\"serial\":7,\"full\":false,\"expires\":99,\"servers\":[{\"id\":1,\"dh_pub\":\"AAAA\",\"ws\":[\"wss://x\"]},"
+        "{\"id\":2,\"prio\":3,\"weight\":2000,\"kind\":\"cdn\",\"relay\":true,"
+        "\"dh_pub\":\"q7NcAXdtz5mHUsjvYH0h9Ur3K4YQqsvT8h4mlj_5Ecc\",\"ws\":[\"wss://a/s\",\"wss://b/s\",\"wss://c/s\"]}],"
+        "\"sources\":{\"doh\":[\"seed.example\",\"\"],\"https\":[\"http://no\",\"https://yes/l\"]}}";
+    npf_server_entry *e = calloc(NPF_MAX_SERVERS, sizeof *e);
+    npf_list_meta meta;
+    m_state *st = malloc(sizeof *st);
+    m_device *dv = malloc(sizeof *dv);
+    int64_t serial = 0;
+    char err[128];
+    CHECK(e && st && dv, "memory");
+    if (!e || !st || !dv)
+        goto out;
+    CHECK(npf_serverlist_parse(list, strlen(list), e, &serial, &meta) == 1 && serial == 7 && e[0].id == 2
+          && e[0].prio == 3 && e[0].weight == 1 && e[0].cdn && e[0].relay && e[0].nws == 2
+          && strcmp(e[0].ws[1], "wss://b/s") == 0 && e[0].dh_pub[0] == 0xab, "the servers");
+    CHECK(!meta.full && meta.expires == 99 && meta.ndoh == 1 && strcmp(meta.doh[0], "seed.example") == 0
+          && meta.nhttps == 1 && strcmp(meta.https[0], "https://yes/l") == 0, "the channels");
+    CHECK(npf_serverlist_parse("{\"servers\":[]}", 15, e, &serial, &meta) == -1, "no serial");
+
+    CHECK(parse(&m_state_d, "{\"password\":\"a\\u0001b\",\"paired\":[{\"pub\":\"AAAA\"},{\"pub\":"
+                "\"q7NcAXdtz5mHUsjvYH0h9Ur3K4YQqsvT8h4mlj_5Ecc\",\"added\":5}],\"fails\":-1,\"owner\":\"12\","
+                "\"revokes\":[{\"account\":\"3\"},{\"account\":\"4\",\"before\":6}]}", st, err, sizeof err) == 0
+          && st->password > 0 && st->npaired == 1 && st->paired[0].added == 5 && st->fails == 0
+          && strcmp(st->owner, "12") == 0 && st->nrevokes == 1 && st->revokes[0].before == 6, "state.json: %s", err);
+
+    CHECK(parse(&m_device_d, "{\"name\":\"dev\",\"psk\":\"secret\",\"save\":true,\"idle_ms\":-5,\"key\":\"AAAA\","
+                "\"forwards\":[\"-L 1\",{\"kind\":\"local\",\"port\":80}],\"mine\":1}", dv, err, sizeof err) == 0
+          && dv->save && dv->idle_ms == 0 && !dv->key_len && dv->nforwards == 1 && dv->forwards[0].port == 80
+          && dv->resources == -1, "a device: %s", err);
+    npf_msg_wipe(&m_device_d, dv);
+    CHECK(!dv->psk[0] && strcmp(dv->name, "dev") == 0, "the psk wiped");
+out:
+    free(e);
+    free(st);
+    free(dv);
+}
+
 /* signaling.md's table of punch_start's optional values is this table */
 static void doc_ranges(void)
 {
@@ -191,8 +270,12 @@ int test_msg(void)
 {
     int i;
     for (i = 0; node_msgdescs[i]; i++)
-        tables(node_msgdescs[i]);
+        tables(node_msgdescs[i], NODE_MSG_MAX);
+    for (i = 0; node_filedescs[i]; i++)
+        tables(node_filedescs[i], 65536);
     rules();
+    more_rules();
+    files();
     doc_ranges();
     return fails;
 }

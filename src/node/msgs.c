@@ -14,6 +14,7 @@
 #undef F_STR
 #undef F_INT
 #undef F_BOOL
+#undef F_BOOLD
 #undef F_B64
 #undef F_B64X
 #undef F_ADDR
@@ -23,6 +24,7 @@
 #define F_STR(T, k, cap, fl)          {#k, NPF_F_STR, fl, offsetof(T, k), cap, 0, 0, 0, 0, NULL},
 #define F_INT(T, k, fl, lo, hi, def)  {#k, NPF_F_INT, fl, offsetof(T, k), 0, 0, lo, hi, def, NULL},
 #define F_BOOL(T, k)                  {#k, NPF_F_BOOL, 0, offsetof(T, k), 0, 0, 0, 0, 0, NULL},
+#define F_BOOLD(T, k, fl, def)        {#k, NPF_F_BOOL, fl, offsetof(T, k), 0, 0, 0, 0, def, NULL},
 #define F_B64(T, k, cap, fl, lo)      {#k, NPF_F_B64, fl, offsetof(T, k), cap, offsetof(T, k##_len), lo, 0, 0, NULL},
 #define F_B64X(T, k, cap, fl)         {#k, NPF_F_B64, NPF_F_REQ | (fl), offsetof(T, k), cap, 0, cap, 0, 0, NULL},
 #define F_ADDR(T, k, fl)              {#k, NPF_F_ADDR, fl, offsetof(T, k), 0, 0, 0, 0, 0, NULL},
@@ -35,8 +37,10 @@
 
 static const npf_field m_addr4_f[] = {{NULL, NPF_F_ADDR, NPF_F_V4, 0, 0, 0, 0, 0, 0, NULL}};
 static const npf_field m_port_f[] = {{NULL, NPF_F_INT, 0, 0, 0, 0, 1, 65535, 0, NULL}};
+static const npf_field m_s256_f[] = {{NULL, NPF_F_STR, NPF_F_REQ, 0, 256, 0, 0, 0, 0, NULL}};
 const npf_msgdesc m_addr4_d = {"address", m_addr4_f, 1, sizeof(m_addr4)};
 const npf_msgdesc m_port_d = {"port", m_port_f, 1, sizeof(m_port)};
+const npf_msgdesc m_s256_d = {"string", m_s256_f, 1, sizeof(m_s256)};
 
 TABLE(m_env, M_ENV)
 TABLE(m_ws, M_WS)
@@ -70,6 +74,14 @@ TABLE(m_listen_id, M_LISTEN_ID)
 TABLE(m_listening, M_LISTENING)
 TABLE(m_grant_update, M_GRANT_UPDATE)
 TABLE(m_bind_approve, M_BIND_APPROVE)
+TABLE(m_server, M_SERVER)
+TABLE(m_sources, M_SOURCES)
+TABLE(m_list, M_LIST)
+TABLE(m_paired, M_PAIRED)
+TABLE(m_revoked, M_REVOKED)
+TABLE(m_state, M_STATE)
+TABLE(m_forward, M_FORWARD)
+TABLE(m_device, M_DEVICE)
 
 /* a call's messages begin with its call_id: node_msg finds the call by it */
 typedef char call_id_first[offsetof(m_call_accepted, call_id) + offsetof(m_call_rejected, call_id)
@@ -84,10 +96,11 @@ const npf_msgdesc *const node_msgdescs[] = {
     &m_call_ended_d, &m_close_d, &m_reverse_listen_d, &m_listen_id_d, &m_listening_d, &m_grant_update_d,
     &m_bind_approve_d, NULL,
 };
+const npf_msgdesc *const node_filedescs[] = {&m_list_d, &m_state_d, &m_device_d, NULL};
 
 /* ---- dispatch ---- */
 
-/* room for any of the messages below (the tests check each table's size) */
+/* room for any of the messages below (NODE_MSG checks each struct's size, D each table) */
 typedef union m_any {
     int64_t i;
     struct sockaddr_storage ss;
@@ -95,33 +108,35 @@ typedef union m_any {
 } m_any;
 
 /* a type, its table (NULL: nothing read), its handler: the node's, or a
- * call's (the call its call_id names; none, or ended: dropped) */
+ * call's (the call its call_id names; none, or ended: dropped); D: only a
+ * message's table, whose struct fits m_any (NODE_MSG) */
+#define D(T) (&T##_d + 0 * sizeof(T##_fits))
 static const struct {
     const char *type;
     const npf_msgdesc *d;
     void (*node)(npf_node *n, const m_env *e, const void *m);
     void (*call)(npf_call *c, const void *m);
 } handlers[] = {
-    {"login", &m_welcome_d, node_on_login, NULL},
-    {"server_list", &m_server_list_d, node_on_server_list, NULL},
-    {"upgrade", &m_upgrade_d, node_on_upgrade, NULL},
-    {"probe", &m_welcome_d, node_on_probe, NULL},
-    {"keys", &m_welcome_d, node_on_keys, NULL},
+    {"login", D(m_welcome), node_on_login, NULL},
+    {"server_list", D(m_server_list), node_on_server_list, NULL},
+    {"upgrade", D(m_upgrade), node_on_upgrade, NULL},
+    {"probe", D(m_welcome), node_on_probe, NULL},
+    {"keys", D(m_welcome), node_on_keys, NULL},
     {"replaced", NULL, node_on_replaced, NULL},
-    {"redirect", &m_redirect_d, node_on_redirect, NULL},
-    {"relay_spare", &m_relay_spare_d, node_on_relay_spare, NULL},
-    {"incoming", &m_incoming_d, node_on_incoming, NULL},
+    {"redirect", D(m_redirect), node_on_redirect, NULL},
+    {"relay_spare", D(m_relay_spare), node_on_relay_spare, NULL},
+    {"incoming", D(m_incoming), node_on_incoming, NULL},
     {"punch_request", NULL, node_on_punch_request, NULL},
-    {"revoke", &m_revoke_d, node_on_revoke, NULL},
-    {"bind_committed", &m_bind_committed_d, node_on_bind_committed, NULL},
-    {"call", &m_call_reply_d, node_on_call, NULL},
-    {"call_accepted", &m_call_accepted_d, NULL, call_on_accepted},
-    {"call_rejected", &m_call_rejected_d, NULL, call_on_rejected},
-    {"handshake", &m_handshake_d, NULL, call_on_handshake},
-    {"punch_start", &m_punch_start_d, NULL, call_on_punch_start},
-    {"punch_info", &m_punch_info_d, NULL, call_on_punch_info},
-    {"relay_switch", &m_relay_switch_d, NULL, call_on_relay_switch},
-    {"call_ended", &m_call_ended_d, NULL, call_on_ended},
+    {"revoke", D(m_revoke), node_on_revoke, NULL},
+    {"bind_committed", D(m_bind_committed), node_on_bind_committed, NULL},
+    {"call", D(m_call_reply), node_on_call, NULL},
+    {"call_accepted", D(m_call_accepted), NULL, call_on_accepted},
+    {"call_rejected", D(m_call_rejected), NULL, call_on_rejected},
+    {"handshake", D(m_handshake), NULL, call_on_handshake},
+    {"punch_start", D(m_punch_start), NULL, call_on_punch_start},
+    {"punch_info", D(m_punch_info), NULL, call_on_punch_info},
+    {"relay_switch", D(m_relay_switch), NULL, call_on_relay_switch},
+    {"call_ended", D(m_call_ended), NULL, call_on_ended},
 };
 
 int node_env(const npf_json *j, m_env *e)

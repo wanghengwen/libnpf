@@ -220,7 +220,7 @@ static int ctl_id(const char *s)
  * request answered bad_request), a reply to its request's callback. What
  * the peer gets wrong is logged at the debug level only (it could fill the
  * log otherwise) */
-static void tun_control(void *arg, const npf_json *j)
+void call_control(void *arg, const npf_json *j)
 {
     npf_call *c = arg;
     m_env e;
@@ -629,11 +629,14 @@ static void grant_update(npf_call *c, const m_grant_update *m, const npf_json *j
         npf_call_ctl_reply(c, "grant_update", j, "error", "forbidden", NULL);
         return;
     }
-    if (call_set_targets(c, &gr) < 0) {
+    if (gr.tlen == c->tlen && (!gr.tlen || memcmp(gr.targets, c->targets, gr.tlen) == 0)) {
+        c->grant_issued = gr.issued;    /* the same list (again: no allocation, no log line each time) */
+    } else if (call_set_targets(c, &gr) < 0) {
         npf_call_ctl_reply(c, "grant_update", j, "error", "internal_error", NULL);
         return;
+    } else {
+        npf_log("call %s: platform public mapping: target list updated", c->call_id_s);
     }
-    npf_log("call %s: platform public mapping: target list updated", c->call_id_s);
     npf_call_ctl_reply(c, "grant_update", j, "ok", NULL, NULL);
 }
 
@@ -660,7 +663,7 @@ static void tun_sublink_done(void *arg, uint32_t id, const npf_sublink_stats *st
         c->sub_done(c, id, st, c->sub_arg);
 }
 
-static const npf_tunnel_io tun_io = {tun_write_ctrl, tun_write_data, tun_backlog, tun_ready, tun_control, tun_broken,
+static const npf_tunnel_io tun_io = {tun_write_ctrl, tun_write_data, tun_backlog, tun_ready, call_control, tun_broken,
                                      tun_unit, tun_target_ok, tun_sublink_done, tun_backlog_max};
 static npf_key_share *key_share(npf_node *n, const uint8_t pub[32])
 {

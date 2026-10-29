@@ -5,7 +5,7 @@
  *   npf_fuzz TARGET [ITERATIONS] [SEED]      mutate built-in seeds, run under ASan + UBSan
  *   npf_fuzz TARGET -f FILE...               replay inputs (crash reproducers)
  *
- * TARGET: json | msg | tunnel | noise | cert | pkt | dns | http | ws | all. With a clang that has
+ * TARGET: json | msg | control | tunnel | noise | cert | pkt | dns | http | ws | all. With a clang that has
  * libFuzzer, -DNPF_LIBFUZZER builds the same targets as LLVMFuzzerTestOneInput
  * entry points (one target per binary, selected with -DNPF_FUZZ_TARGET=name). */
 #define _GNU_SOURCE
@@ -19,12 +19,14 @@
 #include "npf/crypto.h"
 #include "npf/dns.h"
 #include "npf/json.h"
+#include "npf/log.h"
 #include "npf/loop.h"
 #include "npf/msg.h"
 #include "npf/node.h"
 #include "npf/noise.h"
 #include "npf/siv.h"
 #include "npf/tunnel.h"
+#include "call_internal.h"
 #include "msgs.h"
 
 #define MAX_IN 4096
@@ -81,14 +83,16 @@ static void msg_check(const npf_msgdesc *d, const uint8_t *base)
     }
 }
 
-/* every table on the message and on its data (msgs.c), then wiped */
+/* every table (msgs.c: the messages', the server list's, the files') on the
+ * message and on its data, then wiped */
 static void fuzz_msg(const uint8_t *d, size_t n)
 {
     static npf_jtok tok[NPF_JSON_MAX_TOKENS];
-    static union { m_punch_start ps; m_welcome w; m_incoming in; m_reverse_listen rl; uint8_t b[8192]; } u;
+    static union { int64_t i; struct sockaddr_storage ss; uint8_t b[32768]; } u;
+    const npf_msgdesc *const *all[2] = {node_msgdescs, node_filedescs}, *m;
     npf_json j;
     char s[MAX_IN + 1], err[160];
-    int i, k, t[2];
+    int a, i, k, t[2];
     if (n > MAX_IN)
         return;
     memcpy(s, d, n);
@@ -97,19 +101,57 @@ static void fuzz_msg(const uint8_t *d, size_t n)
         return;
     t[0] = 0;
     t[1] = npf_json_get(&j, 0, "data");
-    for (i = 0; node_msgdescs[i]; i++)
-        for (k = 0; k < 2; k++) {
-            if (node_msgdescs[i]->size > sizeof u)
-                abort();
-            if (npf_msg_parse(node_msgdescs[i], &j, t[k], &u, err, sizeof err) == 0)
-                msg_check(node_msgdescs[i], u.b);
-            else if (!memchr(err, 0, sizeof err))
-                abort();
-            npf_msg_wipe(node_msgdescs[i], &u);
-        }
+    for (a = 0; a < 2; a++)
+        for (i = 0; (m = all[a][i]); i++)
+            for (k = 0; k < 2; k++) {
+                if (m->size > sizeof u)
+                    abort();
+                if (npf_msg_parse(m, &j, t[k], &u, err, sizeof err) == 0)
+                    msg_check(m, u.b);
+                else if (!memchr(err, 0, sizeof err))
+                    abort();
+                npf_msg_wipe(m, &u);
+            }
 }
 
 static npf_loop *g_loop;
+
+/* a call's tunnel control messages (call_transport.c:call_control): the
+ * callee's and the caller's side of a call, up, of an offline node (no
+ * policy: every reverse_listen forbidden; no tunnel: the replies go nowhere) */
+static void fuzz_control(const uint8_t *d, size_t n)
+{
+    static npf_jtok tok[NPF_JSON_MAX_TOKENS];
+    static npf_node node;
+    npf_json j;
+    char s[MAX_IN + 1];
+    int k;
+    if (!node.loop) {
+        npf_node_cfg cfg = {0};
+        npf_node_hooks hooks = {0};
+        npf_identity id;
+        uint8_t seed[32] = {7};
+        cfg.offline = 1;
+        npf_identity_from_seed(&id, seed);
+        if (!(g_loop = g_loop ? g_loop : npf_loop_new()) || npf_node_init(&node, g_loop, &cfg, &id, &hooks, NULL) < 0)
+            abort();
+    }
+    if (n > MAX_IN)
+        return;
+    memcpy(s, d, n);
+    s[n] = 0;
+    if (npf_json_parse(&j, s, n, tok, NPF_JSON_MAX_TOKENS) < 0 || tok[0].type != NPF_JT_OBJECT)
+        return;                             /* the tunnel's own check (tunnel.c:handle_control) */
+    for (k = 0; k < 2; k++) {
+        npf_call *c = call_new(&node, k);
+        if (!c)
+            abort();
+        c->st = CS_UP;
+        call_control(c, &j);
+        npf_call_end(c, "fuzz");
+    }
+    npf_loop_once(g_loop, 0);               /* the calls freed */
+}
 static int io_write(void *a, const uint8_t *b, size_t n) { (void)a; (void)b; (void)n; return 0; }
 static size_t io_backlog(void *a) { (void)a; return 0; }
 static void io_ready(void *a) { (void)a; }
@@ -192,12 +234,12 @@ static void fuzz_cert(const uint8_t *d, size_t n)
     npf_cert_chain_parse((const uint8_t (*)[32])roots, 1, d, n, &inter, &leaf, 0);
     npf_grant_verify(d, n, pub, &g);
     if (npf_serverlist_verify((const uint8_t (*)[32])roots, 1, d, n, &pl, &plen) == 0)
-        npf_serverlist_parse((const char *)pl, plen, list, NPF_MAX_SERVERS, &serial, &meta);
+        npf_serverlist_parse((const char *)pl, plen, list, &serial, &meta);
     if (n <= MAX_IN) {                      /* the payload parser on its own: it is JSON */
         char s[MAX_IN + 1];
         memcpy(s, d, n);
         s[n] = 0;
-        npf_serverlist_parse(s, n, list, NPF_MAX_SERVERS, &serial, &meta);
+        npf_serverlist_parse(s, n, list, &serial, &meta);
     }
 }
 
@@ -263,6 +305,8 @@ static const struct {
                       "\"challenge\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"expires\":1,\"before\":1,\"number\":\"1\",\"cert\":\"AAAA\","
                       "\"step\":3,\"msg\":\"AAAA\",\"error\":\"x\",\"reason\":\"y\",\"grant\":\"AAAA\"}}"},
     {"tunnel", fuzz_tunnel, "\x01\x00\x00\x00\x01\x00\x0d\x00\x05\x01\x00\x05\x01\x00\x01\x7f\x00\x00\x01\x00\x50"},
+    {"control", fuzz_control, "{\"v\":1,\"type\":\"reverse_listen\",\"id\":\"7\",\"data\":{\"bind\":\"*\",\"port\":0,"
+                              "\"target_host\":\"127.0.0.1\",\"target_port\":22,\"udp\":true}}"},
     {"noise", fuzz_noise, NULL},
     {"cert", fuzz_cert, "{\"serial\":1,\"servers\":[{\"id\":1,\"ws\":[\"wss://a/s\"],\"dh_pub\":\"AAAA\"}]}"},
     {"pkt", fuzz_pkt, NULL},
@@ -275,6 +319,7 @@ static const struct {
 int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
 {
     size_t i;
+    npf_log_set_level(NPF_LOG_ERROR);       /* a refused server list is a warning */
     for (i = 0; i < sizeof targets / sizeof targets[0]; i++)
         if (strcmp(targets[i].name, NPF_FUZZ_TARGET) == 0)
             targets[i].fn(d, n);
@@ -332,8 +377,9 @@ int main(int argc, char **argv)
     static uint8_t buf[MAX_IN];
     long iters = 20000, it;
     size_t t, first = 0, last = sizeof targets / sizeof targets[0];
+    npf_log_set_level(NPF_LOG_ERROR);       /* a refused server list is a warning */
     if (argc < 2) {
-        fprintf(stderr, "usage: npf_fuzz json|msg|tunnel|noise|cert|pkt|dns|http|ws|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
+        fprintf(stderr, "usage: npf_fuzz json|msg|control|tunnel|noise|cert|pkt|dns|http|ws|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
         return 2;
     }
     if (strcmp(argv[1], "all") != 0) {
