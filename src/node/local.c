@@ -300,6 +300,8 @@ static int parse(npf_local *l, const char *s, size_t len)
     rc = 0;
 out:
     free(tok);
+    if (m)
+        npf_msg_wipe(&m_device_d, m);       /* the last record's psk, on every path */
     free(m);
     return rc;
 }
