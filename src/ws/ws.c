@@ -8,6 +8,7 @@
 #include <strings.h>
 #include <fcntl.h>
 
+#include "npf/crypto.h"
 #include "npf/platform.h"
 #include "npf/tcp.h"
 #include "npf/tls.h"
@@ -93,23 +94,6 @@ static void buf_free(buf *b)
 {
     free(b->p);
     memset(b, 0, sizeof *b);
-}
-
-static size_t b64std(const uint8_t *in, size_t n, char *out)
-{
-    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t i, o = 0;
-    for (i = 0; i < n; i += 3) {
-        uint32_t v = (uint32_t)in[i] << 16;
-        if (i + 1 < n) v |= (uint32_t)in[i + 1] << 8;
-        if (i + 2 < n) v |= in[i + 2];
-        out[o++] = t[v >> 18];
-        out[o++] = t[(v >> 12) & 63];
-        out[o++] = i + 1 < n ? t[(v >> 6) & 63] : '=';
-        out[o++] = i + 2 < n ? t[v & 63] : '=';
-    }
-    out[o] = 0;
-    return o;
 }
 
 /* SHA-1, only for Sec-WebSocket-Accept */
@@ -480,7 +464,7 @@ static int start_upgrade(npf_ws *ws)
     const char *fmt = strchr(ws->host, ':') ? "[%s]" : "%s";
     char hostfield[300];
     npf_random(k, 16);
-    b64std(k, 16, ws->key);
+    npf_b64std_encode(k, 16, ws->key);
     snprintf(hostfield, sizeof hostfield, fmt, ws->host);
     n = snprintf(req, sizeof req,
                  "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -541,7 +525,7 @@ static int parse_upgrade(npf_ws *ws)
         return -1;
     snprintf(kg, sizeof kg, "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws->key);
     sha1((const uint8_t *)kg, strlen(kg), digest);
-    b64std(digest, 20, expect);
+    npf_b64std_encode(digest, 20, expect);
     acc = find_nocase(line, "\r\nSec-WebSocket-Accept:");
     if (!acc)
         return -1;

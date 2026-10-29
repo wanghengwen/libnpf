@@ -10,7 +10,7 @@ int npf_cpace_start_fixed(npf_cpace *c, const char *pw, size_t pw_len, const uin
 {
     crypto_blake2b_ctx h;
     uint8_t rep[32], G[32], l;
-    static const uint8_t zero[32];
+    int r;
     if (pw_len > 255 || sid_len > sizeof c->sid)
         return -1;
     crypto_blake2b_init(&h, 32);
@@ -24,18 +24,15 @@ int npf_cpace_start_fixed(npf_cpace *c, const char *pw, size_t pw_len, const uin
     crypto_blake2b_final(&h, rep);
     crypto_elligator_map(G, rep);
     memcpy(c->y, y, 32);
-    if (npf_x25519(c->Y, c->y, G) < 0) {
-        npf_wipe(rep, 32);
-        npf_wipe(G, 32);
+    r = npf_x25519(c->Y, c->y, G);      /* -1: Y all zero (a low-order G) */
+    npf_wipe(rep, 32);
+    npf_wipe(G, 32);
+    if (r < 0) {
         npf_wipe(c->y, 32);
         return -1;
     }
     memcpy(c->sid, sid, sid_len);
     c->sid_len = sid_len;
-    crypto_wipe(rep, 32);
-    crypto_wipe(G, 32);
-    if (crypto_verify32(c->Y, zero) == 0)
-        return -1;
     memcpy(msg, c->Y, 32);
     return 0;
 }

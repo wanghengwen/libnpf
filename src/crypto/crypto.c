@@ -11,13 +11,7 @@
 
 void npf_kdf(uint8_t out[32], const void *key, size_t key_len, const void *msg, size_t msg_len)
 {
-#ifdef NPF_USE_OPENSSL
-    if (key_len && ossl_mac(out, 32, 0, key, key_len, msg, msg_len, NULL, 0) == 0)
-        return;
-#endif
-    /* OpenSSL 3.0 has no variable-length unkeyed BLAKE2b. Keep its exact
-     * protocol construction; void helpers also fall back on EVP allocation failure. */
-    crypto_blake2b_keyed(out, 32, key, key_len, msg, msg_len);
+    npf_kdf2(out, key, key_len, msg, msg_len, NULL, 0);
 }
 
 void npf_kdf2(uint8_t out[32], const void *key, size_t key_len,
@@ -25,6 +19,8 @@ void npf_kdf2(uint8_t out[32], const void *key, size_t key_len,
 {
     crypto_blake2b_ctx ctx;
 #ifdef NPF_USE_OPENSSL
+    /* OpenSSL 3.0 has no variable-length unkeyed BLAKE2b: Monocypher's then
+     * (and when EVP fails to allocate: these helpers cannot fail) */
     if (key_len && ossl_mac(out, 32, 0, key, key_len, a, a_len, b, b_len) == 0)
         return;
 #endif
@@ -243,30 +239,30 @@ void npf_wipe(void *p, size_t n)
 #endif
 }
 
-static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-size_t npf_b64url_encode(const uint8_t *in, size_t n, char *out)
+static size_t b64_encode(const uint8_t *in, size_t n, char *out, const char t[64], int pad)
 {
     size_t i, o = 0;
-    for (i = 0; i + 2 < n; i += 3) {
-        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8) | in[i + 2];
-        out[o++] = b64[v >> 18];
-        out[o++] = b64[(v >> 12) & 63];
-        out[o++] = b64[(v >> 6) & 63];
-        out[o++] = b64[v & 63];
-    }
-    if (n - i == 1) {
-        uint32_t v = (uint32_t)in[i] << 16;
-        out[o++] = b64[v >> 18];
-        out[o++] = b64[(v >> 12) & 63];
-    } else if (n - i == 2) {
-        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8);
-        out[o++] = b64[v >> 18];
-        out[o++] = b64[(v >> 12) & 63];
-        out[o++] = b64[(v >> 6) & 63];
+    for (i = 0; i < n; i += 3) {
+        uint32_t v = (uint32_t)in[i] << 16 | (i + 1 < n ? (uint32_t)in[i + 1] << 8 : 0) | (i + 2 < n ? in[i + 2] : 0);
+        out[o++] = t[v >> 18];
+        out[o++] = t[(v >> 12) & 63];
+        if (i + 1 < n || pad)
+            out[o++] = i + 1 < n ? t[(v >> 6) & 63] : '=';
+        if (i + 2 < n || pad)
+            out[o++] = i + 2 < n ? t[v & 63] : '=';
     }
     out[o] = 0;
     return o;
+}
+
+size_t npf_b64url_encode(const uint8_t *in, size_t n, char *out)
+{
+    return b64_encode(in, n, out, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", 0);
+}
+
+size_t npf_b64std_encode(const uint8_t *in, size_t n, char *out)
+{
+    return b64_encode(in, n, out, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", 1);
 }
 
 static int b64val(char c)

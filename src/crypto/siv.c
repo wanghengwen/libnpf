@@ -4,56 +4,30 @@
 #include <string.h>
 
 #include "monocypher.h"
+#include "npf/crypto.h"
 #include "npf/siv.h"
 
 #define ROTL64(v, n) (((v) << (n)) | ((v) >> (64 - (n))))
-
-static uint32_t ld32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static void st32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
-}
-
-static uint64_t ld64(const uint8_t *p)
-{
-    return (uint64_t)ld32(p) | ((uint64_t)ld32(p + 4) << 32);
-}
-
-static void st64(uint8_t *p, uint64_t v)
-{
-    st32(p, (uint32_t)v);
-    st32(p + 4, (uint32_t)(v >> 32));
-}
-
 #define SIPROUND \
     v0 += v1; v1 = ROTL64(v1, 13); v1 ^= v0; v0 = ROTL64(v0, 32); \
     v2 += v3; v3 = ROTL64(v3, 16); v3 ^= v2;                      \
     v0 += v3; v3 = ROTL64(v3, 21); v3 ^= v0;                      \
     v2 += v1; v1 = ROTL64(v1, 17); v1 ^= v2; v2 = ROTL64(v2, 32);
 
-/* SipHash-2-4 with 128-bit output (reference construction) */
-void npf_siphash128(const uint8_t key[16], const uint8_t *in, size_t len, uint8_t out[16])
+/* SipHash-2-4 (reference construction): s, the state keyed and (128-bit
+ * output) its v1 ^ 0xee, through the message and the first finalization
+ * (v2 ^ fin, four rounds); the 64-bit output is v0 ^ v1 ^ v2 ^ v3 */
+static void sip(uint64_t s[4], const uint8_t *in, size_t len, uint64_t fin)
 {
-    uint64_t k0 = ld64(key), k1 = ld64(key + 8);
-    uint64_t v0 = 0x736f6d6570736575ULL ^ k0;
-    uint64_t v1 = 0x646f72616e646f6dULL ^ k1 ^ 0xeeULL;
-    uint64_t v2 = 0x6c7967656e657261ULL ^ k0;
-    uint64_t v3 = 0x7465646279746573ULL ^ k1;
-    uint64_t b = (uint64_t)len << 56;
+    uint64_t v0 = s[0], v1 = s[1], v2 = s[2], v3 = s[3], b = (uint64_t)len << 56;
     const uint8_t *end = in + (len & ~(size_t)7);
-    int left = (int)(len & 7);
-
     for (; in != end; in += 8) {
-        uint64_t m = ld64(in);
+        uint64_t m = npf_rd64(in);
         v3 ^= m;
         SIPROUND; SIPROUND;
         v0 ^= m;
     }
-    switch (left) {
+    switch (len & 7) {
     case 7: b |= (uint64_t)in[6] << 48; /* fallthrough */
     case 6: b |= (uint64_t)in[5] << 40; /* fallthrough */
     case 5: b |= (uint64_t)in[4] << 32; /* fallthrough */
@@ -66,48 +40,38 @@ void npf_siphash128(const uint8_t key[16], const uint8_t *in, size_t len, uint8_
     v3 ^= b;
     SIPROUND; SIPROUND;
     v0 ^= b;
-    v2 ^= 0xeeULL;
+    v2 ^= fin;
     SIPROUND; SIPROUND; SIPROUND; SIPROUND;
-    st64(out, v0 ^ v1 ^ v2 ^ v3);
-    v1 ^= 0xddULL;
-    SIPROUND; SIPROUND; SIPROUND; SIPROUND;
-    st64(out + 8, v0 ^ v1 ^ v2 ^ v3);
+    s[0] = v0, s[1] = v1, s[2] = v2, s[3] = v3;
 }
 
-/* SipHash-2-4 with 64-bit output (reference construction) */
+static void sip_init(uint64_t s[4], const uint8_t key[16])
+{
+    uint64_t k0 = npf_rd64(key), k1 = npf_rd64(key + 8);
+    s[0] = 0x736f6d6570736575ULL ^ k0;
+    s[1] = 0x646f72616e646f6dULL ^ k1;
+    s[2] = 0x6c7967656e657261ULL ^ k0;
+    s[3] = 0x7465646279746573ULL ^ k1;
+}
+
+void npf_siphash128(const uint8_t key[16], const uint8_t *in, size_t len, uint8_t out[16])
+{
+    uint64_t s[4], v0, v1, v2, v3;
+    sip_init(s, key);
+    s[1] ^= 0xee;
+    sip(s, in, len, 0xee);
+    npf_le64(out, s[0] ^ s[1] ^ s[2] ^ s[3]);
+    v0 = s[0], v1 = s[1] ^ 0xdd, v2 = s[2], v3 = s[3];
+    SIPROUND; SIPROUND; SIPROUND; SIPROUND;
+    npf_le64(out + 8, v0 ^ v1 ^ v2 ^ v3);
+}
+
 uint64_t npf_siphash64(const uint8_t key[16], const uint8_t *in, size_t len)
 {
-    uint64_t k0 = ld64(key), k1 = ld64(key + 8);
-    uint64_t v0 = 0x736f6d6570736575ULL ^ k0;
-    uint64_t v1 = 0x646f72616e646f6dULL ^ k1;
-    uint64_t v2 = 0x6c7967656e657261ULL ^ k0;
-    uint64_t v3 = 0x7465646279746573ULL ^ k1;
-    uint64_t b = (uint64_t)len << 56;
-    const uint8_t *end = in + (len & ~(size_t)7);
-    int left = (int)(len & 7);
-
-    for (; in != end; in += 8) {
-        uint64_t m = ld64(in);
-        v3 ^= m;
-        SIPROUND; SIPROUND;
-        v0 ^= m;
-    }
-    switch (left) {
-    case 7: b |= (uint64_t)in[6] << 48; /* fallthrough */
-    case 6: b |= (uint64_t)in[5] << 40; /* fallthrough */
-    case 5: b |= (uint64_t)in[4] << 32; /* fallthrough */
-    case 4: b |= (uint64_t)in[3] << 24; /* fallthrough */
-    case 3: b |= (uint64_t)in[2] << 16; /* fallthrough */
-    case 2: b |= (uint64_t)in[1] << 8;  /* fallthrough */
-    case 1: b |= (uint64_t)in[0];       /* fallthrough */
-    default: break;
-    }
-    v3 ^= b;
-    SIPROUND; SIPROUND;
-    v0 ^= b;
-    v2 ^= 0xffULL;
-    SIPROUND; SIPROUND; SIPROUND; SIPROUND;
-    return v0 ^ v1 ^ v2 ^ v3;
+    uint64_t s[4];
+    sip_init(s, key);
+    sip(s, in, len, 0xff);
+    return s[0] ^ s[1] ^ s[2] ^ s[3];
 }
 
 void npf_siv_derive(npf_siv_keys *keys, const uint8_t key[NPF_SIV_KEY_SIZE], const char label[12])
