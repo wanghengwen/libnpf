@@ -54,6 +54,15 @@ static int next_bind(int fd, const npf_siv_keys *keys, int ms, bind_seen *b)
     return 0;
 }
 
+/* the next datagram on fd within ms (lo_socket's are non-blocking, and
+ * macOS hands a loopback datagram over after the send returns): its
+ * length, -1 none */
+static ssize_t recv_within(int fd, uint8_t *buf, size_t cap, int ms)
+{
+    struct pollfd p = {fd, POLLIN, 0};
+    return poll(&p, 1, ms) > 0 ? recv(fd, buf, cap, 0) : -1;
+}
+
 /* a RELAY_BIND_ACK as the relay sends it: body = family | port | addr |
  * srv_time_ms | state | cookie | kseq | flags | t_s | learn */
 static int ack(npf_call *c, const npf_siv_keys *keys, const struct sockaddr_storage *relay, const uint8_t *txid,
@@ -379,18 +388,18 @@ int test_relay_data(void)
 
     /* to the relay: 16 bytes more than the datagram */
     memset(dgram, 0x11, sizeof dgram);
-    while (recv(f1, got, sizeof got, MSG_DONTWAIT) > 0)        /* the binds */
+    while (recv_within(f1, got, sizeof got, 50) > 0)          /* the binds */
         ;
     path_udp_ops.tx(&c1->pu.p, dgram, sizeof dgram);
     path_udp_ops.tx(&c1->pu.p, dgram, sizeof dgram);
-    n = recv(f1, got, sizeof got, 0);
+    n = recv_within(f1, got, sizeof got, 1000);
     CHECK(n == RDATA_HDR + (ssize_t)sizeof dgram && rdata_hint(got, (size_t)n, hint) == 0 && memcmp(hint, rid1, 3) == 0
           && rdata_open(&k1, NPF_DIR_REQ, hint, got, (size_t)n, &seq) == 0 && seq == 0
           && memcmp(got + RDATA_HDR, dgram, sizeof dgram) == 0, "a RELAY_DATA to the relay");
-    n = recv(f1, got, sizeof got, 0);
+    n = recv_within(f1, got, sizeof got, 1000);
     CHECK(n > 0 && rdata_open(&k1, NPF_DIR_REQ, hint, got, (size_t)n, &seq) == 0 && seq == 1, "the next seq");
     path_udp_ops.tx(&c1->pu.p, dgram, RDATA_ATAG - 1);           /* no AnLiu datagram is this short */
-    CHECK(recv(f1, got, sizeof got, MSG_DONTWAIT) < 0, "a datagram shorter than its tag sent");
+    CHECK(recv_within(f1, got, sizeof got, 50) < 0, "a datagram shorter than its tag sent");
 
     /* from the relays: by the hint, the source and the tag (the caller has
      * no keys yet: the datagram is kept for them, relay_early_keep) */
