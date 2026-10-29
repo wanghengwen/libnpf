@@ -899,6 +899,8 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
     npf_timer_cancel(n->loop, n->t_ping);
     n->t_ping = npf_timer_add(n->loop, (n->ping_s > 0 ? n->ping_s : 25) * 1000, ping_cb, n);
     ends_flush(n);                      /* call ends from while signaling was down */
+    if (!n->moving)
+        node_calls_relogin(n);          /* what the calls sent on the connection that went */
     idle_watch(n);
     move_arm(n);
     node_home_login(n);                 /* the spare allocation, while the NAT is measured */

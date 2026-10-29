@@ -483,6 +483,26 @@ void node_sig_lost(npf_node *n)
     }
 }
 
+void node_calls_relogin(npf_node *n)
+{
+    npf_call *c;
+    int64_t now = npf_mono_ms();
+    char data[64];
+    for (c = n->calls; c; c = c->next) {
+        if (call_over(c) || !call_up(c))
+            continue;
+        if (c->pm.need) {               /* an allocation asked for: again now, its 10 s from here */
+            c->pm.asks = 0;
+            c->pm.ask_at = now;
+            call_need(c, c->pm.need, now);
+        }
+        if (c->st == CS_UP && !c->caller && !c->direct) {   /* idempotent at the platform */
+            snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
+            npf_node_send(n, "call_established", 0, data);
+        }
+    }
+}
+
 /* a call (not over) that is up, or (up 0) still being set up */
 static int calls_in(const npf_node *n, int up)
 {

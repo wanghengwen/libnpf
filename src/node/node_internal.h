@@ -41,6 +41,10 @@ void node_sig_probe(npf_node *n);
 int  node_calls_setting_up(const npf_node *n);
 /* a call is up: the signaling reconnects to the same server (its calls are rebound there) */
 int  node_calls_up(const npf_node *n);
+/* logged in again: what the calls up sent on the connection that went is
+ * sent again (a pending relay_switch, call_established); the platform
+ * moved them to this connection (same server) */
+void node_calls_relogin(npf_node *n);
 /* a datagram on a main socket from the UDP signaling server: taken (1), else 0 */
 int  node_sig_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 
