@@ -29,6 +29,7 @@
 #ifndef MSG_DONTWAIT
 #define MSG_DONTWAIT 0          /* npf sockets are non-blocking already */
 #endif
+#define NPF_SE(x) WSAE##x
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0          /* no SIGPIPE on Windows */
 #endif
@@ -68,6 +69,8 @@ void *npf_win_adapters(unsigned long flags);
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0          /* macOS: SO_NOSIGPIPE is set on every socket instead */
 #endif
+#include <errno.h>
+#define NPF_SE(x) E##x
 #endif
 
 /* WSAStartup on Windows (idempotent); nothing elsewhere. 0 or -1. */
@@ -111,7 +114,9 @@ void npf_sock_close(int fd);
  * SO_EXCLUSIVEADDRUSE for both (its SO_REUSEADDR would take a port in use) */
 void npf_sock_listen_opts(int fd, int type);
 
-/* after a failed socket call */
+/* after a failed socket call: its error (errno; Winsock's on Windows), a
+ * name for its codes (NPF_SE(WOULDBLOCK): EWOULDBLOCK, WSAEWOULDBLOCK) */
+int  npf_sock_err(void);
 int  npf_sock_again(void);                      /* would block / interrupted: try later */
 int  npf_sock_in_use(void);                     /* bind: the address is taken (or not ours to take) */
 int  npf_sock_inprogress(void);                 /* non-blocking connect() started */
@@ -119,17 +124,20 @@ int  npf_sock_inprogress(void);                 /* non-blocking connect() starte
  * descriptor gone): reopen it; not an ICMP report or a full buffer */
 int  npf_sock_broken(void);
 int  npf_sock_broken_code(int err);             /* an SO_ERROR value */
+int  npf_sock_starved(void);                    /* out of descriptors or memory (accept: the connection waits) */
 const char *npf_sock_strerror(void);
 const char *npf_sock_strerror_code(int err);         /* an SO_ERROR value */
 
 /* An IPv4 or IPv6 socket address (sockaddr_in, sockaddr_in6, or a
  * sockaddr_storage holding one; the family says which): its length, its
  * port (host order), whether two are the same address and port (0 for
- * any other family), and "IP:port" ("::1:5": log lines only) */
-socklen_t   npf_sa_len(const void *sa);
-uint16_t    npf_sa_port(const void *sa);
-int         npf_sa_eq(const void *a, const void *b);
-const char *npf_sa_str(const void *sa, char *buf, size_t cap);
+ * any other family), "1.2.3.4:5" or "[::1]:5" ("-" for another family),
+ * and the address of such a text (digits only for the port; 0 or -1) */
+socklen_t   npf_addr_len(const void *sa);
+uint16_t    npf_addr_port(const void *sa);
+int         npf_addr_eq(const void *a, const void *b);
+const char *npf_addr_str(const void *sa, char *buf, size_t cap);
+int         npf_addr_parse(const char *s, struct sockaddr_storage *out);
 
 /* addresses of the interfaces that are up (loopback included) */
 typedef struct npf_ifaddr {

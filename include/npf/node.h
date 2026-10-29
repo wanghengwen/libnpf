@@ -617,10 +617,6 @@ int npf_node_home_status(npf_node *n, npf_out *o);
  * sessions open again under it */
 void npf_node_set_secure(npf_node *n, int on);
 
-/* format / parse "1.2.3.4:5" and "[::1]:5" */
-int  npf_addr_parse(const char *s, struct sockaddr_storage *out);
-const char *npf_addr_str(const struct sockaddr_storage *a, char *buf, size_t n);
-
 
 /* ---- setup helpers (setup.c) ---- */
 struct npf_conf;

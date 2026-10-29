@@ -248,7 +248,7 @@ static void peer_cand(npf_call *c, const m_cand *k)
     if (call_over(c) || call_has_p2p(c) || call_has_ws(c) || call_no_p2p(c) || strcmp(k->t, "srflx") != 0
         || k->a.ss_family != AF_INET || cand_skipped(c, &k->a, npf_addr_str(&k->a, a, sizeof a)))
         return;
-    if (c->tcand.ss_family && call_same_addr(&k->a, &c->tcand))
+    if (c->tcand.ss_family && npf_addr_eq(&k->a, &c->tcand))
         return;
     c->tcand = k->a;
     npf_log("call %s: the peer's new srflx %s", c->call_id_s, a);

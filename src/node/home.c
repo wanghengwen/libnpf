@@ -392,7 +392,7 @@ void node_on_relay_spare(npf_node *n, const m_env *e, const void *msg)
 static void r_seen(struct npf_home *h, const struct sockaddr_storage *a)
 {
     char x[64], y[64];
-    if (h->R.ss_family && !call_same_addr(a, &h->R)) {
+    if (h->R.ss_family && !npf_addr_eq(a, &h->R)) {
         npf_log("home: the relay sees %s now (was %s)", npf_addr_str(a, x, sizeof x), npf_addr_str(&h->R, y, sizeof y));
         h->moved++;
     }

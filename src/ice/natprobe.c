@@ -55,7 +55,7 @@ static void tx_send(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t
     t->sent++;
     if (npf_log_on(NPF_LOG_TRACE)) {
         char a[64];
-        npf_logt("natprobe: fd %d -> %s %s #%d (%d bytes)", t->fd, npf_sa_str(&t->dst, a, sizeof(a)),
+        npf_logt("natprobe: fd %d -> %s %s #%d (%d bytes)", t->fd, npf_addr_str(&t->dst, a, sizeof(a)),
                  t->type == NPF_PKT_BOUNCE_REQ ? "BOUNCE_REQ" : "BIND_REQ", t->sent, n);
     }
 }
@@ -71,14 +71,14 @@ static int tx_input(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t
 
     if (npf_pkt_open(keys, NPF_DIR_RESP, buf, len, plain, &pkt) < 0 || npf_bind_resp_parse(&pkt, &resp) < 0) {
         if (npf_log_on(NPF_LOG_TRACE))
-            npf_logt("natprobe: fd %d <- %s %zu bytes: not a valid BIND_RESP", fd, npf_sa_str(from, a, sizeof(a)), len);
+            npf_logt("natprobe: fd %d <- %s %zu bytes: not a valid BIND_RESP", fd, npf_addr_str(from, a, sizeof(a)), len);
         return 0;
     }
     for (i = 0; i < n; i++) {
         tx *t = &txs[i];
         if (t->done || t->fd != fd || memcmp(t->txid, pkt.txid, NPF_TXID_SIZE) != 0)
             continue;
-        if (!npf_sa_eq(from, &t->dst) || resp.family != 4)
+        if (!npf_addr_eq(from, &t->dst) || resp.family != 4)
             continue;                   /* the server answers from the endpoint we asked */
         t->done = 1;
         t->acked_at = npf_mono_ms();
@@ -92,12 +92,12 @@ static int tx_input(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t
         if (npf_log_on(NPF_LOG_TRACE)) {
             char m[64];
             npf_logt("natprobe: fd %d <- %s BIND_RESP mapped %s rtt %d ms", fd,
-                    npf_sa_str(from, a, sizeof(a)), npf_sa_str(&t->mapped, m, sizeof(m)), t->rtt_ms);
+                    npf_addr_str(from, a, sizeof(a)), npf_addr_str(&t->mapped, m, sizeof(m)), t->rtt_ms);
         }
         return 1;
     }
     if (npf_log_on(NPF_LOG_TRACE))
-        npf_logt("natprobe: fd %d <- %s stray BIND_RESP", fd, npf_sa_str(from, a, sizeof(a)));
+        npf_logt("natprobe: fd %d <- %s stray BIND_RESP", fd, npf_addr_str(from, a, sizeof(a)));
     return 1;
 }
 
@@ -304,13 +304,13 @@ static int decide_mapping(npf_natprobe_result *res, const tx *txs, int n_ep)
     res->srv_offset_ms = txs[0].srv_offset_ms;
     res->profile.open = is_local_ipv4(&res->mapped[0].sin_addr)
                         && ntohs(res->mapped[0].sin_port) == res->local_port;
-    if (n_ep >= 2 && res->got[1] && !npf_sa_eq(&res->mapped[0], &res->mapped[1]))
+    if (n_ep >= 2 && res->got[1] && !npf_addr_eq(&res->mapped[0], &res->mapped[1]))
         res->profile.mapping = NPF_MAP_APDM;
     else if (n_ep >= 3 && res->got[1] && res->got[2]) {
         if (res->mapped[2].sin_addr.s_addr != res->mapped[0].sin_addr.s_addr) {
             res->profile.ip_varies = 1;
             res->profile.mapping = NPF_MAP_ADM;
-        } else if (npf_sa_eq(&res->mapped[0], &res->mapped[2]))
+        } else if (npf_addr_eq(&res->mapped[0], &res->mapped[2]))
             res->profile.mapping = NPF_MAP_EIM;
         else
             res->profile.mapping = NPF_MAP_ADM;
@@ -517,7 +517,7 @@ int npf_natprobe_input(npf_natprobe *p, int fd, const uint8_t *buf, size_t len, 
     if (len > NPF_PKT_MAX)
         return 0;                   /* never a probe server's: and tx_input opens into NPF_PKT_MAX bytes */
     for (i = 0; i < p->n_ep && !ours; i++)
-        ours = npf_sa_eq(f, &p->cfg.ep[i]);
+        ours = npf_addr_eq(f, &p->cfg.ep[i]);
     if (!ours)
         return 0;                   /* not from a probe server: the node's */
     tx_input(&p->cfg, &p->keys, p->txs, p->ntx, fd, buf, len, f);

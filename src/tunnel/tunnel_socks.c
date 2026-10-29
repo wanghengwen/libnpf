@@ -2,7 +2,6 @@
  * (data-channel.md 7): Happy Eyeballs, the deadlines, the greeting */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,10 +50,10 @@ static void connect_timeout(npf_loop *loop, void *arg)
 static int map_errno(int e)
 {
     switch (e) {
-    case ECONNREFUSED: return 5;
-    case ENETUNREACH: return 3;
-    case EHOSTUNREACH: return 4;
-    case ETIMEDOUT: return 6;
+    case NPF_SE(CONNREFUSED): return 5;
+    case NPF_SE(NETUNREACH): return 3;
+    case NPF_SE(HOSTUNREACH): return 4;
+    case NPF_SE(TIMEDOUT): return 6;
     default: return 1;
     }
 }
@@ -115,12 +114,12 @@ static int connect_next(sublink *s)
         int i = s->icand++, fd, one = 1;
         fd = npf_socket(s->cand[i].ss_family, SOCK_STREAM, 0, 0);
         if (fd < 0) {
-            s->last_err = errno;
+            s->last_err = npf_sock_err();
             continue;
         }
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         if (connect(fd, (const struct sockaddr *)&s->cand[i], s->hs->clen[i]) < 0 && !npf_sock_inprogress()) {
-            s->last_err = errno;
+            s->last_err = npf_sock_err();
             npf_sock_close(fd);
             continue;
         }

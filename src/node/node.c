@@ -1,4 +1,4 @@
-/* Node lifecycle and address helpers. */
+/* Node lifecycle. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <errno.h>
@@ -20,64 +20,6 @@
 
 #include "node_internal.h"
 #include "home.h"
-
-/* ---- addresses ---- */
-
-int npf_addr_parse(const char *s, struct sockaddr_storage *out)
-{
-    char host[64];
-    const char *colon;
-    long port;
-    char *end;
-    memset(out, 0, sizeof *out);
-    if (*s == '[') {
-        const char *rb = strchr(s, ']');
-        if (!rb || rb[1] != ':' || (size_t)(rb - s - 1) >= sizeof host)
-            return -1;
-        memcpy(host, s + 1, (size_t)(rb - s - 1));
-        host[rb - s - 1] = 0;
-        colon = rb + 1;
-    } else {
-        colon = strrchr(s, ':');
-        if (!colon || (size_t)(colon - s) >= sizeof host)
-            return -1;
-        memcpy(host, s, (size_t)(colon - s));
-        host[colon - s] = 0;
-    }
-    if (colon[1] < '0' || colon[1] > '9')
-        return -1;                          /* digits only: not "1.2.3.4:", nor "+80" or " 80" */
-    port = strtol(colon + 1, &end, 10);
-    if (*end || port < 0 || port > 65535)
-        return -1;
-    if (strchr(host, ':')) {
-        struct sockaddr_in6 *a = (struct sockaddr_in6 *)out;
-        a->sin6_family = AF_INET6;
-        a->sin6_port = htons((uint16_t)port);
-        return inet_pton(AF_INET6, host, &a->sin6_addr) == 1 ? 0 : -1;
-    } else {
-        struct sockaddr_in *a = (struct sockaddr_in *)out;
-        a->sin_family = AF_INET;
-        a->sin_port = htons((uint16_t)port);
-        return inet_pton(AF_INET, host, &a->sin_addr) == 1 ? 0 : -1;
-    }
-}
-
-const char *npf_addr_str(const struct sockaddr_storage *a, char *b, size_t n)
-{
-    char ip[INET6_ADDRSTRLEN];
-    if (a->ss_family == AF_INET6) {
-        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)a;
-        inet_ntop(AF_INET6, &s6->sin6_addr, ip, sizeof ip);
-        snprintf(b, n, "[%s]:%u", ip, ntohs(s6->sin6_port));
-    } else if (a->ss_family == AF_INET) {
-        const struct sockaddr_in *s4 = (const struct sockaddr_in *)a;
-        inet_ntop(AF_INET, &s4->sin_addr, ip, sizeof ip);
-        snprintf(b, n, "%s:%u", ip, ntohs(s4->sin_port));
-    } else {
-        snprintf(b, n, "-");
-    }
-    return b;
-}
 
 int npf_node_init(npf_node *n, npf_loop *loop, const npf_node_cfg *cfg, const npf_identity *id,
                   const npf_node_hooks *hooks, void *arg)

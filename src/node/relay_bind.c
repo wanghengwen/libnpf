@@ -139,26 +139,11 @@ int relay_bind_up(relay_c *r, int64_t now, int ka)
     return was;
 }
 
-int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
-{
-    if (a->ss_family != b->ss_family)
-        return 0;
-    if (a->ss_family == AF_INET) {
-        const struct sockaddr_in *x = (const void *)a, *y = (const void *)b;
-        return x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr;
-    }
-    if (a->ss_family == AF_INET6) {
-        const struct sockaddr_in6 *x = (const void *)a, *y = (const void *)b;
-        return x->sin6_port == y->sin6_port && memcmp(&x->sin6_addr, &y->sin6_addr, 16) == 0;
-    }
-    return 0;
-}
-
 int relay_addr_index(const relay_c *r, const struct sockaddr_storage *from)
 {
     int i;
     for (i = 0; i < r->naddr; i++)
-        if (call_same_addr(from, &r->addr[i]))
+        if (npf_addr_eq(from, &r->addr[i]))
             return i;
     return -1;
 }
