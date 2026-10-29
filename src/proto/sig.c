@@ -8,7 +8,6 @@
 #include "npf/ws.h"
 
 struct npf_sig {
-    npf_loop    *loop;
     npf_ws      *ws;
     npf_sig_cbs  cbs;
     void        *arg;
@@ -16,7 +15,6 @@ struct npf_sig {
     npf_noise_cs tx, rx;
     uint8_t      hash[64];
     int          ready;
-    int          closing;
 };
 
 /* on_down runs first (the handle is still valid, but must not be closed
@@ -122,7 +120,6 @@ npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[
     npf_sig *s = calloc(1, sizeof *s);
     if (!s)
         return NULL;
-    s->loop = loop;
     s->cbs = *cbs;
     s->arg = arg;
     if (npf_noise_init(&s->hs, NPF_NOISE_XK, 1, prologue, strlen(prologue), id->dh_sk, server_pub, NULL) < 0
@@ -135,7 +132,7 @@ npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[
 
 int npf_sig_send(npf_sig *s, const char *json, size_t len)
 {
-    uint8_t *out;               /* not on the stack (sys.h, npf_scratch) */
+    uint8_t *out;               /* up to NPF_JSON_MAX_SIZE: not on the stack (malloc) */
     int pre = s->cbs.on_raw != NULL, n, r = -1;
     if (!s->ready || !s->ws || len > NPF_JSON_MAX_SIZE || !(out = malloc(len + 64)))
         return -1;

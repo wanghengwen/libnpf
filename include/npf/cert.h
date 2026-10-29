@@ -50,16 +50,12 @@ int npf_cert_parse(const uint8_t *buf, size_t len, npf_cert *c);
 int npf_cert_chain_parse(const uint8_t (*roots)[32], int nroots, const uint8_t *buf, size_t len,
                          npf_cert *inter, npf_cert *leaf, int64_t now);
 
-/* Verify a server-list blob; on success *payload points into blob. Validity
- * periods are not checked (an expired list stays usable, D15). */
-int npf_serverlist_verify(const uint8_t (*roots)[32], int nroots, const uint8_t *blob, size_t len,
-                          const uint8_t **payload, size_t *payload_len);
-
-/* Verify a signed update manifest (the same blob as the server list, its own
- * permission and domain; docs/design/upgrade.md 5); *payload is the manifest's
- * JSON, inside blob. Validity periods are not checked. */
-int npf_manifest_verify(const uint8_t (*roots)[32], int nroots, const uint8_t *blob, size_t len,
-                        const uint8_t **payload, size_t *payload_len);
+/* Verify a signed blob: the server list (perm NPF_PERM_SERVERLIST) or an
+ * update manifest (NPF_PERM_UPDATE, docs/design/upgrade.md 5), each with its
+ * own domain; on success *payload (JSON) points into blob. Validity periods
+ * are not checked (an expired list stays usable, D15). */
+int npf_signed_verify(const uint8_t (*roots)[32], int nroots, unsigned perm, const uint8_t *blob, size_t len,
+                      const uint8_t **payload, size_t *payload_len);
 
 /* Hosted-trust grant (security.md 8.2, 8.4):
  *   ver(1)=1 | kind(1) | number(8) | caller_dh(32) | account(8) | issued(4) | expires(4)

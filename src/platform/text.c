@@ -69,10 +69,28 @@ int npf_text_mac(const char *s, unsigned char out[6])
     return *s ? -1 : 0;
 }
 
+int npf_text_dec(const char *s, long lo, long hi, long *out)
+{
+    long v = 0;
+    if (!*s || (s[0] == '0' && s[1]))
+        return -1;
+    for (; *s; s++) {
+        if (*s < '0' || *s > '9')
+            return -1;
+        v = v * 10 + (*s - '0');
+        if (v > hi)
+            return -1;
+    }
+    if (v < lo)
+        return -1;
+    *out = v;
+    return 0;
+}
+
 int npf_hostport(const char *s, char *host, size_t cap, uint16_t *port)
 {
     const char *h = s, *colon;
-    long p = 0;
+    long p;
     size_t n;
     if (*s == '[') {
         const char *rb = strchr(s, ']');
@@ -84,11 +102,7 @@ int npf_hostport(const char *s, char *host, size_t cap, uint16_t *port)
         return -1;
     }
     n = (size_t)((*s == '[' ? colon - 1 : colon) - h);
-    if (!n || n >= cap || (colon[1] == '0' && colon[2]))
-        return -1;
-    for (s = colon + 1; *s >= '0' && *s <= '9' && p <= 65535; s++)
-        p = p * 10 + *s - '0';
-    if (s == colon + 1 || *s || p > 65535)
+    if (!n || n >= cap || npf_text_dec(colon + 1, 0, 65535, &p) < 0)
         return -1;
     memcpy(host, h, n);
     host[n] = 0;

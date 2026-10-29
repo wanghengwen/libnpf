@@ -146,7 +146,7 @@ NODE_MSG(m_bind_approve, M_BIND_APPROVE)
 /* ---- the server list (signaling.md "服务器列表") and the node's files ---- */
 
 #define M_SERVER(T) F_INT(T, id, F_REQ, 0, 1 << 30, 0) F_INT(T, prio, 0, 0, 1000, 1) F_INT(T, weight, 0, 0, 1000, 1) \
-    F_STR(T, kind, 8, 0) F_B64X(T, dh_pub, 32, 0) F_ARR(T, ws, m_s256, 2, F_REQ | F_SKIP) F_BOOL(T, relay)
+    F_B64X(T, dh_pub, 32, 0) F_ARR(T, ws, m_s256, 2, F_REQ | F_SKIP)
 NODE_MSG(m_server, M_SERVER)
 #define M_SOURCES(T) F_ARR(T, doh, m_s256, NPF_SOURCES_MAX, F_SKIP) F_ARR(T, https, m_s256, NPF_SOURCES_MAX, F_SKIP)
 NODE_MSG(m_sources, M_SOURCES)

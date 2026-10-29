@@ -3,13 +3,9 @@
  * closed by its owner (npf_tunnel_vclose) goes at the next poll. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/log.h"
-#include "npf/platform.h"
 #include "tunnel_internal.h"
 
 #define VIRT_ROUNDS 64                  /* passes of one poll (a pass reads a frame per sublink) */
@@ -21,8 +17,7 @@ static void gone_timeout(npf_loop *loop, void *arg)
     npf_tunnel *t = s->t;
     (void)loop;
     s->t_gone = NULL;
-    if (!s->end)
-        s->end = "local_reset";
+    tunnel_sub_end(s, "local_reset");
     t->depth++;
     tunnel_sub_reset(s, NPF_RST_TIMEOUT);
     tunnel_leave(t);
@@ -41,8 +36,7 @@ static void vend_close(sublink *s)
     s->vgone = 0;
     t->ngone--;
     if (reset) {
-        if (!s->end)
-            s->end = "local_reset";
+        tunnel_sub_end(s, "local_reset");
         tunnel_sub_reset(s, NPF_RST_LOCAL);
         return;
     }

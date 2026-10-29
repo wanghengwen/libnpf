@@ -14,7 +14,7 @@ struct npf_wsr {
     npf_wsr_cbs  cbs;
     void        *arg;
     uint8_t      relay_id[8];
-    int          bound, paired;
+    int          paired;
     npf_timer   *t_ping;
 };
 
@@ -48,16 +48,14 @@ static void on_ready(npf_sig *s, void *arg)
 }
 
 /* a control message, by its type (not a word found anywhere in it: an
- * error's text naming another type) */
+ * error's text naming another type); relay_bound asks for nothing */
 static void on_ctl(npf_sig *s, const npf_json *j, void *arg)
 {
     npf_wsr *r = arg;
     char type[24] = "";
     (void)s;
     npf_json_get_str(j, 0, "type", type, sizeof type);
-    if (strcmp(type, "relay_bound") == 0) {
-        r->bound = 1;
-    } else if (strcmp(type, "relay_paired") == 0) {
+    if (strcmp(type, "relay_paired") == 0) {
         r->paired = 1;
         if (r->cbs.paired)
             r->cbs.paired(r, npf_json_eq(j, npf_json_get(j, npf_json_get(j, 0, "data"), "peer"), "udp"), r->arg);

@@ -33,13 +33,16 @@ typedef struct rgroup {
 } rgroup;
 
 /* a sublink's handshake: the SOCKS bytes being parsed (a server's greeting
- * and request, -D's application greeting) and the connect attempts. Made
- * with a server's or -D's sublink, freed once it is open (a port mapping's
- * never has one): an open sublink keeps none of its 664 bytes */
+ * and request, -D's application greeting) and the connect attempts (Happy
+ * Eyeballs). Made with a server's or -D's sublink, freed once it is open
+ * (a port mapping's never has one): an open sublink keeps none of it */
 typedef struct sl_hs {
     uint8_t   sb[SOCKS_BUF];
-    int       cfd[NPF_RESOLVE_MAX];     /* SL_CONNECTING: the attempts under way (the winner becomes fd) */
+    /* SL_CONNECTING: the addresses (malloc), the attempts under way (the winner becomes fd) */
+    struct sockaddr_storage *cand;
     socklen_t clen[NPF_RESOLVE_MAX];
+    int       ncand, icand, cfd[NPF_RESOLVE_MAX], ncfd, last_err;
+    npf_timer *t_connect, *t_he;    /* the deadline (lookup too), the next address's turn */
 } sl_hs;
 
 typedef struct sublink {
@@ -60,18 +63,11 @@ typedef struct sublink {
     int      peer_fin;          /* FIN received */
     int      shut_wr;           /* local write side shut down */
     unsigned ev;                /* registered events */
-    int      reverse;           /* caller side of a reverse mapping: target checked against rev[] */
-    npf_timer *t_connect;
     npf_timer *t_greet;         /* the SOCKS greeting and request still to come (GREET_MS) */
-    npf_timer *t_he;            /* SL_CONNECTING: the next address's turn (HE_DELAY_MS) */
-    int      ncfd;              /* SL_CONNECTING: hs->cfd in use */
-    int      last_err;          /* SL_CONNECTING: the last attempt's error */
     struct rgroup *rg;          /* its rate group, NULL: none */
     uint64_t in, out;           /* read from / written to its local socket */
     int      shared;            /* counted in the shared limits (npf_tunnel_shared.subs) */
     npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
-    struct sockaddr_storage *cand;  /* SL_CONNECTING: a name's addresses still to try (malloc) */
-    int      ncand, icand;
     /* opened here: for its record (npf_sublink_stats) */
     int64_t  t_open, t_ok, t_first;     /* mono ms: opened, CONNECT reply, first byte to the local socket */
     int      fin_first;                 /* 1: the local side closed first, 2: the peer */
@@ -115,10 +111,6 @@ struct npf_tunnel {
     npf_budget *budget;         /* NULL: none */
     uint64_t    local_in, local_out;    /* read from / written to the local sockets */
     npf_timer  *t_rate;         /* a group ran dry: look again soon */
-    /* caller: targets registered for reverse mapping (data-channel.md 7.1),
-     * each made when registered (a callee's tunnel has none) */
-    struct rev_target { uint32_t id; uint16_t port; char host[]; } *rev[NPF_MAX_REVERSE];
-    int         nrev;
     npf_timer  *t_virt;         /* virtual local ends to look at (virt_poll) */
     int         in_poll;        /* virt_poll runs (it arms itself again) */
     int         depth;          /* calls in here that may call out (the transport, the local ends,
@@ -132,18 +124,22 @@ int  tunnel_wb_put(wbuf *b, const void *p, size_t n);
 sublink *tunnel_find(npf_tunnel *t, uint32_t id);
 /* a local socket's event (also what virt_poll feeds a virtual end) */
 void tunnel_io_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
-/* the frames to the peer: DATA (a copy of p), FIN; DATA of the sublink's
- * own (the SOCKS bytes), charged to its credit; 0, or -1 */
-int  tunnel_send_data(npf_tunnel *t, uint32_t id, const void *p, size_t n);
+/* the frames to the peer: FIN; DATA of the sublink's own (the SOCKS bytes,
+ * a copy of p), charged to its credit; 0, or -1 */
 int  tunnel_send_fin(npf_tunnel *t, uint32_t id);
 int  tunnel_sub_send(sublink *s, const void *p, size_t n);
 void tunnel_update_ev(sublink *s);
 void tunnel_sub_free(sublink *s, int rst);
 void tunnel_sub_reset(sublink *s, int reason);
+/* why it ended (npf_sublink_stats.end), unless that is said already */
+static inline void tunnel_sub_end(sublink *s, const char *why) { if (!s->end) s->end = why; }
 /* the end of a call into the tunnel that held it (t->depth++ before): 1
  * when it was freed meanwhile (it is gone now) */
 int  tunnel_leave(npf_tunnel *t);
-int  tunnel_flush_local(sublink *s);
+/* to the local end: what is queued, then p[0..n); what it cannot take now
+ * queued. -1: the sublink was reset (a write failed: LOCAL, the queue full: LIMIT) */
+int  tunnel_flush_local(sublink *s, const uint8_t *p, size_t n);
+int  tunnel_queue(sublink *s, const void *p, size_t n);     /* queued only (reset: LIMIT) */
 /* n bytes of the peer's data taken here: WINDOW back once a quarter of the window is free */
 void tunnel_credit_back(sublink *s, size_t n);
 
@@ -168,9 +164,9 @@ int  tunnel_socks_request(const char *host, uint16_t port, uint8_t req[300], siz
 int  tunnel_socks_parse(sublink *s);
 /* client side: the server's method and CONNECT replies, as they come (tunnel_socks.c) */
 int  tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop);
-/* the handshake is over (open, or the sublink goes): hs freed */
+/* the handshake is over (open, or the sublink goes): hs freed, the
+ * attempts still under way closed */
 void tunnel_hs_done(sublink *s);
 void tunnel_greet_wait(sublink *s);
-void tunnel_greet_done(sublink *s);
 
 #endif

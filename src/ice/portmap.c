@@ -1,8 +1,6 @@
 #define _DEFAULT_SOURCE
 #include "npf/log.h"
 #include "npf/sys.h"
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "npf/crypto.h"
@@ -180,28 +178,23 @@ static int try_map(int method, const struct sockaddr_in *gw, uint16_t internal_p
 
 static int gateway(struct sockaddr_in *gw, const char *at)
 {
-    char gs[INET_ADDRSTRLEN];
-    uint32_t a;
+    char a[64];
+    uint32_t ip;
     memset(gw, 0, sizeof(*gw));
     gw->sin_family = AF_INET;
     gw->sin_port = htons(NPF_PORTMAP_PORT);
     if (at) {                               /* "IP:PORT" of a stand-in gateway */
-        char ip[64], *colon;
-        snprintf(ip, sizeof ip, "%s", at);
-        if ((colon = strrchr(ip, ':')) != NULL) {
-            *colon = 0;
-            gw->sin_port = htons((uint16_t)atoi(colon + 1));
-        }
-        if (inet_pton(AF_INET, ip, &gw->sin_addr) != 1)
+        struct sockaddr_storage ss;
+        if (npf_addr_parse(at, &ss) < 0 || ss.ss_family != AF_INET)
             return -1;
-    } else if (npf_default_gw4(&a) == 0) {
-        gw->sin_addr.s_addr = a;
+        memcpy(gw, &ss, sizeof *gw);
+    } else if (npf_default_gw4(&ip) == 0) {
+        gw->sin_addr.s_addr = ip;
     } else {
         npf_logd("portmap: no default IPv4 gateway");
         return -1;
     }
-    inet_ntop(AF_INET, &gw->sin_addr, gs, sizeof(gs));
-    npf_logd("portmap: gateway %s:%d", gs, NPF_PORTMAP_PORT);
+    npf_logd("portmap: gateway %s", npf_addr_str(gw, a, sizeof a));
     return 0;
 }
 
@@ -241,9 +234,6 @@ uint64_t npf_portmap_net(const char *at)
 
 const char *npf_portmap_method_str(int method)
 {
-    switch (method) {
-    case NPF_PORTMAP_PCP:    return "PCP";
-    case NPF_PORTMAP_NATPMP: return "NAT-PMP";
-    default:                 return "none";
-    }
+    static const char *const names[] = {"none", "PCP", "NAT-PMP"};     /* NPF_PORTMAP_*; out of range: none */
+    return method > 0 && method < 3 ? names[method] : names[0];
 }

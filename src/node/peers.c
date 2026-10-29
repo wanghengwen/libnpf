@@ -8,6 +8,7 @@
 #include "npf/crypto.h"
 #include "npf.h"
 #include "npf/platform.h"
+#include "npf/text.h"
 
 #include "peers_internal.h"
 
@@ -28,6 +29,12 @@ static int idle_time(const npf_peers *ps, int req)
     return req ? req : ps->default_idle_ms ? ps->default_idle_ms : IDLE_DEFAULT_MS;
 }
 
+/* target's local.json record (made when create), NULL: none */
+static npf_ldev *dev_of(const npf_peers *ps, const char *target, int create)
+{
+    return ps->lc ? npf_local_dev(ps->lc, target, create) : NULL;
+}
+
 /* ---- known callee keys: the pinned public keys, in local.json ---- */
 
 static int known_get(const npf_peers *ps, uint64_t number, uint8_t pub[32])
@@ -35,8 +42,7 @@ static int known_get(const npf_peers *ps, uint64_t number, uint8_t pub[32])
     char t[24];
     npf_ldev *d;
     snprintf(t, sizeof t, "%llu", (unsigned long long)number);
-    d = ps->lc ? npf_local_dev(ps->lc, t, 0) : NULL;
-    if (!d || !d->has_key)
+    if (!(d = dev_of(ps, t, 0)) || !d->has_key)
         return 0;
     memcpy(pub, d->key, 32);
     return 1;
@@ -47,7 +53,7 @@ static void known_put(npf_peers *ps, uint64_t number, const uint8_t pub[32])
     char t[24];
     npf_ldev *d;
     snprintf(t, sizeof t, "%llu", (unsigned long long)number);
-    if (!ps->lc || !(d = npf_local_dev(ps->lc, t, 1)))
+    if (!(d = dev_of(ps, t, 1)))
         return;
     memcpy(d->key, pub, 32);
     d->has_key = 1;
@@ -342,8 +348,7 @@ const char *npf_peer_nick(const npf_peer *p)
     npf_ldev *d;
     if (p->has_nick_here)
         return p->nick_here;                /* this run's (the application keeps its objects) */
-    d = p->ps->lc ? npf_local_dev(p->ps->lc, p->name, 0) : NULL;
-    return d ? d->nick : "";
+    return (d = dev_of(p->ps, p->name, 0)) ? d->nick : "";
 }
 
 const char *npf_peer_resources(const npf_peer *p)
@@ -351,8 +356,7 @@ const char *npf_peer_resources(const npf_peer *p)
     npf_ldev *d;
     if (p->resources)
         return p->resources;
-    d = p->ps->lc ? npf_local_dev(p->ps->lc, p->name, 0) : NULL;
-    return d ? d->resources : NULL;
+    return (d = dev_of(p->ps, p->name, 0)) ? d->resources : NULL;
 }
 
 int npf_peer_resources_same(const npf_peer *p, const char *json)
@@ -388,7 +392,7 @@ static int save_soon(npf_peers *ps)
 
 int npf_peer_resources_set(npf_peer *p, const char *json)
 {
-    npf_ldev *d = p->ps->lc ? npf_local_dev(p->ps->lc, p->name, 0) : NULL;
+    npf_ldev *d = dev_of(p->ps, p->name, 0);
     char *s = strdup(json);
     if (!s)
         return -1;
@@ -500,15 +504,8 @@ void npf_peers_remove(npf_peers *ps, npf_peer *p)
 static void canon_target(const char *word, char *out, size_t cap)
 {
     char host[300];
-    const char *colon = strrchr(word, ':');
-    out[0] = 0;
-    if (!colon || colon == word || (size_t)(colon - word) >= sizeof host)
-        return;
-    if (word[0] == '[' && colon[-1] == ']')
-        snprintf(host, sizeof host, "%.*s", (int)(colon - word - 2), word + 1);
-    else
-        snprintf(host, sizeof host, "%.*s", (int)(colon - word), word);
-    if (npf_peer_target_name(0, host, (uint16_t)atoi(colon + 1), out, cap) < 0)
+    uint16_t port;
+    if (npf_hostport(word, host, sizeof host, &port) < 0 || npf_peer_target_name(0, host, port, out, cap) < 0)
         out[0] = 0;
 }
 
@@ -572,7 +569,6 @@ void npf_peers_free(npf_peers *ps)
     }
     free(ps->conns);
     free(ps->ips);
-    free(ps->ubuf);
     free(ps->subs);
     free(ps);
 }
@@ -656,11 +652,8 @@ npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, siz
         snprintf(p->password, sizeof p->password, "%s", pn->password);
     p->connect = pn->connect;
     p->keep = pn->connect != NPF_CONNECT_ONCE;
-    p->idle_req = pn->idle_ms > 0 ? pn->idle_ms : 0;     /* kept for on demand, whatever the way now */
-    if (pn->connect == NPF_CONNECT_ON_DEMAND)
-        p->idle_ms = idle_time(ps, p->idle_req);
-    d = ps->lc ? npf_local_dev(ps->lc, p->name, 0) : NULL;
-    if (d)
+    npf_peer_idle_put(p, pn->idle_ms);
+    if ((d = dev_of(ps, p->name, 0)))
         snprintf(p->label, sizeof p->label, "%s", d->name);
     p->id = ++ps->peer_seq;
     for (pp = &ps->list; *pp; pp = &(*pp)->next)
@@ -690,20 +683,13 @@ void npf_peers_start(npf_peers *ps)
 
 void npf_peer_start(npf_peer *p)
 {
-    if (p->direct) {
+    int online = p->ps->n->online;          /* offline: the login starts it (a direct peer needs none) */
+    if (p->direct || (online && !p->idle_ms)) {
         if (!p->t_retry)
             peers_start_call(p);
-        return;
+    } else if (online && !p->listening) {
+        peers_forwards_start(p);            /* on demand: listening; a connection starts the session */
     }
-    if (!p->ps->n->online)
-        return;                             /* the login starts it */
-    if (p->idle_ms) {                       /* on demand: listening; a connection starts the session */
-        if (!p->listening)
-            peers_forwards_start(p);
-        return;
-    }
-    if (!p->t_retry)
-        peers_start_call(p);
 }
 
 void npf_peers_on_login(npf_peers *ps)
@@ -747,12 +733,7 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         npf_log("%s: connected (%s)", p->name, npf_call_path_label(c));
         p->up_since = npf_mono_ms();
         peers_forwards_start(p);        /* a mapping that fails retries on its own */
-        if (npf_call_ready(c)) {
-            peers_demand_flush(p);      /* the connections that waited for it */
-            peers_udp_queue_flush(p);
-        } else {
-            peers_ready_wait(p);        /* ... once its transport can take them */
-        }
+        peers_ready(p);                 /* the connections that waited for it, now or once it can take them */
         {                               /* and those of the modules' forwards */
             int k;
             for (k = 0; k < p->ps->nkinds; k++)
@@ -843,13 +824,7 @@ npf_peer *npf_peers_by_id(const npf_peers *ps, uint32_t id)
  * static one was shared by all) */
 int npf_peer_direct_target(const npf_peer *p, char *host, size_t cap, uint16_t *port)
 {
-    const char *colon = p->direct ? strrchr(p->name, ':') : NULL;
-    int br = p->name[0] == '[';
-    if (!colon || colon - p->name < 1 + 2 * br)
-        return -1;                          /* (a direct peer's name is canonical: HOST:PORT) */
-    snprintf(host, cap, "%.*s", (int)(colon - p->name - 2 * br), p->name + br);
-    *port = (uint16_t)atoi(colon + 1);
-    return 0;
+    return p->direct ? npf_hostport(p->name, host, cap, port) : -1;     /* (its name is canonical: HOST:PORT) */
 }
 
 void npf_peer_set_nick_here(npf_peer *p, const char *nick)
@@ -863,17 +838,19 @@ void npf_peer_set_label(npf_peer *p, const char *name)
     snprintf(p->label, sizeof p->label, "%s", name ? name : "");
 }
 
+/* what a session that ended for why waits for: NPF_NEED_*, 0 nothing */
+static int why_needs(const char *why)
+{
+    return strcmp(why, "not_paired") == 0       ? NPF_NEED_PASSWORD
+           : strcmp(why, "wrong_password") == 0 ? NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG
+           : strcmp(why, "pairing_lost") == 0   ? NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST
+           : strcmp(why, "no_account") == 0     ? NPF_NEED_ACCOUNT
+                                                : 0;
+}
+
 int npf_peer_needs(const npf_peer *p)
 {
-    if (p->call || p->password[0])
-        return 0;
-    if (strcmp(p->last_why, "not_paired") == 0)
-        return NPF_NEED_PASSWORD;
-    if (strcmp(p->last_why, "wrong_password") == 0)
-        return NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG;
-    if (strcmp(p->last_why, "pairing_lost") == 0)
-        return NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST;
-    return strcmp(p->last_why, "no_account") == 0 ? NPF_NEED_ACCOUNT : 0;
+    return p->call || p->password[0] ? 0 : why_needs(p->last_why);
 }
 
 int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
@@ -954,8 +931,7 @@ int npf_peer_password_try(npf_peer *p, const char *password)
     if (!password[0] || strlen(password) >= sizeof p->password)
         return -1;
     snprintf(p->password, sizeof p->password, "%s", password);
-    if (strcmp(p->last_why, "not_paired") == 0 || strcmp(p->last_why, "wrong_password") == 0
-        || strcmp(p->last_why, "no_account") == 0 || strcmp(p->last_why, "pairing_lost") == 0)
+    if (why_needs(p->last_why))
         p->last_why[0] = 0;
     npf_log("%s: password given", p->name);
     npf_peer_wake_now(p);

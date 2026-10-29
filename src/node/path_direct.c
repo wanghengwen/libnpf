@@ -20,8 +20,7 @@ int call_p2p_cut(const npf_call *c)
     int port = (int)c->n->th.drop_p2p_port;
     if (!cut || !call_has_p2p(c) || npf_mono_ms() - c->pd.p.since < cut)
         return 0;
-    return !port || ntohs(c->pd.addr.ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)&c->pd.addr)->sin6_port
-                                                             : ((const struct sockaddr_in *)&c->pd.addr)->sin_port) == port;
+    return !port || npf_addr_port(&c->pd.addr) == port;
 }
 
 static void direct_send(npf_path *p, const uint8_t *dgram, size_t len)
@@ -56,7 +55,6 @@ void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer)
     c->pd.p.last_rx = c->pd.p.since = npf_mono_ms();
     c->pd.p.health = PH_UP;
 }
-
 
 /* ---- direct path check (nat-traversal.md 10.3) ----
  * Hearing the peer does not prove that it hears us (a path dead one way: a
@@ -160,7 +158,6 @@ void call_p2p_suspect_start(npf_call *c, const char *why)
     direct_doubt(c, why);
     pm_check(c);                /* its first check now */
 }
-
 
 void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {

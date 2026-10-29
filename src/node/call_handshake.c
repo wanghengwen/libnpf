@@ -28,6 +28,7 @@ int call_set_targets(npf_call *c, const npf_grant *g)
     c->hosted_grant = 1;
     return 0;
 }
+
 static void prologue(const npf_call *c, uint8_t *out, size_t *len)
 {
     const char *pre = c->auth == AUTH_PAKE ? "npf-pair-v1" : "npf-conn-v1";
@@ -46,50 +47,19 @@ static void sid_of(const npf_call *c, uint8_t sid[24])
 
 int call_finish_handshake(npf_call *c)
 {
-    uint8_t k1[32], k2[32];
     const uint8_t *rs = npf_noise_remote_static(&c->hs->noise);
-    if (!rs || npf_noise_split(&c->hs->noise, NULL, NULL, k1, k2, NULL) < 0)
+    if (!rs || npf_noise_split(&c->hs->noise, NULL, NULL, c->k12, c->k12 + 32, NULL) < 0)
         return -1;
     memcpy(c->peer_pub, rs, 32);
-    memcpy(c->k12, k1, 32);
-    memcpy(c->k12 + 32, k2, 32);
-    npf_wipe(k1, 32);
-    npf_wipe(k2, 32);
     if (c->hs->password[0])
         npf_wipe(c->hs->password, sizeof c->hs->password);
     return call_start_transport(c);
 }
+
 /* ---- caller ---- */
 
 /* a call as auth says: PAKE with the password, IK to the pinned key, the
  * account's grant with IK to the certified key (grant, grant_len) */
-static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *password, const uint8_t pinned[32],
-                            const uint8_t *grant, size_t grant_len);
-
-npf_call *npf_call_start_grant(npf_node *n, uint64_t number, const uint8_t *chain, size_t chain_len,
-                               const uint8_t *grant, size_t grant_len)
-{
-    npf_cert inter, leaf;
-    npf_call *c;
-    if (!grant || grant_len == 0 || grant_len > sizeof c->hs->grant) {
-        npf_logw("call: no usable grant for %llu", (unsigned long long)number);
-        return NULL;
-    }
-    if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, chain, chain_len, &inter, &leaf,
-                             npf_node_time(n) / 1000) < 0
-        || leaf.type != NPF_CERT_NODE || leaf.subject != number) {
-        npf_log("call: the platform's certificate for %llu does not verify", (unsigned long long)number);
-        return NULL;
-    }
-    /* IK with the certified key; the grant goes with the call (security.md 8.2) */
-    return call_start(n, number, AUTH_GRANT, NULL, leaf.dh_pub, grant, grant_len);
-}
-
-npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, const uint8_t pinned[32])
-{
-    return call_start(n, number, password ? AUTH_PAKE : AUTH_IK, password, pinned, NULL, 0);
-}
-
 static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *password, const uint8_t pinned[32],
                             const uint8_t *grant, size_t grant_len)
 {
@@ -151,6 +121,30 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
 fail:
     call_free(c);
     return NULL;
+}
+
+npf_call *npf_call_start_grant(npf_node *n, uint64_t number, const uint8_t *chain, size_t chain_len,
+                               const uint8_t *grant, size_t grant_len)
+{
+    npf_cert inter, leaf;
+    npf_call *c;
+    if (!grant || grant_len == 0 || grant_len > sizeof c->hs->grant) {
+        npf_logw("call: no usable grant for %llu", (unsigned long long)number);
+        return NULL;
+    }
+    if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, chain, chain_len, &inter, &leaf,
+                             npf_node_time(n) / 1000) < 0
+        || leaf.type != NPF_CERT_NODE || leaf.subject != number) {
+        npf_log("call: the platform's certificate for %llu does not verify", (unsigned long long)number);
+        return NULL;
+    }
+    /* IK with the certified key; the grant goes with the call (security.md 8.2) */
+    return call_start(n, number, AUTH_GRANT, NULL, leaf.dh_pub, grant, grant_len);
+}
+
+npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, const uint8_t pinned[32])
+{
+    return call_start(n, number, password ? AUTH_PAKE : AUTH_IK, password, pinned, NULL, 0);
 }
 
 /* incoming / call_accepted: "secure" when the session is to stay on relays
@@ -318,7 +312,6 @@ void node_on_incoming(npf_node *n, const m_env *e, const void *msg)
     c = call_new(n, 0);
     if (!c)
         return;
-    snprintf(c->req_id, sizeof c->req_id, "%s", req);
     c->number = n->cfg.number;
     if (strcmp(m->caller.kind, "node") == 0)
         c->caller_number = strtoull(m->caller.id, NULL, 10);

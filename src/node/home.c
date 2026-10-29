@@ -98,16 +98,10 @@ static void watch_sync(struct npf_home *h)
 /* a RELAY_BIND; flags RELAY_F_PONG: the answer to ping_id */
 static void bind_send(struct npf_home *h, int flags, uint32_t ping_id)
 {
-    npf_node *n = h->n;
-    uint8_t wire[256];
-    int len;
-    if (n->udp_fd < 0 || !h->r.state || call_relay_addr_blocked(n, RELAY_BIND_DST(&h->r)))
+    if (!h->r.state)
         return;
     watch_sync(h);
-    if (h->newnet)
-        flags |= RELAY_F_NEWNET;
-    if ((len = relay_bind_pack(&h->r, n, flags, ping_id, wire)) > 0)
-        (void)npf_udp_send(n->udp_fd, wire, (size_t)len, RELAY_BIND_DST(&h->r));
+    relay_bind_send(&h->r, h->n, flags | (h->newnet ? RELAY_F_NEWNET : 0), ping_id);
 }
 
 /* ---- the spare's deadline ---- */
@@ -464,12 +458,10 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
 /* a RELAY_PING: answered at once (that is the keepalive) */
 static void ping_in(struct npf_home *h, const uint8_t *plain, size_t pl)
 {
-    size_t blen = npf_rd16(plain + 2);
     relay_ping p;
     int64_t now = npf_mono_ms(), d;
     int flags = RELAY_F_PONG;
-    if (pl < NPF_PKT_HDR_SIZE || NPF_PKT_HDR_SIZE + blen > pl
-        || relay_ping_parse(plain + NPF_PKT_HDR_SIZE, blen, &p) < 0)
+    if (relay_ping_parse(plain, pl, &p) < 0)
         return;
     /* newer than any taken, of about now: a replayed one is not answered */
     d = p.srv_ms - npf_node_time(h->n);
@@ -509,19 +501,17 @@ int node_home_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const s
 int npf_node_home_status(npf_node *n, npf_out *w)
 {
     struct npf_home *h = n->home;
-    char a[64] = "", r[64];
+    char a[64];
     if (!h)
         return 0;
-    if (h->r.state)
-        npf_addr_str(CUR(h), a, sizeof a);
     npf_out_jobj(w);
     npf_out_kstr(w, "state", k_state[H_STATE(h)]);
     if (h->r.state) {
         npf_out_kint(w, "server", h->server);
-        npf_out_kstr(w, "relay", a);
+        npf_out_kstr(w, "relay", npf_addr_str(CUR(h), a, sizeof a));
     }
     if (h->R.ss_family)
-        npf_out_kstr(w, "addr", npf_addr_str(&h->R, r, sizeof r));
+        npf_out_kstr(w, "addr", npf_addr_str(&h->R, a, sizeof a));
     npf_out_kint(w, "iv_s", h->t_s);
     npf_out_kstr(w, "learn", learn_str(h->learn));
     npf_out_kint(w, "last_ping_ms", h->keepalives ? npf_mono_ms() - h->ping_mark : -1);

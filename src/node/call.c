@@ -12,13 +12,11 @@
 #include "call_internal.h"
 #include "home.h"
 
-#define CALL_TIMEOUT_MS    15000
+#define CALL_LIMIT_MS      25000  /* to be established, from the start and again from the accept */
 
 /* ---- helpers ---- */
 
 int npf_call_auth(const npf_call *c) { return c->auth; }
-uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
-
 
 /* ---- state (architecture.md 3.1) ---- */
 
@@ -121,7 +119,7 @@ void call_accept(npf_call *c)
     if (c->st != CS_CALLING && c->st != CS_ANSWERED)
         return;
     call_set_state(c, CS_CONNECTING, NULL);
-    c->limit_at = npf_mono_ms() + CALL_TIMEOUT_MS + 10000;
+    c->limit_at = npf_mono_ms() + CALL_LIMIT_MS;
 }
 
 npf_call *call_new(npf_node *n, int caller)
@@ -143,7 +141,7 @@ npf_call *call_new(npf_node *n, int caller)
     call_paths_init(c);
     c->next = n->calls;
     n->calls = c;
-    c->limit_at = npf_mono_ms() + CALL_TIMEOUT_MS + 10000;
+    c->limit_at = npf_mono_ms() + CALL_LIMIT_MS;
     call_at(c, c->limit_at);
     return c;
 }
@@ -174,10 +172,8 @@ void call_anl_drop(npf_call *c)
     if (a) {
         call_conv_unlink(c);
         c->anl = NULL;
-        c->stream = NULL;
         anl_release(a);                 /* releases the stream handles too */
     }
-    c->stream = NULL;
     call_dpend_free(c);
 }
 
@@ -210,19 +206,15 @@ void call_free(npf_call *c)
     free(c->pcfg);
     call_anl_drop(c);
     call_p2p_drop(c);
-    npf_wipe(c, sizeof *c);
-    free(c);
+    npf_wipe_free(c, sizeof *c);
     if (!n->calls)
         npf_scratch_trim();             /* the last session's buffers (sys.h) */
 }
 
 void call_hs_free(npf_call *c)
 {
-    if (c->hs) {
-        npf_wipe(c->hs, sizeof *c->hs);
-        free(c->hs);
-        c->hs = NULL;
-    }
+    npf_wipe_free(c->hs, sizeof *c->hs);
+    c->hs = NULL;
 }
 
 /* defer the free: npf_call_end may run inside callbacks of this call */
@@ -327,19 +319,13 @@ void npf_call_info_get(const npf_call *c, npf_call_info *i)
 
 npf_call *npf_node_calls(npf_node *n) { return n->calls; }
 npf_call *npf_call_next(const npf_call *c) { return c->next; }
-uint64_t npf_call_peer(const npf_call *c) { return c->number; }
 
 /* the path the session sends on (path_mgr.c), named */
 const char *npf_call_path(const npf_call *c) { return pm_name(&c->pm); }
 const char *npf_call_path_label(const npf_call *c) { return pm_label(&c->pm); }
 
-int npf_call_open(npf_call *c, int fd, int passthrough, const char *host, uint16_t port)
-{
-    return npf_call_open_rated(c, fd, passthrough, host, port, 0, 0);
-}
-
-int npf_call_open_rated(npf_call *c, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
-                        uint32_t rate)
+int npf_call_open(npf_call *c, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
+                  uint32_t rate)
 {
     if (call_over(c) || !c->tun || !npf_tunnel_is_ready(c->tun))
         return -1;
@@ -382,7 +368,6 @@ void npf_call_usage_take(npf_call *c, uint64_t *tx, uint64_t *rx)
     c->rep_tx = in > c->rep_tx ? in : c->rep_tx;
     c->rep_rx = out > c->rep_rx ? out : c->rep_rx;
 }
-
 
 void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *arg), void *arg)
 {
@@ -511,7 +496,6 @@ void node_sig_lost(npf_node *n)
     }
 }
 
-
 int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
     npf_call *c;
@@ -582,7 +566,6 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
     return matched;
 }
 
-
 void npf_node_dump(npf_node *n)
 {
     npf_call *c;
@@ -643,7 +626,6 @@ void npf_node_check_paths(npf_node *n, const char *why)
         if (!call_over(c) && call_has_p2p(c) && !c->direct && c->anl && c->pd.p.health != PH_SUSPECT)
             call_p2p_suspect_start(c, w);
 }
-
 
 /* the node's UDP changed (udp_back_ms; tests: NPF_TEST_WS_FILE): each
  * session decides again (pm_decide, data-channel.md 3) */

@@ -26,7 +26,7 @@
 #define RELAY_F_OTHER      2         /* ... the main socket sent elsewhere since the last ping */
 #define RELAY_F_NEWNET     4         /* ... the network changed: the relay learns again */
 #define RELAY_ACK_BOUND    1         /* RELAY_BIND_ACK state: the relay sends to this address (0: a challenge) */
-#define RELAY_BIND_MS      700       /* binding: a RELAY_BIND every 700 ms, 3 to an address, then the next */
+#define RELAY_BIND_MS      700       /* binding: a RELAY_BIND every 700 ms, 4 to an address, then the next */
 #define RELAY_SENT         8         /* the last RELAY_BINDs whose BIND_ACK is taken */
 enum { RELAY_LEARNING, RELAY_LEARNED, RELAY_UNSTABLE };   /* a spare's learning (RELAY_PING, BIND_ACK) */
 
@@ -55,7 +55,7 @@ int  rdata_open(const rdata_keys *k, int dir, const uint8_t hint[RDATA_HINT], co
 /* The binding's states (architecture.md 3.3): BINDING from the first
  * address, the data going along; PROBING from the address in use, the data
  * staying on it until another answers; BOUND; GAVE_UP, every address tried.
- * Its owner sends the binds (relay_bind_pack) and keeps the deadline, at */
+ * Its owner sends the binds (relay_bind_send) and keeps the deadline, at */
 enum { RB_NONE, RB_BINDING, RB_PROBING, RB_BOUND, RB_GAVE_UP };
 
 typedef struct relay_c {
@@ -104,14 +104,16 @@ typedef struct relay_ping {
     int      t_s, learn;
 } relay_ping;
 
-int  relay_ping_parse(const uint8_t *body, size_t len, relay_ping *p);
+/* a RELAY_PING (plain: pl bytes opened, the header first): 0, or -1 */
+int  relay_ping_parse(const uint8_t *plain, size_t pl, relay_ping *p);
 /* an allocation (NONE -> BINDING from its first address, relay_bind_begin):
  * no cookie, no binds answered */
 void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t key[32],
                      const struct sockaddr_storage *addr, int naddr);
-/* a RELAY_BIND in wire (256 bytes): its length, or -1.
- * flags RELAY_F_PONG: the answer to ping_id, shorter than a bind (72..95) */
-int  relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire);
+/* a RELAY_BIND to the address binds go to (RELAY_BIND_DST) from the main
+ * socket, unless the tests block it (NPF_TEST_BLOCK_RELAY); flags
+ * RELAY_F_PONG: the answer to ping_id */
+void relay_bind_send(relay_c *r, npf_node *n, int flags, uint32_t ping_id);
 /* The transitions: a run from now (BINDING, or PROBING from the address in
  * use), a bind now and one each RELAY_BIND_MS, 4 to an address; the
  * deadline at now: 1 a bind to send (BOUND: the keepalive every ka ms), -1

@@ -23,11 +23,21 @@ static const uint8_t *addr_parse(const uint8_t *b, size_t len, struct sockaddr_s
     return b + 7;
 }
 
-static int relay_ack_parse(const uint8_t *b, size_t len, relay_ack *a)
+/* a control packet's body (plain: pl bytes, the header first): its length, or -1 */
+static int pkt_body(const uint8_t *plain, size_t pl)
 {
-    const uint8_t *p;
+    size_t blen;
+    if (pl < NPF_PKT_HDR_SIZE || NPF_PKT_HDR_SIZE + (blen = npf_rd16(plain + 2)) > pl)
+        return -1;
+    return (int)blen;
+}
+
+static int relay_ack_parse(const uint8_t *plain, size_t pl, relay_ack *a)
+{
+    const uint8_t *b = plain + NPF_PKT_HDR_SIZE, *p;
+    int len = pkt_body(plain, pl);
     memset(a, 0, sizeof *a);
-    if (!(p = addr_parse(b, len, &a->addr)) || len < 7 + 8 + 1 + 8 + 8 + 1 + 3)
+    if (len < 7 + 8 + 1 + 8 + 8 + 1 + 3 || !(p = addr_parse(b, (size_t)len, &a->addr)))
         return -1;
     a->srv_ms = (int64_t)npf_rd64(p);
     a->state = p[8];
@@ -38,11 +48,12 @@ static int relay_ack_parse(const uint8_t *b, size_t len, relay_ack *a)
     return 0;
 }
 
-int relay_ping_parse(const uint8_t *b, size_t len, relay_ping *q)
+int relay_ping_parse(const uint8_t *plain, size_t pl, relay_ping *q)
 {
-    const uint8_t *p;
+    const uint8_t *b = plain + NPF_PKT_HDR_SIZE, *p;
+    int len = pkt_body(plain, pl);
     memset(q, 0, sizeof *q);
-    if (!(p = addr_parse(b, len, &q->addr)) || len < 7 + 8 + 4 + 2 + 1 + 1)
+    if (len < 7 + 8 + 4 + 2 + 1 + 1 || !(p = addr_parse(b, (size_t)len, &q->addr)))
         return -1;
     q->srv_ms = (int64_t)npf_rd64(p);
     q->ping_id = npf_rd32(p + 8);
@@ -69,7 +80,9 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
     relay_bind_begin(r, 0, npf_mono_ms());
 }
 
-int relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire)
+/* a RELAY_BIND in wire (256 bytes): its length, or -1. flags RELAY_F_PONG:
+ * the answer to ping_id, shorter than a bind (72..95) */
+static int relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire)
 {
     uint8_t txid[NPF_TXID_SIZE], body[RELAY_BIND_BODY];
     size_t len = flags & RELAY_F_PONG ? npf_rand_range(72, NPF_BIND_REQ_MIN - 1)
@@ -90,6 +103,15 @@ int relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_
     w = npf_pkt_seal(&r->keys, NPF_DIR_REQ, PKT_RELAY_BIND, txid, ts, body, sizeof body, len - RELAY_HINT_SIZE,
                      wire + RELAY_HINT_SIZE);
     return w > 0 ? w + RELAY_HINT_SIZE : -1;
+}
+
+void relay_bind_send(relay_c *r, npf_node *n, int flags, uint32_t ping_id)
+{
+    uint8_t wire[256];
+    int len;
+    if (n->udp_fd >= 0 && !call_relay_addr_blocked(n, RELAY_BIND_DST(r))
+        && (len = relay_bind_pack(r, n, flags, ping_id, wire)) > 0)
+        (void)npf_udp_send(n->udp_fd, wire, (size_t)len, RELAY_BIND_DST(r));
 }
 
 /* the run's nth address: the one it began with, then the others in order */
@@ -183,13 +205,9 @@ int relay_bind_ack(relay_c *r, npf_node *n, const uint8_t *plain, size_t pl, rel
     static const uint8_t none[NPF_TXID_SIZE];
     const uint8_t *txid = plain + 4;
     uint32_t ts;
-    size_t blen;
     int64_t now = npf_mono_ms(), d;
     int i;
-    if (pl < NPF_PKT_HDR_SIZE)
-        return 0;
-    blen = npf_rd16(plain + 2);
-    if (NPF_PKT_HDR_SIZE + blen > pl || relay_ack_parse(plain + NPF_PKT_HDR_SIZE, blen, a) < 0)
+    if (relay_ack_parse(plain, pl, a) < 0)
         return 0;
     ts = npf_rd32(plain + 4 + NPF_TXID_SIZE);
     if (memcmp(txid, none, sizeof none) == 0) {

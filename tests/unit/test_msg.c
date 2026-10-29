@@ -205,7 +205,7 @@ static void files(void)
     if (!e || !st || !dv)
         goto out;
     CHECK(npf_serverlist_parse(list, strlen(list), e, &serial, &meta) == 1 && serial == 7 && e[0].id == 2
-          && e[0].prio == 3 && e[0].weight == 1 && e[0].cdn && e[0].relay && e[0].nws == 2
+          && e[0].prio == 3 && e[0].weight == 1 && e[0].nws == 2
           && strcmp(e[0].ws[1], "wss://b/s") == 0 && e[0].dh_pub[0] == 0xab, "the servers");
     CHECK(!meta.full && meta.expires == 99 && meta.ndoh == 1 && strcmp(meta.doh[0], "seed.example") == 0
           && meta.nhttps == 1 && strcmp(meta.https[0], "https://yes/l") == 0, "the channels");

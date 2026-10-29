@@ -98,14 +98,15 @@ int npf_cert_chain_parse(const uint8_t (*roots)[32], int nroots, const uint8_t *
     return npf_cert_chain_verify(roots, nroots, inter, 1u << leaf->type, leaf, now);
 }
 
-/* the signed blob of the server list and of the update manifests: ver(1) | flags(1) | inter_len(2) | inter |
- * payload_len(4) | payload | sig(64), the intermediate with perm, the signature over domain | payload */
-static int signed_blob_verify(const uint8_t (*roots)[32], int nroots, unsigned perm, const char *domain, size_t dlen,
-                              const uint8_t *blob, size_t len, const uint8_t **payload, size_t *payload_len)
+/* ver(1) | flags(1) | inter_len(2) | inter | payload_len(4) | payload | sig(64), the intermediate
+ * with perm, the signature over perm's domain | payload */
+int npf_signed_verify(const uint8_t (*roots)[32], int nroots, unsigned perm, const uint8_t *blob, size_t len,
+                      const uint8_t **payload, size_t *payload_len)
 {
+    const char *domain = perm == NPF_PERM_SERVERLIST ? list_domain : perm == NPF_PERM_UPDATE ? update_domain : NULL;
     npf_cert inter;
     size_t il, pl, p;
-    if (len < 8 + 64 || blob[0] != 1)
+    if (!domain || len < 8 + 64 || blob[0] != 1)
         return -1;
     il = npf_rd16(blob + 2);
     if (4 + il + 4 > len)
@@ -118,25 +119,11 @@ static int signed_blob_verify(const uint8_t (*roots)[32], int nroots, unsigned p
     p = 8 + il;
     if (pl > len || p + pl + 64 != len)
         return -1;
-    if (npf_verify2(blob + p + pl, inter.sign_pub, domain, dlen, blob + p, pl))
+    if (npf_verify2(blob + p + pl, inter.sign_pub, domain, strlen(domain), blob + p, pl))
         return -1;
     *payload = blob + p;
     *payload_len = pl;
     return 0;
-}
-
-int npf_serverlist_verify(const uint8_t (*roots)[32], int nroots, const uint8_t *blob, size_t len,
-                          const uint8_t **payload, size_t *payload_len)
-{
-    return signed_blob_verify(roots, nroots, NPF_PERM_SERVERLIST, list_domain, sizeof list_domain - 1, blob, len,
-                              payload, payload_len);
-}
-
-int npf_manifest_verify(const uint8_t (*roots)[32], int nroots, const uint8_t *blob, size_t len,
-                        const uint8_t **payload, size_t *payload_len)
-{
-    return signed_blob_verify(roots, nroots, NPF_PERM_UPDATE, update_domain, sizeof update_domain - 1, blob, len,
-                              payload, payload_len);
 }
 
 int npf_grant_verify(const uint8_t *b, size_t len, const uint8_t issuer_pub[32], npf_grant *g)

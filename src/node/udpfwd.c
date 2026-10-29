@@ -61,12 +61,6 @@ typedef struct uflow {
                                      * (its own length: a flow is made with it) */
 } uflow;
 
-typedef struct urev {               /* caller: a -R .../udp mapping's target (u->rev: made at the first) */
-    uint32_t lid;
-    char     host[256];
-    uint16_t port;
-} urev;
-
 struct npf_udpf {
     npf_loop    *loop;
     anl_t       *anl;
@@ -81,11 +75,9 @@ struct npf_udpf {
     uint32_t     next_id;
     uint32_t     closed[CLOSED_RING];
     unsigned     nclosed;           /* ever closed: the next goes at nclosed % CLOSED_RING */
-    urev        *rev;               /* NPF_MAX_REVERSE, made at the first -R .../udp */
-    int          nrev;
     npf_timer   *t_tick;
     int          idle_ms, tick_ms;  /* NPF_UDP_IDLE_MS, TICK_MS (tests: shorter, npf_udpf_new) */
-    uint8_t     *out, *in;          /* frame being built / a datagram read */
+    uint8_t     *out;               /* the frame being built (BUF_MAX) */
     npf_udpf_stats st;
     int64_t      warned_at;
     npf_tunnel_shared *shared[2];   /* the node's and the caller key's descriptors, with the sublinks */
@@ -103,21 +95,6 @@ static unsigned src_hash(int fd, const struct sockaddr *a)
     return h & 255;
 }
 
-static int same_src(const struct sockaddr *a, const struct sockaddr *b)
-{
-    if (a->sa_family != b->sa_family)
-        return 0;
-    if (a->sa_family == AF_INET) {
-        const struct sockaddr_in *x = (const struct sockaddr_in *)a, *y = (const struct sockaddr_in *)b;
-        return x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr;
-    }
-    if (a->sa_family == AF_INET6) {
-        const struct sockaddr_in6 *x = (const struct sockaddr_in6 *)a, *y = (const struct sockaddr_in6 *)b;
-        return x->sin6_port == y->sin6_port && memcmp(&x->sin6_addr, &y->sin6_addr, 16) == 0;
-    }
-    return 0;
-}
-
 static uflow *find_id(const npf_udpf *u, uint32_t id)
 {
     uflow *f;
@@ -131,7 +108,7 @@ static uflow *find_src(const npf_udpf *u, int fd, const struct sockaddr_storage 
 {
     uflow *f;
     for (f = u->by_src[src_hash(fd, (const struct sockaddr *)src)]; f; f = f->nsrc)
-        if (f->fd == fd && same_src(&f->src.sa, (const struct sockaddr *)src))   /* (a virtual flow's fd: VFD) */
+        if (f->fd == fd && npf_addr_eq(&f->src.sa, src))   /* (a virtual flow's fd: VFD) */
             return f;
     return NULL;
 }
@@ -284,7 +261,7 @@ npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *polic
     u->tick_ms = idle_ms ? 500 : TICK_MS;
     u->loop = loop;
     u->anl = anl;
-    u->caller = caller;
+    u->caller = caller != 0;               /* (send_out compares it) */
     u->policy = policy;
     u->io = *io;
     u->arg = arg;
@@ -311,8 +288,6 @@ void npf_udpf_free(npf_udpf *u)
         }
     /* the AnLiu stream goes with the connection */
     free(u->out);
-    free(u->in);
-    free(u->rev);
     free(u);
 }
 
@@ -370,6 +345,23 @@ void npf_udpf_prepare(npf_udpf *u)
         stream(u);
 }
 
+/* the frame in u->out (n bytes, the datagram's len of them last) to the peer */
+static int frame_send(npf_udpf *u, size_t n, size_t len)
+{
+    anl_stream_t *s = stream(u);
+    int r = s ? anl_stream_send_frame(s, 0, (const char *)u->out, (int)n, NULL) : -1;
+    u->io.kick(u->arg);
+    if (r < 0) {
+        u->st.dropped++;
+        return -1;
+    }
+    u->st.dgrams_out++;
+    u->st.bytes_out += len;
+    if (n > NPF_UDP_ONE_SEG)
+        u->st.split++;
+    return 0;
+}
+
 /* one datagram of flow f to the peer; an out flow not opened yet carries
  * what opens it there: the caller's target, the callee's listener */
 static int frame_out(npf_udpf *u, uflow *f, const uint8_t *p, size_t len)
@@ -393,21 +385,7 @@ static int frame_out(npf_udpf *u, uflow *f, const uint8_t *p, size_t len)
         n += 4;
     }
     memcpy(u->out + n, p, len);
-    n += len;
-    {
-        anl_stream_t *s = stream(u);
-        int r = s ? anl_stream_send_frame(s, 0, (const char *)u->out, (int)n, NULL) : -1;
-        u->io.kick(u->arg);
-        if (r < 0) {
-            u->st.dropped++;
-            return -1;
-        }
-    }
-    u->st.dgrams_out++;
-    u->st.bytes_out += len;
-    if (n > NPF_UDP_ONE_SEG)
-        u->st.split++;
-    return 0;
+    return frame_send(u, n + len, len);
 }
 
 /* ---- in flows: a socket to the target ---- */
@@ -419,10 +397,12 @@ static void flow_readable(npf_loop *loop, int fd, unsigned ev, void *arg)
     int k;
     (void)loop;
     (void)ev;
-    if (!u->in && !(u->in = malloc(NPF_UDP_PAYLOAD_MAX + 1)))
+    if (!u->out && !(u->out = malloc(BUF_MAX)))
         return;
     for (k = 0; k < READ_BURST; k++) {
-        ssize_t r = recv(fd, u->in, NPF_UDP_PAYLOAD_MAX + 1, MSG_DONTWAIT);
+        /* an in flow's frame header is fixed (its id, no flags: frame_out's
+         * for a flow not out): the reply is read in after it, no copy */
+        ssize_t r = recv(fd, u->out + HDR, NPF_UDP_PAYLOAD_MAX + 1, MSG_DONTWAIT);
         if (r < 0) {
             if (npf_sock_again())
                 break;
@@ -433,7 +413,9 @@ static void flow_readable(npf_loop *loop, int fd, unsigned ev, void *arg)
             continue;
         }
         f->last = npf_mono_ms();
-        frame_out(u, f, u->in, (size_t)r);
+        npf_le32(u->out, f->id);
+        u->out[4] = 0;
+        frame_send(u, HDR + (size_t)r, (size_t)r);
     }
 }
 
@@ -582,15 +564,6 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     return find_id(u, id);                  /* refused or failed at once: gone */
 }
 
-static const urev *rev_find(const npf_udpf *u, uint32_t lid)
-{
-    int i;
-    for (i = 0; i < u->nrev; i++)
-        if (u->rev[i].lid == lid)
-            return &u->rev[i];
-    return NULL;
-}
-
 /* ---- frames in ---- */
 
 void npf_udpf_frame_in(npf_udpf *u, const uint8_t *p, size_t n)
@@ -636,19 +609,19 @@ void npf_udpf_frame_in(npf_udpf *u, const uint8_t *p, size_t n)
          * the callee opens the caller's to a target, the caller the callee's
          * through one of its -R mappings */
         int peers = (id & 1) == (u->caller ? 0u : 1u);
-        const urev *r;
+        const char *rh;
         if (!peers || closed_lately(u, id) || (u->caller ? !(flags & F_LID) : !(flags & F_TARGET) || !port)) {
             unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_CLOSED);      /* the other side starts it again */
             u->st.dropped++;
             return;
         }
         if (u->caller) {
-            if (!(r = rev_find(u, lid))) {
+            if (!u->io.rev || !(rh = u->io.rev(u->arg, lid, &port))) {
                 unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_REFUSED);
                 u->st.refused++;
                 return;
             }
-            f = flow_open(u, id, r->host, r->port, lid);
+            f = flow_open(u, id, rh, port, lid);
         } else {
             f = flow_open(u, id, host, port, 0);
         }
@@ -764,12 +737,18 @@ static uflow *least_recent(const npf_udpf *u, int fd, int *count)
     return best;
 }
 
-static int send_out(npf_udpf *u, int lfd, const struct sockaddr_storage *src, socklen_t srclen, void *vkey,
-                    npf_udpf_deliver deliver, const char *host, uint16_t port, uint32_t lid, const uint8_t *buf,
-                    size_t len)
+/* a datagram of an out flow, on the side whose it is only (caller: the
+ * -L's and the virtual ones, callee: a -R listener's) */
+static int send_out(npf_udpf *u, int caller, int lfd, const struct sockaddr_storage *src, socklen_t srclen,
+                    void *vkey, npf_udpf_deliver deliver, const char *host, uint16_t port, uint32_t lid,
+                    const uint8_t *buf, size_t len)
 {
-    uflow *f = vkey ? find_key(u, vkey) : find_src(u, lfd, src);
-    if (!f) {
+    uflow *f;
+    if (u->caller != caller || (lfd == VFD && !(vkey && deliver))) {
+        u->st.dropped++;
+        return -1;
+    }
+    if (!(f = vkey ? find_key(u, vkey) : find_src(u, lfd, src))) {
         size_t hl = strlen(host);
         uflow *old;
         int n;
@@ -812,21 +791,13 @@ static int send_out(npf_udpf *u, int lfd, const struct sockaddr_storage *src, so
 int npf_udpf_send(npf_udpf *u, int lfd, const struct sockaddr_storage *src, socklen_t srclen, const char *host,
                   uint16_t port, const uint8_t *buf, size_t len)
 {
-    if (!u->caller) {
-        u->st.dropped++;
-        return -1;
-    }
-    return send_out(u, lfd, src, srclen, NULL, NULL, host, port, 0, buf, len);
+    return send_out(u, 1, lfd, src, srclen, NULL, NULL, host, port, 0, buf, len);
 }
 
 int npf_udpf_send_v(npf_udpf *u, void *key, npf_udpf_deliver deliver, const char *host, uint16_t port,
                     const uint8_t *buf, size_t len)
 {
-    if (!u->caller || !key || !deliver) {
-        u->st.dropped++;
-        return -1;
-    }
-    return send_out(u, VFD, NULL, 0, key, deliver, host, port, 0, buf, len);
+    return send_out(u, 1, VFD, NULL, 0, key, deliver, host, port, 0, buf, len);
 }
 
 void npf_udpf_forget_v(npf_udpf *u, const void *key)
@@ -839,11 +810,7 @@ void npf_udpf_forget_v(npf_udpf *u, const void *key)
 int npf_udpf_send_rev(npf_udpf *u, int lfd, const struct sockaddr_storage *src, socklen_t srclen, uint32_t lid,
                       const uint8_t *buf, size_t len)
 {
-    if (u->caller) {
-        u->st.dropped++;
-        return -1;
-    }
-    return send_out(u, lfd, src, srclen, NULL, NULL, "", 0, lid, buf, len);
+    return send_out(u, 0, lfd, src, srclen, NULL, NULL, "", 0, lid, buf, len);
 }
 
 void npf_udpf_forget_fd(npf_udpf *u, int lfd)
@@ -852,27 +819,8 @@ void npf_udpf_forget_fd(npf_udpf *u, int lfd)
         drop_where(u, of_socket, lfd);
 }
 
-int npf_udpf_rev_add(npf_udpf *u, uint32_t lid, const char *host, uint16_t port)
-{
-    if (!u || !u->caller || u->nrev >= NPF_MAX_REVERSE || strlen(host) >= sizeof u->rev[0].host
-        || (!u->rev && !(u->rev = calloc(NPF_MAX_REVERSE, sizeof *u->rev))))
-        return -1;
-    u->rev[u->nrev].lid = lid;
-    snprintf(u->rev[u->nrev].host, sizeof u->rev[u->nrev].host, "%s", host);
-    u->rev[u->nrev].port = port;
-    u->nrev++;
-    return 0;
-}
-
 void npf_udpf_rev_del(npf_udpf *u, uint32_t lid)
 {
-    int i;
-    if (!u)
-        return;
-    for (i = 0; i < u->nrev; i++)
-        if (u->rev[i].lid == lid) {
-            u->rev[i] = u->rev[--u->nrev];
-            break;
-        }
-    drop_where(u, of_mapping, lid);         /* its flows end */
+    if (u)
+        drop_where(u, of_mapping, lid);
 }

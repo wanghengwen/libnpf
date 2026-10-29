@@ -32,9 +32,10 @@ void rdata_derive(rdata_keys *k, const uint8_t alloc_key[32])
     npf_wipe(&t, sizeof t);
 }
 
-static int hm_off(const uint8_t *tag)
+/* hm: where in the tag the hint's mask is */
+static const uint8_t *hm_of(const uint8_t *tag)
 {
-    return 1 + (tag[0] & 3);
+    return tag + 1 + (tag[0] & 3);
 }
 
 /* the tag over hint | tf | seq | len | atag */
@@ -54,26 +55,26 @@ static uint64_t mac(const rdata_keys *k, int dir, const uint8_t hint[RDATA_HINT]
 void rdata_seal(const rdata_keys *k, int dir, const uint8_t hint[RDATA_HINT], uint32_t seq, uint8_t *w, size_t dlen)
 {
     uint64_t t = mac(k, dir, hint, RDATA_TF, seq, w + RDATA_HDR, dlen), m;
-    int o;
+    const uint8_t *hm;
+    int i;
     npf_le64(w, t);
     m = npf_siphash64(k->mask[dir], w, 8);
-    o = hm_off(w);
-    w[8] = hint[0] ^ w[o];
-    w[9] = hint[1] ^ w[o + 1];
-    w[10] = hint[2] ^ w[o + 2];
+    hm = hm_of(w);
+    for (i = 0; i < RDATA_HINT; i++)
+        w[8 + i] = hint[i] ^ hm[i];
     w[11] = (uint8_t)(RDATA_TF ^ (uint8_t)m);
     npf_le32(w + 12, seq ^ (uint32_t)(m >> 8));
 }
 
 int rdata_hint(const uint8_t *w, size_t len, uint8_t hint[RDATA_HINT])
 {
-    int o;
+    const uint8_t *hm;
+    int i;
     if (len < RDATA_HDR + RDATA_ATAG)
         return -1;
-    o = hm_off(w);
-    hint[0] = w[8] ^ w[o];
-    hint[1] = w[9] ^ w[o + 1];
-    hint[2] = w[10] ^ w[o + 2];
+    hm = hm_of(w);
+    for (i = 0; i < RDATA_HINT; i++)
+        hint[i] = w[8 + i] ^ hm[i];
     return 0;
 }
 

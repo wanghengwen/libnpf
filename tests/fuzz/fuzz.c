@@ -233,7 +233,7 @@ static void fuzz_cert(const uint8_t *d, size_t n)
     npf_cert_parse(d, n, &c);
     npf_cert_chain_parse((const uint8_t (*)[32])roots, 1, d, n, &inter, &leaf, 0);
     npf_grant_verify(d, n, pub, &g);
-    if (npf_serverlist_verify((const uint8_t (*)[32])roots, 1, d, n, &pl, &plen) == 0)
+    if (npf_signed_verify((const uint8_t (*)[32])roots, 1, NPF_PERM_SERVERLIST, d, n, &pl, &plen) == 0)
         npf_serverlist_parse((const char *)pl, plen, list, &serial, &meta);
     if (n <= MAX_IN) {                      /* the payload parser on its own: it is JSON */
         char s[MAX_IN + 1];

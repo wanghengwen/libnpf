@@ -276,7 +276,6 @@ void call_paths_init(npf_call *c)
     c->pm.udp_again = c->n->th.udp_again_ms ? c->n->th.udp_again_ms : PM_UDP_AGAIN_MS;
 }
 
-
 /* ---- the session's paths' health ---- */
 
 /* The health rules (pm_tick) for a session with its AnLiu connection,
@@ -338,7 +337,6 @@ void pm_check(npf_call *c)
     m->check_at = due;
     call_at(c, due);
 }
-
 
 /* ---- the session's side of the decisions ---- */
 

@@ -76,7 +76,7 @@ static void test_vectors(void)
     CHECK(n == 53 && memcmp(out, exp, (size_t)n) == 0, "RELAY_BIND vector (must match spare_test.go)");
     hex2bin(V_ACK, exp, 68);
     CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 68, plain, &pk) == 0 && pk.type == PKT_RELAY_BIND_ACK
-          && relay_ack_parse(pk.body, pk.body_len, &a) == 0, "RELAY_BIND_ACK vector opens");
+          && relay_ack_parse(plain, NPF_PKT_HDR_SIZE + pk.body_len, &a) == 0, "RELAY_BIND_ACK vector opens");
     CHECK(((struct sockaddr_in *)&a.addr)->sin_addr.s_addr == inet_addr("198.51.100.7")
           && ntohs(((struct sockaddr_in *)&a.addr)->sin_port) == 40312
           && a.srv_ms == 1793000000123LL && a.state == 1 && memcmp(a.cookie, ck, 8) == 0
@@ -84,7 +84,7 @@ static void test_vectors(void)
           "RELAY_BIND_ACK fields");
     hex2bin(V_PING, exp, 55);
     CHECK(npf_pkt_open(&keys, NPF_DIR_RESP, exp, 55, plain, &pk) == 0 && pk.type == PKT_RELAY_PING
-          && relay_ping_parse(pk.body, pk.body_len, &p) == 0 && p.srv_ms == 1793000045123LL && p.ping_id == 0xdeadbeefu
+          && relay_ping_parse(plain, NPF_PKT_HDR_SIZE + pk.body_len, &p) == 0 && p.srv_ms == 1793000045123LL && p.ping_id == 0xdeadbeefu
           && p.t_s == 45 && p.learn == RELAY_LEARNED && ntohs(((struct sockaddr_in *)&p.addr)->sin_port) == 40312, "RELAY_PING vector");
     CHECK(npf_pkt_open(&keys, NPF_DIR_REQ, exp, 55, plain, &pk) < 0, "a reflected RELAY_PING opens");
 }

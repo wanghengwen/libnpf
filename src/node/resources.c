@@ -288,12 +288,11 @@ char *npf_res_normalize(const char *json, size_t len)
     if (tok && r && npf_json_parse(&j, json, len, tok, NPF_RES_JSON_TOK) == 0
         && (n = npf_res_parse(&j, 0, r, NPF_RES_MAX, err, sizeof err)) >= 0) {
         npf_res_json(&o, r, n);
-        if (!o.failed && (out = malloc(o.len + 1))) {
-            memcpy(out, o.p, o.len);
-            out[o.len] = 0;
-        }
+        if (!o.failed)
+            out = o.p;                      /* the buffer, NUL-terminated, is the caller's now */
     }
-    npf_out_free(&o);
+    if (!out)
+        npf_out_free(&o);
     free(tok);
     free(r);
     return out;

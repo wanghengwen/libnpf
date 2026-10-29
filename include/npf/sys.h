@@ -16,6 +16,8 @@
 #else
 #define NPF_THREAD_LOCAL __thread
 #endif
+/* fn(arg) on a detached thread of its own (platform/resolve.c); 0 or -1 */
+int npf_thread_detached(void (*fn)(void *), void *arg);
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -147,6 +149,8 @@ typedef struct npf_ifaddr {
     int     loopback;                           /* on a loopback interface (WSL puts 10.255.255.254 on lo) */
 } npf_ifaddr;
 int  npf_if_list(npf_ifaddr *out, int max);
+/* one of them? addr: an in_addr (AF_INET) or in6_addr's 16 bytes */
+int  npf_if_has(int family, const void *addr);
 
 /* sendto() on a non-blocking UDP socket; to is a sockaddr_in / sockaddr_in6 /
  * sockaddr_storage. A failure other than a full queue is logged (warning,

@@ -6,14 +6,11 @@
 
 #include "npf/sys.h"
 
-/* Global (routable) IPv6 addresses of this host: excludes loopback,
- * link-local (fe80::/10) and unique-local (fc00::/7). Writes up to `max`,
- * returns the count. host6 is the highest-priority candidate: usually only a
- * firewall pinhole (handled like S1) is needed, no NAT. */
-int npf_gather_host6(struct in6_addr *out, int max);
-
-/* Non-loopback IPv4 addresses (private or public). Useful when both peers sit
- * behind the same NAT (same srflx IP) and can reach each other directly. */
-int npf_gather_host4(struct in_addr *out, int max);
+/* This host's addresses of a family (AF_INET: struct in_addr out[max],
+ * AF_INET6: struct in6_addr), none loopback or link-local; IPv6 global only
+ * (no fc00::/7). Returns the count. host6 is the highest-priority candidate:
+ * usually only a firewall pinhole (handled like S1) is needed, no NAT; host4
+ * (private or public) serves peers behind the same NAT (same srflx IP). */
+int npf_gather_host(int family, void *out, int max);
 
 #endif

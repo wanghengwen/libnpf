@@ -59,13 +59,8 @@ static npf_call *direct_call(npf_node *n, int caller, int fd, const struct socka
 /* keys from the handshake, then the same transport as a call */
 static int direct_up(npf_call *c)
 {
-    uint8_t k1[32], k2[32];
-    if (npf_noise_split(&c->hs->noise, NULL, NULL, k1, k2, NULL) < 0)
+    if (npf_noise_split(&c->hs->noise, NULL, NULL, c->k12, c->k12 + 32, NULL) < 0)
         return -1;
-    memcpy(c->k12, k1, 32);
-    memcpy(c->k12 + 32, k2, 32);
-    npf_wipe(k1, 32);
-    npf_wipe(k2, 32);
     pm_add(&c->pm, &c->pd.p);
     call_set_state(c, CS_CONNECTING, NULL);    /* first: the initiator is established with its hello */
     if (call_start_transport(c) < 0)
@@ -340,8 +335,7 @@ int npf_direct_psk(const char *key, const char *file, uint8_t psk[32])
     while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r' || s[n - 1] == ' '))
         s[--n] = 0;
     r = npf_b64url_decode(s, (size_t)n, psk, 32) == 32 ? 0 : -1;
-    npf_wipe(s, (size_t)n);
-    free(s);
+    npf_wipe_free(s, (size_t)n);
     if (r < 0)
         npf_log("direct: %s does not hold 32 random bytes in Base64url", file);
     return r;
@@ -409,6 +403,5 @@ void npf_direct_close(npf_direct *d)
     }
     npf_loop_del(d->n->loop, d->fd);
     npf_sock_close(d->fd);
-    npf_wipe(d, sizeof *d);
-    free(d);
+    npf_wipe_free(d, sizeof *d);
 }

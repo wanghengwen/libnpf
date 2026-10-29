@@ -3,12 +3,7 @@
  * (the quota, then the slow speed), the groups counted and reset. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
-#include "npf/log.h"
 #include "npf/platform.h"
 #include "tunnel_internal.h"
 

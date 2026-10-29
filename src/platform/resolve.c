@@ -189,8 +189,9 @@ static void work(npf_resolve *r)
     }
 }
 
-static void worker(void)
+static void worker(void *unused)
 {
+    (void)unused;
     for (;;) {
         npf_resolve *r;
         int skip;
@@ -228,43 +229,50 @@ static void worker(void)
     }
 }
 
+/* fn(arg) on a detached thread of its own: on POSIX a 256 KB stack (not musl's 128 KB default) */
+typedef struct thread_go { void (*fn)(void *); void *arg; } thread_go;
+
 #ifdef _WIN32
 static DWORD WINAPI thread_main(LPVOID p)
-{
-    (void)p;
-    worker();
-    return 0;
-}
-
-static int spawn(void)
-{
-    HANDLE h = CreateThread(NULL, 0, thread_main, NULL, 0, NULL);
-    if (!h)
-        return -1;
-    CloseHandle(h);
-    return 0;
-}
 #else
 static void *thread_main(void *p)
+#endif
 {
-    (void)p;
-    worker();
-    return NULL;
+    thread_go g = *(thread_go *)p;
+    free(p);
+    g.fn(g.arg);
+    return 0;
 }
 
-static int spawn(void)
+int npf_thread_detached(void (*fn)(void *), void *arg)
 {
+    thread_go *g = malloc(sizeof *g);
+    int e;
+#ifdef _WIN32
+    HANDLE h;
+#else
     pthread_t t;
     pthread_attr_t a;
-    int e;
+#endif
+    if (!g)
+        return -1;
+    g->fn = fn;
+    g->arg = arg;
+#ifdef _WIN32
+    h = CreateThread(NULL, 0, thread_main, g, 0, NULL);
+    if ((e = !h) == 0)
+        CloseHandle(h);
+#else
     pthread_attr_init(&a);
     pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
-    pthread_attr_setstacksize(&a, 256 << 10);    /* not musl's 128 KB default */
-    e = pthread_create(&t, &a, thread_main, NULL);
+    pthread_attr_setstacksize(&a, 256 << 10);
+    e = pthread_create(&t, &a, thread_main, g);
     pthread_attr_destroy(&a);
+#endif
+    if (e)
+        free(g);
     return e ? -1 : 0;
 }
-#endif
 
 static npf_resolve *start(npf_loop *loop, const char *host, uint16_t port, int socktype, npf_resolve_fn fn,
                           void *arg, int peer)
@@ -292,7 +300,7 @@ static npf_resolve *start(npf_loop *loop, const char *host, uint16_t port, int s
      * running still counts as idle: idle == 0 alone let a burst wait for
      * one thread) */
     if (P.queued + 1 > P.idle && P.workers < RESOLVE_WORKERS) {
-        if (spawn() == 0)
+        if (npf_thread_detached(worker, NULL) == 0)
             P.workers++;
         else if (P.workers == 0) {
             UNLOCK();

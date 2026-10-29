@@ -11,6 +11,7 @@
 #include "peers_internal.h"
 
 static void demand_tick(npf_loop *loop, void *arg);
+static void ready_wait(npf_peer *p);
 
 #define DEMAND_WAIT_MS     30000    /* how long one waits for it */
 #define DEMAND_TICK_MS     5000
@@ -48,7 +49,7 @@ static void wait_start(npf_peer *p, const char *what, const pfwd *f)
             return;
     }
     peers_demand_timer(p);
-    peers_ready_wait(p);
+    ready_wait(p);
 }
 
 /* on demand: a connection before the session: it waits, and the session starts */
@@ -62,12 +63,7 @@ void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
         return;
     }
     npf_set_nonblock(fd);
-    p->pend[p->npend].fd = fd;
-    p->pend[p->npend].slot = f->idx;
-    p->pend[p->npend].fid = f->id;
-    p->pend[p->npend].at = npf_mono_ms();
-    p->pend[p->npend].conn = cid;
-    p->npend++;
+    p->pend[p->npend++] = (struct pend_conn){.fd = fd, .slot = f->idx, .fid = f->id, .at = npf_mono_ms(), .conn = cid};
     wait_start(p, "a connection", f);
 }
 
@@ -75,42 +71,15 @@ void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
 void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, const uint8_t *buf, size_t len)
 {
     npf_peer *p = f->p;
+    uint8_t *d;
     if (p->nuq == UDP_PENDING || p->uq_bytes + len > UDP_PENDING_BYTES
-        || (!p->uq && !(p->uq = calloc(UDP_PENDING, sizeof *p->uq)))
-        || !(p->uq[p->nuq].d = malloc(len ? len : 1)))
+        || (!p->uq && !(p->uq = calloc(UDP_PENDING, sizeof *p->uq))) || !(d = malloc(len ? len : 1)))
         return;                             /* UDP: dropped */
-    memcpy(p->uq[p->nuq].d, buf, len);
-    p->uq[p->nuq].len = len;
-    p->uq[p->nuq].slot = f->idx;
-    memcpy(&p->uq[p->nuq].src, src, sizeof *src);
-    p->uq[p->nuq].sl = sl;
-    p->uq[p->nuq].at = npf_mono_ms();
-    p->nuq++;
+    memcpy(d, buf, len);
+    p->uq[p->nuq++] =
+        (struct pend_dgram){.slot = f->idx, .src = *src, .sl = sl, .at = npf_mono_ms(), .len = len, .d = d};
     p->uq_bytes += len;
     wait_start(p, "a UDP datagram", f);
-}
-
-static void ready_poll(npf_loop *loop, void *arg)
-{
-    npf_peer *p = arg;
-    (void)loop;
-    p->t_ready = NULL;
-    if (npf_call_ready(p->call)) {
-        peers_demand_flush(p);
-        peers_udp_queue_flush(p);
-    } else {
-        peers_ready_wait(p);
-    }
-}
-
-/* the session is established but its tunnel cannot take a connection yet
- * (its transport not ready): what waits goes in as soon as it can, not at
- * the next state change (there may be none: the state stays established);
- * the waiting ones' deadline is demand_tick's */
-void peers_ready_wait(npf_peer *p)
-{
-    if (!p->t_ready && (p->npend || p->nuq) && p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
-        p->t_ready = npf_timer_add(p->ps->n->loop, READY_POLL_MS, ready_poll, p);
 }
 
 /* the waiting connections of the forward in slot (-1: any) that came
@@ -146,7 +115,7 @@ static void dgrams_drop(npf_peer *p, int slot, int64_t before)
 }
 
 /* the session is up: the waiting connections go into it */
-void peers_demand_flush(npf_peer *p)
+static void demand_flush(npf_peer *p)
 {
     int k;
     for (k = 0; k < p->npend; k++) {
@@ -164,7 +133,7 @@ void peers_demand_flush(npf_peer *p)
 }
 
 /* the session is up: the datagrams that waited go into it */
-void peers_udp_queue_flush(npf_peer *p)
+static void udp_queue_flush(npf_peer *p)
 {
     int k;
     for (k = 0; k < p->nuq; k++) {
@@ -174,6 +143,34 @@ void peers_udp_queue_flush(npf_peer *p)
                               p->uq[k].len);
     }
     dgrams_drop(p, -1, ALL);
+}
+
+static void ready_poll(npf_loop *loop, void *arg)
+{
+    npf_peer *p = arg;
+    (void)loop;
+    p->t_ready = NULL;
+    peers_ready(p);
+}
+
+/* the session is established but its tunnel cannot take a connection yet
+ * (its transport not ready): what waits goes in as soon as it can, not at
+ * the next state change (there may be none: the state stays established);
+ * the waiting ones' deadline is demand_tick's */
+static void ready_wait(npf_peer *p)
+{
+    if (!p->t_ready && (p->npend || p->nuq) && p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
+        p->t_ready = npf_timer_add(p->ps->n->loop, READY_POLL_MS, ready_poll, p);
+}
+
+void peers_ready(npf_peer *p)
+{
+    if (npf_call_ready(p->call)) {
+        demand_flush(p);
+        udp_queue_flush(p);
+    } else {
+        ready_wait(p);
+    }
 }
 
 void peers_udp_queue_drop(npf_peer *p, int slot)

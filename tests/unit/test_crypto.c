@@ -222,22 +222,24 @@ static void test_cert(void)
     CHECK(npf_cert_chain_parse(roots, 1, chain, il + ll, &inter, &leaf, 1800000000) != 0, "tampered leaf");
 
     ln = unhex(V_SERVERLIST, list, sizeof list);
-    CHECK(npf_serverlist_verify(roots, 1, list, ln, &pl, &plen) == 0
+    CHECK(npf_signed_verify(roots, 1, NPF_PERM_SERVERLIST, list, ln, &pl, &plen) == 0
           && plen == 12 && memcmp(pl, "{\"serial\":5}", 12) == 0, "server list");
+    CHECK(npf_signed_verify(roots, 1, NPF_PERM_SERVERLIST | NPF_PERM_UPDATE, list, ln, &pl, &plen) != 0
+          && npf_signed_verify(roots, 1, 0, list, ln, &pl, &plen) != 0, "a signed blob of no known kind");
     list[ln - 1] ^= 1;
-    CHECK(npf_serverlist_verify(roots, 1, list, ln, &pl, &plen) != 0, "server list tampered");
+    CHECK(npf_signed_verify(roots, 1, NPF_PERM_SERVERLIST, list, ln, &pl, &plen) != 0, "server list tampered");
 
     /* update manifests (docs/design/upgrade.md 5): signed by an intermediate with NPF_PERM_UPDATE */
     {
         uint8_t mf[768], other[768];
         size_t mn = unhex(V_MANIFEST, mf, sizeof mf), on = unhex(V_MANIFEST_BY_LISTER, other, sizeof other);
-        CHECK(npf_manifest_verify(roots, 1, mf, mn, &pl, &plen) == 0 && plen > 20
+        CHECK(npf_signed_verify(roots, 1, NPF_PERM_UPDATE, mf, mn, &pl, &plen) == 0 && plen > 20
               && has_text(pl, plen, "\"version\":\"0.2.0\""), "update manifest");
-        CHECK(npf_serverlist_verify(roots, 1, mf, mn, &pl, &plen) != 0, "a manifest is not a server list");
-        CHECK(npf_manifest_verify(roots, 1, other, on, &pl, &plen) != 0, "a blob of the server-list domain is not a manifest");
-        CHECK(npf_manifest_verify(roots, 1, list, ln, &pl, &plen) != 0, "a server list is not a manifest");
+        CHECK(npf_signed_verify(roots, 1, NPF_PERM_SERVERLIST, mf, mn, &pl, &plen) != 0, "a manifest is not a server list");
+        CHECK(npf_signed_verify(roots, 1, NPF_PERM_UPDATE, other, on, &pl, &plen) != 0, "a blob of the server-list domain is not a manifest");
+        CHECK(npf_signed_verify(roots, 1, NPF_PERM_UPDATE, list, ln, &pl, &plen) != 0, "a server list is not a manifest");
         mf[mn - 70] ^= 1;
-        CHECK(npf_manifest_verify(roots, 1, mf, mn, &pl, &plen) != 0, "manifest tampered");
+        CHECK(npf_signed_verify(roots, 1, NPF_PERM_UPDATE, mf, mn, &pl, &plen) != 0, "manifest tampered");
     }
 }
 

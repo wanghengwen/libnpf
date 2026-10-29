@@ -28,7 +28,6 @@
 /* short names for npf_node.h's NPF_AUTH_* */
 enum { AUTH_IK = NPF_AUTH_IK, AUTH_PAKE = NPF_AUTH_PAKE, AUTH_GRANT = NPF_AUTH_GRANT, AUTH_DIRECT = NPF_AUTH_DIRECT };
 
-
 /* control requests awaiting a reply in a session: a reverse_listen for each
  * -R (NPF_MAX_REVERSE) and a few more (grant_update) */
 #define NPF_CALL_CTL_MAX (NPF_MAX_REVERSE + 4)
@@ -44,7 +43,6 @@ struct npf_call {
     uint8_t     call_id[16];
     char        call_id_s[32];
     uint64_t    number;             /* the callee's number */
-    char        req_id[24];         /* callee: id of the incoming request to answer */
     int         call_req;           /* caller: id of our call request */
 
     struct call_hs *hs;             /* the handshake's state, until the keys are ready */
@@ -114,11 +112,13 @@ struct npf_call {
     npf_media  *media;              /* libnpf media streams (media.h), made on first use */
     npf_udpf   *udp;                /* the UDP forwards' flows (udpfwd.h), made on first use */
     npf_timer  *t_free;             /* its free on the next turn of the loop (ended) */
-    /* callee: reverse-mapping listeners (data-channel.md 7.1), each made
-     * when the caller asks for it */
-    struct rev_listener {
+    /* reverse mappings (data-channel.md 7.1): the callee's listeners, each
+     * made when the caller asks for it; the caller's targets (fd -1), each
+     * once the callee listens: the only ones its reverse sublinks and UDP
+     * flows reach */
+    struct rev_map {
         npf_call *c;
-        uint32_t id;
+        uint32_t id;                /* listen_id */
         int      fd;
         char     host[256];
         uint16_t port;
@@ -178,7 +178,6 @@ typedef struct npf_key_share {
     npf_tunnel_shared sh;
 } npf_key_share;
 
-
 /* call.c: the state, the end, dispatch, the node's sessions */
 /* the call's one timer (architecture.md 4): call_at a part's deadline, the
  * timer moved only when earlier (inline: each datagram asks; one moved
@@ -193,11 +192,6 @@ static inline void call_at(npf_call *c, int64_t at)
 int64_t call_due(const npf_call *c, int64_t now);
 void call_tick(npf_call *c, int64_t now);
 void call_accept(npf_call *c);
-/* the peer's addresses this node sends to (security.md H-1): a candidate;
- * the public IP the sprays aim at */
-int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);
-int call_peer_spray_ok(const npf_call *c, struct in_addr ip);
-int call_peer_ip4_usable(const npf_node *n, struct in_addr ip);
 void call_set_state(npf_call *c, int st, const char *why);      /* CS_*, forward only */
 /* the end; how: CALL_END_LOCAL (npf_call_end: call_end and close), _PEER (the
  * same, the record naming the peer), _QUIET (no word: the platform told us) */
@@ -263,6 +257,8 @@ void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 
 /* call_reverse.c: reverse mapping (data-channel.md 7.1) */
 void call_rev_close_all(npf_call *c);
+void call_rev_drop(npf_call *c, uint32_t id);
+const struct rev_map *call_rev_target(const npf_call *c, int udp, uint32_t id, const char *host, uint16_t port);
 void call_reverse_request(npf_call *c, const m_env *e);
 
 /* path_ws.c: the WS relay as a carrier of the AnLiu connection (data-channel.md 10) */

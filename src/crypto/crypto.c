@@ -242,6 +242,14 @@ void npf_wipe(void *p, size_t n)
 #endif
 }
 
+void npf_wipe_free(void *p, size_t n)
+{
+    if (p) {
+        npf_wipe(p, n);
+        free(p);
+    }
+}
+
 static size_t b64_encode(const uint8_t *in, size_t n, char *out, const char t[64], int pad)
 {
     size_t i, o = 0;

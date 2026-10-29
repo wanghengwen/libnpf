@@ -47,7 +47,7 @@ static void gather(npf_node *n)
     n->ncands = 0;
     /* S0 first: a global IPv6 address needs no NAT traversal, only the firewall's */
     if (n->udp6_fd >= 0) {
-        c6 = npf_gather_host6(v6, 8);
+        c6 = npf_gather_host(AF_INET6, v6, 8);
         for (i = 0; i < c6; i++)
             add_host6(n, &v6[i]);
         if (t6) {
@@ -76,7 +76,7 @@ static void gather(npf_node *n)
             add_cand(n, "pred", &ss);
         }
     }
-    c4 = npf_gather_host4(v4, 8);
+    c4 = npf_gather_host(AF_INET, v4, 8);
     for (i = 0; i < c4; i++) {
         struct sockaddr_storage ss;
         struct sockaddr_in *a = (struct sockaddr_in *)&ss;
@@ -99,17 +99,12 @@ void node_nat_regather(npf_node *n)
  * first: the node's first profile (a call made before it had no candidates) */
 static void nat_settled(npf_node *n, int first)
 {
+    char a[64];
     gather(n);
-    {
-        char a[64];
-        struct sockaddr_storage ss;
-        memset(&ss, 0, sizeof ss);
-        memcpy(&ss, &n->srflx, sizeof n->srflx);
-        npf_log("nat: udp=%d map=%s alloc=%s filter=%s srflx=%s cands=%d%s", n->nat_udp,
-                npf_nat_mapping_str(n->nat.mapping), npf_nat_alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
-                n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands,
-                n->th.no_udp ? " (tests: reported as udp=0, NPF_NO_UDP)" : "");
-    }
+    npf_log("nat: udp=%d map=%s alloc=%s filter=%s srflx=%s cands=%d%s", n->nat_udp,
+            npf_nat_mapping_str(n->nat.mapping), npf_nat_alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
+            n->nat_valid && n->nat_udp ? npf_addr_str(&n->srflx, a, sizeof a) : "-", n->ncands,
+            n->th.no_udp ? " (tests: reported as udp=0, NPF_NO_UDP)" : "");
     /* a network change: the calls' platforms hear the new profile and punch
      * again; the first profile: the calls made without candidates get them.
      * Not otherwise: a side's srflx during a call is where the platform's
@@ -305,18 +300,17 @@ static int nat_probe_start(npf_node *n)
     return -1;
 }
 
-/* at login: the hook waits for a first profile; with one from before it runs
- * at once and the profile is measured again in the background */
+/* at login: the hook waits for a first profile (nat_settled runs it, at
+ * once when no probe can start); with one from before, or no UDP socket (on
+ * demand, measured when a session needs it), it runs now and the profile is
+ * measured again in the background */
 void node_nat_login(npf_node *n)
 {
-    if (n->udp_fd < 0) {                /* UDP on demand, closed: measured when a session needs it */
-        if (n->hooks.on_login)
-            n->hooks.on_login(n, n->hook_arg);
-        return;
-    }
-    n->login_waits_nat = !n->nat_valid;
-    node_nat_refresh(n);
-    if (!n->login_waits_nat && n->hooks.on_login)
+    int wait = n->udp_fd >= 0 && !n->nat_valid;
+    n->login_waits_nat = wait;
+    if (n->udp_fd >= 0)
+        node_nat_refresh(n);
+    if (!wait && n->hooks.on_login)
         n->hooks.on_login(n, n->hook_arg);
 }
 
@@ -336,6 +330,7 @@ void npf_node_report_nat(npf_node *n)
 void npf_node_write_nat(npf_node *n, npf_out *w)
 {
     char ip[INET_ADDRSTRLEN];
+    int known = n->nat_valid && n->nat_udp;
     npf_out_jkey(w, "nat");
     npf_out_jobj(w);
     /* no probe servers configured: assume UDP works (local tests) */
@@ -346,10 +341,10 @@ void npf_node_write_nat(npf_node *n, npf_out *w)
         npf_out_jend(w);
         return;
     }
-    npf_out_kstr(w, "map", n->nat_valid && n->nat_udp ? npf_nat_mapping_str(n->nat.mapping) : "UNKNOWN");
-    npf_out_kstr(w, "alloc", n->nat_valid && n->nat_udp ? npf_nat_alloc_str(n->nat.allocation) : "UNKNOWN");
+    npf_out_kstr(w, "map", known ? npf_nat_mapping_str(n->nat.mapping) : "UNKNOWN");
+    npf_out_kstr(w, "alloc", known ? npf_nat_alloc_str(n->nat.allocation) : "UNKNOWN");
     npf_out_kint(w, "delta", n->nat.seq_delta);
-    npf_out_kstr(w, "filter", n->nat_valid && n->nat_udp ? npf_nat_filter_str(n->nat.filtering) : "UNKNOWN");
+    npf_out_kstr(w, "filter", known ? npf_nat_filter_str(n->nat.filtering) : "UNKNOWN");
     if (n->nat.allocation == NPF_ALLOC_BLOCK) {
         npf_out_jkey(w, "block");
         npf_out_jarr(w);
@@ -363,7 +358,7 @@ void npf_node_write_nat(npf_node *n, npf_out *w)
         npf_out_kbool(w, "lead", 1);
     if (n->th.pub_ip)                   /* tests: a forged public IP (the platform must not spray it) */
         npf_out_kstr(w, "pub_ip", n->th.pub_ip);
-    else if (n->nat_valid && n->nat_udp)
+    else if (known)
         npf_out_kstr(w, "pub_ip", inet_ntop(AF_INET, &n->pub_ip, ip, sizeof ip));
     npf_out_kint(w, "at", n->nat.measured_at);
     npf_out_jend(w);

@@ -1,14 +1,15 @@
 /* Callee target policy: the published resources (security.md D22, data-channel.md 7, resources.h). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "npf/platform.h"
+#include "npf/text.h"
 #include "npf/tunnel.h"
 
 #define REFRESH_MS 30000
+
+static const uint8_t lo6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, zero[16];  /* ::1, :: */
 
 static int prefix_match(const uint8_t *a, const uint8_t *b, int bits)
 {
@@ -50,7 +51,6 @@ static void add_local(npf_policy *p, int fam, const uint8_t *addr, int prefix)
 void npf_policy_refresh(npf_policy *p)
 {
     static const uint8_t lo4[4] = {127, 0, 0, 0};
-    static const uint8_t lo6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
     p->nlocal = 0;
     add_local(p, AF_INET, lo4, 8);
     add_local(p, AF_INET6, lo6, 128);
@@ -71,38 +71,19 @@ void npf_policy_refresh(npf_policy *p)
     p->refreshed_ms = npf_mono_ms();
 }
 
-/* a decimal number in lo..hi taking the whole string: digits only, no sign,
- * no leading zero, no trailing text (atoi read "typo" as 0, a /0 prefix that
- * allowed every address, and cast 65537 to port 1) */
-static int strict_num(const char *s, long lo, long hi, long *out)
-{
-    long v = 0;
-    if (!*s || (s[0] == '0' && s[1]))
-        return -1;
-    for (; *s; s++) {
-        if (*s < '0' || *s > '9')
-            return -1;
-        v = v * 10 + (*s - '0');
-        if (v > hi)
-            return -1;
-    }
-    if (v < lo)
-        return -1;
-    *out = v;
-    return 0;
-}
-
-/* "PORT" or "LO-HI", 1..65535, LO <= HI */
+/* "PORT" or "LO-HI", 1..65535, LO <= HI; the numbers here strict (npf_text_dec:
+ * atoi read "typo" as 0, a /0 prefix that allowed every address, and cast
+ * 65537 to port 1) */
 static int ports(char *s, npf_policy_rule *r)
 {
     char *dash = strchr(s, '-');
     long lo, hi;
     if (dash)
         *dash = 0;
-    if (strict_num(s, 1, 65535, &lo) < 0)
+    if (npf_text_dec(s, 1, 65535, &lo) < 0)
         return -1;
     hi = lo;
-    if (dash && (strict_num(dash + 1, 1, 65535, &hi) < 0 || hi < lo))
+    if (dash && (npf_text_dec(dash + 1, 1, 65535, &hi) < 0 || hi < lo))
         return -1;
     r->port_lo = (uint16_t)lo;
     r->port_hi = (uint16_t)hi;
@@ -113,7 +94,7 @@ static int ports(char *s, npf_policy_rule *r)
 static int prefix(const char *slash, int max, int *out)
 {
     long v = max;
-    if (slash && strict_num(slash + 1, 0, max, &v) < 0)
+    if (slash && npf_text_dec(slash + 1, 0, max, &v) < 0)
         return -1;
     *out = (int)v;
     return 0;
@@ -142,13 +123,7 @@ static int parse_rule(const char *spec, npf_policy_rule *out)
             colon = strchr(slash = rb + 1, ':');    /* a port after the prefix */
         else if (rb[1])
             return -1;
-        if (colon) {
-            *colon = 0;
-            if (ports(colon + 1, &r) < 0)
-                return -1;
-            colon = NULL;
-        }
-        memmove(buf, buf + 1, strlen(buf + 1) + 1);   /* only the address moves; slash stays put */
+        memmove(buf, buf + 1, strlen(buf + 1) + 1);   /* only the address moves; slash, colon stay put */
     } else if (strchr(buf, '.')) {
         colon = strchr(buf, ':');
     }
@@ -349,28 +324,14 @@ int npf_policy_allowed(npf_policy *p, const struct sockaddr *dst)
 static struct sockaddr_storage g_guard[GUARDS];
 static int g_nguard;
 
-static int is_loopback(int fam, const uint8_t *a)
-{
-    static const uint8_t lo6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
-    static const uint8_t any6[16];
-    return fam == AF_INET ? a[0] == 127 || a[0] == 0 : memcmp(a, lo6, 16) == 0 || memcmp(a, any6, 16) == 0;
-}
-
 static int is_any(int fam, const uint8_t *a)
 {
-    static const uint8_t z[16];
-    return memcmp(a, z, fam == AF_INET ? 4 : 16) == 0;
+    return memcmp(a, zero, fam == AF_INET ? 4 : 16) == 0;
 }
 
-/* one of this host's interface addresses? */
-static int is_local(int fam, const uint8_t *a)
+static int is_loopback(int fam, const uint8_t *a)
 {
-    npf_ifaddr ifs[64];
-    int k, n = npf_if_list(ifs, 64);
-    for (k = 0; k < n; k++)
-        if (ifs[k].family == fam && memcmp(ifs[k].addr, a, fam == AF_INET ? 4 : 16) == 0)
-            return 1;
-    return 0;
+    return fam == AF_INET ? a[0] == 127 || a[0] == 0 : memcmp(a, lo6, 16) == 0 || is_any(fam, a);
 }
 
 void npf_guard_control(const struct sockaddr_storage *a)
@@ -397,7 +358,7 @@ int npf_guard_blocked(const struct sockaddr *dst)
          * may be served there too), its own address, or any local one when
          * it listens on all of them */
         if (is_loopback(df, d) || (df == gf && memcmp(d, g, df == AF_INET ? 4 : 16) == 0)
-            || (is_any(gf, g) && is_local(df, d)))
+            || (is_any(gf, g) && npf_if_has(df, d)))
             return 1;
     }
     return 0;
