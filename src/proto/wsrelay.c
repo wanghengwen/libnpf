@@ -66,7 +66,7 @@ static void on_ctl(npf_sig *s, const npf_json *j, void *arg)
         if (r->cbs.gone)
             r->cbs.gone(r, "peer gone", r->arg);
     } else if (strcmp(type, "relay_error") == 0) {
-        wsr_down(r, "relay refused the binding");
+        wsr_down(r, "refused the binding");
     }
 }
 

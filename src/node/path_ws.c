@@ -164,6 +164,11 @@ void call_ws_failed(npf_call *c, const char *why)
     npf_log("call %s: WS relay %s", c->call_id_s, why);
     if (call_over(c) || !call_has_ws(c) || c->pw.p.health == PH_DEAD)
         return;
+    if (c->pm.need == PM_NEED_UDP_BACK && c->pm.asks) {
+        npf_log("call %s: WS relay: not connecting again (UDP asked for: the platform's allocation comes)",
+                c->call_id_s);
+        return;                 /* the relay closes it once the platform moved our side (or it is asked again) */
+    }
     if (c->pw.paired_once && c->pw.p.health != PH_SUSPECT) {
         pm_suspect(&c->pm, &c->pw.p, npf_mono_ms());
     } else if (!c->pw.paired_once || ++c->pw.fails >= WS_RECONNECTS) {
