@@ -55,8 +55,6 @@ typedef struct npf_msgdesc {
 /* the object at token obj into out (zeroed first): 0, or -1 with "field:
  * why" in err (cap may be 0) */
 int  npf_msg_parse(const npf_msgdesc *d, const npf_json *j, int obj, void *out, char *err, size_t cap);
-/* the same for the "data" object of the message at the root */
-int  npf_msg_data(const npf_msgdesc *d, const npf_json *j, void *out, char *err, size_t cap);
 /* the NPF_F_SECRET fields cleared (after a parse, whatever it returned) */
 void npf_msg_wipe(const npf_msgdesc *d, void *msg);
 

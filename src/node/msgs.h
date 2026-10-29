@@ -24,6 +24,7 @@
 #define F_OBJ(T, k, S, fl)              S k;
 #define F_ARR(T, k, S, cap, fl)         S k[cap]; int n##k;
 #define F_TOK(T, k, fl, jt)             int k;              /* its token, -1 absent */
+#define F_TIME_MAX                      (1LL << 50)         /* Unix ms: 35 000 years; sums of two never overflow */
 #define NODE_MSG(T, LIST)               typedef struct T { LIST(T) } T; extern const npf_msgdesc T##_d;
 
 /* the envelope (signaling.md "公共消息格式"); j: the message */
@@ -54,7 +55,7 @@ NODE_MSG(m_upgrade, M_UPGRADE)
 NODE_MSG(m_daykey, M_DAYKEY)
 /* login's reply; "keys" and "probe" carry some of its fields (server_list:
  * the token of 64 KB at most, decoded by its handler) */
-#define M_WELCOME(T) F_INT(T, time, 0, 0, INT64_MAX, -1) F_INT(T, server_id, 0, 0, 1 << 30, -1) \
+#define M_WELCOME(T) F_INT(T, time, 0, 0, F_TIME_MAX, -1) F_INT(T, server_id, 0, 0, 1 << 30, -1) \
     F_INT(T, ping_s, 0, 5, 3600, 0) F_STR(T, client_id, 24, 0) F_STR(T, account_id, 24, 0) \
     F_TOK(T, upgrade, 0, NPF_JT_OBJECT) F_B64(T, ticket, 28, F_SECRET, 28) F_ARR(T, probe_keys, m_daykey, 2, F_SKIP) \
     F_ARR(T, probe, m_addr4, 3, F_SKIP) F_B64(T, cert, 1024, 0, 1) F_B64(T, account_cert, 1024, 0, 1) \
@@ -107,7 +108,7 @@ NODE_MSG(m_peer, M_PEER)
     F_OBJ(T, peer, m_peer, 0) F_ARR(T, range, m_port, 2, 0) F_INT(T, m_total, 0, 0, 4000, 1024) \
     F_INT(T, pps, 0, 1, 1000, 200) F_INT(T, n_sockets, 0, 0, 256, 0) F_INT(T, timeout_ms, 0, 1000, 600000, 8000) \
     F_INT(T, delta, 0, -64, 64, 0) F_INT(T, peer_delta, 0, -64, 64, 0) F_INT(T, window, 0, 1, 128, 32) \
-    F_INT(T, passes, 0, 1, 8, 4) F_INT(T, peer_n, 0, 1, 256, 0) F_INT(T, start_at, 0, 0, INT64_MAX, -1)
+    F_INT(T, passes, 0, 1, 8, 4) F_INT(T, peer_n, 0, 1, 256, 0) F_INT(T, start_at, 0, 0, F_TIME_MAX, -1)
 NODE_MSG(m_punch_start, M_PUNCH_START)
 #define M_PUNCH_INFO(T) F_B64X(T, call_id, 16, 0) F_INT(T, round, F_REQ, 0, 1000, 0) F_INT(T, port, 0, 1024, 65535, 0) \
     F_BOOL(T, stop) F_OBJ(T, cand, m_cand, 0)

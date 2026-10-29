@@ -54,17 +54,18 @@ static int array(const npf_field *f, const npf_json *j, int t, uint8_t *base, ch
 {
     const npf_msgdesc *e = f->sub;
     int i, n = 0, it = t + 1;
+    char in[96];
     if (j->tok[t].type != NPF_JT_ARRAY)
         return bad(err, cap, f->key, "not an array");
     for (i = 0; i < j->tok[t].size && n < f->size; i++, it = j->tok[it].next) {
         uint8_t *el = base + f->off + (size_t)n * e->size;
-        int r = e->f[0].key ? npf_msg_parse(e, j, it, el, err, cap) : value(&e->f[0], j, it, el, err, cap);
+        int r = e->f[0].key ? npf_msg_parse(e, j, it, el, in, sizeof in) : value(&e->f[0], j, it, el, in, sizeof in);
         if (r == 0)
             n++;
         else if (f->flags & NPF_F_SKIP)
             memset(el, 0, e->size);
         else
-            return -1;
+            return bad(err, cap, f->key, in);
     }
     set_int(base, f->aux, n);
     return 0;
@@ -178,11 +179,6 @@ int npf_msg_parse(const npf_msgdesc *d, const npf_json *j, int obj, void *out, c
             absent(&d->f[i], base);
         }
     return 0;
-}
-
-int npf_msg_data(const npf_msgdesc *d, const npf_json *j, void *out, char *err, size_t cap)
-{
-    return npf_msg_parse(d, j, j ? npf_json_get(j, 0, "data") : -1, out, err, cap);
 }
 
 void npf_msg_wipe(const npf_msgdesc *d, void *msg)

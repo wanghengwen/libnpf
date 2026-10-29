@@ -217,7 +217,9 @@ static int ctl_id(const char *s)
 }
 
 /* a control message: its table's struct to its handler (refused: a
- * request answered bad_request), a reply to its request's callback */
+ * request answered bad_request), a reply to its request's callback. What
+ * the peer gets wrong is logged at the debug level only (it could fill the
+ * log otherwise) */
 static void tun_control(void *arg, const npf_json *j)
 {
     npf_call *c = arg;
@@ -226,8 +228,11 @@ static void tun_control(void *arg, const npf_json *j)
     const npf_msgdesc *d = NULL;
     char err[96];
     int i;
-    if (node_env(j, &e) < 0)
+    if (npf_msg_parse(&m_env_d, j, 0, &e, err, sizeof err) < 0) {
+        npf_logd("call %s: a control message refused (%s)", c->call_id_s, err);
         return;
+    }
+    e.j = j;
     if (e.reply_to[0]) {
         int id = ctl_id(e.reply_to);
         for (i = 0; i < NPF_CALL_CTL_MAX; i++) {
@@ -243,7 +248,7 @@ static void tun_control(void *arg, const npf_json *j)
     d = strcmp(e.type, "close") == 0 ? &m_close_d : strcmp(e.type, "reverse_closed") == 0 ? &m_listen_id_d
         : strcmp(e.type, "grant_update") == 0 ? &m_grant_update_d : NULL;
     if (d && npf_msg_parse(d, j, e.data, &u, err, sizeof err) < 0) {
-        npf_logw("call %s: %s refused (%s)", c->call_id_s, e.type, err);
+        npf_logd("call %s: %s refused (%s)", c->call_id_s, e.type, err);
         if (e.id[0])
             npf_call_ctl_reply(c, e.type, j, "error", "bad_request", NULL);
     } else if (d == &m_close_d) {

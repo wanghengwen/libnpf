@@ -178,7 +178,7 @@ void call_reverse_request(npf_call *c, const m_env *e)
         return;
     }
     if (npf_msg_parse(&m_reverse_listen_d, j, e->data, &m, reply, sizeof reply) < 0) {
-        npf_logw("call %s: reverse_listen refused (%s)", c->call_id_s, reply);
+        npf_logd("call %s: reverse_listen refused (%s)", c->call_id_s, reply);
         npf_call_ctl_reply(c, type, j, "error", "bad_request", NULL);
         return;
     }
