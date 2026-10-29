@@ -399,7 +399,8 @@ int main(void)
     char ov[300], err[300];
     static const uint8_t key[32] = {1, 2, 3};
     const char *keyb64 = "AQIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    int dport = 47930 + (int)(getpid() % 40), echo, i, j, k, ok;
+    /* below the ephemeral ports, apart from the API test's 479xx (ctest -j, other builds at once) */
+    int dport = 27930 + (int)(getpid() % 40), echo, i, j, k, ok;
     int ctx_peer, ctx_fwd, ctx_socks;
     npf_t *a, *b, *c;
     npf_peer_opt po;
@@ -708,9 +709,13 @@ int main(void)
                   "a field too long for its key: refused, naming it");
             su.model = NULL;
         }
-        check(npf_create(&o, &c, err, sizeof err) == NPF_OK && npf_config_get(c, "direct", val, sizeof val) == NPF_OK
-              && atoi(val) == dport + 1, "npf_setup: no configuration file, the fields as keys");
-        check(npf_pairing_password_get(c, val, sizeof val) == NPF_ESTATE, "no number: pairing NPF_ESTATE");
+        if (npf_create(&o, &c, err, sizeof err) != NPF_OK) {
+            printf("     (%s)\n", err);
+            c = NULL;
+        }
+        check(c && npf_config_get(c, "direct", val, sizeof val) == NPF_OK && atoi(val) == dport + 1,
+              "npf_setup: no configuration file, the fields as keys");
+        check(c && npf_pairing_password_get(c, val, sizeof val) == NPF_ESTATE, "no number: pairing NPF_ESTATE");
         npf_destroy(c);
     }
 
