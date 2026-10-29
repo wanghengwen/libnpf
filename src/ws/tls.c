@@ -89,7 +89,7 @@ static npf_tls *tls_new_locked(int fd, const char *sni)
     if (mbedtls_ssl_config_defaults(&t->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
                                     MBEDTLS_SSL_PRESET_DEFAULT))
         goto fail;
-    /* TLS is camouflage only; the Noise handshake inside authenticates the server (D5) */
+    /* TLS is camouflage only; what runs inside authenticates (D5) */
     mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&t->conf, rng, NULL);
     if (mbedtls_ssl_setup(&t->ssl, &t->conf))

@@ -88,7 +88,7 @@
 | `npf_media` | `node/media.c` | 一个会话的媒体流（各是 AnLiu 半可靠流） | 无 | — |
 | `npf_udpf` | `node/udpfwd.c` | 一个会话的 UDP 流 | `t_tick` | — |
 | `npf_punch` | `punch/punch_ev.c` | 一轮打洞的套接字与探测 | 一个 `tick`，排在 `next_due()` 算出的时刻 | `sprayed`、`nom_sent`、`have_valid`、`finished` |
-| `npf_wsr` | `proto/wsrelay.c` | WS 中转连接（Noise_XK、`relay_bind`） | `t_ping`（25 s） | `ready`、`bound`、`paired` |
+| `npf_wsr` | `proto/wsrelay.c` | WS 中转连接（Noise_XK、`relay_bind`；2026-10-29 起是 `alloc_key` 认证的绑定，data-channel.md 10.1） | `t_ping`（25 s） | `ready`、`bound`、`paired`（今天只有 `paired`） |
 
 ### 1.4 数据流
 
@@ -296,7 +296,7 @@ struct npf_path {
 **1b 的实现与上面的不同之处**（2026-10-28）：
 
 - 规则在 `path_mgr.c:pm_tick`（纯函数：路径、现在、在途数据、RTO → 事件与下一个截止时刻），参数在 `pm_rules_of`（`t_busy`、`t_idle`、`t_probe`、`t_verdict`，0 表示这一条由路径自己做）。路径的操作是 `tx`、`name` 与三个事件 `suspect`、`probe`、`dead`；路径证明往返时调用 `pm_rt`，自己判定失效时调用 `pm_dead`。2.3 草图里每条路径的 `due` / `tick` 留给 1d；管理器已经只有一个定时器（`pm.t_check`，排在下一个截止时刻，只在提前时重排），取代了 `t_pcheck` 与 `t_rcheck`。
-- WS 中转有数据在途时不用 3 秒的规则（"只看 TCP"）：流式载体上排队几秒是正常的，重连会丢掉 8 MiB 的发送队列；只用 30 秒没有任何帧。可疑时不发 ping（25 秒的 ping 本来就在），而是关掉连接立即重连；每次重连要在 10 秒内配对（`WS_PAIR_MS`，表里没有：连上 TCP 之后 WebSocket、Noise 握手没有超时），连续 5 次不成是 `DEAD`。
+- WS 中转有数据在途时不用 3 秒的规则（"只看 TCP"）：流式载体上排队几秒是正常的，重连会丢掉 8 MiB 的发送队列；只用 30 秒没有任何帧。可疑时不发 ping（25 秒的 ping 本来就在），而是关掉连接立即重连；每次重连要在 10 秒内配对（`WS_PAIR_MS`，表里没有：连上 TCP 之后 WebSocket、绑定没有超时），连续 5 次不成是 `DEAD`。
 - UDP 中转绑定期间是 `NEW`、绑上是 `UP`、探测期间 `SUSPECT`、所有地址试过 `DEAD`（`r.bound` 与健康一致）；`DEAD` 的 UDP 中转与 `DEAD` 的 WS 中转在没有别的路径时仍是主路径（发往它们没有坏处，去留由 1c 决定），只有 `DEAD` 的直连不再发送。探测期间名字仍显示 `relay (binding)`（D3 的翻转只剩真正的探测，空闲的会话不再探测）。
 - 直连的 `PATH_ECHO` 一到就恢复（原来等下一次 500 ms 的检查）。
 - Q2 也用于备用分配的看门狗（`home.c:bind_start(h, 1)` → `relay_bind_probe`，同一份代码，只多一个参数）。
@@ -459,8 +459,8 @@ struct npf_path {
 
 | 状态 | 事件 | 下一状态 | 动作 / 截止时间 |
 |---|---|---|---|
-| `NONE` | WS 分配 | `CONNECTING` | 连接、Noise_XK、`relay_bind`（`proto/wsrelay.c`） |
-| `CONNECTING` | `relay_paired` | `PAIRED` | 设 STREAM 载体；路径 `UP` |
+| `NONE` | WS 分配 | `CONNECTING` | 连接、第一条消息是 `alloc_key` 认证的绑定（`node/relay_bind.c:relay_ws_bind`，`proto/wsrelay.c`；原来是 Noise_XK 与 `relay_bind`） |
+| `CONNECTING` | `PAIRED`（原来的 `relay_paired`） | `PAIRED` | 设 STREAM 载体；路径 `UP` |
 | `CONNECTING` | 失败，从未配对，主叫且未接受 | `WAIT_ACCEPT` | 接受到来时转 `PM_NEED_WS_ELSEWHERE` |
 | `CONNECTING` | 失败，从未配对，其余 | `FAILED` | 主叫：`PM_NEED_WS_ELSEWHERE`；被叫：等平台 |
 | `PAIRED` | 连接断开 | `RECONNECT` | 截止 +2 s |
@@ -672,7 +672,7 @@ TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 |---|---|---|
 | 平台 → 节点 | `welcome`（`login` 应答，及 `upgrade_required` 的 `data`）、`server_list`、`upgrade`、`probe`、`keys`（后两者用 `welcome` 的表）、`replaced`、`redirect`、`relay_spare`、`home_open` 应答、`enroll` 应答、`incoming`、`punch_request`、`revoke`、`bind_committed`、`call` 应答、`call_accepted`、`call_rejected`、`handshake`、`punch_start`、`punch_info`、`relay_switch`、`call_ended`：22 种 | `api/` 里等平台应答的回调（`engine_identity.c`、`platform.c`、`publish.c`、`peers.c`：每处读一两个字段，`npf_reply_fn` 改成结构不省行，见下）|
 | 隧道内控制 | `close`、`reverse_listen` 及其应答、`reverse_close`、`reverse_closed`、`grant_update`、`bind_approve`：7 种 | `hello`（`tunnel/`：两个整数，表不比两行 `npf_json_get_int` 短）、`resources`（原样交给钩子） |
-| WS 中转控制 | — | `proto/wsrelay.c` 的 4 种收到的（`relay_bound`、`relay_paired`、`relay_peer_gone`、`relay_error`）：只读 `type` 与 `relay_paired.peer`，表与分发都比这三行长；连接本身改在 `npf_sig` 上（下面"WS 与 XK 的骨架"） |
+| WS 中转控制 | — | `proto/wsrelay.c` 的 4 种收到的（`relay_bound`、`relay_paired`、`relay_peer_gone`、`relay_error`）：只读 `type` 与 `relay_paired.peer`，表与分发都比这三行长；连接本身改在 `npf_sig` 上（下面"WS 与 XK 的骨架"）。2026-10-29 起是一个事件字节，没有 JSON 了 |
 | 节点 → 平台、写出 | — | 全部：`npf_out` 的 JSON（第二波起库里唯一的写法，原来的 `npf_jw` 并入）与 `snprintf`（见下） |
 | 服务器列表与文件 | 服务器列表的内容（`m_list`：`node_servers.c:npf_serverlist_parse`）、`state.json`（`m_state`：`callee.c:state_load`）、`local.json` 的设备记录（`m_device`：`local.c:device`）：`node_filedescs` | `local.json` 的 `settings`（键由文件给出，按键表检查）、`start`、根上的 `resources`（写错时整个文件拒绝，不是按缺失） |
 
@@ -682,7 +682,7 @@ TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 
 **服务器列表与文件**（第二波，2026-10-29）：三者的检查与消息相同（同一个解析器、`tests/fuzz` 的 `msg` 目标也跑这三张表），处理器只把检查过的结构抄进 `npf_server_entry`、`npf_list_meta`、`npf_callee`、`npf_ldev`。与原来的手写解析相同的：服务器缺 `id`、`dh_pub` 不是 32 字节、没有可用的 `ws` 时跳过这台；`prio`、`weight` 越界取 1；`https` 只收 `https://` 开头的；`state.json` 的 `password` 用 `TOK` 原样取（口令可以含控制字符，`STR` 会把它当缺失而回到默认口令）；`local.json` 的设备记录，表里没有的键是模块的，原样保留（`core_key` 名单就是表）。不同的：服务器列表不合格时记一行 WARN（原来静默）、没有可用服务器的列表是 −1（原来是 0，调用者同样不用）；`doh` 名字的上限 127 → 255 字节（与 `https` 共用 `m_s256`）；`local.json` 的文本与解出的 `psk` 用后擦除（原来不擦）；字符串里的控制字符按缺失（原来照收）。
 
-**WS 与 XK 的骨架**（第二波）：`proto/wsrelay.c` 原来自己开 WebSocket、自己做 XK 的两步（`npf_sig_xk_first` / `npf_sig_xk_finish`，sig.c 导出给它）、自己解密控制消息；现在 WS 中转连接就是一条 `npf_sig`（`npf_sig_open` 的 prologue `npf-relay-v1`），`npf_sig_cbs` 多一个 `on_raw`：设了它，握手之后每条消息先有一个类型字节，0 是密封的 JSON（`npf_sig_send` 也加这个字节），其余原样交给 `on_raw`（`NPF_WSR_ANL` 的数据报）。线上格式不变；中转的控制消息上限从 1 KB 明文变成信令的 32 KB（服务器经 XK 认证，同信令）；`npf_sig_xk_*` 两个导出函数没有了。数据报的热路径只多一次函数指针调用。
+**WS 与 XK 的骨架**（第二波）：`proto/wsrelay.c` 原来自己开 WebSocket、自己做 XK 的两步（`npf_sig_xk_first` / `npf_sig_xk_finish`，sig.c 导出给它）、自己解密控制消息；现在 WS 中转连接就是一条 `npf_sig`（`npf_sig_open` 的 prologue `npf-relay-v1`），`npf_sig_cbs` 多一个 `on_raw`：设了它，握手之后每条消息先有一个类型字节，0 是密封的 JSON（`npf_sig_send` 也加这个字节），其余原样交给 `on_raw`（`NPF_WSR_ANL` 的数据报）。线上格式不变；中转的控制消息上限从 1 KB 明文变成信令的 32 KB（服务器经 XK 认证，同信令）；`npf_sig_xk_*` 两个导出函数没有了。数据报的热路径只多一次函数指针调用。（2026-10-29 起不再是这样：WS 中转去掉了 XK，第一条消息是 `alloc_key` 认证的绑定、服务器发的是事件字节，`wsrelay.c` 直接用 `npf_ws`，`on_raw`、`npf_sig_ws` 与 `npf_sig_open` 的 prologue 参数随之去掉；data-channel.md 0.53 第 10.1 节。）
 
 **改动量**（库的 `src` + `include`，`git diff 2491715`，同一个脚本数前后两版）：见第 8 节"4、5 实际"与"第二波实际"。
 

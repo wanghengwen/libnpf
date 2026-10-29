@@ -122,6 +122,10 @@ void relay_bind_send(relay_c *r, npf_node *n, int flags, uint32_t ping_id);
 void relay_bind_begin(relay_c *r, int probe, int64_t now);
 int  relay_bind_tick(relay_c *r, int64_t now, int ka);
 int  relay_bind_up(relay_c *r, int64_t now, int ka);
+/* the WS relay's bind (data-channel.md 10.1) in wire (256 bytes): id(8),
+ * then a RELAY_BIND as the UDP relay's after its hint (no cookie, flags 0;
+ * kseq the allocation's next): its length, or -1 */
+int  relay_ws_bind(npf_node *n, const npf_siv_keys *k, const uint8_t id[8], uint64_t kseq, uint8_t *wire);
 /* where the binds go */
 #define RELAY_BIND_DST(r) (&(r)->addr[(r)->bi])
 /* tests: NPF_TEST_BLOCK_RELAY="addr,url,..." makes these relay endpoints unreachable (path_udp.c) */

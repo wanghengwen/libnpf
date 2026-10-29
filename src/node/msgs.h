@@ -49,10 +49,8 @@ typedef char m_s256[256];
 extern const npf_msgdesc m_addr4_d, m_port_d, m_s256_d;
 
 /* a relay allocation (signaling.md "公共字段"): mode "" none; IPv4 addresses only */
-#define M_WS(T) F_STR(T, url, 256, F_REQ) F_INT(T, server_id, 0, 0, 1 << 30, 0)
-NODE_MSG(m_ws, M_WS)
 #define M_RELAY(T) F_STR(T, mode, 8, F_REQ) F_B64X(T, relay_id, 8, 0) F_B64X(T, alloc_key, 32, F_SECRET) \
-    F_ARR(T, udp, m_addr4, 4, F_SKIP) F_OBJ(T, ws, m_ws, 0) F_BOOL(T, spare)
+    F_ARR(T, udp, m_addr4, 4, F_SKIP) F_STR(T, ws, 256, 0) F_BOOL(T, spare)
 NODE_MSG(m_relay, M_RELAY)
 
 /* ---- access (signaling.md "接入与服务器列表") ---- */

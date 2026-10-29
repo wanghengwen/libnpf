@@ -80,29 +80,46 @@ void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t
     relay_bind_begin(r, 0, npf_mono_ms());
 }
 
+/* a RELAY_BIND (body = cookie | kseq | flags | ping_id) sealed with k at w,
+ * len bytes, under a new txid: its length, or -1 */
+static int bind_seal(const npf_siv_keys *k, uint32_t ts, const uint8_t cookie[8], uint64_t kseq, int flags,
+                     uint32_t ping_id, uint8_t txid[NPF_TXID_SIZE], size_t len, uint8_t *w)
+{
+    uint8_t body[RELAY_BIND_BODY];
+    npf_random(txid, NPF_TXID_SIZE);
+    memcpy(body, cookie, 8);
+    npf_le64(body + 8, kseq);
+    body[16] = (uint8_t)flags;
+    npf_le32(body + 17, ping_id);
+    return npf_pkt_seal(k, NPF_DIR_REQ, PKT_RELAY_BIND, txid, ts, body, sizeof body, len, w);
+}
+
 /* a RELAY_BIND in wire (256 bytes): its length, or -1. flags RELAY_F_PONG:
  * the answer to ping_id, shorter than a bind (72..95) */
 static int relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id, uint8_t *wire)
 {
-    uint8_t txid[NPF_TXID_SIZE], body[RELAY_BIND_BODY];
     size_t len = flags & RELAY_F_PONG ? npf_rand_range(72, NPF_BIND_REQ_MIN - 1)
                                       : npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
     uint32_t ts = (uint32_t)npf_node_time(n);
     int k = r->nsent++ % RELAY_SENT, w;
-    npf_random(txid, sizeof txid);
-    r->kseq++;
-    memcpy(r->sent[k].txid, txid, sizeof txid);     /* its BIND_ACK echoes them (relay_bind_ack) */
-    r->sent[k].ts = ts;
+    memcpy(wire, r->relay_id, RELAY_HINT_SIZE);
+    w = bind_seal(&r->keys, ts, r->cookie, ++r->kseq, flags, ping_id, r->sent[k].txid, len - RELAY_HINT_SIZE,
+                  wire + RELAY_HINT_SIZE);
+    r->sent[k].ts = ts;                             /* its BIND_ACK echoes them (relay_bind_ack) */
     r->sent[k].kseq = r->kseq;
     r->sent[k].at = r->last_tx = npf_mono_ms();
-    memcpy(body, r->cookie, 8);                     /* cookie | kseq | flags | ping_id */
-    npf_le64(body + 8, r->kseq);
-    body[16] = (uint8_t)flags;
-    npf_le32(body + 17, ping_id);
-    memcpy(wire, r->relay_id, RELAY_HINT_SIZE);
-    w = npf_pkt_seal(&r->keys, NPF_DIR_REQ, PKT_RELAY_BIND, txid, ts, body, sizeof body, len - RELAY_HINT_SIZE,
-                     wire + RELAY_HINT_SIZE);
     return w > 0 ? w + RELAY_HINT_SIZE : -1;
+}
+
+int relay_ws_bind(npf_node *n, const npf_siv_keys *k, const uint8_t id[8], uint64_t kseq, uint8_t *wire)
+{
+    static const uint8_t none[RELAY_COOKIE_SIZE];
+    uint8_t txid[NPF_TXID_SIZE];
+    int w;
+    memcpy(wire, id, 8);
+    w = bind_seal(k, (uint32_t)npf_node_time(n), none, kseq, 0, 0, txid,
+                  npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX) - RELAY_HINT_SIZE, wire + 8);
+    return w > 0 ? w + 8 : -1;
 }
 
 void relay_bind_send(relay_c *r, npf_node *n, int flags, uint32_t ping_id)

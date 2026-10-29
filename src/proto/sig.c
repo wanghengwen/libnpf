@@ -1,5 +1,4 @@
-/* The signaling connection (npf/sig.h), on which the WS relay's connection
- * runs too (wsrelay.c). */
+/* The signaling connection (npf/sig.h) */
 #include <stdlib.h>
 #include <string.h>
 
@@ -39,8 +38,8 @@ static void ws_open(npf_ws *ws, void *arg)
 }
 
 /* Every WebSocket message is a binary one: the Noise handshake message or
- * a transport ciphertext as it is (signaling.md), after a type byte with
- * on_raw (0; the others raw); a text message ends the connection */
+ * a transport ciphertext as it is (signaling.md); a text message ends the
+ * connection */
 static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void *arg)
 {
     npf_sig *s = arg;
@@ -71,12 +70,6 @@ static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
             s->cbs.on_ready(s, s->arg);
         return;
     }
-    if (s->cbs.on_raw && (!len || data[0])) {
-        s->cbs.on_raw(s, data, len, s->arg);
-        return;
-    }
-    if (s->cbs.on_raw)
-        data++, len--;
     {
         /* a token takes two characters at least ("1,") */
         size_t ntok = len / 2 + 2 < NPF_JSON_MAX_TOKENS ? len / 2 + 2 : NPF_JSON_MAX_TOKENS;
@@ -113,16 +106,16 @@ static void ws_closed(npf_ws *ws, int code, const char *why, void *arg)
 }
 
 npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[32],
-                      const npf_identity *id, const char *prologue, const npf_sig_cbs *cbs, void *arg,
-                      int outside_vpn)
+                      const npf_identity *id, const npf_sig_cbs *cbs, void *arg, int outside_vpn)
 {
     static const npf_ws_cbs wcb = {ws_open, ws_msg, ws_closed, NULL};
+    static const char prologue[] = "npf-ws-v1";
     npf_sig *s = calloc(1, sizeof *s);
     if (!s)
         return NULL;
     s->cbs = *cbs;
     s->arg = arg;
-    if (npf_noise_init(&s->hs, NPF_NOISE_XK, 1, prologue, strlen(prologue), id->dh_sk, server_pub, NULL) < 0
+    if (npf_noise_init(&s->hs, NPF_NOISE_XK, 1, prologue, sizeof prologue - 1, id->dh_sk, server_pub, NULL) < 0
         || !(s->ws = npf_ws_connect(loop, url, &wcb, s, outside_vpn))) {
         npf_sig_close(s);               /* the handshake state holds our key */
         return NULL;
@@ -133,13 +126,12 @@ npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[
 int npf_sig_send(npf_sig *s, const char *json, size_t len)
 {
     uint8_t *out;               /* up to NPF_JSON_MAX_SIZE: not on the stack (malloc) */
-    int pre = s->cbs.on_raw != NULL, n, r = -1;
+    int n, r = -1;
     if (!s->ready || !s->ws || len > NPF_JSON_MAX_SIZE || !(out = malloc(len + 64)))
         return -1;
-    out[0] = 0;                 /* the type byte with on_raw */
-    n = npf_noise_encrypt(&s->tx, NULL, 0, (const uint8_t *)json, len, out + pre);
+    n = npf_noise_encrypt(&s->tx, NULL, 0, (const uint8_t *)json, len, out);
     if (n >= 0)
-        r = npf_ws_send(s->ws, out, (size_t)n + pre, 1);
+        r = npf_ws_send(s->ws, out, (size_t)n, 1);
     free(out);
     return r;
 }
@@ -152,11 +144,6 @@ int npf_sig_ping(npf_sig *s)
 int64_t npf_sig_last_rx(const npf_sig *s)
 {
     return s->ws ? npf_ws_last_rx(s->ws) : 0;
-}
-
-npf_ws *npf_sig_ws(const npf_sig *s)
-{
-    return s->ws;
 }
 
 const uint8_t *npf_sig_hash(const npf_sig *s)

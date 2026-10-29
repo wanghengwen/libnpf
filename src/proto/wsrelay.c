@@ -1,19 +1,19 @@
-/* WS relay connection (data-channel.md 10.1): WebSocket + Noise_XK
- * (prologue "npf-relay-v1"), relay_bind, then type-prefixed binary messages:
- * 0 control (Noise ciphertext of JSON), 3 ANL (an AnLiu datagram). */
-#include <stdio.h>
+/* WS relay connection (data-channel.md 10.1): a WebSocket whose first
+ * message is the allocation's bind, then type-prefixed binary messages:
+ * 0 control (the relay's event byte), 3 ANL (an AnLiu datagram). */
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/sig.h"
+#include "npf/ws.h"
 #include "npf/wsrelay.h"
 
 struct npf_wsr {
     npf_loop    *loop;
-    npf_sig     *s;                 /* the WebSocket and Noise_XK, as signaling's */
+    npf_ws      *ws;
     npf_wsr_cbs  cbs;
     void        *arg;
-    uint8_t      relay_id[8];
+    uint8_t      bind[1 + NPF_WSR_BIND_MAX];
+    size_t       blen;
     int          paired;
     npf_timer   *t_ping;
 };
@@ -30,72 +30,67 @@ static void wsr_down(npf_wsr *r, const char *why)
 static void ping_cb(npf_loop *loop, void *arg)
 {
     npf_wsr *r = arg;
-    npf_sig_ping(r->s);
+    npf_ws_ping(r->ws);
     r->t_ping = npf_timer_add(loop, 25000, ping_cb, r);
 }
 
-static void on_ready(npf_sig *s, void *arg)
+static void ws_open(npf_ws *ws, void *arg)
 {
     npf_wsr *r = arg;
-    char b[16], bind[96];
-    b[npf_b64url_encode(r->relay_id, 8, b)] = 0;
-    snprintf(bind, sizeof bind, "{\"v\":1,\"type\":\"relay_bind\",\"data\":{\"relay_id\":\"%s\"}}", b);
-    if (npf_sig_send(s, bind, strlen(bind)) < 0) {
+    if (npf_ws_send(ws, r->bind, r->blen, 1) < 0) {
         wsr_down(r, "send failed");
         return;
     }
     r->t_ping = npf_timer_add(r->loop, 25000, ping_cb, r);
 }
 
-/* a control message, by its type (not a word found anywhere in it: an
- * error's text naming another type); relay_bound asks for nothing */
-static void on_ctl(npf_sig *s, const npf_json *j, void *arg)
+/* A datagram (paired or not: AnLiu authenticates it), or an event; anything
+ * else ends the connection. The events are not authenticated: only the
+ * TLS peer can send them, and one not the relay (TLS is not verified) may
+ * as well drop everything (security.md 10) */
+static void ws_msg(npf_ws *ws, const uint8_t *d, size_t len, int binary, void *arg)
 {
     npf_wsr *r = arg;
-    char type[24] = "";
-    (void)s;
-    npf_json_get_str(j, 0, "type", type, sizeof type);
-    if (strcmp(type, "relay_paired") == 0) {
+    int ev = binary && len == 2 && d[0] == NPF_WSR_CTL ? d[1] : 0;
+    (void)ws;
+    if (binary && len && d[0] == NPF_WSR_ANL) {
+        if (len > 1 && r->cbs.datagram)
+            r->cbs.datagram(r, d + 1, len - 1, r->arg);
+    } else if (ev == NPF_WSR_PAIRED || ev == NPF_WSR_PAIRED_UDP) {
         r->paired = 1;
         if (r->cbs.paired)
-            r->cbs.paired(r, npf_json_eq(j, npf_json_get(j, npf_json_get(j, 0, "data"), "peer"), "udp"), r->arg);
-    } else if (strcmp(type, "relay_peer_gone") == 0) {
-        r->paired = 0;
+            r->cbs.paired(r, ev == NPF_WSR_PAIRED_UDP, r->arg);
+    } else if (ev == NPF_WSR_PEER_GONE) {
         if (r->cbs.gone)
             r->cbs.gone(r, "peer gone", r->arg);
-    } else if (strcmp(type, "relay_error") == 0) {
-        wsr_down(r, "refused the binding");
+    } else {
+        wsr_down(r, "bad message");
     }
 }
 
-static void on_raw(npf_sig *s, const uint8_t *d, size_t len, void *arg)
+static void ws_closed(npf_ws *ws, int code, const char *why, void *arg)
 {
     npf_wsr *r = arg;
-    (void)s;
-    if (len && d[0] == NPF_WSR_ANL && r->paired && r->cbs.datagram)
-        r->cbs.datagram(r, d + 1, len - 1, r->arg);
+    (void)ws;
+    (void)code;
+    r->ws = NULL;           /* freed by the ws layer */
+    wsr_down(r, why && *why ? why : "connection closed");
 }
 
-static void on_down(npf_sig *s, const char *why, void *arg)
+npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t *bind, size_t len, const npf_wsr_cbs *cbs,
+                      void *arg)
 {
-    npf_wsr *r = arg;
-    (void)s;
-    r->s = NULL;                        /* freed by sig.c after this */
-    wsr_down(r, why);
-}
-
-npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t server_pub[32], const npf_identity *id,
-                      const uint8_t relay_id[8], const npf_wsr_cbs *cbs, void *arg)
-{
-    static const npf_sig_cbs scb = {on_ready, on_ctl, on_down, on_raw};
-    npf_wsr *r = calloc(1, sizeof *r);
-    if (!r)
+    static const npf_ws_cbs wcb = {ws_open, ws_msg, ws_closed, NULL};
+    npf_wsr *r;
+    if (len > NPF_WSR_BIND_MAX || !(r = calloc(1, sizeof *r)))
         return NULL;
     r->loop = loop;
     r->cbs = *cbs;
     r->arg = arg;
-    memcpy(r->relay_id, relay_id, 8);
-    if (!(r->s = npf_sig_open(loop, url, server_pub, id, "npf-relay-v1", &scb, r, 0))) {
+    r->bind[0] = NPF_WSR_CTL;
+    memcpy(r->bind + 1, bind, len);
+    r->blen = len + 1;
+    if (!(r->ws = npf_ws_connect(loop, url, &wcb, r, 0))) {
         free(r);
         return NULL;
     }
@@ -107,17 +102,17 @@ int npf_wsr_queue(npf_wsr *r, const uint8_t *d, size_t len)
     static const uint8_t t = NPF_WSR_ANL;
     if (!r->paired)
         return -1;
-    return npf_ws_queue2(npf_sig_ws(r->s), &t, 1, d, len);
+    return npf_ws_queue2(r->ws, &t, 1, d, len);
 }
 
 int npf_wsr_flush(npf_wsr *r)
 {
-    return npf_ws_flush(npf_sig_ws(r->s));
+    return npf_ws_flush(r->ws);
 }
 
 size_t npf_wsr_pending(const npf_wsr *r)
 {
-    return npf_ws_pending(npf_sig_ws(r->s));
+    return npf_ws_pending(r->ws);
 }
 
 int npf_wsr_paired(const npf_wsr *r)
@@ -127,7 +122,7 @@ int npf_wsr_paired(const npf_wsr *r)
 
 int64_t npf_wsr_last_rx(const npf_wsr *r)
 {
-    return npf_sig_last_rx(r->s);
+    return npf_ws_last_rx(r->ws);
 }
 
 void npf_wsr_close(npf_wsr *r)
@@ -135,6 +130,6 @@ void npf_wsr_close(npf_wsr *r)
     if (!r)
         return;
     npf_timer_cancel(r->loop, r->t_ping);
-    npf_sig_close(r->s);
+    npf_ws_free(r->ws);
     free(r);
 }

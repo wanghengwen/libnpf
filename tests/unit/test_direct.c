@@ -99,7 +99,7 @@ static int ws_move(npf_call *c)
 {
     m_relay r;
     memset(&r, 0, sizeof r);
-    snprintf(r.ws.url, sizeof r.ws.url, "wss://127.0.0.1:9/r");
+    snprintf(r.ws, sizeof r.ws, "wss://127.0.0.1:9/r");
     return call_ws_setup(c, &r);
 }
 

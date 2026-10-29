@@ -2,7 +2,7 @@
  * NPF_USE_OPENSSL selects OpenSSL 3 where the protocol primitives are available.
  *
  *   KDF       BLAKE2b-256(key, msg)                          (security.md 3.1)
- *   AEAD      ChaCha20-Poly1305, RFC 8439 (12-byte nonce)    (Noise, WS records)
+ *   AEAD      ChaCha20-Poly1305, RFC 8439 (12-byte nonce)    (Noise)
  *   identity  one 32-byte seed -> Ed25519 signing key + X25519 DH key
  *   fp        BLAKE2b-256(dh_pub)[0..7]: client_id and paired-list fingerprint
  *
