@@ -232,32 +232,15 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     tunnel_leave(t);
 }
 
-/* a CONNECT's address (ATYP 1 IPv4, 4 IPv6, 3 a name of alen bytes) as text */
-static void atyp_host(int atyp, const uint8_t *addr, size_t alen, char host[256])
-{
-    if (atyp == 1)
-        inet_ntop(AF_INET, addr, host, 256);
-    else if (atyp == 4)
-        inet_ntop(AF_INET6, addr, host, 256);
-    else {
-        memcpy(host, addr, alen);
-        host[alen] = 0;
-    }
-}
-
-/* literal addresses connect at once; names are resolved off the loop thread.
- * Returns -1 when the sublink was released. */
+/* literal addresses (ATYP 1 IPv4, 4 IPv6) connect at once; names (3, alen
+ * bytes) are resolved off the loop thread. Returns -1 when the sublink was
+ * released. */
 static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen, uint16_t port)
 {
     struct sockaddr_storage cand;
-    socklen_t clen;
+    socklen_t clen = 0;
     char host[256];
-    atyp_host(atyp, addr, alen, host);
-    if ((s->t->io.target_ok || s->t->caller)
-        && (!s->t->io.target_ok || !s->t->io.target_ok(s->t->arg, host, port))) {
-        socks_fail(s, 2);
-        return -1;
-    }
+    int i, busy = 0;
     memset(&cand, 0, sizeof cand);
     if (atyp == 1) {
         struct sockaddr_in *a = (struct sockaddr_in *)&cand;
@@ -265,42 +248,48 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
         memcpy(&a->sin_addr, addr, 4);
         a->sin_port = htons(port);
         clen = sizeof *a;
+        inet_ntop(AF_INET, addr, host, sizeof host);
     } else if (atyp == 4) {
         struct sockaddr_in6 *a = (struct sockaddr_in6 *)&cand;
         a->sin6_family = AF_INET6;
         memcpy(&a->sin6_addr, addr, 16);
         a->sin6_port = htons(port);
         clen = sizeof *a;
+        inet_ntop(AF_INET6, addr, host, sizeof host);
     } else {
-        if (npf_tunnel_test_resolve) {     /* tests: the addresses of their choosing, at once */
-            struct sockaddr_storage ta[NPF_RESOLVE_MAX];
-            socklen_t tl[NPF_RESOLVE_MAX];
-            int tn = npf_tunnel_test_resolve(host, port, ta, tl, NPF_RESOLVE_MAX);
-            if (tn >= 0)
-                return socks_connect_addrs(s, ta, tl, tn);
-        }
-        {
-            int i, busy = 0;
-            for (i = 0; i < s->t->nsubs; i++)
-                busy += s->t->subs[i]->state == SL_RESOLVING;
-            if (busy >= RESOLVING_MAX) {
-                socks_fail(s, 1);
-                return -1;
-            }
-        }
-        s->state = SL_RESOLVING;
-        s->resolve = npf_resolve_start_peer(s->t->loop, host, port, SOCK_STREAM, resolved, s);
-        if (!s->resolve) {
-            socks_fail(s, 1);       /* the resolver's budget is used up (or no memory) */
-            return -1;
-        }
-        /* one deadline for the lookup and the connection: a lookup that
-         * never returns fails the sublink after CONNECT_MS (the worker is
-         * released by the system, the request's callback is cancelled) */
-        s->hs->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
-        return 0;
+        memcpy(host, addr, alen);
+        host[alen] = 0;
     }
-    return socks_connect_addrs(s, &cand, &clen, 1);
+    if (s->t->io.target_ok ? !s->t->io.target_ok(s->t->arg, host, port) : s->t->caller) {
+        socks_fail(s, 2);
+        return -1;
+    }
+    if (atyp != 3)
+        return socks_connect_addrs(s, &cand, &clen, 1);
+    if (npf_tunnel_test_resolve) {         /* tests: the addresses of their choosing, at once */
+        struct sockaddr_storage ta[NPF_RESOLVE_MAX];
+        socklen_t tl[NPF_RESOLVE_MAX];
+        int tn = npf_tunnel_test_resolve(host, port, ta, tl, NPF_RESOLVE_MAX);
+        if (tn >= 0)
+            return socks_connect_addrs(s, ta, tl, tn);
+    }
+    for (i = 0; i < s->t->nsubs; i++)
+        busy += s->t->subs[i]->state == SL_RESOLVING;
+    if (busy >= RESOLVING_MAX) {
+        socks_fail(s, 1);
+        return -1;
+    }
+    s->state = SL_RESOLVING;
+    s->resolve = npf_resolve_start_peer(s->t->loop, host, port, SOCK_STREAM, resolved, s);
+    if (!s->resolve) {
+        socks_fail(s, 1);           /* the resolver's budget is used up (or no memory) */
+        return -1;
+    }
+    /* one deadline for the lookup and the connection: a lookup that never
+     * returns fails the sublink after CONNECT_MS (the worker is released by
+     * the system, the request's callback is cancelled) */
+    s->hs->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
+    return 0;
 }
 
 /* the greeting and request did not come in time: a peer's sublink is reset
@@ -339,7 +328,6 @@ int tunnel_socks_greeting(const uint8_t *b, size_t n, int *noauth)
     return 2 + b[1];
 }
 
-/* parse what the client sent so far; returns -1 if the sublink was freed */
 int tunnel_socks_parse(sublink *s)
 {
     uint8_t *b = s->hs->sb;

@@ -3,14 +3,12 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "udpfwd.h"
 #include "npf/crypto.h"
 #include "npf/log.h"
-#include "npf/node.h"
 #include "npf/platform.h"
 #include "npf/resolve.h"
 
@@ -54,7 +52,6 @@ typedef struct uflow {
     int      ok;                    /* out: the other side has opened it */
     int64_t  last;                  /* the last datagram either way (ms) */
     npf_resolve *res;               /* in: the target's name being resolved */
-    int      counted;               /* in: its socket counted in the shares (npf_udpf_set_shared) */
     pend     q[PEND_MAX];
     int      nq;
     char     host[];                /* out on the caller: the target, sent until OK; in: the target
@@ -185,17 +182,16 @@ static int warn_due(npf_udpf *u)
 static void free_flow(npf_udpf *u, uflow *f)
 {
     int i;
-    if (!f->out && f->fd >= 0) {
+    if (!f->out && f->fd >= 0) {            /* its own socket, counted in the shares */
         npf_loop_del(u->loop, f->fd);
         npf_sock_close(f->fd);
-    }
-    if (f->counted)
         for (i = 0; i < 2; i++)
             if (u->shared[i])
                 u->shared[i]->subs--;
+    }
     if (f->res) {
         npf_resolve_cancel(f->res);
-        f->u->nresolving--;
+        u->nresolving--;
     }
     for (i = 0; i < f->nq; i++)
         free(f->q[i].d);
@@ -455,7 +451,6 @@ static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *t
         return;
     }
     f->fd = fd;
-    f->counted = 1;
     for (i = 0; i < 2; i++)
         if (u->shared[i])
             u->shared[i]->subs++;
@@ -666,8 +661,7 @@ void npf_udpf_drain(npf_udpf *u, anl_stream_t *s)
         uint8_t *buf;
         if (sz == ANL_ECLOSED) {            /* the peer closed it: the flows stay, a new frame opens a new stream */
             anl_stream_close(s);
-            if (u->s == s)
-                u->s = NULL;
+            u->s = NULL;
             return;
         }
         if (sz < 0)

@@ -162,7 +162,7 @@ int  tunnel_socks_greeting(const uint8_t *b, size_t n, int *noauth);
 int  tunnel_socks_request(const char *host, uint16_t port, uint8_t req[300], size_t *len);
 /* parse what the client sent so far; -1 if the sublink was freed */
 int  tunnel_socks_parse(sublink *s);
-/* client side: the server's method and CONNECT replies, as they come (tunnel_socks.c) */
+/* client side: the server's method and CONNECT replies, as they come */
 int  tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop);
 /* the handshake is over (open, or the sublink goes): hs freed, the
  * attempts still under way closed */

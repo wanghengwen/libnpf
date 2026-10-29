@@ -382,20 +382,17 @@ int tunnel_flush_local(sublink *s, const uint8_t *p, size_t n)
 /* the peer's hello (data-channel.md 8): its window and sublinks, once */
 static int hello_in(npf_tunnel *t, const npf_json *j)
 {
-    int d = npf_json_get(j, 0, "data");
+    int d = npf_json_get(j, 0, "data"), i;
     int64_t w = NPF_INIT_WINDOW, m = NPF_MAX_SUBLINKS;
     if (t->hello_recv)
         return -1;
     npf_json_get_int(j, d, "init_window", 4096, 16 << 20, &w);
     npf_json_get_int(j, d, "max_sublinks", 1, 4096, &m);
-    if ((uint32_t)w != t->peer_window) {
-        /* sublinks opened before the hello got the default credit (ours
-         * opened early, the peer's whose first data came first): the
-         * difference now (negative: they wait for WINDOWs) */
-        int i;
-        for (i = 0; i < t->nsubs; i++)
-            t->subs[i]->tx_credit += w - (int64_t)t->peer_window;
-    }
+    /* sublinks opened before the hello got the default credit (ours opened
+     * early, the peer's whose first data came first): the difference now
+     * (negative: they wait for WINDOWs) */
+    for (i = 0; i < t->nsubs; i++)
+        t->subs[i]->tx_credit += w - (int64_t)t->peer_window;
     t->peer_window = (uint32_t)w;
     t->peer_max = (int)m;
     t->hello_recv = 1;
@@ -629,26 +626,6 @@ static int input_data(npf_tunnel *t, const uint8_t *msg, size_t len)
     return 0;
 }
 
-/* a callee that has the caller's input before its own hello went has a
- * path: its hello goes first (the caller does not wait for it, and a
- * sublink frame before it used to break the tunnel) */
-static void callee_hello(npf_tunnel *t)
-{
-    if (!t->caller && !t->hello_sent)
-        npf_tunnel_start(t);
-}
-
-int npf_tunnel_input_data(npf_tunnel *t, const uint8_t *msg, size_t len)
-{
-    int r;
-    if (t->dead)
-        return -1;
-    t->depth++;
-    callee_hello(t);
-    r = t->dead ? -1 : input_data(t, msg, len);
-    return tunnel_leave(t) ? -1 : r;
-}
-
 static int handle_unit(npf_tunnel *t, int type, const uint8_t *p, size_t n)
 {
     switch (type) {
@@ -722,16 +699,24 @@ static int input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len)
     return 0;
 }
 
-int npf_tunnel_input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len)
+/* the peer's control units (ctrl) or a data message. A callee that has the
+ * caller's input before its own hello went has a path: its hello goes first
+ * (the caller does not wait for it, and a sublink frame before it used to
+ * break the tunnel) */
+static int input(npf_tunnel *t, int ctrl, const uint8_t *b, size_t len)
 {
     int r;
     if (t->dead)
         return -1;
     t->depth++;
-    callee_hello(t);
-    r = t->dead ? -1 : input_ctrl(t, buf, len);
+    if (!t->caller && !t->hello_sent)
+        npf_tunnel_start(t);
+    r = t->dead ? -1 : ctrl ? input_ctrl(t, b, len) : input_data(t, b, len);
     return tunnel_leave(t) ? -1 : r;
 }
+
+int npf_tunnel_input_data(npf_tunnel *t, const uint8_t *msg, size_t len) { return input(t, 0, msg, len); }
+int npf_tunnel_input_ctrl(npf_tunnel *t, const uint8_t *buf, size_t len) { return input(t, 1, buf, len); }
 
 /* ---- local sockets ---- */
 
@@ -763,8 +748,10 @@ static void local_greeting(sublink *s)
     }
     /* the server's greeting, then whatever the application already sent */
     if (tunnel_sub_send(s, g, sizeof g) < 0
-        || (s->sl > (size_t)need && tunnel_sub_send(s, s->hs->sb + need, s->sl - (size_t)need) < 0))
+        || (s->sl > (size_t)need && tunnel_sub_send(s, s->hs->sb + need, s->sl - (size_t)need) < 0)) {
+        tunnel_sub_reset(s, NPF_RST_LOCAL);     /* no memory, or the transport broke: not left half greeted */
         return;
+    }
     s->sl = 0;
     tunnel_hs_done(s);                  /* the replies are read with rep */
     s->fwd_rep = 1;                     /* the server's replies: its CONNECT reply is the application's */
@@ -924,8 +911,7 @@ static void tunnel_destroy(npf_tunnel *t)
     t->depth++;
     npf_timer_stop(t->loop, &t->t_rate);
     npf_timer_stop(t->loop, &t->t_virt);
-    t->dead = 1;
-    while (t->nsubs) {
+    while (t->nsubs) {                      /* (dead: set by npf_tunnel_free) */
         sublink *s = t->subs[t->nsubs - 1];
         tunnel_sub_end(s, "session_ended");
         tunnel_sub_free(s, 1);
@@ -936,8 +922,6 @@ static void tunnel_destroy(npf_tunnel *t)
     free(t);
 }
 
-/* the end of a call into the tunnel that may have called out: 1 when the
- * tunnel was freed meanwhile (it is gone now) */
 int tunnel_leave(npf_tunnel *t)
 {
     if (--t->depth || !t->free_later)
