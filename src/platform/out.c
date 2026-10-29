@@ -9,10 +9,6 @@
 #include "npf/crypto.h"
 #include "npf/out.h"
 
-#ifdef __MINGW32__
-#define vsnprintf __mingw_vsnprintf     /* C99 formats (%zu) */
-#endif
-
 int npf_grow(void *pp, size_t *cap, size_t need, size_t size, size_t first)
 {
     size_t c = *cap ? *cap : first;
@@ -67,7 +63,7 @@ void npf_out_vprintf(npf_out *o, const char *fmt, va_list ap)
     va_list aq;
     int n;
     va_copy(aq, ap);
-    n = vsnprintf(NULL, 0, fmt, aq);
+    n = npf_vsnprintf(NULL, 0, fmt, aq);
     va_end(aq);
     if (n < 0) {
         o->failed = 1;
@@ -75,7 +71,7 @@ void npf_out_vprintf(npf_out *o, const char *fmt, va_list ap)
     }
     if (out_grow(o, (size_t)n) < 0)
         return;
-    vsnprintf(o->p + o->len, (size_t)n + 1, fmt, ap);
+    npf_vsnprintf(o->p + o->len, (size_t)n + 1, fmt, ap);
     o->len += (size_t)n;
 }
 

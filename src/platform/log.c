@@ -13,6 +13,7 @@
 
 #include "npf/lock.h"
 #include "npf/log.h"
+#include "npf/out.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
 
@@ -111,11 +112,7 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
     if (level < level_now())
         return;
     va_start(ap, fmt);
-#ifdef __MINGW32__
-    __mingw_vsnprintf(msg, sizeof msg, fmt, ap);
-#else
-    vsnprintf(msg, sizeof msg, fmt, ap);
-#endif
+    npf_vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     n = make_line(lv, file, line, msg, ln, sizeof ln);
     if (c) {                                /* an instance's line: its ring, its callback */
