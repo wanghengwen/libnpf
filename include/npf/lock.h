@@ -1,9 +1,9 @@
 /* The library's one lock, for what threads share (the log, the resolver's
  * pool, the VPN choice, a loop's posted calls, TLS, the modules, an
  * instance's calls): an SRWLOCK on Windows, a pthread mutex elsewhere; not
- * recursive. NPF_MUTEX_INIT for a static one, npf_mutex_init / _free for
- * one in an allocated struct (0 or not). A condition goes with it where a
- * thread waits; a wait may return early: wait in a loop. */
+ * recursive. NPF_MUTEX_INIT for a static one, npf_mutex_init (0, or an
+ * error) and npf_mutex_free for one in an allocated struct. A condition goes
+ * with it where a thread waits; a wait may return early: wait in a loop. */
 #ifndef NPF_LOCK_H
 #define NPF_LOCK_H
 
