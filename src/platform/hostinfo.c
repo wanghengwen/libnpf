@@ -73,12 +73,11 @@ static int hw_add(npf_hw_item *it, int n, int max, const char *kind, const char 
 
 typedef LONG(WINAPI *rtl_get_version_fn)(PRTL_OSVERSIONINFOW);
 
-void npf_host_info_get(npf_host_info *h)
+static void hostinfo_win(npf_host_info *h)
 {
     SYSTEM_INFO si;
     DWORD sz;
     HKEY k;
-    memset(h, 0, sizeof *h);
     {
         RTL_OSVERSIONINFOW v;
         rtl_get_version_fn f = (rtl_get_version_fn)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlGetVersion");
@@ -138,7 +137,91 @@ int npf_hw_items(npf_hw_item *it, int max)
 #include <dirent.h>
 #endif
 
-#if !defined(__APPLE__) && !defined(__ANDROID__)
+/* the machine, "sysname release" (each system's own text replaces it) and
+ * the host name; u for that text */
+static void host_uname(npf_host_info *h, struct utsname *u)
+{
+    if (uname(u) == 0) {
+        snprintf(h->arch, sizeof h->arch, "%.31s", u->machine);
+        snprintf(h->os, sizeof h->os, "%.40s %.60s", u->sysname, u->release);
+    } else {
+        memset(u, 0, sizeof *u);
+    }
+    gethostname(h->hostname, sizeof h->hostname - 1);
+}
+
+#if defined(__APPLE__)
+
+#if !TARGET_OS_IPHONE
+/* IOPlatformUUID: the hardware's, not the system's (iOS has none for apps) */
+static void hw_uuid(char *out, size_t cap)
+{
+    struct timespec ts = {0, 0};
+    uuid_t id;
+    if (gethostuuid(id, &ts) == 0)
+        snprintf(out, cap, "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X", id[0], id[1], id[2],
+                 id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10], id[11], id[12], id[13], id[14], id[15]);
+}
+#endif
+
+static void hostinfo_apple(npf_host_info *h)
+{
+    struct utsname u;
+    struct ifaddrs *ifs, *i;
+    char v[64] = "";
+    size_t l = sizeof v;
+    host_uname(h, &u);
+    if (sysctlbyname("kern.osproductversion", v, &l, NULL, 0) == 0)
+        snprintf(h->os, sizeof h->os, "%s %s (Darwin %s)", TARGET_OS_IPHONE ? "iOS" : "macOS", v, u.release);
+#if !TARGET_OS_IPHONE
+    hw_uuid(h->machine_id, sizeof h->machine_id);
+#endif
+    if (TARGET_OS_IPHONE || getifaddrs(&ifs) != 0)
+        return;                             /* iOS: every interface reports the same made-up MAC */
+    for (i = ifs; i; i = i->ifa_next) {
+        const struct sockaddr_dl *dl = (const void *)i->ifa_addr;
+        if (i->ifa_addr && i->ifa_addr->sa_family == AF_LINK && dl->sdl_alen == 6 && strncmp(i->ifa_name, "en", 2) == 0)
+            add_mac(h, (const unsigned char *)LLADDR(dl));
+    }
+    freeifaddrs(ifs);
+}
+
+int npf_hw_items(npf_hw_item *it, int max)
+{
+    char id[128] = "";
+#if !TARGET_OS_IPHONE
+    hw_uuid(id, sizeof id);
+#endif
+    return hw_add(it, 0, max, "board", id);
+}
+
+#elif defined(__ANDROID__)
+
+/* Android's version, and the model for a name (the host name is
+ * "localhost"); apps see no machine id and no MAC (the mobile apps) */
+static void hostinfo_android(npf_host_info *h)
+{
+    struct utsname u;
+    char v[PROP_VALUE_MAX] = "", m[PROP_VALUE_MAX] = "", k[sizeof h->os];
+    host_uname(h, &u);
+    __system_property_get("ro.build.version.release", v);
+    __system_property_get("ro.product.model", m);
+    snprintf(k, sizeof k, "%s", h->os);
+    snprintf(h->os, sizeof h->os, "Android %s (%s)", v, k);
+    if (m[0])
+        snprintf(h->hostname, sizeof h->hostname, "%s", m);
+}
+
+/* apps cannot read the hardware's serial numbers */
+int npf_hw_items(npf_hw_item *it, int max)
+{
+    (void)it;
+    (void)max;
+    return 0;
+}
+
+#else
+
 static void read_line(const char *path, char *out, size_t cap)
 {
     FILE *f = fopen(path, "r");
@@ -151,122 +234,56 @@ static void read_line(const char *path, char *out, size_t cap)
     }
     fclose(f);
 }
-#endif
 
-void npf_host_info_get(npf_host_info *h)
+static void hostinfo_linux(npf_host_info *h)
 {
     struct utsname u;
-    memset(h, 0, sizeof *h);
-    if (uname(&u) == 0) {
-        snprintf(h->arch, sizeof h->arch, "%.31s", u.machine);
-        snprintf(h->os, sizeof h->os, "%.40s %.60s", u.sysname, u.release);
-    }
-    gethostname(h->hostname, sizeof h->hostname - 1);
-#if defined(__APPLE__)
-    {
-        char v[64] = "";
-        size_t l = sizeof v;
-        struct timespec ts = {0, 0};
-        uuid_t id;
-#if TARGET_OS_IPHONE
-        /* no machine id, and every interface reports the same made-up MAC */
-        (void)ts;
-        (void)id;
-        if (sysctlbyname("kern.osproductversion", v, &l, NULL, 0) == 0)
-            snprintf(h->os, sizeof h->os, "iOS %s (Darwin %s)", v, u.release);
-        return;
-#else
-        if (sysctlbyname("kern.osproductversion", v, &l, NULL, 0) == 0)
-            snprintf(h->os, sizeof h->os, "macOS %s (Darwin %s)", v, u.release);
-        if (gethostuuid(id, &ts) == 0)
-            snprintf(h->machine_id, sizeof h->machine_id,
-                     "%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X", id[0], id[1], id[2],
-                     id[3], id[4], id[5], id[6], id[7], id[8], id[9], id[10], id[11], id[12], id[13], id[14], id[15]);
-#endif
-    }
-    {
-        struct ifaddrs *ifs, *i;
-        if (getifaddrs(&ifs) == 0) {
-            for (i = ifs; i; i = i->ifa_next) {
-                const struct sockaddr_dl *dl = (const void *)i->ifa_addr;
-                if (i->ifa_addr && i->ifa_addr->sa_family == AF_LINK && dl->sdl_alen == 6 && strncmp(i->ifa_name, "en", 2) == 0)
-                    add_mac(h, (const unsigned char *)LLADDR(dl));
-            }
-            freeifaddrs(ifs);
+    FILE *f = fopen("/etc/os-release", "r");
+    char line[256];
+    int pass;
+    host_uname(h, &u);
+    while (f && fgets(line, sizeof line, f))        /* its PRETTY_NAME */
+        if (strncmp(line, "PRETTY_NAME=", 12) == 0) {
+            char *v = line + 12, *e;
+            if (*v == '"')
+                v++;
+            if ((e = strpbrk(v, "\"\n")))
+                *e = 0;
+            snprintf(h->os + strlen(h->os), sizeof h->os - strlen(h->os), " (%s)", v);
+            break;
         }
-    }
-#elif defined(__ANDROID__)
-    {
-        /* Android's version, and the model for a name (the host name is
-         * "localhost"); apps see no machine id and no MAC (the mobile apps) */
-        char v[PROP_VALUE_MAX] = "", m[PROP_VALUE_MAX] = "", k[sizeof h->os];
-        __system_property_get("ro.build.version.release", v);
-        __system_property_get("ro.product.model", m);
-        snprintf(k, sizeof k, "%s", h->os);
-        snprintf(h->os, sizeof h->os, "Android %s (%s)", v, k);
-        if (m[0])
-            snprintf(h->hostname, sizeof h->hostname, "%s", m);
-    }
-#else
-    {
-        /* PRETTY_NAME of /etc/os-release */
-        FILE *f = fopen("/etc/os-release", "r");
-        char line[256];
-        while (f && fgets(line, sizeof line, f))
-            if (strncmp(line, "PRETTY_NAME=", 12) == 0) {
-                char *v = line + 12, *e;
-                if (*v == '"')
-                    v++;
-                if ((e = strpbrk(v, "\"\n")))
-                    *e = 0;
-                snprintf(h->os + strlen(h->os), sizeof h->os - strlen(h->os), " (%s)", v);
-                break;
-            }
-        if (f)
-            fclose(f);
-    }
+    if (f)
+        fclose(f);
     read_line("/etc/machine-id", h->machine_id, sizeof h->machine_id);
     if (!h->machine_id[0])
         read_line("/var/lib/dbus/machine-id", h->machine_id, sizeof h->machine_id);
-    {
-        /* physical interfaces first (they have a device); else all but lo */
-        int pass;
-        for (pass = 0; pass < 2 && h->nmacs == 0; pass++) {
-            DIR *d = opendir("/sys/class/net");
-            struct dirent *e;
-            while (d && (e = readdir(d))) {
-                char p[300], mac[NPF_MAC_LEN] = "";
-                unsigned char b[6];
-                if (e->d_name[0] == '.' || strcmp(e->d_name, "lo") == 0)
+    /* physical interfaces first (they have a device); else all but lo */
+    for (pass = 0; pass < 2 && h->nmacs == 0; pass++) {
+        DIR *d = opendir("/sys/class/net");
+        struct dirent *e;
+        while (d && (e = readdir(d))) {
+            char p[300], mac[NPF_MAC_LEN] = "";
+            unsigned char b[6];
+            if (e->d_name[0] == '.' || strcmp(e->d_name, "lo") == 0)
+                continue;
+            if (pass == 0) {
+                snprintf(p, sizeof p, "/sys/class/net/%s/device", e->d_name);
+                if (access(p, F_OK) != 0)
                     continue;
-                if (pass == 0) {
-                    snprintf(p, sizeof p, "/sys/class/net/%s/device", e->d_name);
-                    if (access(p, F_OK) != 0)
-                        continue;
-                }
-                snprintf(p, sizeof p, "/sys/class/net/%s/address", e->d_name);
-                read_line(p, mac, sizeof mac);
-                if (npf_text_mac(mac, b) == 0)
-                    add_mac(h, b);
             }
-            if (d)
-                closedir(d);
+            snprintf(p, sizeof p, "/sys/class/net/%s/address", e->d_name);
+            read_line(p, mac, sizeof mac);
+            if (npf_text_mac(mac, b) == 0)
+                add_mac(h, b);
         }
+        if (d)
+            closedir(d);
     }
-#endif
 }
 
 int npf_hw_items(npf_hw_item *it, int max)
 {
     int n = 0;
-#if defined(__APPLE__)
-    npf_host_info h;
-    npf_host_info_get(&h);
-    n = hw_add(it, n, max, "board", h.machine_id);     /* IOPlatformUUID: the hardware's, not the system's */
-#elif defined(__ANDROID__)
-    (void)it;                                           /* apps cannot read the hardware's serial numbers */
-    (void)max;
-#else
     char v[160] = "";
     DIR *d;
     struct dirent *e;
@@ -319,9 +336,22 @@ int npf_hw_items(npf_hw_item *it, int max)
         if (f)
             fclose(f);
     }
-    n = hw_add(it, n, max, "soc", v);
-#endif
-    return n;
+    return hw_add(it, n, max, "soc", v);
 }
 
 #endif
+#endif
+
+void npf_host_info_get(npf_host_info *h)
+{
+    memset(h, 0, sizeof *h);
+#if defined(_WIN32)
+    hostinfo_win(h);
+#elif defined(__APPLE__)
+    hostinfo_apple(h);
+#elif defined(__ANDROID__)
+    hostinfo_android(h);
+#else
+    hostinfo_linux(h);
+#endif
+}
