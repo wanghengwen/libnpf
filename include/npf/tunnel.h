@@ -4,9 +4,8 @@
  *     unit    = type(1) | len(2) | body                     (little-endian)
  *     JSON=1 (control messages), WINDOW=2 sublink(4) | increment(4),
  *     RESET=3 sublink(4) | reason(1), APP=4 the application's data (libnpf
- *     npf_session_send), MEDIA=5 the media streams' signals (node/media.c),
- *     UDP=6 the UDP forwards' flows (node/udpfwd.c);
- *     unknown types are skipped
+ *     npf_session_send), UDP=6 the UDP forwards' flows (node/udpfwd.c);
+ *     unknown types are skipped (5 was MEDIA, before AnLiu ran on the WS relay)
  *   data (one message stream per direction, priority 2; message boundaries kept):
  *     message = sublink(4) | payload; an empty payload is FIN
  *
@@ -27,13 +26,13 @@
 #include "npf/json.h"
 #include "npf/loop.h"
 
-/* 5 was MEDIA (the WS relay's media streams before AnLiu ran there): skipped as unknown */
 enum { NPF_CU_JSON = 1, NPF_CU_WINDOW = 2, NPF_CU_RESET = 3, NPF_CU_APP = 4, NPF_CU_UDP = 6 };
 enum { NPF_RST_LOCAL = 1, NPF_RST_PROTOCOL = 2, NPF_RST_LIMIT = 3, NPF_RST_TIMEOUT = 4, NPF_RST_TRANSPORT = 5 };
 
 #define NPF_CU_HDR        3         /* control unit header */
 #define NPF_DATA_HDR      4         /* data message header */
 #define NPF_FRAME_MAX     16384     /* data payload per message */
+#define NPF_CTRL_MAX      16384     /* control unit body */
 /* a sublink's receive window: from NPF_INIT_WINDOW, doubled while its data
  * is taken at once, up to NPF_MAX_WINDOW; a tunnel's windows grow only
  * while their sum stays within NPF_RX_BUDGET (the memory a peer may fill:
@@ -42,18 +41,8 @@ enum { NPF_RST_LOCAL = 1, NPF_RST_PROTOCOL = 2, NPF_RST_LIMIT = 3, NPF_RST_TIMEO
 #define NPF_MAX_WINDOW    (4 * 1024 * 1024)
 #define NPF_RX_BUDGET     (32 * 1024 * 1024)
 #define NPF_MAX_SUBLINKS  1024
-
-/* tests: the Happy Eyeballs delay (250 ms) and the SOCKS greeting deadline
- * of a sublink (10 s); a resolver giving a name's addresses at once (NULL,
- * or -1 from it: the system's) */
-extern int npf_tunnel_he_ms;
-extern int npf_tunnel_greet_ms;
-extern int (*npf_tunnel_test_resolve)(const char *host, uint16_t port, struct sockaddr_storage *out,
-                                      socklen_t *lens, int max);
-/* a name's addresses in the order to try them (RFC 8305: the families in turns) */
-void npf_he_order(struct sockaddr_storage *a, socklen_t *l, int n);
-#define NPF_CTRL_MAX      16384
 #define NPF_MAX_REVERSE   16        /* reverse mappings per session (data-channel.md 7.1) */
+#define NPF_TUNNEL_BACKLOG  (1024 * 1024)   /* transport bytes queued before local reads pause (npf_tunnel_io) */
 
 /* Target policy (security.md D22): what the published resources cover
  * (resources.h), nothing else. "lan" stands for this host's addresses and
@@ -151,8 +140,6 @@ typedef struct npf_tunnel_io {
     size_t (*backlog_max)(void *arg);
 } npf_tunnel_io;
 
-#define NPF_TUNNEL_BACKLOG  (1024 * 1024)
-
 npf_tunnel *npf_tunnel_new(npf_loop *loop, int caller, const npf_tunnel_io *io, void *arg, npf_policy *policy);
 /* resets every sublink (local sockets get RST) and frees */
 void npf_tunnel_free(npf_tunnel *t);
@@ -173,7 +160,7 @@ void npf_tunnel_kick(npf_tunnel *t);
 /* sublinks and control requests may go: our hello sent and the peer's come (or early) */
 int  npf_tunnel_is_ready(const npf_tunnel *t);
 int  npf_tunnel_control(npf_tunnel *t, const char *json, size_t len);
-/* an APP, MEDIA or UDP unit on the control channel (<= NPF_CTRL_MAX) */
+/* an APP or UDP unit on the control channel (<= NPF_CTRL_MAX) */
 int  npf_tunnel_unit_send(npf_tunnel *t, int type, const void *buf, size_t len);
 int  npf_tunnel_count(const npf_tunnel *t);
 void npf_tunnel_dump(const npf_tunnel *t);     /* debugging, to stderr */
@@ -182,15 +169,31 @@ void npf_tunnel_dump(const npf_tunnel *t);     /* debugging, to stderr */
 int  npf_tunnel_rev_add(npf_tunnel *t, uint32_t listen_id, const char *host, uint16_t port);
 void npf_tunnel_rev_del(npf_tunnel *t, uint32_t listen_id);
 
-/* caller: a local TCP connection becomes a sublink.
- * passthrough: the application speaks SOCKS5 itself (SOCKS5 proxy mode);
- * otherwise the tunnel sends CONNECT host:port and strips the replies. */
-/* the sublink's id (> 0), or -1 */
+/* caller: a local TCP connection becomes a sublink: its id (> 0), or -1
+ * (the caller keeps fd). passthrough: the application speaks SOCKS5 itself
+ * (SOCKS5 proxy mode); otherwise the tunnel sends CONNECT host:port and
+ * strips the replies */
 int  npf_tunnel_open(npf_tunnel *t, int fd, int passthrough, const char *host, uint16_t port);
 /* the same, the sublink in group `group` (> 0, a public mapping): its
  * sublinks together move at most rate bytes per second each way (0: no
  * limit); the tunnel keeps up to NPF_RATE_GROUPS groups */
 #define NPF_RATE_GROUPS 16
+int  npf_tunnel_open_rated(npf_tunnel *t, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
+                           uint32_t rate);
+/* the sublinks open in a rate group */
+int  npf_tunnel_group_count(const npf_tunnel *t, uint32_t group);
+/* resets a group's sublinks (their end: why, a static string), and the
+ * group's place goes (a mapping closed: NPF_RATE_GROUPS at once, not in a
+ * session's life); how many */
+int  npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why);
+/* bytes read from / written to the local sockets of the sublinks (what a
+ * public mapping moved for the people connected to it) */
+void npf_tunnel_local_bytes(const npf_tunnel *t, uint64_t *in, uint64_t *out);
+/* one sublink: its local bytes so far (0, -1 no such sublink); reset it,
+ * why its npf_sublink_stats.end (0, -1 none) */
+int  npf_tunnel_sub_bytes(npf_tunnel *t, uint32_t id, uint64_t *in, uint64_t *out);
+int  npf_tunnel_sub_reset(npf_tunnel *t, uint32_t id, const char *why);
+
 /* a traffic budget shared by tunnels (a hosted client's quota, signaling.md
  * "流量额度"): the bytes moved to and from the local sockets come off
  * budget; with none left they go at slow bytes per second */
@@ -218,21 +221,6 @@ typedef struct npf_tunnel_shared {
 /* node: the node's (all sessions); key: the caller key's (its sessions here,
  * half the node's: one visitor leaves room for the others); NULL none */
 void npf_tunnel_set_shared(npf_tunnel *t, npf_tunnel_shared *node, npf_tunnel_shared *key);
-/* the sublinks open in a rate group */
-int  npf_tunnel_group_count(const npf_tunnel *t, uint32_t group);
-/* resets a group's sublinks (their end: why, a static string), and the
- * group's place goes (a mapping closed: NPF_RATE_GROUPS at once, not in a
- * session's life); how many */
-int  npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why);
-/* bytes read from / written to the local sockets of the sublinks (what a
- * public mapping moved for the people connected to it) */
-void npf_tunnel_local_bytes(const npf_tunnel *t, uint64_t *in, uint64_t *out);
-/* one sublink: its local bytes so far (0, -1 no such sublink); reset it,
- * why its npf_sublink_stats.end (0, -1 none) */
-int  npf_tunnel_sub_bytes(npf_tunnel *t, uint32_t id, uint64_t *in, uint64_t *out);
-int  npf_tunnel_sub_reset(npf_tunnel *t, uint32_t id, const char *why);
-int  npf_tunnel_open_rated(npf_tunnel *t, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
-                           uint32_t rate);
 
 /* caller: a sublink whose local end is not a socket (a module's kind of
  * forward, npf_fwd_kind: connections it ends itself). The tunnel calls these from
@@ -255,5 +243,13 @@ void npf_tunnel_vkick(npf_tunnel *t, uint32_t id);
 /* the local end went away by itself: the sublink is reset (reset) or
  * finished as by FIN and dropped; closed() is not called */
 void npf_tunnel_vclose(npf_tunnel *t, uint32_t id, int reset);
+
+/* tests: the SOCKS greeting deadline of a sublink (10 s); a resolver giving
+ * a name's addresses at once (NULL, or -1 from it: the system's) */
+extern int npf_tunnel_greet_ms;
+extern int (*npf_tunnel_test_resolve)(const char *host, uint16_t port, struct sockaddr_storage *out,
+                                      socklen_t *lens, int max);
+/* a name's addresses in the order to try them (RFC 8305: the families in turns) */
+void npf_he_order(struct sockaddr_storage *a, socklen_t *l, int n);
 
 #endif

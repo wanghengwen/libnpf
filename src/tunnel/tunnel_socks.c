@@ -59,7 +59,6 @@ static int map_errno(int e)
     }
 }
 
-int npf_tunnel_he_ms = HE_DELAY_MS;
 int npf_tunnel_greet_ms = GREET_MS;
 int (*npf_tunnel_test_resolve)(const char *host, uint16_t port, struct sockaddr_storage *out, socklen_t *lens,
                                int max);
@@ -128,7 +127,7 @@ static int connect_next(sublink *s)
         s->hs->cfd[s->ncfd++] = fd;
         npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s);
         if (s->icand < s->ncand && !s->t_he)
-            s->t_he = npf_timer_add(s->t->loop, npf_tunnel_he_ms, he_timer, s);
+            s->t_he = npf_timer_add(s->t->loop, HE_DELAY_MS, he_timer, s);
         return 0;
     }
     if (s->ncfd)
