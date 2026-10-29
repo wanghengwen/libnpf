@@ -129,8 +129,9 @@ static void bind_start(struct npf_home *h, int probe, int64_t now)
  * is asked whether the spare is still there (home_open resume: kept, or a
  * new one): the relay reclaims a spare it does not hear from (at most
  * 330 s), and binding the old one again never ends (measured: a node's UDP
- * dropped 91 s, its spare resumed once while still dropped, then bound in
- * vain every 180 s for over an hour; the calls' allocations bound at once) */
+ * dropped 91 s, the platform kept its spare once while still dropped, then
+ * it was bound in vain every 180 s for over an hour; the calls' allocations
+ * bound at once) */
 static void gave_up(struct npf_home *h, int64_t now)
 {
     static const int again_s[] = {5, 20, 60, 180};
@@ -233,7 +234,7 @@ static void open_reply(npf_node *n, const npf_env *e, int ok, void *arg)
     if (npf_msg_parse(&m_home_open_d, e->j, e->data, &m, err, sizeof err) < 0)
         npf_logw("home: home_open's reply refused (%s)", err);
     else if (m.resumed && h->r.state && m.relay_id_len && memcmp(m.relay_id, h->r.relay_id, 8) == 0) {
-        npf_log("home: spare resumed (server %d)", n->server_id);
+        npf_log("home: the platform keeps the spare (server %d)", n->server_id);
         h->server = n->server_id;           /* backing off: bound again at its deadline (D11) */
     } else if (!m.resumed && spare_take(h, &m.relay) == 0)
         npf_logd("home: a spare allocation (server %d)", n->server_id);

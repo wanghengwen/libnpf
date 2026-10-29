@@ -79,18 +79,9 @@ static int fwd_create_run(npf_t *n, void *arg)
 int npf_forward_create(npf_t *n, uint32_t peer, const npf_forward_opt *o, uint32_t *fwd, char *err, size_t errcap)
 {
     npf_forward_opt opt;
-    uint32_t id = 0;
-    op_arg x = {.id = peer, .in = &opt, .out = &id, .err = err, .errcap = errcap};
-    int rc;
-    err_clear(err, errcap);
+    op_arg x = {.id = peer, .out = fwd, .err = err, .errcap = errcap};
     npf_forward_opt_init(&opt);
-    if (take_in(&opt, sizeof opt, o, SIZE_TO(npf_forward_opt, ctx)) < 0)
-        rc = op_fail(&x, NPF_EINVAL, "options not initialised (npf_forward_opt_init)");
-    else
-        rc = npf_api_op(n, fwd_create_run, &x);
-    if (fwd)
-        *fwd = id;
-    return rc;
+    return op_take(n, fwd_create_run, &x, &opt, sizeof opt, o, SIZE_TO(npf_forward_opt, ctx), "npf_forward_opt_init");
 }
 
 /* forward id: its peer and index there, NULL none */

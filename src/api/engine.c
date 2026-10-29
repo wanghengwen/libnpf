@@ -9,7 +9,6 @@
 #include <string.h>
 
 #include "api_internal.h"
-#include "npf/module.h"
 
 /* ---- lifecycle ---- */
 
@@ -34,98 +33,65 @@ int npf_api_version(void)
     return NPF_API_VERSION;
 }
 
-static int create(const npf_options *o, npf_t **out, char *err, size_t errcap);
+/* create()'s stages, in order. The first makes the instance (or nothing);
+ * each after it leaves what it made in n, failing or not: npf_engine_free
+ * undoes any part of them */
 
-/* the structures as this build knows them: what the application's build has,
- * the defaults for the rest */
-int npf_create(const npf_options *uo, npf_t **out, char *err, size_t errcap)
+/* why the options cannot be taken, NULL: they can (app_name, app_ver: npf_create set them) */
+static const char *options_bad(const npf_options *o)
 {
-    npf_options o;
-    npf_callbacks cb;
-    if (!out || !err || !errcap)
-        return NPF_EINVAL;
-    *out = NULL;
-    npf_options_init(&o);
-    npf_callbacks_init(&cb);
-    if (take_in(&o, sizeof o, uo, SIZE_TO(npf_options, flags)) < 0) {
-        snprintf(err, errcap, "options not initialised (npf_options_init)");
-        return NPF_EINVAL;
-    }
-    if (o.cb && take_in(&cb, sizeof cb, o.cb, SIZE_TO(npf_callbacks, media_closed)) < 0) {
-        snprintf(err, errcap, "callbacks not initialised (npf_callbacks_init)");
-        return NPF_EINVAL;
-    }
-    o.cb = &cb;
-    return create(&o, out, err, errcap);
+    if (!o->setup && !o->conf_dir && !o->conf_file)
+        return "conf_dir (or npf_options.setup) is needed";
+    if (o->setup && (o->conf_dir || o->conf_file || !o->data_dir))
+        return "npf_options.setup: no conf_dir or conf_file, and a data_dir";
+    if (o->flags & ~(NPF_OPT_NO_SAVED_SETTINGS | NPF_OPT_NO_SAVED_OBJECTS | NPF_OPT_NO_LOG_RING))
+        return "npf_options.flags: unknown flags";
+    if (!app_name_ok(o->app_name) || !app_ver_ok(o->app_ver))
+        return "app_name: 1..32 of a-z 0-9 . _ -; app_ver: up to 32 printable characters";
+    return NULL;
 }
 
-static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
+/* the instance with its lock and log, NULL: no memory */
+static npf_t *instance_new(const npf_options *o)
 {
-    npf_t *n;
-    npf_node_cfg cfg;                   /* the node's (its copy: n->node.cfg) */
-    int rc, fail_rc = NPF_EFAIL;
-    npf_log_ctx *prev_log;
-    if (!o->setup && !o->conf_dir && !o->conf_file) {
-        snprintf(err, errcap, "conf_dir (or npf_options.setup) is needed");
-        return NPF_EINVAL;
-    }
-    if (o->setup && (o->conf_dir || o->conf_file || !o->data_dir)) {
-        snprintf(err, errcap, "npf_options.setup: no conf_dir or conf_file, and a data_dir");
-        return NPF_EINVAL;
-    }
-    if (o->flags & ~(NPF_OPT_NO_SAVED_SETTINGS | NPF_OPT_NO_SAVED_OBJECTS | NPF_OPT_NO_LOG_RING)) {
-        snprintf(err, errcap, "npf_options.flags: unknown flags");
-        return NPF_EINVAL;
-    }
-    if (!(n = calloc(1, sizeof *n))) {
-        snprintf(err, errcap, "no memory");
-        return NPF_ENOMEM;
+    npf_t *n = calloc(1, sizeof *n);
+    if (!n)
+        return NULL;
+    /* recent lines for npf_log_json, unless the application asked for none */
+    if ((!(o->flags & NPF_OPT_NO_LOG_RING) && !(n->logctx.ring = malloc(NPF_LOG_RING))) || npf_api_init(n) < 0) {
+        free(n->logctx.ring);
+        free(n);
+        return NULL;
     }
     n->role = o->role;
     n->cb = *o->cb;
     n->opt_flags = o->flags;
-    npf_mods_take(n);                   /* the modules registered by now */
-    if (!app_name_ok(o->app_name ? o->app_name : "libnpf") || !app_ver_ok(o->app_ver ? o->app_ver : npf_version())) {
-        snprintf(err, errcap, "app_name: 1..32 of a-z 0-9 . _ -; app_ver: up to 32 printable characters");
-        free(n);
-        return NPF_EINVAL;
-    }
-    if (npf_api_init(n) < 0) {
-        snprintf(err, errcap, "no memory for API synchronization");
-        free(n);
-        return NPF_ENOMEM;
-    }
-    snprintf(n->app_name, sizeof n->app_name, "%s", o->app_name ? o->app_name : "libnpf");
-    snprintf(n->app_ver, sizeof n->app_ver, "%s", o->app_ver ? o->app_ver : npf_version());
+    npf_mods_take(n);                       /* the modules registered by now */
+    snprintf(n->app_name, sizeof n->app_name, "%s", o->app_name);
+    snprintf(n->app_ver, sizeof n->app_ver, "%s", o->app_ver);
     /* the instance's own log from here on: its level starts as the process's */
     n->logctx.hook = o->cb->log;
     n->logctx.user = o->cb->user;
-    /* recent lines for npf_log_json, unless the application asked for none */
-    if (!(o->flags & NPF_OPT_NO_LOG_RING) && !(n->logctx.ring = malloc(NPF_LOG_RING))) {
-        snprintf(err, errcap, "no memory");
-        npf_api_fini(n);
-        free(n);
-        return NPF_ENOMEM;
-    }
     n->logctx.level = npf_log_get_level();
-    prev_log = npf_log_ctx_swap(&n->logctx);
-    rc = npf_engine_config_load(n, o, err, errcap);
-    if (rc != NPF_OK) {
-        fail_rc = rc;
-        goto fail;
-    }
+    return n;
+}
 
+/* the configuration, the identity and the node on its loop */
+static int node_up(npf_t *n, const npf_options *o, char *err, size_t errcap)
+{
+    npf_node_cfg cfg;                   /* the node's (its copy: n->node.cfg) */
+    int rc = npf_engine_config_load(n, o, err, errcap);
+    if (rc != NPF_OK)
+        return rc;
     if (npf_engine_identity_load(n, err, errcap) < 0)
-        goto fail;
-
-    /* the node */
+        return NPF_EFAIL;
     if (n->role == NPF_ROLE_DIRECT) {
         memset(&cfg, 0, sizeof cfg);
         cfg.offline = 1;
         cfg.udp_port = (int)npf_conf_int(&n->conf, "udp_port");
     } else if (npf_node_cfg_from_conf(&cfg, &n->conf) < 0) {
         snprintf(err, errcap, "config: root keys and a server list are needed");
-        goto fail;
+        return NPF_EFAIL;
     }
     cfg.callable = n->role == NPF_ROLE_NODE && n->has_number;
     cfg.number = cfg.callable ? n->number : 0;
@@ -144,59 +110,109 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
     }
     if (!n->loop || npf_engine_node_init(n, &cfg) < 0) {
         snprintf(err, errcap, "cannot start the node (UDP socket or server list)");
-        goto fail;
+        return NPF_EFAIL;
     }
     if (!n->node.cfg.offline && !n->cred)
         npf_engine_account_load(n);
+    return NPF_OK;
+}
+
+/* what runs on the node: the published resources, the peers, the modules */
+static int services_up(npf_t *n, char *err, size_t errcap)
+{
+    int idle = (int)npf_conf_int(&n->conf, "peer_idle");
     /* target policy of the sessions accepted here: the published resources
      * (resources.h, security.md D22) */
     if (npf_pub_load(n, err, errcap) < 0)
-        goto fail;
+        return NPF_EFAIL;
     if (n->node.cfg.callable)
         npf_engine_callee_attach(n);
-    /* peers: the application's, and those it saved in local.json */
     if (!(n->peers = npf_engine_peers_new(n))) {
         snprintf(err, errcap, "no memory");
-        goto fail;
+        return NPF_EFAIL;
     }
-    if (n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS)
+    if (no_saved_objects(n))
         npf_peers_no_cache(n->peers);
-    {   /* peer_idle = S: the peers on demand without an idle time of their own end S s after their last connection */
-        int idle = (int)npf_conf_int(&n->conf, "peer_idle");
-        npf_peers_set_idle(n->peers, (idle > 0 ? idle : 300) * 1000);
-    }
+    /* peer_idle = S: the peers on demand without an idle time of their own end S s after their last connection */
+    npf_peers_set_idle(n->peers, (idle > 0 ? idle : 300) * 1000);
     if (n->node.cfg.hosted_exec)
         npf_hosted_limits(n);
     /* the modules, before the peers come: their forwards' callbacks go to them */
-    if (npf_mods_create(n, err, errcap) < 0)
-        goto fail;
-    /* a long-running role brings back what it saved (a client's one-off tasks do not) */
-    if (n->role != NPF_ROLE_CLIENT && !(n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS))
+    return npf_mods_create(n, err, errcap) < 0 ? NPF_EFAIL : NPF_OK;
+}
+
+/* what a long-running role saved (a client's one-off tasks do not), and
+ * the direct connections (no platform): "direct = [ADDR:]PORT" with its key */
+static int restore(npf_t *n, char *err, size_t errcap)
+{
+    const char *direct = npf_conf_get(&n->conf, "direct", NULL);
+    uint8_t psk[32];
+    if (n->role == NPF_ROLE_CLIENT)
+        return NPF_OK;
+    if (!no_saved_objects(n))
         npf_ops_restore(n);
-    {   /* direct connections (no platform): "direct = [ADDR:]PORT" with its key */
-        const char *direct = npf_conf_get(&n->conf, "direct", NULL);
-        if (direct && *direct && n->role != NPF_ROLE_CLIENT) {
-            uint8_t psk[32];
-            if (npf_direct_psk(npf_conf_get(&n->conf, "direct_psk", NULL), npf_conf_get(&n->conf, "direct_psk_file", NULL),
-                               psk) < 0) {
-                snprintf(err, errcap, "direct needs direct_psk_file (or direct_psk)");
-                goto fail;
-            }
-            n->dl = npf_direct_listen(&n->node, direct, psk, n->node.cfg.callable ? NULL : &n->policy);
-            npf_wipe(psk, 32);
-            if (!n->dl) {
-                snprintf(err, errcap, "cannot listen for direct connections on %s", direct);
-                goto fail;
-            }
-        }
+    if (!direct || !*direct)
+        return NPF_OK;
+    if (npf_direct_psk(npf_conf_get(&n->conf, "direct_psk", NULL), npf_conf_get(&n->conf, "direct_psk_file", NULL),
+                       psk) < 0) {
+        snprintf(err, errcap, "direct needs direct_psk_file (or direct_psk)");
+        return NPF_EFAIL;
     }
-    npf_log_ctx_swap(prev_log);
-    *out = n;
+    n->dl = npf_direct_listen(&n->node, direct, psk, n->node.cfg.callable ? NULL : &n->policy);
+    npf_wipe(psk, 32);
+    if (!n->dl) {
+        snprintf(err, errcap, "cannot listen for direct connections on %s", direct);
+        return NPF_EFAIL;
+    }
     return NPF_OK;
-fail:                                       /* what was made so far: npf_engine_free knows it */
+}
+
+static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
+{
+    const char *bad = options_bad(o);
+    npf_log_ctx *prev_log;
+    npf_t *n;
+    int rc;
+    if (bad) {
+        snprintf(err, errcap, "%s", bad);
+        return NPF_EINVAL;
+    }
+    if (!(n = instance_new(o))) {
+        snprintf(err, errcap, "no memory");
+        return NPF_ENOMEM;
+    }
+    prev_log = npf_log_ctx_swap(&n->logctx);
+    if ((rc = node_up(n, o, err, errcap)) == NPF_OK && (rc = services_up(n, err, errcap)) == NPF_OK)
+        rc = restore(n, err, errcap);
     npf_log_ctx_swap(prev_log);
-    npf_engine_free(n);
-    return fail_rc;
+    if (rc != NPF_OK)
+        npf_engine_free(n);                 /* the one unwind: whatever the stages made */
+    else
+        *out = n;
+    return rc;
+}
+
+/* the structures as this build knows them: what the application's build has,
+ * the defaults for the rest */
+int npf_create(const npf_options *uo, npf_t **out, char *err, size_t errcap)
+{
+    npf_options o;
+    npf_callbacks cb;
+    op_arg x = {.err = err, .errcap = errcap};
+    if (!out || !err || !errcap)
+        return NPF_EINVAL;
+    *out = NULL;
+    npf_options_init(&o);
+    npf_callbacks_init(&cb);
+    if (take_in(&x, &o, sizeof o, uo, SIZE_TO(npf_options, flags), "npf_options_init")
+        || (o.cb && take_in(&x, &cb, sizeof cb, o.cb, SIZE_TO(npf_callbacks, media_closed), "npf_callbacks_init")))
+        return NPF_EINVAL;
+    o.cb = &cb;
+    if (!o.app_name)
+        o.app_name = "libnpf";
+    if (!o.app_ver)
+        o.app_ver = npf_version();
+    return create(&o, out, err, errcap);
 }
 
 /* the start of the run, on the loop's thread */

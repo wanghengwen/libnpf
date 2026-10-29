@@ -15,7 +15,6 @@
 #include <string.h>
 
 #include "api_internal.h"
-#include "npf/module.h"
 #include "npf/text.h"
 
 /* ---- the structures' defaults ---- */
@@ -56,6 +55,30 @@ int op_fail(op_arg *x, int rc, const char *fmt, ...)
         va_end(ap);
     }
     return rc;
+}
+
+int take_in(op_arg *x, void *dst, size_t dsize, const void *src, size_t min, const char *init)
+{
+    size_t size = 0;
+    if (src)
+        memcpy(&size, src, sizeof size);
+    if (size < min)                         /* NULL too: min > 0 */
+        return op_fail(x, NPF_EINVAL, "not initialised (%s)", init);
+    memcpy(dst, src, size < dsize ? size : dsize);
+    memcpy(dst, &dsize, sizeof dsize);
+    return NPF_OK;
+}
+
+int op_take(npf_t *n, int (*fn)(npf_t *n, void *arg), op_arg *x, void *in, size_t size, const void *src, size_t min,
+            const char *init)
+{
+    uint32_t none;
+    err_clear(x->err, x->errcap);
+    x->in = in;
+    if (!x->out)
+        x->out = &none;
+    *(uint32_t *)x->out = 0;
+    return take_in(x, in, size, src, min, init) ? NPF_EINVAL : npf_api_op(n, fn, x);
 }
 
 int op_get(npf_t *n, int (*fn)(npf_t *n, void *arg), uint32_t id, void *out, size_t size)

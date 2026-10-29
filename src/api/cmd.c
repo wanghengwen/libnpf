@@ -10,9 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/platform.h"
 #include "api_internal.h"
-#include "npf/module.h"
 
 /* ---- settings ---- */
 

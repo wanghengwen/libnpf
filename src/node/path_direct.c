@@ -66,7 +66,7 @@ void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer)
 static void path_send(npf_call *c, int type, uint64_t nonce)
 {
     uint8_t buf[PATH_PKT_LEN], *p = buf + NPF_SIV_TAG_SIZE;
-    if (!c->pd.keys_ready || !call_has_p2p(c) || call_p2p_cut(c))
+    if (!c->keys_ready || !call_has_p2p(c) || call_p2p_cut(c))
         return;
     p[0] = (uint8_t)type;
     p[1] = 0;
@@ -79,7 +79,7 @@ static void path_send(npf_call *c, int type, uint64_t nonce)
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len)
 {
     uint8_t plain[16];
-    if (!c->pd.keys_ready || len != PATH_PKT_LEN || npf_siv_open(&c->pd.keys, c->caller ? 1 : 0, buf, len, plain) < 0)
+    if (!c->keys_ready || len != PATH_PKT_LEN || npf_siv_open(&c->pd.keys, c->caller ? 1 : 0, buf, len, plain) < 0)
         return 0;
     if (plain[0] == PKT_PATH_CHECK)
         path_send(c, PKT_PATH_ECHO, npf_rd64(plain + 2));

@@ -11,9 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/platform.h"
 #include "api_internal.h"
-#include "npf/module.h"
 
 /* ---- queries: JSON for the caller (npf_free) ---- */
 
@@ -132,12 +130,13 @@ int npf_config_set(npf_t *n, const char *key, const char *value, int save, char 
 {
     kv_arg x = {.key = key, .value = value, .save = save};
     int r;
+    err_clear(err, errcap);
     if (!key || !value)
         return NPF_EINVAL;
     r = npf_api_op(n, set_run, &x);
     if (x.o.failed)
         r = NPF_ENOMEM;
-    else if (r < 0 && x.o.p && err && errcap)
+    else if (r < 0 && x.o.p && err)
         snprintf(err, errcap, "%s", x.o.p);
     npf_out_free(&x.o);
     return r;
@@ -245,54 +244,48 @@ int npf_session_send(npf_t *n, uint32_t session, const void *buf, size_t len)
     return npf_api_op(n, send_run, &x);
 }
 
-typedef struct m_open {
-    uint32_t session, media;
-    npf_media_opt o;
-} m_open;
-
 static int open_run(npf_t *n, void *arg)
 {
-    m_open *x = arg;
-    npf_call *call = npf_session_call(n, x->session);
+    op_arg *x = arg;
+    const npf_media_opt *o = x->in;
+    npf_call *call = npf_session_call(n, x->id);
     npf_call_media_opt co;
-    uint32_t lid;
+    uint32_t lid, media;
     int e = 0;
+    if (o->tag < 0 || o->tag > 999)
+        return NPF_EINVAL;
     if (!call)
         return NPF_ENOENT;
     if (n->nmed >= NPF_MAX_MEDIA)
         return NPF_EBUSY;
     memset(&co, 0, sizeof co);
-    co.tag = x->o.tag;
-    co.prio = x->o.prio < 0 || x->o.prio > 3 ? 1 : x->o.prio;
-    co.max_age_ms = x->o.max_age_ms;
-    co.drop_until_key = x->o.drop_until_key;
-    co.fec = x->o.fec;
-    co.fec_ratio = x->o.fec_ratio;
-    co.latency_rtt = x->o.latency_rtt;
-    co.rcv_drop_until_key = x->o.rcv_drop_until_key;
+    co.tag = o->tag;
+    co.prio = o->prio < 0 || o->prio > 3 ? 1 : o->prio;
+    co.max_age_ms = o->max_age_ms;
+    co.drop_until_key = o->drop_until_key;
+    co.fec = o->fec;
+    co.fec_ratio = o->fec_ratio;
+    co.latency_rtt = o->latency_rtt;
+    co.rcv_drop_until_key = o->rcv_drop_until_key;
     if (!(lid = npf_call_media_open(call, &co, &e)))
         return e ? e : NPF_ESTATE;
-    if (!(x->media = npf_media_add(n, x->session, call, lid))) {
+    if (!(media = npf_media_add(n, x->id, call, lid))) {
         npf_call_media_close(call, lid);
         return NPF_ENOMEM;
     }
+    *(uint32_t *)x->out = media;
     return NPF_OK;
 }
 
 int npf_media_open(npf_t *n, uint32_t session, const npf_media_opt *o, uint32_t *media)
 {
-    m_open x = {.session = session};
-    int rc;
+    npf_media_opt mo;
+    op_arg x = {.id = session, .out = media};
     if (!media)
         return NPF_EINVAL;
-    *media = 0;
-    npf_media_opt_init(&x.o);
-    if ((o && take_in(&x.o, sizeof x.o, o, SIZE_TO(npf_media_opt, rcv_drop_until_key)) < 0) || x.o.tag < 0
-        || x.o.tag > 999)
-        return NPF_EINVAL;
-    if ((rc = npf_api_op(n, open_run, &x)) == NPF_OK)
-        *media = x.media;
-    return rc;
+    npf_media_opt_init(&mo);
+    return op_take(n, open_run, &x, &mo, sizeof mo, o, SIZE_TO(npf_media_opt, rcv_drop_until_key),
+                   "npf_media_opt_init");
 }
 
 static int frame_run(npf_t *n, void *arg)
