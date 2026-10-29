@@ -41,7 +41,7 @@ static void connect_timeout(npf_loop *loop, void *arg)
     npf_tunnel *t = s->t;
     (void)loop;
     s->hs->t_connect = NULL;
-    t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
+    tunnel_enter(t);                    /* sublink_done may free the tunnel */
     socks_fail(s, 6);
     tunnel_leave(t);
 }
@@ -99,7 +99,7 @@ static void he_timer(npf_loop *loop, void *arg)
     npf_tunnel *t = s->t;
     (void)loop;
     s->hs->t_he = NULL;
-    t->depth++;
+    tunnel_enter(t);
     connect_next(s);                    /* no answer yet: the next address too */
     tunnel_leave(t);
 }
@@ -145,7 +145,7 @@ static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
     int err = 0, k;
     socklen_t el = sizeof err;
     (void)ev;
-    t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
+    tunnel_enter(t);                    /* sublink_done may free the tunnel */
     getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&err, &el);
     for (k = 0; k < h->ncfd && h->cfd[k] != fd; k++)
         ;
@@ -223,7 +223,7 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     sublink *s = arg;
     npf_tunnel *t = s->t;
     (void)r;
-    t->depth++;
+    tunnel_enter(t);
     s->resolve = NULL;
     if (err != 0)
         socks_fail(s, 4);           /* host unreachable: the name did not resolve */
@@ -301,7 +301,7 @@ static void greet_timeout(npf_loop *loop, void *arg)
     npf_tunnel *t = s->t;
     (void)loop;
     s->t_greet = NULL;
-    t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
+    tunnel_enter(t);                    /* sublink_done may free the tunnel */
     if (s->state == SL_LOCAL_GREETING) {
         s->end = "greeting_timeout";
         tunnel_sub_free(s, 1);

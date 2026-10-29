@@ -321,7 +321,7 @@ static void room_tick(npf_loop *l, void *arg)
     (void)l;
     if (!v->room && !v->closed) {
         v->room = 1;
-        npf_tunnel_vkick(v->t, v->sid);
+        npf_tunnel_vkick(v->t);
     }
 }
 

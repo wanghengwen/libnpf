@@ -45,16 +45,23 @@ typedef struct sl_hs {
     npf_timer *t_connect, *t_he;    /* the deadline (lookup too), the next address's turn */
 } sl_hs;
 
+/* a virtual end its owner closed (npf_tunnel_vclose), for virt_poll */
+enum { VG_NONE, VG_CLOSED, VG_RESET };
+
 typedef struct sublink {
     npf_tunnel *t;
     uint32_t id;
     int      fd;
     int      state;
+    /* the handshake */
     int      server;            /* we run the SOCKS5 server for this sublink */
     sl_hs   *hs;                /* the handshake's (above), NULL once open */
     uint8_t  rep[7];            /* client: the replies' first bytes (tunnel_client_reply) */
     size_t   sl;                /* bytes in hs->sb; client: of the replies seen */
     int      fwd_rep;           /* client (-D): the CONNECT reply goes to the application as it is */
+    npf_timer *t_greet;         /* the SOCKS greeting and request still to come (GREET_MS) */
+    npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
+    /* flow control */
     int64_t  tx_credit;         /* DATA bytes we may still send */
     uint32_t rx_freed;          /* written locally since the last WINDOW */
     uint32_t rx_window;
@@ -63,20 +70,20 @@ typedef struct sublink {
     int      peer_fin;          /* FIN received */
     int      shut_wr;           /* local write side shut down */
     unsigned ev;                /* registered events */
-    npf_timer *t_greet;         /* the SOCKS greeting and request still to come (GREET_MS) */
-    struct rgroup *rg;          /* its rate group, NULL: none */
-    uint64_t in, out;           /* read from / written to its local socket */
     int      shared;            /* counted in the shared limits (npf_tunnel_shared.subs) */
-    npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
-    /* opened here: for its record (npf_sublink_stats) */
+    /* the rate */
+    struct rgroup *rg;          /* its rate group, NULL: none */
+    /* a virtual end */
+    const npf_vend_io *v;       /* a virtual local end (npf_tunnel_open_v), fd -1; NULL: none */
+    void    *varg;
+    int      vgone;             /* VG_* */
+    int      gone;              /* closed so: the peer's data dropped until its FIN (or t_gone) */
+    npf_timer *t_gone;
+    /* stats: opened here, for its record (npf_sublink_stats) */
+    uint64_t in, out;           /* read from / written to its local socket */
     int64_t  t_open, t_ok, t_first;     /* mono ms: opened, CONNECT reply, first byte to the local socket */
     int      fin_first;                 /* 1: the local side closed first, 2: the peer */
     const char *end;                    /* why it ended, when not by FIN (npf_sublink_stats.end) */
-    const npf_vend_io *v;               /* a virtual local end (npf_tunnel_open_v), fd -1; NULL: none */
-    void    *varg;
-    int      vgone;                     /* its owner closed the virtual end (1, 2: reset): for virt_poll */
-    int      gone;                      /* closed so: the peer's data dropped until its FIN (or t_gone) */
-    npf_timer *t_gone;
 } sublink;
 
 struct npf_tunnel {
@@ -133,8 +140,9 @@ void tunnel_sub_free(sublink *s, int rst);
 void tunnel_sub_reset(sublink *s, int reason);
 /* why it ended (npf_sublink_stats.end), unless that is said already */
 static inline void tunnel_sub_end(sublink *s, const char *why) { if (!s->end) s->end = why; }
-/* the end of a call into the tunnel that held it (t->depth++ before): 1
- * when it was freed meanwhile (it is gone now) */
+/* a call into the tunnel that may call out (a callback may free it), and
+ * its end: 1 when it was freed meanwhile (it is gone now) */
+static inline void tunnel_enter(npf_tunnel *t) { t->depth++; }
 int  tunnel_leave(npf_tunnel *t);
 /* to the local end: what is queued, then p[0..n); what it cannot take now
  * queued. -1: the sublink was reset (a write failed: LOCAL, the queue full: LIMIT) */
@@ -149,9 +157,7 @@ size_t tunnel_rate_allow(sublink *s, int up, size_t want);
 void tunnel_rate_take(sublink *s, int up, size_t n);
 rgroup *tunnel_rate_group(npf_tunnel *t, uint32_t group, uint32_t rate);
 
-/* tunnel_virt.c: the virtual local ends */
-/* a poll of the virtual ends soon (one at a time, not from inside one) */
-void tunnel_virt_arm(npf_tunnel *t);
+/* tunnel_virt.c: the virtual local ends (a poll soon: npf_tunnel_vkick) */
 
 /* tunnel_socks.c */
 /* a SOCKS5 greeting in b[0..n): its length once complete (*noauth: it

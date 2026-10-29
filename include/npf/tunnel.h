@@ -227,8 +227,8 @@ typedef struct npf_vend_io {
 } npf_vend_io;
 /* CONNECT host:port with a virtual local end; the sublink's id (> 0), or -1 */
 int  npf_tunnel_open_v(npf_tunnel *t, const npf_vend_io *v, void *varg, const char *host, uint16_t port);
-/* the local end of sublink id may read or write again: looked at soon */
-void npf_tunnel_vkick(npf_tunnel *t, uint32_t id);
+/* a virtual local end may read or write again: they are all looked at soon */
+void npf_tunnel_vkick(npf_tunnel *t);
 /* the local end went away by itself: the sublink is reset (reset) or
  * finished as by FIN and dropped; closed() is not called */
 void npf_tunnel_vclose(npf_tunnel *t, uint32_t id, int reset);

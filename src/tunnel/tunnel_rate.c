@@ -31,7 +31,7 @@ static void rate_tick(npf_loop *loop, void *arg)
     int i;
     (void)loop;
     t->t_rate = NULL;
-    t->depth++;
+    tunnel_enter(t);
     for (i = 0; i < t->nrg; i++)
         rg_refill(&t->rg[i]);
     for (i = 0; i < t->nsubs; i++)
@@ -137,7 +137,7 @@ int npf_tunnel_group_count(const npf_tunnel *t, uint32_t group)
 int npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why)
 {
     int i, n = 0;
-    t->depth++;                             /* sublink_done may free the tunnel */
+    tunnel_enter(t);                        /* sublink_done may free the tunnel */
     for (i = t->nsubs - 1; i >= 0 && !t->dead; i--) {   /* from the end: a released one's place takes one seen already */
         sublink *s;
         if (i >= t->nsubs)

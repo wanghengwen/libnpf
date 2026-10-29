@@ -18,7 +18,7 @@ static void gone_timeout(npf_loop *loop, void *arg)
     (void)loop;
     s->t_gone = NULL;
     tunnel_sub_end(s, "local_reset");
-    t->depth++;
+    tunnel_enter(t);
     tunnel_sub_reset(s, NPF_RST_TIMEOUT);
     tunnel_leave(t);
 }
@@ -32,8 +32,8 @@ static void gone_timeout(npf_loop *loop, void *arg)
 static void vend_close(sublink *s)
 {
     npf_tunnel *t = s->t;
-    int reset = s->vgone == 2;
-    s->vgone = 0;
+    int reset = s->vgone == VG_RESET;
+    s->vgone = VG_NONE;
     t->ngone--;
     if (reset) {
         tunnel_sub_end(s, "local_reset");
@@ -75,7 +75,7 @@ static void virt_poll(npf_loop *loop, void *arg)
     (void)loop;
     t->t_virt = NULL;
     t->in_poll = 1;
-    t->depth++;
+    tunnel_enter(t);
     vends_closed(t);
     for (round = 0; round < VIRT_ROUNDS && busy && !t->dead; round++) {
         int i;
@@ -100,19 +100,14 @@ static void virt_poll(npf_loop *loop, void *arg)
     if (tunnel_leave(t))
         return;
     if (busy || t->ngone)
-        tunnel_virt_arm(t);                    /* more next time: other work goes first */
+        npf_tunnel_vkick(t);                    /* more next time: other work goes first */
 }
 
-void tunnel_virt_arm(npf_tunnel *t)
+/* a poll soon (one at a time, not from inside one) */
+void npf_tunnel_vkick(npf_tunnel *t)
 {
     if (!t->t_virt && !t->in_poll && !t->dead)
         t->t_virt = npf_timer_add(t->loop, 0, virt_poll, t);
-}
-
-void npf_tunnel_vkick(npf_tunnel *t, uint32_t id)
-{
-    (void)id;
-    tunnel_virt_arm(t);
 }
 
 /* the owner closed the virtual end: not called again from now on, the rest
@@ -125,7 +120,7 @@ void npf_tunnel_vclose(npf_tunnel *t, uint32_t id, int reset)
     if (!s || !s->v)
         return;
     s->v = NULL;
-    s->vgone = reset ? 2 : 1;
+    s->vgone = reset ? VG_RESET : VG_CLOSED;
     t->ngone++;
-    tunnel_virt_arm(t);
+    npf_tunnel_vkick(t);
 }
