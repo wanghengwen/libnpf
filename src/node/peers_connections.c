@@ -6,7 +6,6 @@
 #include <string.h>
 
 #include "npf/out.h"
-#include "npf.h"
 #include "npf/platform.h"
 
 #include "peers_internal.h"
@@ -127,7 +126,6 @@ static uint64_t conn_add(pfwd *f, const struct sockaddr_storage *from, int ip)
     memset(c, 0, sizeof *c);
     c->id = ++ps->conn_seq;
     c->p = f->p;
-    c->slot = f->idx;
     c->fid = f->id;
     c->port = f->port;
     c->mapping = f->ext;
@@ -191,11 +189,11 @@ uint64_t peers_public_admit(pfwd *f, int fd)
 static void conn_end(npf_peers *ps, int k, const npf_sublink_stats *st, const char *why)
 {
     pconn c = ps->conns[k];
+    pfwd *f = peers_fwd_by_id(ps, c.fid);   /* NULL: gone (a removed peer is not listed) */
     ps->conns[k] = ps->conns[--ps->nconns];
-    if (c.p && c.slot < c.p->nfwd && c.p->fwds[c.slot]->used && c.p->fwds[c.slot]->id == c.fid
-        && c.p->fwds[c.slot]->nconns > 0)
-        c.p->fwds[c.slot]->nconns--;
-    if (c.ip >= 0 && ps->ips && ps->ips[c.ip].conns > 0)
+    if (f && f->nconns > 0)
+        f->nconns--;
+    if (c.ip >= 0 && ps->ips[c.ip].conns > 0)
         ps->ips[c.ip].conns--;
     if (why) {
         if (ps->cbs.refused)

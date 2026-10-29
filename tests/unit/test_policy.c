@@ -123,6 +123,24 @@ int test_policy(void)
     npf_policy_clear(&p);
     CHECK(!allowed4(&p, "127.0.0.1", 80) && !p.lan && !p.any, "cleared: nothing allowed");
 
+    /* an allow_from list: the address, whatever the rules' ports (a range
+     * once matched only when it ended at 65535 or began at 0) */
+    {
+        struct sockaddr_in a;
+        memset(&a, 0, sizeof a);
+        a.sin_family = AF_INET;
+        a.sin_port = htons(40000);
+        CHECK(npf_policy_add(&p, "192.0.2.0/24:80-443") == 0 && npf_policy_add(&p, "198.51.100.7") == 0,
+              "two source rules");
+        inet_pton(AF_INET, "192.0.2.9", &a.sin_addr);
+        CHECK(npf_policy_rules_match(p.rules, p.nrules, (struct sockaddr *)&a), "in a rule with a port range");
+        inet_pton(AF_INET, "198.51.100.7", &a.sin_addr);
+        CHECK(npf_policy_rules_match(p.rules, p.nrules, (struct sockaddr *)&a), "an address rule");
+        inet_pton(AF_INET, "192.0.3.9", &a.sin_addr);
+        CHECK(!npf_policy_rules_match(p.rules, p.nrules, (struct sockaddr *)&a), "outside the rules");
+        npf_policy_clear(&p);
+    }
+
     /* resources: the policy they make; the fields checked */
     {
         npf_res r[4];

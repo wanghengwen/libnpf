@@ -127,8 +127,7 @@ static int load_node_file(npf_t *n, const char *path)
     ok = npf_json_parse(&j, s, (size_t)len, tok, 32) == 0 && npf_json_get_str(&j, 0, "number", num, sizeof num) > 0
          && npf_json_get_str(&j, 0, "password", n->default_pw, sizeof n->default_pw) > 0
          && strtoull(num, NULL, 10) != 0;
-    npf_wipe(s, (size_t)len);           /* the default password */
-    free(s);
+    npf_wipe_free(s, (size_t)len);      /* the default password */
     if (!ok) {
         n->default_pw[0] = 0;
         return -2;

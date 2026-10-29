@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,20 +30,34 @@ static void check(int ok, const char *what)
 
 /* ---- an echo service ---- */
 
+/* a connection of its own thread: one through a session that went (the
+ * network changed) never ends here, its peer's FIN lost with the session
+ * (a session that went without a word stays until it times out) */
+static void *echo_conn(void *arg)
+{
+    int c = (int)(intptr_t)arg;
+    char b[4096];
+    ssize_t r;
+    while ((r = read(c, b, sizeof b)) > 0)
+        if (write(c, b, (size_t)r) != r)
+            break;
+    close(c);
+    return NULL;
+}
+
 static int echo_fd;
 static void *echo_main(void *arg)
 {
     (void)arg;
     for (;;) {
-        char b[4096];
-        ssize_t r;
+        pthread_t t;
         int c = accept(echo_fd, NULL, NULL);
         if (c < 0)
             return NULL;
-        while ((r = read(c, b, sizeof b)) > 0)
-            if (write(c, b, (size_t)r) != r)
-                break;
-        close(c);
+        if (pthread_create(&t, NULL, echo_conn, (void *)(intptr_t)c) == 0)
+            pthread_detach(t);
+        else
+            close(c);
     }
 }
 
@@ -400,9 +415,9 @@ int main(void)
     static const uint8_t key[32] = {1, 2, 3};
     const char *keyb64 = "AQIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     /* below the ephemeral ports, apart from the API test's 277xx (ctest -j, other builds at once) */
-    int dport = 27930 + (int)(getpid() % 40), echo, i, j, k, ok;
+    int dport = 0, echo, i, j, k, ok;
     int ctx_peer, ctx_fwd, ctx_socks;
-    npf_t *a, *b, *c;
+    npf_t *a = NULL, *b, *c;
     npf_peer_opt po;
     npf_peer_info pi;
     npf_forward_opt fo;
@@ -416,8 +431,11 @@ int main(void)
         return 2;
 
     /* A: a direct node with an echo service published */
-    snprintf(ov, sizeof ov, "udp_port = 0\ndirect = 127.0.0.1:%d\ndirect_psk = %s\n", dport, keyb64);
-    a = make(da, NPF_ROLE_DIRECT, ov, 0, 0, err, sizeof err);
+    for (i = 0; i < 40 && !a; i++) {        /* the next port when another run (another tree's) has it */
+        dport = 27930 + (int)((getpid() + i) % 40);
+        snprintf(ov, sizeof ov, "udp_port = 0\ndirect = 127.0.0.1:%d\ndirect_psk = %s\n", dport, keyb64);
+        a = make(da, NPF_ROLE_DIRECT, ov, 0, 0, err, sizeof err);
+    }
     check(a != NULL, "A made");
     if (!a)
         return 1;

@@ -1,11 +1,9 @@
 /* Connections and datagrams waiting for a session, and idle expiry. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf.h"
 #include "npf/platform.h"
 
 #include "peers_internal.h"
@@ -86,17 +84,22 @@ void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, c
  * before `before` are closed (why: their record's end); how many */
 static int conns_drop(npf_peer *p, int slot, int64_t before, const char *why)
 {
-    int k, n = 0, was = p->npend;
+    uint64_t gone[DEMAND_PENDING];
+    int k, n = 0, ng = 0;
     for (k = 0; k < p->npend; k++)
         if ((slot < 0 || p->pend[k].slot == slot) && p->pend[k].at < before) {
             npf_sock_close(p->pend[k].fd);
-            peers_conn_gone(p->ps, p->pend[k].conn, why);
+            gone[ng++] = p->pend[k].conn;
         } else {
             p->pend[n++] = p->pend[k];
         }
     p->npend = n;
     queues_trim(p);
-    return was - n;
+    /* told once the queue is whole again: the application's callback (an
+     * event) may remove the forward or the peer, dropping it in turn */
+    for (k = 0; k < ng; k++)
+        peers_conn_gone(p->ps, gone[k], why);
+    return ng;
 }
 
 /* the same for the waiting UDP datagrams: dropped */
@@ -117,18 +120,21 @@ static void dgrams_drop(npf_peer *p, int slot, int64_t before)
 /* the session is up: the waiting connections go into it */
 static void demand_flush(npf_peer *p)
 {
-    int k;
-    for (k = 0; k < p->npend; k++) {
-        pfwd *f = p->fwds[p->pend[k].slot];
-        if (f->used && f->id == p->pend[k].fid)    /* still its forward, not another in the slot */
-            peers_conn_open(f, p->pend[k].fd, p->pend[k].conn);
-        else {
-            npf_sock_close(p->pend[k].fd);
-            peers_conn_gone(p->ps, p->pend[k].conn, "no_session");
-        }
-    }
+    struct pend_conn *q = p->pend;          /* taken out: a refusal's callback may drop the queue (conns_drop) */
+    int k, n = p->npend;
+    p->pend = NULL;
     p->npend = 0;
     p->idle_since = 0;
+    for (k = 0; k < n; k++) {
+        pfwd *f = p->fwds[q[k].slot];
+        if (f->used && f->id == q[k].fid)  /* still its forward, not another in the slot */
+            peers_conn_open(f, q[k].fd, q[k].conn);     /* (a removed peer has no session: refused) */
+        else {
+            npf_sock_close(q[k].fd);
+            peers_conn_gone(p->ps, q[k].conn, "no_session");
+        }
+    }
+    free(q);
     queues_trim(p);
 }
 

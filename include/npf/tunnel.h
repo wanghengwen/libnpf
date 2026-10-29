@@ -86,7 +86,7 @@ int  npf_policy_allowed(npf_policy *p, const struct sockaddr *dst);
  * "10.1.0.0/16", "10.1.2.3:5000-5100" or "*"; 0, -1 bad or full */
 int  npf_policy_add_udp(npf_policy *p, const char *spec);
 int  npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst);
-/* is the address (any port) in one of the rules (an allow_from list)? */
+/* is the address in one of the rules, whatever their ports (an allow_from list)? */
 int  npf_policy_rules_match(const npf_policy_rule *r, int n, const struct sockaddr *a);
 
 /* The control interface of this process (the web console and its API, on
@@ -227,8 +227,8 @@ typedef struct npf_vend_io {
 } npf_vend_io;
 /* CONNECT host:port with a virtual local end; the sublink's id (> 0), or -1 */
 int  npf_tunnel_open_v(npf_tunnel *t, const npf_vend_io *v, void *varg, const char *host, uint16_t port);
-/* the local end of sublink id may read or write again: looked at soon */
-void npf_tunnel_vkick(npf_tunnel *t, uint32_t id);
+/* a virtual local end may read or write again: they are all looked at soon */
+void npf_tunnel_vkick(npf_tunnel *t);
 /* the local end went away by itself: the sublink is reset (reset) or
  * finished as by FIN and dropped; closed() is not called */
 void npf_tunnel_vclose(npf_tunnel *t, uint32_t id, int reset);

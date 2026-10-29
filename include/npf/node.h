@@ -600,6 +600,9 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason, int
 
 /* server time in ms (wall clock corrected by welcome.time) */
 int64_t npf_node_time(const npf_node *n);
+/* the next wait of a doubling backoff (*cur: first the first time, at most
+ * max), with +-25 % jitter (ms) */
+int     npf_backoff(int *cur, int first, int max);
 
 /* a server list's payload into entries (out: NPF_MAX_SERVERS), its serial
  * and its expiry, fullness and channels: the count, or -1 (logged) */

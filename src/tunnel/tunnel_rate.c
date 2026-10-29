@@ -12,8 +12,6 @@
 static void rg_refill(rgroup *g)
 {
     int64_t now = npf_mono_ms(), add;
-    if (now <= g->at_ms)
-        return;
     /* The bucket holds at most a second. A high-rate group idle for weeks
      * must not overflow elapsed_ms * rate just to fill that bucket. */
     add = now - g->at_ms >= 1000 ? g->rate : (now - g->at_ms) * (int64_t)g->rate / 1000;
@@ -33,7 +31,7 @@ static void rate_tick(npf_loop *loop, void *arg)
     int i;
     (void)loop;
     t->t_rate = NULL;
-    t->depth++;
+    tunnel_enter(t);
     for (i = 0; i < t->nrg; i++)
         rg_refill(&t->rg[i]);
     for (i = 0; i < t->nsubs; i++)
@@ -53,17 +51,12 @@ static void rate_wait(npf_tunnel *t)
 static void budget_refill(npf_budget *b)
 {
     int64_t now = npf_mono_ms();
-    if (b->at_ms == 0 || b->tokens > b->slow) {
-        b->tokens = b->slow;
-        b->at_ms = now;
-    }
-    b->tokens += (double)(now - b->at_ms) * b->slow / 1000;
+    b->tokens = b->at_ms ? b->tokens + (double)(now - b->at_ms) * b->slow / 1000 : b->slow;
     if (b->tokens > b->slow)
         b->tokens = b->slow;
     b->at_ms = now;
 }
 
-/* bytes the sublink may move now (up: local -> tunnel), at most want */
 size_t tunnel_rate_allow(sublink *s, int up, size_t want)
 {
     npf_budget *b = s->t->budget;
@@ -144,7 +137,7 @@ int npf_tunnel_group_count(const npf_tunnel *t, uint32_t group)
 int npf_tunnel_group_reset(npf_tunnel *t, uint32_t group, const char *why)
 {
     int i, n = 0;
-    t->depth++;                             /* sublink_done may free the tunnel */
+    tunnel_enter(t);                        /* sublink_done may free the tunnel */
     for (i = t->nsubs - 1; i >= 0 && !t->dead; i--) {   /* from the end: a released one's place takes one seen already */
         sublink *s;
         if (i >= t->nsubs)

@@ -151,7 +151,7 @@ npf_call *call_new(npf_node *n, int caller)
  * the call before it is freed: the tunnel's sublinks end with callbacks
  * (sublink_done, a virtual end's closed), which must not find it still
  * there. It sends nothing and fails no control request: its callers do */
-void call_data_free(npf_call *c)
+static void call_data_free(npf_call *c)
 {
     npf_tunnel *t = c->tun;
     npf_udpf *u = c->udp;
@@ -162,19 +162,6 @@ void call_data_free(npf_call *c)
     npf_udpf_free(u);
     npf_media_free(m);
     npf_tunnel_free(t);
-}
-
-/* the AnLiu connection goes (after call_data_free), with its data stream,
- * its conv's entry and the datagrams waiting for it */
-void call_anl_drop(npf_call *c)
-{
-    anl_t *a = c->anl;
-    if (a) {
-        call_conv_unlink(c);
-        c->anl = NULL;
-        anl_release(a);                 /* releases the stream handles too */
-    }
-    call_dpend_free(c);
 }
 
 void call_free(npf_call *c)

@@ -202,6 +202,21 @@ static void deadline_moves(npf_node *n)
     npf_call_end(c, "test");
 }
 
+/* offline, the call_end reports wait; all slots taken, a new one takes the
+ * oldest waiting one's (it took the first slot's, whatever its age) */
+static void ends_full(npf_node *n)
+{
+    int i, oldest = 5;
+    for (i = 0; i < NPF_ENDS_MAX; i++)
+        npf_node_call_end(n, "c", "test", 0);
+    for (i = 0; i < NPF_ENDS_MAX; i++)
+        n->ends[i].at_ms = 1000 + (i == oldest ? 0 : i + 1);
+    npf_node_call_end(n, "new", "test", 0);
+    CHECK(strcmp(n->ends[oldest].call_id, "new") == 0 && strcmp(n->ends[0].call_id, "c") == 0,
+          "call_end reports full: the oldest waiting one replaced");
+    memset(n->ends, 0, sizeof n->ends);
+}
+
 int test_call(void)
 {
     static npf_node node;
@@ -231,6 +246,7 @@ int test_call(void)
     deadline_invariant(&node, 1);
     deadline_invariant(&node, 0);
     deadline_moves(&node);
+    ends_full(&node);
 
     npf_log_ctx_swap(old);
     npf_node_stop(&node);

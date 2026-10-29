@@ -1,21 +1,12 @@
 /* Signaling requests, login, enrolment and reconnection. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
-#include <errno.h>
 #include <limits.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#ifndef _WIN32
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
-#include "npf/candidates.h"
 #include "npf/cert.h"
-#include "npf/conf.h"
 #include "npf/node.h"
 #include "npf/platform.h"
 
@@ -24,7 +15,6 @@
 
 static void ends_flush(npf_node *n);
 static void sig_expect(npf_node *n, int ms, int probed);
-static void expect_stop(npf_node *n);
 static void sig_down(npf_sig *s, const char *why, void *arg);
 static void idle_watch(npf_node *n);
 
@@ -98,7 +88,6 @@ int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_r
 
 /* ---- call_end reports ---- */
 
-
 static void end_reply(npf_node *n, const npf_env *env, int ok, void *arg)
 {
     npf_end_report *e = arg;
@@ -130,11 +119,8 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason, int
 {
     npf_end_report *e = NULL;
     int i;
-    for (i = 0; i < NPF_ENDS_MAX && !e; i++)
-        if (n->ends[i].state == 0)
-            e = &n->ends[i];
-    for (i = 0; i < NPF_ENDS_MAX && !e; i++)      /* full: the oldest waiting one goes */
-        if (n->ends[i].state == 1 && (!e || n->ends[i].at_ms < e->at_ms))
+    for (i = 0; i < NPF_ENDS_MAX && !(e && e->state == 0); i++)    /* a free one; full: the oldest waiting goes */
+        if (n->ends[i].state == 0 || (n->ends[i].state == 1 && (!e || n->ends[i].at_ms < e->at_ms)))
             e = &n->ends[i];
     if (!e)
         return;
@@ -173,7 +159,6 @@ int npf_node_reply(npf_node *n, const char *type, const char *reply_to, const ch
 {
     return send_env(n, type, NULL, reply_to, status, error, data_json);
 }
-
 
 /* a new list from an external channel: drop the attempt in progress (to
  * the old list's servers) and connect again at once */
@@ -253,12 +238,10 @@ static void schedule_reconnect(npf_node *n)
 
 #define SIG_LOGIN_MS 20000         /* connect, TLS, upgrade, Noise and login together */
 
-
 /* the second access point closed */
 static void race_drop(npf_node *n)
 {
-    if (n->race)
-        npf_sig_close(n->race);
+    npf_sig_close(n->race);
     n->race = NULL;
 }
 
@@ -269,7 +252,7 @@ static void sig_drop(npf_node *n)
     n->sig = NULL;
     n->online = 0;
     npf_timer_stop(n->loop, &n->t_ping);
-    expect_stop(n);
+    npf_timer_stop(n->loop, &n->t_expect);
 }
 
 void node_sig_close(npf_node *n)
@@ -277,8 +260,7 @@ void node_sig_close(npf_node *n)
     npf_sig *s = n->sig;
     race_drop(n);
     sig_drop(n);
-    if (s)
-        npf_sig_close(s);
+    npf_sig_close(s);
 }
 
 /* after a connection went: the requests on it learn there is no answer, the
@@ -291,6 +273,8 @@ static void sig_gone(npf_node *n, const char *why, int was_online)
     if (was_online && n->hooks.on_offline)
         n->hooks.on_offline(n, why, n->hook_arg);
 }
+
+static int cur_id(const npf_node *n) { return n->cur_server >= 0 ? n->servers[n->cur_server].id : -1; }
 
 /* the platform turned this connection down (a login, an enrolment): it
  * goes; counted against the server by weight (0: not at all), and not a
@@ -366,17 +350,12 @@ static void sig_expect(npf_node *n, int ms, int probed)
                      (long long)(npf_mono_ms() - n->expect_since));
             return;
         }
-        expect_stop(n);
+        npf_timer_stop(n->loop, &n->t_expect);
     }
     n->expect_since = npf_mono_ms();
     n->expect_probed = probed;
     n->t_expect = npf_timer_add(n->loop, ms, expect_cb, n);
     npf_logt("sig: watch %d ms (%s)", ms, probed ? "probed" : "a request");
-}
-
-static void expect_stop(npf_node *n)
-{
-    npf_timer_stop(n->loop, &n->t_expect);
 }
 
 void node_sig_probe(npf_node *n)
@@ -393,8 +372,6 @@ static void ping_cb(npf_loop *loop, void *arg)
     int ivl = (n->ping_s > 0 ? n->ping_s : 25) * 1000;
     (void)loop;
     n->t_ping = NULL;
-    if (!n->sig)
-        return;
     /* no check of its own for silence here: each ping's watch notices it
      * within 10 s (sooner than three intervals of silence ever could: at
      * ping_s 5 both came due at once, and the reason was either one) */
@@ -623,13 +600,6 @@ static int node_apply_probe(npf_node *n, const m_welcome *m)
     return n->nprobe_ep != nold || memcmp(old, n->probe_ep, sizeof old) != 0;
 }
 
-/* other probes while online (another server came or went): measured again */
-static void probe_changed(npf_node *n)
-{
-    if (n->online && n->udp_fd >= 0 && !n->probe)
-        node_nat_refresh(n);
-}
-
 static void apply_keys(npf_node *n, const m_welcome *m)
 {
     int i;
@@ -642,23 +612,27 @@ static void apply_keys(npf_node *n, const m_welcome *m)
     }
 }
 
-/* a renewed account (client) certificate from welcome: keep it and tell the program */
-static void node_accept_account_cert(npf_node *n, const uint8_t *blob, size_t bl)
+/* a (re)issued certificate from welcome, this node's own or (account) the
+ * account's (client) one, for this key: kept, and the program told */
+static void cert_in(npf_node *n, const uint8_t *blob, size_t bl, int account)
 {
+    const char *what = account ? "account" : "node";
     npf_cert inter, leaf;
-    if (bl > sizeof n->account_cert
-        || npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, blob, bl, &inter, &leaf,
-                                npf_node_time(n) / 1000) < 0
-        || leaf.type != NPF_CERT_CLIENT || memcmp(leaf.dh_pub, n->id.dh_pub, 32) != 0) {
-        npf_log("login: received account certificate does not verify, ignored");
+    /* bl: at most 1024 (msgs.h), the size of either */
+    if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, blob, bl, &inter, &leaf,
+                             npf_node_time(n) / 1000) < 0
+        || leaf.type != (account ? NPF_CERT_CLIENT : NPF_CERT_NODE) || memcmp(leaf.dh_pub, n->id.dh_pub, 32) != 0) {
+        npf_log("login: received %s certificate does not verify, ignored", what);
         return;
     }
-    memcpy(n->account_cert, blob, bl);
-    n->account_cert_len = bl;
-    npf_log("login: account certificate renewed (expires in %lld days)",
+    memcpy(account ? n->account_cert : n->cert, blob, bl);
+    *(account ? &n->account_cert_len : &n->cert_len) = bl;
+    npf_log("login: %s certificate renewed (expires in %lld days)", what,
             (long long)(leaf.not_after - npf_node_time(n) / 1000) / 86400);
-    if (n->on_account_cert)
+    if (account && n->on_account_cert)
         n->on_account_cert(n, n->on_account_cert_arg);
+    else if (!account && n->on_cert)
+        n->on_cert(n, n->on_cert_arg);
 }
 
 /* a server list sent as base64url (welcome, server_list) at token t */
@@ -695,30 +669,12 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
     node_upgrade_apply(n, j, m->upgrade, 0, 1);
     apply_keys(n, m);
     node_apply_probe(n, m);             /* measured below (node_nat_login) */
-    /* a (re)issued certificate: a node's own certificate in "cert"; the
-     * account (client) certificate in "account_cert" for nodes, in "cert" for
-     * pure clients (signaling.md "welcome") */
-    if (m->cert_len) {
-        npf_cert inter, leaf;
-        if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, m->cert, (size_t)m->cert_len,
-                                 &inter, &leaf, npf_node_time(n) / 1000) < 0
-            || memcmp(leaf.dh_pub, n->id.dh_pub, 32) != 0) {
-            npf_log("login: received certificate does not verify, ignored");
-        } else if (n->cfg.callable && leaf.type == NPF_CERT_NODE) {
-            memcpy(n->cert, m->cert, (size_t)m->cert_len);
-            n->cert_len = (size_t)m->cert_len;
-            npf_log("login: certificate issued (expires in %lld days)",
-                    (long long)(leaf.not_after - npf_node_time(n) / 1000) / 86400);
-            if (n->on_cert)
-                n->on_cert(n, n->on_cert_arg);
-        } else if (!n->cfg.callable && leaf.type == NPF_CERT_CLIENT) {
-            node_accept_account_cert(n, m->cert, (size_t)m->cert_len);
-        } else {
-            npf_logw("login: certificate of the wrong type, ignored");
-        }
-    }
+    /* a node's own certificate in "cert"; the account's in "account_cert"
+     * for nodes, in "cert" for pure clients (signaling.md "welcome") */
+    if (m->cert_len)
+        cert_in(n, m->cert, (size_t)m->cert_len, !n->cfg.callable);
     if (m->account_cert_len)
-        node_accept_account_cert(n, m->account_cert, (size_t)m->account_cert_len);
+        cert_in(n, m->account_cert, (size_t)m->account_cert_len, 1);
     server_list_in(n, j, m->server_list);
     n->online = 1;
     n->logins++;
@@ -756,8 +712,7 @@ void node_on_login(npf_node *n, const m_env *e, const void *m)
         snprintf(n->sig_error, sizeof n->sig_error, "this version is too old for the platform: upgrade to %s%s",
                  n->upgrade.min[0] ? n->upgrade.min : "the newest version", n->upgrade.url[0] ? " (see the download page)" : "");
     } else {
-        snprintf(n->sig_error, sizeof n->sig_error, "server %d refused the login (%s)",
-                 n->cur_server >= 0 ? n->servers[n->cur_server].id : -1, e->error);
+        snprintf(n->sig_error, sizeof n->sig_error, "server %d refused the login (%s)", cur_id(n), e->error);
     }
     n->sig_refused = 1;
     sig_refused(n, 3);
@@ -780,8 +735,9 @@ void node_on_upgrade(npf_node *n, const m_env *e, const void *m)
 void node_on_probe(npf_node *n, const m_env *e, const void *m)
 {
     (void)e;
-    if (node_apply_probe(n, m))
-        probe_changed(n);
+    /* other probes while online (another server came or went): measured again */
+    if (node_apply_probe(n, m) && n->online && n->udp_fd >= 0 && !n->probe)
+        node_nat_refresh(n);
 }
 
 void node_on_keys(npf_node *n, const m_env *e, const void *m)
@@ -841,8 +797,7 @@ static void sig_ready(npf_sig *s, void *arg)
     npf_node *n = arg;
     if (s == n->race) {
         npf_log("signaling: server %d %s answered first", n->servers[n->race_server].id, "(second access point)");
-        if (n->sig)
-            npf_sig_close(n->sig);
+        npf_sig_close(n->sig);
         n->sig = s;
         n->cur_server = n->race_server;
         n->race = NULL;
@@ -876,8 +831,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
     if (n->sig != s)
         return;
     if (n->race && !n->online) {    /* the first failed while the second still tries */
-        npf_log("signaling: server %d failed (%s), waiting for the second access point", n->cur_server >= 0 ?
-                n->servers[n->cur_server].id : -1, why);
+        npf_log("signaling: server %d failed (%s), waiting for the second access point", cur_id(n), why);
         if (n->cur_server >= 0)
             node_server_failed(&n->servers[n->cur_server], 1);
         n->sig = n->race;
@@ -910,8 +864,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         node_server_failed(&n->servers[n->cur_server], 1);
     n->replaced_ms = 0;
     if (!was_online) {              /* an attempt that did not log in: the status says why */
-        snprintf(n->sig_error, sizeof n->sig_error, "server %d: %s", n->cur_server >= 0 ?
-                 n->servers[n->cur_server].id : -1, why ? why : "?");
+        snprintf(n->sig_error, sizeof n->sig_error, "server %d: %s", cur_id(n), why ? why : "?");
         n->sig_refused = 0;
     }
     npf_log("signaling: disconnected (%s)", why);

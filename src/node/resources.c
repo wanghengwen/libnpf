@@ -10,15 +10,6 @@
 #include "npf/resources.h"
 #include "npf/text.h"
 
-/* no control characters (UTF-8 itself the JSON parser checks) */
-static int text_ok(const char *s)
-{
-    for (; *s; s++)
-        if ((unsigned char)*s < 0x20 || *s == 0x7f)
-            return 0;
-    return 1;
-}
-
 /* HOST:PORT with HOST an IPv4 address, [IPv6] or localhost: the address
  * part (brackets off) in host, the port in *port; 0 or -1 */
 static int split_target(const char *t, char *host, size_t cap, int *port)
@@ -76,7 +67,7 @@ int npf_res_check(const npf_res *r, char *err, size_t errcap)
     char host[64];
     int port, k = type_of(r);
     npf_policy t;
-    if (!r->name[0] || !text_ok(r->name)) {
+    if (!r->name[0] || !npf_text_plain(r->name)) {
         snprintf(err, errcap, "a name of 1 to %d bytes without control characters", NPF_RES_NAME_MAX);
         return -1;
     }
@@ -95,12 +86,12 @@ int npf_res_check(const npf_res *r, char *err, size_t errcap)
         snprintf(err, errcap, "%s: a %s target is %s", r->name, r->type, k_types[k].form);
         return -1;
     }
-    if (!text_ok(r->desc)) {
+    if (!npf_text_plain(r->desc)) {
         snprintf(err, errcap, "%s: a description of up to %d bytes without control characters", r->name,
                  NPF_RES_DESC_MAX);
         return -1;
     }
-    if (r->path[0] && (r->path[0] != '/' || strpbrk(r->path, " \"<>\\") || !text_ok(r->path))) {
+    if (r->path[0] && (r->path[0] != '/' || strpbrk(r->path, " \"<>\\") || !npf_text_plain(r->path))) {
         snprintf(err, errcap, "%s: the path starts with / (no spaces)", r->name);
         return -1;
     }

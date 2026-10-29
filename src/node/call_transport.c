@@ -23,7 +23,7 @@ typedef struct dmsg {
     uint8_t      d[];
 } dmsg;
 
-void call_dpend_free(npf_call *c)
+static void call_dpend_free(npf_call *c)
 {
     while (c->dpend) {
         dmsg *m = c->dpend;
@@ -75,8 +75,9 @@ static int anl_accept(anl_t *w, anl_stream_t *s, anl_stream_opt *opt, void *user
 
 /* the callee's data messages that waited for the data stream, now that it
  * is here (in order: tun_write_data queues behind them until then) */
-static void anl_kick(npf_call *c)
+static void anl_kick(void *arg)        /* (also the media's and UDP forwarding's kick) */
 {
+    npf_call *c = arg;
     if (!c->flush_pending) {
         c->flush_pending = 1;
         call_at(c, npf_mono_ms());
@@ -512,7 +513,7 @@ static void conv_link(npf_call *c)
     *slot = c;
 }
 
-void call_conv_unlink(npf_call *c)
+static void call_conv_unlink(npf_call *c)
 {
     npf_call **pp;
     for (pp = &c->n->conv_tab[CONV_SLOT(c->conv)]; *pp; pp = &(*pp)->conv_next)
@@ -521,6 +522,17 @@ void call_conv_unlink(npf_call *c)
             c->conv_next = NULL;
             return;
         }
+}
+
+void call_anl_drop(npf_call *c)
+{
+    anl_t *a = c->anl;
+    if (a) {
+        call_conv_unlink(c);
+        c->anl = NULL;
+        anl_release(a);                 /* releases the stream handles too */
+    }
+    call_dpend_free(c);
 }
 
 /* one datagram for this call's connection; 0 when it was authentic. The
@@ -541,11 +553,6 @@ int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len)
 }
 
 /* ---- libnpf media streams (media.h) ---- */
-
-static void m_kick(void *arg)
-{
-    anl_kick(arg);
-}
 
 static int m_open(void *arg, uint32_t id, int tag)
 {
@@ -573,7 +580,7 @@ static int m_ended(void *arg)
     return call_over(arg);
 }
 
-static const npf_media_io media_io = {m_kick, m_open, m_frame, m_closed, m_ended};
+static const npf_media_io media_io = {anl_kick, m_open, m_frame, m_closed, m_ended};
 
 /* the session's media streams, made on first use */
 npf_media *call_media_of(npf_call *c)
@@ -603,7 +610,7 @@ static const char *u_rev(void *arg, uint32_t lid, uint16_t *port)
     return r ? (*port = r->port, r->host) : NULL;
 }
 
-static const npf_udpf_io udp_io = {u_unit, m_kick, u_allowed, u_rev};
+static const npf_udpf_io udp_io = {u_unit, anl_kick, u_allowed, u_rev};
 
 npf_udpf *call_udp_of(npf_call *c)
 {

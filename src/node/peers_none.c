@@ -106,7 +106,7 @@ void npf_peer_idle_put(npf_peer *p, int idle_ms) {}
 void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running) {}
 const uint8_t *npf_peer_psk(const npf_peer *p) { return NULL; }
 int npf_peer_direct_target(const npf_peer *p, char *host, size_t cap, uint16_t *port) { return -1; }
-int npf_peer_wake_now(npf_peer *p) { return -1; }
+void npf_peer_wake_now(npf_peer *p) {}
 int npf_peer_password_try(npf_peer *p, const char *password) { return -1; }
 void npf_peer_grant_update(npf_peer *p) {}
 int npf_peer_forward_del_at(npf_peer *p, int i) { return -1; }

@@ -206,10 +206,10 @@ npf_call   *npf_peers_fwd_call(npf_peers *ps, int id);
 int         npf_peers_idle(const npf_peers *ps);
 /* the peers' resources are not kept in local.json (only here) */
 void        npf_peers_no_cache(npf_peers *ps);
-/* start the session now (on demand: it ends idle_ms later unless used; a
- * kept peer waiting to reconnect: at once; a finished one: one more try, as
- * it was made): 1 there is one already, 0 started */
-int         npf_peer_wake_now(npf_peer *p);
+/* start the session now unless there is one (on demand: it ends idle_ms
+ * later unless used; a kept peer waiting to reconnect: at once; a finished
+ * one: one more try, as it was made) */
+void        npf_peer_wake_now(npf_peer *p);
 /* forward i (what npf_peer_forward_add_parts returned) goes: 0 or -1 */
 int         npf_peer_forward_del_at(npf_peer *p, int i);
 /* a public mapping (npf-hosted): connections from the allow list only (CIDRs

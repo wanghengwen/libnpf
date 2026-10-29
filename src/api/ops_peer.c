@@ -119,7 +119,7 @@ static int peer_create_run(npf_t *n, void *arg)
         int r = npf_ops_record(n, p, 1, NULL);
         npf_ldev *d = npf_local_dev(&n->lc, npf_peer_name(p), 0);
         if (d && pn.psk) {                  /* a direct peer: this key, not one an old record had */
-            d->psk[npf_b64url_encode(o->psk, 32, d->psk)] = 0;
+            npf_b64url_encode(o->psk, 32, d->psk);
             d->psk_file[0] = 0;
             r = saved_rc(n);
         }

@@ -233,12 +233,13 @@ int npf_policy_lan_peer(npf_policy *p, const struct sockaddr *a)
     return npf_policy_rules_match(p->local, p->nlocal, a);
 }
 
-static int match(const npf_policy_rule *r, int n, int fam, const uint8_t *a, uint16_t port)
+/* port -1: any */
+static int match(const npf_policy_rule *r, int n, int fam, const uint8_t *a, int port)
 {
     int i;
     for (i = 0; i < n; i++)
-        if (r[i].family == fam && prefix_match(a, r[i].addr, r[i].prefix) && port >= r[i].port_lo
-            && port <= r[i].port_hi)
+        if (r[i].family == fam && prefix_match(a, r[i].addr, r[i].prefix)
+            && (port < 0 || (port >= r[i].port_lo && port <= r[i].port_hi)))
             return 1;
     return 0;
 }
@@ -279,7 +280,7 @@ int npf_policy_rules_match(const npf_policy_rule *r, int n, const struct sockadd
     uint16_t port;
     if (sa_parts(sa, 0, a, &fam, &port) < 0)
         return 0;
-    return match(r, n, fam, a, 0) || match(r, n, fam, a, 65535);
+    return match(r, n, fam, a, -1);
 }
 
 /* UDP: only the "udp" resources (theirs "*" too), never net's or socks'

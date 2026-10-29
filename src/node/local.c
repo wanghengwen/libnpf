@@ -11,6 +11,7 @@
 #include "npf/resources.h"
 #include "npf/out.h"
 #include "npf/platform.h"
+#include "npf/text.h"
 
 #include "msgs.h"
 
@@ -35,13 +36,7 @@ int npf_name_valid(const char *s)
 
 int npf_nick_valid(const char *s)
 {
-    size_t n = strlen(s), i;
-    if (n > NPF_NICK_MAX)
-        return 0;
-    for (i = 0; i < n; i++)
-        if ((unsigned char)s[i] < 0x20 || s[i] == 0x7f)
-            return 0;
-    return 1;
+    return strlen(s) <= NPF_NICK_MAX && npf_text_plain(s);
 }
 
 npf_ldev *npf_local_dev(npf_local *l, const char *target, int create)

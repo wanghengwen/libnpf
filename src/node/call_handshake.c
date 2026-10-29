@@ -45,7 +45,7 @@ static void sid_of(const npf_call *c, uint8_t sid[24])
     npf_le64(sid + 16, c->number);
 }
 
-int call_finish_handshake(npf_call *c)
+static int call_finish_handshake(npf_call *c)
 {
     const uint8_t *rs = npf_noise_remote_static(&c->hs->noise);
     if (!rs || npf_noise_split(&c->hs->noise, NULL, NULL, c->k12, c->k12 + 32, NULL) < 0)
@@ -90,7 +90,6 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
             || npf_noise_init(&c->hs->noise, NPF_NOISE_XXPSK3, 1, pro, pl, n->id.dh_sk, NULL, NULL) < 0)
             goto fail;
     } else {
-        memcpy(c->hs->pinned, pinned, 32);
         if (npf_noise_init(&c->hs->noise, NPF_NOISE_IK, 1, pro, pl, n->id.dh_sk, pinned, NULL) < 0)
             goto fail;
     }
