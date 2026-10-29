@@ -82,18 +82,6 @@ static int make_line(int lv, const char *file, int ln, const char *msg, char *li
     return n;
 }
 
-/* the process log, called under the lock (the writer too) */
-static void sink(int lv, const char *file, int ln, const char *msg)
-{
-    char line[2300];
-    int n = make_line(lv, file, ln, msg, line, sizeof line);
-    ring_put(g_ring, &g_ring_pos, &g_ring_len, line, (size_t)n);
-    if (g_writer)
-        g_writer(line, (size_t)n);
-    else
-        npf_log_stderr(line, (size_t)n);
-}
-
 /* the terminal gets the time only */
 void npf_log_stderr(const char *line, size_t len)
 {
@@ -123,10 +111,10 @@ static int level_now(void)
 
 void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
 {
-    char msg[2048];
+    char msg[2048], ln[2300];
     va_list ap;
     npf_log_ctx *c = t_ctx;
-    int lv = level < 0 ? 0 : level > NPF_LOG_ERROR ? NPF_LOG_ERROR : level;
+    int lv = level < 0 ? 0 : level > NPF_LOG_ERROR ? NPF_LOG_ERROR : level, n;
     if (level < level_now())
         return;
     va_start(ap, fmt);
@@ -136,9 +124,8 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
     vsnprintf(msg, sizeof msg, fmt, ap);
 #endif
     va_end(ap);
+    n = make_line(lv, file, line, msg, ln, sizeof ln);
     if (c) {                                /* an instance's line: its ring, its callback */
-        char ln[2300];
-        int n = make_line(lv, file, line, msg, ln, sizeof ln);
         if (c->ring)
             ring_put(c->ring, &c->ring_pos, &c->ring_len, ln, (size_t)n);
         if (c->hook) {
@@ -147,8 +134,12 @@ void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
             return;
         }
     }
-    npf_log_lock();
-    sink(lv, file, line, msg);
+    npf_log_lock();                         /* the process log: the writer runs under the lock */
+    ring_put(g_ring, &g_ring_pos, &g_ring_len, ln, (size_t)n);
+    if (g_writer)
+        g_writer(ln, (size_t)n);
+    else
+        npf_log_stderr(ln, (size_t)n);
     npf_log_unlock();
 }
 
