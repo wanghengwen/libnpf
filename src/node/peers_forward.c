@@ -157,11 +157,11 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
             break;
         }
         uint64_t cid = 0;
-        if (f->pub) {                       /* a public mapping: who may, how many */
-            if (!(cid = peers_public_admit(f, fd)))
-                continue;
-        } else if (f->draining) {
-            npf_sock_close(fd);
+        if (f->pub && !(cid = peers_public_admit(f, fd)))  /* a public mapping: who may, how many */
+            continue;
+        if (f->draining || f->p->removed || !f->used || f->fd != lfd) {
+            npf_sock_close(fd);             /* or the admission's callback (opened) removed it */
+            peers_conn_gone(f->p->ps, cid, "mapping_closed");
             continue;
         }
         if (peer_may_wait(f->p) && !npf_call_ready(f->p->call)) {

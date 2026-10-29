@@ -86,7 +86,7 @@ int  npf_policy_allowed(npf_policy *p, const struct sockaddr *dst);
  * "10.1.0.0/16", "10.1.2.3:5000-5100" or "*"; 0, -1 bad or full */
 int  npf_policy_add_udp(npf_policy *p, const char *spec);
 int  npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst);
-/* is the address (any port) in one of the rules (an allow_from list)? */
+/* is the address in one of the rules, whatever their ports (an allow_from list)? */
 int  npf_policy_rules_match(const npf_policy_rule *r, int n, const struct sockaddr *a);
 
 /* The control interface of this process (the web console and its API, on

@@ -39,6 +39,7 @@ int test_call_state(void);
 int test_path(void);
 int test_path_health(void);
 int test_path_decide(void);
+int test_peers(void);
 int node_wake_delay(int ms);        /* node_signal.c */
 
 #define CHECK(cond, ...) do { \
@@ -254,6 +255,7 @@ int main(void)
     failures += test_path();
     failures += test_path_health();
     failures += test_path_decide();
+    failures += test_peers();
     failures += test_punch();
     {   /* the periodic wake of signaling on demand: sig_wake_ms +-20 %, drawn
          * each time (instances asleep together drift apart) */

@@ -795,8 +795,10 @@ static void io_cb_in(npf_loop *loop, int fd, unsigned ev, void *arg)
             tunnel_update_ev(s);        /* the rate group's share is used up */
             return;
         }
-        if (!(m = npf_scratch(NPF_DATA_HDR + NPF_FRAME_MAX)))    /* received in place */
+        if (!(m = npf_scratch(NPF_DATA_HDR + NPF_FRAME_MAX))) {  /* received in place */
+            tunnel_sub_reset(s, NPF_RST_LOCAL);     /* no memory: not read again at each event (level-triggered) */
             return;
+        }
         r = s->v ? s->v->read(s->varg, m + NPF_DATA_HDR, want) : recv(s->fd, m + NPF_DATA_HDR, want, MSG_DONTWAIT);
         if (r > 0) {
             tunnel_rate_take(s, 1, (size_t)r);

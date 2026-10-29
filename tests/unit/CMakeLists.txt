@@ -26,6 +26,7 @@ add_executable(npf_unit_tests
   test_path.c
   test_path_health.c
   test_path_decide.c
+  test_peers.c
 )
 if(NPF_PORTMAP)
   target_sources(npf_unit_tests PRIVATE test_portmap.c)
@@ -54,7 +55,7 @@ target_include_directories(npf_anliu_audit_test PRIVATE ${NPF_LIB_DIR}/src/node)
 npf_target_options(npf_anliu_audit_test)
 add_test(NAME anliu_audit COMMAND npf_anliu_audit_test)
 
-foreach(name net faults)
+foreach(name net faults tunfaults)
   add_executable(npf_${name}_test test_${name}.c)
   target_link_libraries(npf_${name}_test PRIVATE npf_common)
   npf_target_options(npf_${name}_test)
