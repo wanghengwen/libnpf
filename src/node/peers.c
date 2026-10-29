@@ -294,8 +294,6 @@ void peers_start_call(npf_peer *p)
         again(p, "error");
 }
 
-/* ---- public ---- */
-
 /* ---- names people give peers (local.json) ---- */
 
 int npf_peers_name_set(npf_peers *ps, const char *name, const char *target, char *err, size_t errcap)
@@ -906,11 +904,11 @@ int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
 void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
 {
     int busy = p->call || p->waiting;
+    p->connect = connect;
+    p->keep = connect != NPF_CONNECT_ONCE;
+    p->idle_ms = 0;                         /* idle_req stays: the time asked for on demand */
     if (connect == NPF_CONNECT_ON_DEMAND) {
-        p->idle_req = idle_ms > 0 ? idle_ms : 0;
-        p->idle_ms = idle_time(p->ps, p->idle_req);
-        p->connect = NPF_CONNECT_ON_DEMAND;
-        p->keep = 1;
+        npf_peer_idle_put(p, idle_ms);
         p->idle_since = 0;                  /* the idle time runs from now */
         /* no reconnecting: a connection starts the next one */
         npf_timer_stop(p->ps->n->loop, &p->t_retry);
@@ -918,12 +916,7 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
             peers_forwards_start(p);        /* listening now, the session when a connection comes */
         if (p->call)
             peers_demand_timer(p);
-        return;
-    }
-    p->idle_ms = 0;                         /* idle_req stays: the time asked for on demand */
-    p->connect = connect;
-    p->keep = connect != NPF_CONNECT_ONCE;
-    if (connect == NPF_CONNECT_KEEP) {
+    } else if (connect == NPF_CONNECT_KEEP) {
         if (p->finished)
             unfinish(p);
         if (running && !busy && !p->t_retry)
@@ -939,9 +932,8 @@ const uint8_t *npf_peer_psk(const npf_peer *p) { return p->direct ? p->psk : NUL
 void npf_peer_idle_put(npf_peer *p, int idle_ms)
 {
     p->idle_req = idle_ms > 0 ? idle_ms : 0;
-    if (p->connect != NPF_CONNECT_ON_DEMAND)
-        return;                             /* used once it is on demand */
-    p->idle_ms = idle_time(p->ps, p->idle_req);
+    if (p->connect == NPF_CONNECT_ON_DEMAND)    /* else used once it is on demand */
+        p->idle_ms = idle_time(p->ps, p->idle_req);
 }
 
 void npf_peers_set_idle(npf_peers *ps, int idle_ms)
@@ -951,8 +943,7 @@ void npf_peers_set_idle(npf_peers *ps, int idle_ms)
         return;
     ps->default_idle_ms = idle_ms > 0 ? idle_ms : 0;
     for (p = ps->list; p; p = p->next)
-        if (p->connect == NPF_CONNECT_ON_DEMAND && !p->idle_req && ps->default_idle_ms)
-            p->idle_ms = ps->default_idle_ms;
+        npf_peer_idle_put(p, p->idle_req);  /* those on demand without a time of their own: the new default */
 }
 
 int npf_peers_idle(const npf_peers *ps) { return ps ? ps->default_idle_ms : 0; }
