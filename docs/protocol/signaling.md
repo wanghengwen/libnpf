@@ -24,6 +24,8 @@
 
 WebSocket：一个完整的应用信令消息对应一个 JSON 对象；接收端先处理 WebSocket 分片，再验证解密。信令连接只承载信令，不承载数据。隧道内的控制消息放在隧道控制通道（AnLiu 默认流）的控制单元中，每个单元一条 JSON，见 [数据通道协议](data-channel.md) 第 8 节。
 
+UDP 承载（UDP 优先、WS 兜底）的设计见 npf 仓库的 docs/design/signaling-udp.md（草案，未实现）；实现后线上格式移入本文。
+
 ## 公共消息格式
 
 请求示例：

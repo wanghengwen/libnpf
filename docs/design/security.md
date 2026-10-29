@@ -344,6 +344,8 @@ chk        = BLAKE2b(前面全部字节)[0..3]      ; 发现抄写、截断错�
   - **可以经 CDN 接入**：CDN 终止 TLS 后看到的只是 Noise 密文、AnLiu 密文和 WS 中转的绑定（用 `alloc_key` 认证），既读不到内容，也无法冒充节点；它能冒充 WS 中转，但那只等于丢弃数据（第 10 节）；
   - 主用服务器仍然建议使用公共 CA 签发的正规证书，这样从外部看与普通网站没有区别。
 
+UDP 承载（UDP 优先、WS 兜底）的设计见 npf 仓库的 docs/design/signaling-udp.md（草案，未实现）；实现后线上格式移入本文。
+
 ### 7.2 WebSocket 内的 Noise 握手与双向认证
 
 WebSocket 升级完成后，设备与服务器做 `Noise_XK_25519_ChaChaPoly_BLAKE2b` 握手。WebSocket 上用 **binary 消息**：每条消息就是一条 Noise 握手消息，或一条 Noise 传输密文（其中是一个 JSON 信令对象），不再编码。2026-10-22 之前用的 text 消息（内容为同样字节的无填充 Base64url）已不再支持，收到 text 消息即断开（[信令协议](../protocol/signaling.md)“参与方与承载”）：
