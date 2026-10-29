@@ -424,34 +424,26 @@ static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *e
 
 npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
 {
-    npf_peer *p;
     int i;
-    for (p = ps->list; p; p = p->next)
-        for (i = 0; i < p->nfwd; i++)
-            if (p->fwds[i]->used && p->fwds[i]->kind && p->fwds[i]->id == id) {
-                if (npf_call_ready(p->call)) {
-                    p->idle_since = 0;
-                    return p->call;
-                }
-                if (!p->call && !p->waiting && !p->finished) {
-                    npf_log("%s: a connection through -%c %s: starting the session", p->name,
-                            p->fwds[i]->kind->k->opt, p->fwds[i]->spec);
-                    peers_kick(p);
-                    if (p->idle_ms)
-                        peers_demand_timer(p);
-                }
-                return NULL;
-            }
+    npf_peer *p = npf_peers_fwd_find(ps, id, &i);
+    if (!p || !p->fwds[i]->kind)
+        return NULL;
+    if (npf_call_ready(p->call)) {
+        p->idle_since = 0;
+        return p->call;
+    }
+    if (!p->call && !p->waiting && !p->finished) {
+        npf_log("%s: a connection through -%c %s: starting the session", p->name, p->fwds[i]->kind->k->opt,
+                p->fwds[i]->spec);
+        if (peers_kick(p) == 0 && p->idle_ms)
+            peers_demand_timer(p);
+    }
     return NULL;
 }
 
-
-/* start one mapping: a -L / -D listener stays across sessions (it refuses
- * while none is up); a -R mapping is asked of each new session */
-/* a TCP listener on bind:port ("::": IPv6 and IPv4 on one socket); the
- * socket, or -1 with why */
-/* a listening socket, -1 with why; *in_use: the port is taken (as opposed
- * to the address family missing) */
+/* a socket on bind:port, listening (SOCK_STREAM) or bound (SOCK_DGRAM);
+ * "::" is IPv6 and IPv4 on one socket. -1 with why; *in_use: the port is
+ * taken (as opposed to the address family missing) */
 static int listen_on(const char *bind_host, int port, int type, char *why, size_t whycap, int *in_use)
 {
     struct addrinfo hints, *res;
@@ -485,6 +477,8 @@ static int listen_on(const char *bind_host, int port, int type, char *why, size_
     return fd;
 }
 
+/* start one mapping: a -L / -D listener stays across sessions (it refuses
+ * while none is up); a -R mapping is asked of each new session */
 static void fwd_start(pfwd *f)
 {
     npf_peer *p = f->p;
@@ -576,13 +570,10 @@ void peers_forwards_session_gone(npf_peer *p)
     }
 }
 
-/* two listeners on one port: the same address, or one of them on every address */
+/* two listeners on one port: the same address, or one of them on every
+ * address (fwd_fill wrote localhost as 127.0.0.1) */
 static int binds_meet(const char *a, const char *b)
 {
-    if (strcmp(a, "localhost") == 0)
-        a = "127.0.0.1";
-    if (strcmp(b, "localhost") == 0)
-        b = "127.0.0.1";
     return strcmp(a, b) == 0 || strcmp(a, "0.0.0.0") == 0 || strcmp(b, "0.0.0.0") == 0
         || strcmp(a, "::") == 0 || strcmp(b, "::") == 0;
 }
@@ -897,7 +888,7 @@ void npf_peers_net_changed(npf_peers *ps)
         p->backoff = 0;
         for (i = 0; i < p->nfwd; i++) {
             pfwd *f = p->fwds[i];
-            if (f && f->used && f->t_retry) {
+            if (f->used && f->t_retry) {
                 npf_timer_cancel(ps->n->loop, f->t_retry);
                 f->backoff = 0;
                 fwd_retry_cb(ps->n->loop, f);

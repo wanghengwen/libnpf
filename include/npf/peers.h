@@ -78,7 +78,9 @@ typedef struct npf_fwd_new {
     int         hostport;
 } npf_fwd_new;
 /* its index (>= 0), or -1 bad (err), -2 at the limit, -3 other (port taken ...);
- * ext: the application's id (a platform mapping), 0 none */
+ * ext: the application's id (a platform mapping), 0 none. One that cannot
+ * start (port in use, refused by the callee) retries with backoff, the
+ * session goes on */
 int npf_peer_forward_add_parts(npf_peer *p, const npf_fwd_new *fn, int perm, uint64_t ext, char *err, size_t errcap);
 /* SPEC of a module's kind as it keeps it (its parse), else SPEC itself */
 const char *npf_peers_kind_norm(npf_peers *ps, char opt, const char *spec, char *buf, size_t cap);
@@ -208,10 +210,7 @@ void        npf_peers_no_cache(npf_peers *ps);
  * kept peer waiting to reconnect: at once; a finished one: one more try, as
  * it was made): 1 there is one already, 0 started */
 int         npf_peer_wake_now(npf_peer *p);
-/* port mappings at run time (npf_peer_forward_add_parts): a mapping that
- * cannot start (port in use, refused by the callee) retries with backoff,
- * the session goes on */
-/* by index (what npf_peer_forward_add_parts returned): 0 or -1 */
+/* forward i (what npf_peer_forward_add_parts returned) goes: 0 or -1 */
 int         npf_peer_forward_del_at(npf_peer *p, int i);
 /* a public mapping (npf-hosted): connections from the allow list only (CIDRs
  * or addresses; none: anyone), at most rate bytes per second each way (0:
