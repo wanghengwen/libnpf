@@ -42,9 +42,9 @@ struct npf {
     int           role;
     char          app_name[33], app_ver[33];  /* the program (npf_options) */
     npf_callbacks cb;
-    /* configuration: npf.conf, the overrides and local.json's settings in
-     * effect (later ones win, peer lines add up); and each alone (where a peer
-     * is from). local.json also keeps the devices (npf/local.h) */
+    /* the configuration in effect: npf.conf (or npf_setup), the overrides
+     * and local.json's settings, later ones winning; local.json also keeps
+     * the peers, forwards and resources saved (npf/local.h) */
     npf_conf      conf;
     npf_local     lc;
     char         *conf_dir, *data_dir;   /* malloc (path_set) */
@@ -77,8 +77,8 @@ struct npf {
     unsigned long loop_tid;
     int           exec_busy;        /* not running: a caller executes a call (they take turns) */
     unsigned long exec_owner;
-    unsigned      send_jobs;        /* also bound metadata for tiny frames */
-    size_t        send_queued;      /* media frames posted from other threads, bytes */
+    unsigned      send_jobs;        /* media frames posted from other threads (at most 4096) */
+    size_t        send_queued;      /* and their bytes (NPF_MEDIA_SEND_QUEUE) */
     /* this instance's log: level, recent lines, the application's callback */
     npf_log_ctx   logctx;
     /* sessions and media streams by number */
