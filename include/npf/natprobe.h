@@ -4,8 +4,8 @@
  * mapped address (mapping behaviour), then K fresh sockets ask E1 (port
  * allocation), then E2 and E3 are asked to answer the first of those (F, which
  * sent to E1 only) from where they are (filtering behaviour). IPv4 only.
- * npf_natprobe_run is synchronous (poll: the npf-natprobe tool);
- * npf_natprobe_start runs on the event loop (the node). */
+ * npf_natprobe_start runs on the event loop (the node); npf_natprobe_run
+ * is the same run on a loop of its own, blocking (the tools). */
 #ifndef NPF_NATPROBE_H
 #define NPF_NATPROBE_H
 
@@ -67,9 +67,9 @@ void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg);
  * alloc_* samples of res (the detection does it; tests) */
 void npf_natprobe_classify_alloc(npf_natprobe_result *res);
 
-/* Run the whole detection (about 2-3 s worst case). Returns 0, or -1 if E1
- * did not answer at all (no profile). Built with NPF_TOOLS_API only (the
- * npf-natprobe tool; a node uses the event-driven one). */
+/* Run the whole detection (about 2-3 s worst case) and return: 0, or -1 if
+ * E1 did not answer at all (no profile). cfg->main_fd -1: a fresh socket.
+ * Built with NPF_TOOLS_API only (npf-natprobe, npf-punch). */
 int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res);
 
 /* Event-driven (the node): the same detection on the loop, nothing blocks.
