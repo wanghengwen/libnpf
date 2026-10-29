@@ -166,7 +166,7 @@ static void start_round(npf_node *n, const char *why)
         int first = (int)npf_rand_range(0, (size_t)nd - 1);
         if (ql < 0)
             continue;
-        q64[npf_b64url_encode(q, (size_t)ql, q64)] = 0;
+        npf_b64url_encode(q, (size_t)ql, q64);
         for (k = 0; k < (nd > 1 ? 2 : 1); k++) {     /* two services in random order */
             int d = (first + k) % nd;
             char via[400];

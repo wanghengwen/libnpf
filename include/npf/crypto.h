@@ -68,7 +68,7 @@ void npf_wipe(void *p, size_t n);
 void npf_wipe_free(void *p, size_t n);     /* npf_wipe, then free (NULL: nothing) */
 
 /* Base64url without padding. encode returns the string length (out needs
- * 4*ceil(n/3)+1). decode returns the byte count or -1 (bad char, padding,
+ * 4*ceil(n/3)+1: it ends with a NUL). decode returns the byte count or -1 (bad char, padding,
  * non-canonical tail bits, or more than cap bytes). */
 size_t npf_b64url_encode(const uint8_t *in, size_t n, char *out);
 int    npf_b64url_decode(const char *in, size_t n, uint8_t *out, size_t cap);

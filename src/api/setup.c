@@ -24,7 +24,7 @@ static void set(npf_conf *c, const char *k, const char *v, const char **failed)
 static void set_b64(npf_conf *c, const char *k, const uint8_t key[32], const char **failed)
 {
     char b[NPF_B64_LEN(32) + 1];
-    b[npf_b64url_encode(key, 32, b)] = 0;
+    npf_b64url_encode(key, 32, b);
     set(c, k, b, failed);
     npf_wipe(b, sizeof b);              /* direct_psk */
 }

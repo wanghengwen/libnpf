@@ -137,7 +137,6 @@ typedef struct call_hs {
     npf_noise_hs noise;
     npf_cpace   cp;
     char        password[128];
-    uint8_t     pinned[32];
     uint8_t     grant[512];         /* caller: hosted-trust grant to present */
     size_t      grant_len;
     uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */
@@ -200,9 +199,8 @@ void call_close(npf_call *c, const char *why, int how);
 npf_call *call_new(npf_node *n, int caller);
 void call_free(npf_call *c);
 void call_hs_free(npf_call *c);         /* the handshake's state wiped and freed (keys ready, or the call goes) */
-/* the data transport (tunnel, UDP forwarding, media) off the call and freed;
- * then the AnLiu connection */
-void call_data_free(npf_call *c);
+/* call_transport.c: the AnLiu connection goes (after the data transport),
+ * with its data stream, its conv's entry and the datagrams waiting for it */
 void call_anl_drop(npf_call *c);
 /* the platform's messages to a call (msgs.c): m_call_rejected, m_relay_switch, m_call_ended */
 void call_on_rejected(npf_call *c, const void *m);
@@ -211,7 +209,6 @@ void call_on_ended(npf_call *c, const void *m);
 
 /* call_handshake.c: the caller's call, the callee's answer, the keys */
 int call_set_targets(npf_call *c, const npf_grant *g);
-int call_finish_handshake(npf_call *c);
 void node_on_incoming(npf_node *n, const m_env *e, const void *m);   /* m_incoming (msgs.c) */
 void call_on_accepted(npf_call *c, const void *m);                     /* m_call_accepted */
 void call_on_handshake(npf_call *c, const void *m);                    /* m_handshake */
@@ -222,9 +219,7 @@ void tr_tick(npf_call *c, int64_t now);
 int call_anl_feed(npf_call *c, const uint8_t *buf, size_t len);
 void call_path_up(npf_call *c);
 void call_hello(npf_call *c);         /* our hello, the session has a path (a caller established with it) */
-void call_dpend_free(npf_call *c);
 struct npf_policy *call_policy(npf_call *c);
-void call_conv_unlink(npf_call *c);
 npf_media *call_media_of(npf_call *c);
 npf_udpf *call_udp_of(npf_call *c);
 npf_tunnel *call_tunnel_new(npf_call *c);

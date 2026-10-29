@@ -88,7 +88,6 @@ int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_r
 
 /* ---- call_end reports ---- */
 
-
 static void end_reply(npf_node *n, const npf_env *env, int ok, void *arg)
 {
     npf_end_report *e = arg;
@@ -120,11 +119,8 @@ void npf_node_call_end(npf_node *n, const char *call_id, const char *reason, int
 {
     npf_end_report *e = NULL;
     int i;
-    for (i = 0; i < NPF_ENDS_MAX && !e; i++)
-        if (n->ends[i].state == 0)
-            e = &n->ends[i];
-    for (i = 0; i < NPF_ENDS_MAX && !e; i++)      /* full: the oldest waiting one goes */
-        if (n->ends[i].state == 1 && (!e || n->ends[i].at_ms < e->at_ms))
+    for (i = 0; i < NPF_ENDS_MAX && !(e && e->state == 0); i++)    /* a free one; full: the oldest waiting goes */
+        if (n->ends[i].state == 0 || (n->ends[i].state == 1 && (!e || n->ends[i].at_ms < e->at_ms)))
             e = &n->ends[i];
     if (!e)
         return;
@@ -163,7 +159,6 @@ int npf_node_reply(npf_node *n, const char *type, const char *reply_to, const ch
 {
     return send_env(n, type, NULL, reply_to, status, error, data_json);
 }
-
 
 /* a new list from an external channel: drop the attempt in progress (to
  * the old list's servers) and connect again at once */
@@ -243,12 +238,10 @@ static void schedule_reconnect(npf_node *n)
 
 #define SIG_LOGIN_MS 20000         /* connect, TLS, upgrade, Noise and login together */
 
-
 /* the second access point closed */
 static void race_drop(npf_node *n)
 {
-    if (n->race)
-        npf_sig_close(n->race);
+    npf_sig_close(n->race);
     n->race = NULL;
 }
 
@@ -267,8 +260,7 @@ void node_sig_close(npf_node *n)
     npf_sig *s = n->sig;
     race_drop(n);
     sig_drop(n);
-    if (s)
-        npf_sig_close(s);
+    npf_sig_close(s);
 }
 
 /* after a connection went: the requests on it learn there is no answer, the
@@ -380,8 +372,6 @@ static void ping_cb(npf_loop *loop, void *arg)
     int ivl = (n->ping_s > 0 ? n->ping_s : 25) * 1000;
     (void)loop;
     n->t_ping = NULL;
-    if (!n->sig)
-        return;
     /* no check of its own for silence here: each ping's watch notices it
      * within 10 s (sooner than three intervals of silence ever could: at
      * ping_s 5 both came due at once, and the reason was either one) */
@@ -807,8 +797,7 @@ static void sig_ready(npf_sig *s, void *arg)
     npf_node *n = arg;
     if (s == n->race) {
         npf_log("signaling: server %d %s answered first", n->servers[n->race_server].id, "(second access point)");
-        if (n->sig)
-            npf_sig_close(n->sig);
+        npf_sig_close(n->sig);
         n->sig = s;
         n->cur_server = n->race_server;
         n->race = NULL;

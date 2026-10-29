@@ -11,11 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/bind.h"
 #include "npf/crypto.h"
-#include "npf/json.h"
 #include "npf/platform.h"
-#include "npf/siv.h"
 
 #include "home.h"
 #include "node_internal.h"
@@ -98,8 +95,6 @@ static void watch_sync(struct npf_home *h)
 /* a RELAY_BIND; flags RELAY_F_PONG: the answer to ping_id */
 static void bind_send(struct npf_home *h, int flags, uint32_t ping_id)
 {
-    if (!h->r.state)
-        return;
     watch_sync(h);
     relay_bind_send(&h->r, h->n, flags | (h->newnet ? RELAY_F_NEWNET : 0), ping_id);
 }
@@ -214,7 +209,6 @@ static const char *id_json(const struct npf_home *h, const char *key, char *out,
 {
     char b[16];
     npf_b64url_encode(h->r.relay_id, 8, b);
-    b[11] = 0;
     snprintf(out, cap, "{\"%s\":\"%s\"}", key, b);
     return out;
 }

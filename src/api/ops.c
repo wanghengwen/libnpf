@@ -122,7 +122,7 @@ int npf_ops_record(npf_t *n, npf_peer *p, int save, const char *psk_file)
             snprintf(d->psk_file, sizeof d->psk_file, "%s", psk_file);
             d->psk[0] = 0;
         } else if (!d->psk_file[0] && !d->psk[0] && npf_peer_psk(p)) {
-            d->psk[npf_b64url_encode(npf_peer_psk(p), 32, d->psk)] = 0;  /* a direct peer: its key */
+            npf_b64url_encode(npf_peer_psk(p), 32, d->psk);  /* a direct peer: its key */
         }
         for (i = 0; i < npf_peer_nfwd(p); i++) {
             npf_lfwd lf;

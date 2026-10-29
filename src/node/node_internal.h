@@ -85,7 +85,7 @@ void node_nat_regather(npf_node *n);
  * before, else once the first one is measured */
 void node_nat_login(npf_node *n);
 
-/* call_punch.c: a check of the NAT unanswered (call_punch.c): a sign it is short of ports
+/* call_punch.c: a check of the NAT unanswered: a sign it is short of ports
  * if a hard-side punch held them or just did (nat-traversal.md 8) */
 void call_port_pressure(npf_node *n, const char *what);
 
@@ -98,6 +98,6 @@ void node_sig_lost(npf_node *n);
 /* returns 1 when the datagram belonged to a call */
 int  node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 void node_calls_free(npf_node *n);
-void call_key_shares_free(npf_node *n);      /* call.c: the caller keys' shares, after the calls */
+void call_key_shares_free(npf_node *n);      /* call_transport.c: the caller keys' shares, after the calls */
 
 #endif
