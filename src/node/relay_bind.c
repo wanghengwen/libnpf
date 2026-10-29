@@ -139,23 +139,6 @@ int relay_bind_up(relay_c *r, int64_t now, int ka)
     return was;
 }
 
-int relay_obj_parse(const npf_json *j, int r, char mode[8], uint8_t id[8], uint8_t key[32],
-                    struct sockaddr_storage addr[4])
-{
-    int arr = npf_json_get(j, r, "udp"), i, naddr = 0;
-    mode[0] = 0;
-    npf_json_get_str(j, r, "mode", mode, 8);
-    if (npf_json_get_b64(j, r, "relay_id", id, 8) != 8 || npf_json_get_b64(j, r, "alloc_key", key, 32) != 32)
-        return -1;
-    for (i = 0; arr >= 0 && i < j->tok[arr].size && naddr < 4; i++) {
-        char a[80];
-        if (npf_json_str(j, npf_json_item(j, arr, i), a, sizeof a) > 0 && npf_addr_parse(a, &addr[naddr]) == 0
-            && addr[naddr].ss_family == AF_INET)
-            naddr++;
-    }
-    return naddr;
-}
-
 int call_same_addr(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
 {
     if (a->ss_family != b->ss_family)

@@ -5,7 +5,7 @@
  *   npf_fuzz TARGET [ITERATIONS] [SEED]      mutate built-in seeds, run under ASan + UBSan
  *   npf_fuzz TARGET -f FILE...               replay inputs (crash reproducers)
  *
- * TARGET: json | tunnel | noise | cert | pkt | dns | http | ws | all. With a clang that has
+ * TARGET: json | msg | tunnel | noise | cert | pkt | dns | http | ws | all. With a clang that has
  * libFuzzer, -DNPF_LIBFUZZER builds the same targets as LLVMFuzzerTestOneInput
  * entry points (one target per binary, selected with -DNPF_FUZZ_TARGET=name). */
 #define _GNU_SOURCE
@@ -20,10 +20,12 @@
 #include "npf/dns.h"
 #include "npf/json.h"
 #include "npf/loop.h"
+#include "npf/msg.h"
 #include "npf/node.h"
 #include "npf/noise.h"
 #include "npf/siv.h"
 #include "npf/tunnel.h"
+#include "msgs.h"
 
 #define MAX_IN 4096
 
@@ -57,6 +59,54 @@ static void fuzz_json(const uint8_t *d, size_t n)
         }
     }
     npf_json_eq(&j, npf_json_get(&j, 0, "status"), "ok");
+}
+
+/* what a parse leaves, whatever the input: strings terminated within their
+ * buffer, lengths and counts within theirs (else the handlers would read past
+ * them) */
+static void msg_check(const npf_msgdesc *d, const uint8_t *base)
+{
+    int i, k, v = 0;
+    for (i = 0; i < d->nf; i++) {
+        const npf_field *f = &d->f[i];
+        const uint8_t *p = base + f->off;
+        if (f->aux)
+            memcpy(&v, base + f->aux, sizeof v);
+        if ((f->type == NPF_F_STR && !memchr(p, 0, f->size)) || (f->aux && (v < 0 || v > f->size)))
+            abort();
+        if (f->type == NPF_F_OBJ)
+            msg_check(f->sub, p);
+        for (k = 0; f->type == NPF_F_ARR && k < v; k++)
+            msg_check(f->sub, p + (size_t)k * f->sub->size);
+    }
+}
+
+/* every table on the message and on its data (msgs.c), then wiped */
+static void fuzz_msg(const uint8_t *d, size_t n)
+{
+    static npf_jtok tok[NPF_JSON_MAX_TOKENS];
+    static union { m_punch_start ps; m_welcome w; m_incoming in; m_reverse_listen rl; uint8_t b[8192]; } u;
+    npf_json j;
+    char s[MAX_IN + 1], err[160];
+    int i, k, t[2];
+    if (n > MAX_IN)
+        return;
+    memcpy(s, d, n);
+    s[n] = 0;
+    if (npf_json_parse(&j, s, n, tok, NPF_JSON_MAX_TOKENS) < 0)
+        return;
+    t[0] = 0;
+    t[1] = npf_json_get(&j, 0, "data");
+    for (i = 0; node_msgdescs[i]; i++)
+        for (k = 0; k < 2; k++) {
+            if (node_msgdescs[i]->size > sizeof u)
+                abort();
+            if (npf_msg_parse(node_msgdescs[i], &j, t[k], &u, err, sizeof err) == 0)
+                msg_check(node_msgdescs[i], u.b);
+            else if (!memchr(err, 0, sizeof err))
+                abort();
+            npf_msg_wipe(node_msgdescs[i], &u);
+        }
 }
 
 static npf_loop *g_loop;
@@ -198,6 +248,20 @@ static const struct {
     {"json", fuzz_json, "{\"v\":1,\"type\":\"call\",\"id\":\"c1\",\"data\":{\"call_id\":\"AAAAAAAAAAAAAAAAAAAAAA\","
                         "\"callee\":\"123456789\",\"auth\":\"ik\",\"hs\":\"AAAA\",\"nat\":{\"udp\":true},"
                         "\"cand\":[{\"t\":\"srflx\",\"a\":\"1.2.3.4:5\"}]}}"},
+    {"msg", fuzz_msg, "{\"v\":1,\"type\":\"punch_start\",\"id\":\"r1\",\"data\":{\"call_id\":\"AAAAAAAAAAAAAAAAAAAAAA\","
+                      "\"round\":1,\"punch_id\":\"AAAAAAAAAAA\",\"punch_key\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\","
+                      "\"strategy\":\"S3\",\"side\":\"easy\",\"peer\":{\"cand\":[{\"t\":\"srflx\",\"a\":\"1.2.3.4:5\"},"
+                      "{\"t\":\"host6\",\"a\":\"[2001:db8::1]:9\"}],\"pub_ip\":\"1.2.3.4\"},\"range\":[1,65535],"
+                      "\"m_total\":10,\"start_at\":1,\"relay\":{\"mode\":\"udp\",\"relay_id\":\"AAAAAAAAAAA\","
+                      "\"alloc_key\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"udp\":[\"1.2.3.4:5\",\"[::1]:3\"],"
+                      "\"ws\":{\"url\":\"wss://a/r\",\"server_id\":1},\"spare\":true},\"probe_keys\":[{\"day\":1,"
+                      "\"key\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}],\"probe\":[\"1.2.3.4:9\"],"
+                      "\"ticket\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"upgrade\":{\"latest\":\"1.0\",\"packages\":[]},"
+                      "\"hs\":\"AAAA\",\"caller\":{\"kind\":\"node\",\"id\":\"1\",\"app\":{\"name\":\"a\",\"ver\":\"1\"}},"
+                      "\"auth\":\"ik\",\"cand\":{\"t\":\"srflx\",\"a\":\"1.2.3.4:5\"},\"port\":2000,\"listen_id\":1,"
+                      "\"target_host\":\"h\",\"target_port\":1,\"account_id\":\"1\",\"operation_id\":\"AAAAAAAAAAAAAAAAAAAAAA\","
+                      "\"challenge\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"expires\":1,\"before\":1,\"number\":\"1\",\"cert\":\"AAAA\","
+                      "\"step\":3,\"msg\":\"AAAA\",\"error\":\"x\",\"reason\":\"y\",\"grant\":\"AAAA\"}}"},
     {"tunnel", fuzz_tunnel, "\x01\x00\x00\x00\x01\x00\x0d\x00\x05\x01\x00\x05\x01\x00\x01\x7f\x00\x00\x01\x00\x50"},
     {"noise", fuzz_noise, NULL},
     {"cert", fuzz_cert, "{\"serial\":1,\"servers\":[{\"id\":1,\"ws\":[\"wss://a/s\"],\"dh_pub\":\"AAAA\"}]}"},
@@ -269,7 +333,7 @@ int main(int argc, char **argv)
     long iters = 20000, it;
     size_t t, first = 0, last = sizeof targets / sizeof targets[0];
     if (argc < 2) {
-        fprintf(stderr, "usage: npf_fuzz json|tunnel|noise|cert|pkt|dns|http|ws|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
+        fprintf(stderr, "usage: npf_fuzz json|msg|tunnel|noise|cert|pkt|dns|http|ws|all [ITERATIONS] [SEED] | TARGET -f FILE...\n");
         return 2;
     }
     if (strcmp(argv[1], "all") != 0) {

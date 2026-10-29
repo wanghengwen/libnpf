@@ -11,6 +11,8 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 
+#include "msgs.h"
+
 int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
 {
     const char *roots = npf_conf_get(conf, "root", NULL), *v;
@@ -171,12 +173,12 @@ static const char *const k_err[][2] = {
 
 void npf_platform_err(const npf_json *j, char *buf, size_t cap)
 {
-    char code[32] = "no reply", why[32] = "";
-    const char *say = NULL;
+    m_env e;
+    const char *code = "no reply", *why = "", *say = NULL;
     size_t i;
-    if (j) {
-        npf_json_get_str(j, 0, "error", code, sizeof code);
-        npf_json_get_str(j, 0, "message", why, sizeof why);
+    if (j && npf_msg_parse(&m_env_d, j, 0, &e, NULL, 0) == 0) {
+        code = e.error[0] ? e.error : code;
+        why = e.message;
     }
     for (i = 0; i < sizeof k_err / sizeof k_err[0] && !say; i++)
         if (why[0] && strcmp(why, k_err[i][0]) == 0)

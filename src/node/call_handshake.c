@@ -159,43 +159,36 @@ fail:
 
 /* incoming / call_accepted: "secure" when the session is to stay on relays
  * (connect_mode secure here or on the other side) */
-static void secure_of(npf_call *c, const npf_json *j, int d)
+static void secure_of(npf_call *c, int secure)
 {
-    int v = 0;
-    if (npf_json_bool(j, npf_json_get(j, d, "secure"), &v) == 0 && v && !c->secure) {
+    if (secure && !c->secure) {
         c->secure = 1;
         npf_log("call %s: secure: relays only, no direct path", c->call_id_s);
     }
 }
 
-void call_caller_accepted(npf_call *c, const npf_json *j, int d)
+void call_on_accepted(npf_call *c, const void *msg)
 {
-    uint8_t msg[512], out[256], peer_y[32], isk[32], p[64];
-    int ml, ol;
-    ml = npf_json_get_b64(j, d, "hs", msg, sizeof msg);
-    if (ml < 0)
-        goto fail;
-    secure_of(c, j, d);
+    const m_call_accepted *m = msg;
+    uint8_t out[256], isk[32], p[64];
+    int ol;
+    if (!c->caller || c->st != CS_CALLING)
+        return;
+    secure_of(c, m->secure);
     if (c->auth == AUTH_PAKE) {
-        char data[1024];
-        if (npf_json_get_b64(j, d, "cpace", peer_y, 32) != 32 || npf_cpace_finish(&c->hs->cp, peer_y, 1, isk) < 0)
+        char data[1024], b[NPF_B64_LEN(256)];
+        if (!m->cpace_len || npf_cpace_finish(&c->hs->cp, m->cpace, 1, isk) < 0)
             goto fail;
         npf_noise_set_psk(&c->hs->noise, isk);
         npf_wipe(isk, 32);
-        if (npf_noise_read(&c->hs->noise, msg, (size_t)ml, p, sizeof p) < 0)
+        if (npf_noise_read(&c->hs->noise, m->hs, (size_t)m->hs_len, p, sizeof p) < 0
+            || (ol = npf_noise_write(&c->hs->noise, NULL, 0, out, sizeof out)) < 0)
             goto fail;
-        ol = npf_noise_write(&c->hs->noise, NULL, 0, out, sizeof out);
-        if (ol < 0)
-            goto fail;
-        {
-            char b[NPF_B64_LEN(256)];
-            npf_b64url_encode(out, (size_t)ol, b);
-            snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"step\":3,\"msg\":\"%s\"}", c->call_id_s, b);
-        }
+        npf_b64url_encode(out, (size_t)ol, b);
+        snprintf(data, sizeof data, "{\"call_id\":\"%s\",\"step\":3,\"msg\":\"%s\"}", c->call_id_s, b);
         npf_node_send(c->n, "handshake", 0, data);
-    } else {
-        if (npf_noise_read(&c->hs->noise, msg, (size_t)ml, p, sizeof p) < 0)
-            goto fail;
+    } else if (npf_noise_read(&c->hs->noise, m->hs, (size_t)m->hs_len, p, sizeof p) < 0) {
+        goto fail;
     }
     npf_log("call %s: accepted%s", c->call_id_s,
             call_has_ws(c) ? (c->pw.wsr ? " (the WS relay connected since the reply)" : "")
@@ -206,7 +199,8 @@ void call_caller_accepted(npf_call *c, const npf_json *j, int d)
     call_accept(c);
     if (call_finish_handshake(c) < 0)
         goto fail;
-    call_relay_setup(c, j, d);
+    if (m->relay.mode[0])
+        call_relay_setup(c, &m->relay);
     pm_check(c);                /* a relay that failed before the accept: replaced now (pm_decide) */
     /* what the callee sent through the relay before the keys, now: after
      * connecting (its hello may establish the session at once) */
@@ -227,25 +221,25 @@ static void callee_reply_error(npf_node *n, const char *req, const char *err)
 
 /* an incoming pairing (CPace, then Noise XXpsk3 with its key): the answer
  * in out (*ol bytes), the CPace message in ymsg; NULL, or the error to reply */
-static const char *incoming_pake(npf_call *c, const npf_json *j, int d, const uint8_t *msg, int ml, uint8_t *out,
-                                 size_t outcap, int *ol, uint8_t ymsg[32])
+static const char *incoming_pake(npf_call *c, const m_incoming *m, uint8_t *out, size_t outcap, int *ol,
+                                 uint8_t ymsg[32])
 {
     npf_node *n = c->n;
     const char *pw = n->callee->password ? n->callee->password(n, n->callee_arg) : NULL;
-    uint8_t p[64], pro[64], sid[24], isk[32], peer_y[32];
+    uint8_t p[64], pro[64], sid[24], isk[32];
     size_t pl;
     int ok;
     c->auth = AUTH_PAKE;
     if (n->callee->locked && n->callee->locked(n, n->callee_arg))
         return "locked";
-    if (!pw || !*pw || npf_json_get_b64(j, d, "cpace", peer_y, 32) != 32)
+    if (!pw || !*pw || !m->cpace_len)
         return "unauthorized";
     prologue(c, pro, &pl);
     sid_of(c, sid);
     ok = npf_cpace_start(&c->hs->cp, pw, strlen(pw), sid, sizeof sid, ymsg) >= 0
-         && npf_cpace_finish(&c->hs->cp, peer_y, 0, isk) >= 0
+         && npf_cpace_finish(&c->hs->cp, m->cpace, 0, isk) >= 0
          && npf_noise_init(&c->hs->noise, NPF_NOISE_XXPSK3, 0, pro, pl, n->id.dh_sk, NULL, isk) >= 0
-         && npf_noise_read(&c->hs->noise, msg, (size_t)ml, p, sizeof p) >= 0
+         && npf_noise_read(&c->hs->noise, m->hs, (size_t)m->hs_len, p, sizeof p) >= 0
          && (*ol = npf_noise_write(&c->hs->noise, NULL, 0, out, outcap)) >= 0;
     npf_wipe(isk, 32);
     return ok ? NULL : "unauthorized";
@@ -267,15 +261,14 @@ static int key_sessions(npf_node *n, const uint8_t *pub)
 /* an incoming session of a paired caller (Noise IK) or of a grant: the
  * callee gate (security.md 8.3): the caller's key is authorized, or hosted
  * trust with a valid grant bound to that key; the answer in out (*ol bytes) */
-static const char *incoming_ik(npf_call *c, const npf_json *j, int d, const uint8_t *msg, int ml, uint8_t *out,
-                               size_t outcap, int *ol)
+static const char *incoming_ik(npf_call *c, const m_incoming *m, uint8_t *out, size_t outcap, int *ol)
 {
     npf_node *n = c->n;
     uint8_t p[64], pro[64];
     size_t pl;
     prologue(c, pro, &pl);
     if (npf_noise_init(&c->hs->noise, NPF_NOISE_IK, 0, pro, pl, n->id.dh_sk, NULL, NULL) < 0
-        || npf_noise_read(&c->hs->noise, msg, (size_t)ml, p, sizeof p) < 0)
+        || npf_noise_read(&c->hs->noise, m->hs, (size_t)m->hs_len, p, sizeof p) < 0)
         return "unauthorized";
     if (key_sessions(n, npf_noise_remote_static(&c->hs->noise)) >= SESSIONS_PER_KEY)
         return "busy";                      /* one caller does not take all the sessions */
@@ -283,12 +276,10 @@ static const char *incoming_ik(npf_call *c, const npf_json *j, int d, const uint
         if (!n->callee->authorized || !n->callee->authorized(n, npf_noise_remote_static(&c->hs->noise), n->callee_arg))
             return "unauthorized";
     } else {
-        uint8_t g[512];
         npf_grant gr;
-        int gl = npf_json_get_b64(j, d, "grant", g, sizeof g);
-        if (gl <= 0 || !n->callee->grant_check
-            || n->callee->grant_check(n, g, (size_t)gl, npf_noise_remote_static(&c->hs->noise), &c->grant_account, &gr,
-                                      n->callee_arg) < 0
+        if (!m->grant_len || !n->callee->grant_check
+            || n->callee->grant_check(n, m->grant, (size_t)m->grant_len, npf_noise_remote_static(&c->hs->noise),
+                                      &c->grant_account, &gr, n->callee_arg) < 0
             || call_set_targets(c, &gr) < 0)
             return "unauthorized";
     }
@@ -298,22 +289,24 @@ static const char *incoming_ik(npf_call *c, const npf_json *j, int d, const uint
     return NULL;
 }
 
-void call_handle_incoming(npf_node *n, const npf_json *j, int d)
+void node_on_incoming(npf_node *n, const m_env *e, const void *msg)
 {
-    char data[4096];
-    char req[24], auth[8], hs_b[NPF_B64_LEN(512)];
-    uint8_t msg[512], out[512], ymsg[32];
-    const char *err;
-    int ml, ol = -1;
+    const m_incoming *m = msg;
+    const char *req = e->id, *err;
+    char data[4096], hs_b[NPF_B64_LEN(512)];
+    uint8_t out[512], ymsg[32];
+    int ol = -1;
     npf_call *c;
     npf_jw w;
-    if (npf_json_get_str(j, 0, "id", req, sizeof req) < 0)
+    if (!req[0])
         return;
     if (!n->callee) {
         callee_reply_error(n, req, "unauthorized");
         return;
     }
-    if (call_find(n, j, d)) {
+    for (c = n->calls; c && memcmp(c->call_id, m->call_id, 16) != 0; c = c->next)
+        ;
+    if (c) {
         callee_reply_error(n, req, "conflict");
         return;
     }
@@ -332,35 +325,19 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d)
         return;
     snprintf(c->req_id, sizeof c->req_id, "%s", req);
     c->number = n->cfg.number;
-    {
-        int who = npf_json_get(j, d, "caller");
-        char id[24];
-        if (who >= 0 && npf_json_eq(j, npf_json_get(j, who, "kind"), "node")
-            && npf_json_get_str(j, who, "id", id, sizeof id) > 0)
-            c->caller_number = strtoull(id, NULL, 10);
-        if (who >= 0) {
-            int a = npf_json_get(j, who, "app");
-            char an[40] = "", av[40] = "";
-            if (a >= 0 && npf_json_get_str(j, a, "name", an, sizeof an) > 0
-                && npf_json_get_str(j, a, "ver", av, sizeof av) > 0)
-                snprintf(c->caller_app, sizeof c->caller_app, "%.32s %.32s", an, av);   /* each 1..32 (signaling.md) */
-            npf_json_bool(j, npf_json_get(j, who, "hosted"), &c->caller_hosted);
-        }
-    }
-    if (npf_json_get_b64(j, d, "call_id", c->call_id, 16) != 16
-        || npf_json_get_str(j, d, "auth", auth, sizeof auth) < 0
-        || (ml = npf_json_get_b64(j, d, "hs", msg, sizeof msg)) < 0) {
-        callee_reply_error(n, req, "bad_request");
-        call_free(c);
-        return;
-    }
+    if (strcmp(m->caller.kind, "node") == 0)
+        c->caller_number = strtoull(m->caller.id, NULL, 10);
+    if (m->caller.app.name[0])
+        snprintf(c->caller_app, sizeof c->caller_app, "%s %s", m->caller.app.name, m->caller.app.ver);
+    c->caller_hosted = m->caller.hosted;
+    memcpy(c->call_id, m->call_id, 16);
     npf_b64url_encode(c->call_id, 16, c->call_id_s);
-    secure_of(c, j, d);
-    if (strcmp(auth, "pake") == 0) {
-        err = incoming_pake(c, j, d, msg, ml, out, sizeof out, &ol, ymsg);
-    } else if (strcmp(auth, "ik") == 0 || strcmp(auth, "grant") == 0) {
-        c->auth = strcmp(auth, "ik") == 0 ? AUTH_IK : AUTH_GRANT;
-        err = incoming_ik(c, j, d, msg, ml, out, sizeof out, &ol);
+    secure_of(c, m->secure);
+    if (strcmp(m->auth, "pake") == 0) {
+        err = incoming_pake(c, m, out, sizeof out, &ol, ymsg);
+    } else if (strcmp(m->auth, "ik") == 0 || strcmp(m->auth, "grant") == 0) {
+        c->auth = strcmp(m->auth, "ik") == 0 ? AUTH_IK : AUTH_GRANT;
+        err = incoming_ik(c, m, out, sizeof out, &ol);
     } else {
         err = "unauthorized";
     }
@@ -385,17 +362,15 @@ void call_handle_incoming(npf_node *n, const npf_json *j, int d)
     npf_node_reply(n, "incoming", req, "ok", NULL, data);
     c->st = CS_ANSWERED;
     npf_log("call %s: incoming %s call accepted", c->call_id_s, c->auth == AUTH_PAKE ? "pairing" : "paired");
-    call_relay_setup(c, j, d);
+    if (m->relay.mode[0])
+        call_relay_setup(c, &m->relay);
 }
 
-void call_handle_handshake(npf_call *c, const npf_json *j, int d)
+void call_on_handshake(npf_call *c, const void *msg)
 {
-    uint8_t msg[512], p[64];
-    int ml;
-    int64_t step;
+    const m_handshake *m = msg;
+    uint8_t p[64];
     if (c->caller || c->auth != AUTH_PAKE || c->keys_ready)
-        return;
-    if (npf_json_get_int(j, d, "step", 3, 3, &step) < 0 || (ml = npf_json_get_b64(j, d, "msg", msg, sizeof msg)) < 0)
         return;
     /* locked while this pairing was under way (other guesses in parallel
      * failed): no guess for it either (security.md 8.3) */
@@ -403,7 +378,7 @@ void call_handle_handshake(npf_call *c, const npf_json *j, int d)
         npf_call_end(c, "locked");
         return;
     }
-    if (npf_noise_read(&c->hs->noise, msg, (size_t)ml, p, sizeof p) < 0) {
+    if (npf_noise_read(&c->hs->noise, m->msg, (size_t)m->msg_len, p, sizeof p) < 0) {
         /* wrong password: count it (security.md 8.3) */
         npf_logw("call %s: pairing failed (wrong password)", c->call_id_s);
         if (c->n->callee->pair_failed)

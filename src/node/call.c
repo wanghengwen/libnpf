@@ -16,19 +16,6 @@
 
 /* ---- helpers ---- */
 
-npf_call *call_find(npf_node *n, const npf_json *j, int d)
-{
-    uint8_t id[16];
-    npf_call *c;
-    if (npf_json_get_b64(j, d, "call_id", id, sizeof id) != 16)
-        return NULL;
-    for (c = n->calls; c; c = c->next)
-        if (memcmp(c->call_id, id, 16) == 0)
-            return c;
-    return NULL;
-}
-
-
 int npf_call_auth(const npf_call *c) { return c->auth; }
 uint64_t npf_call_grant_account(const npf_call *c) { return c->grant_account; }
 
@@ -415,12 +402,15 @@ void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *
     }
 }
 
-static void handle_punch_request(npf_node *n, const npf_json *j, int d)
+/* ---- the platform's messages (msgs.c) ---- */
+
+/* the callee's profile and candidates, before the platform's next round */
+void node_on_punch_request(npf_node *n, const m_env *e, const void *m)
 {
-    char req[24], data[2048];
+    char data[2048];
     npf_jw w;
-    (void)d;
-    if (npf_json_get_str(j, 0, "id", req, sizeof req) < 0)
+    (void)m;
+    if (!e->id[0])
         return;
     npf_jw_init(&w, data, sizeof data);
     npf_jw_obj(&w);
@@ -428,119 +418,87 @@ static void handle_punch_request(npf_node *n, const npf_json *j, int d)
     npf_node_write_cands(n, &w);
     npf_jw_end(&w);
     if (npf_jw_finish(&w) > 0)
-        npf_node_reply(n, "punch_request", req, "ok", NULL, data);
+        npf_node_reply(n, e->type, e->id, "ok", NULL, data);
 }
 
-/* ---- dispatch ---- */
-
-void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d)
+void node_on_revoke(npf_node *n, const m_env *e, const void *msg)
 {
-    npf_call *c;
-    if (strcmp(type, "incoming") == 0) {
-        call_handle_incoming(n, j, d);
-        return;
-    }
-    if (strcmp(type, "punch_request") == 0 && npf_json_get(j, 0, "id") >= 0) {
-        handle_punch_request(n, j, d);
-        return;
-    }
-    if (strcmp(type, "revoke") == 0) {
-        char a[32], req[24];
-        int64_t before = 0;
-        int owner = 0;
-        uint64_t acct;
-        npf_call *x;
-        if (npf_json_get_str(j, d, "account_id", a, sizeof a) <= 0
-            || npf_json_get_int(j, d, "before", 0, INT64_MAX, &before) < 0)
-            return;
-        npf_json_bool(j, npf_json_get(j, d, "owner"), &owner);
-        acct = strtoull(a, NULL, 10);
-        if (n->callee && n->callee->revoke)
-            n->callee->revoke(n, acct, before, owner, n->callee_arg);
-        /* sessions admitted by this account's grants end now */
-        for (x = n->calls; x; x = x->next)
-            if (!x->caller && !call_over(x) && x->auth == AUTH_GRANT && x->grant_account == acct) {
-                npf_log("call %s: revoked", x->call_id_s);
-                npf_call_end(x, "revoked");
-            }
-        if (npf_json_get_str(j, 0, "id", req, sizeof req) > 0)
-            npf_node_reply(n, "revoke", req, "ok", NULL, NULL);
-        return;
-    }
-    if (strcmp(type, "bind_committed") == 0) {
-        char a[32];
-        uint8_t op[16];
-        if (npf_json_get_str(j, d, "account_id", a, sizeof a) > 0 && npf_json_get_b64(j, d, "operation_id", op, 16) == 16
-            && n->callee && n->callee->bind_committed)
-            n->callee->bind_committed(n, strtoull(a, NULL, 10), op, n->callee_arg);
-        return;
-    }
-    if (strcmp(type, "call") == 0) {      /* reply to our call request */
-        char rt[24], err[32] = "";
-        npf_call *x;
-        int ok;
-        if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) < 0)
-            return;
-        ok = npf_json_eq(j, npf_json_get(j, 0, "status"), "ok");
-        if (!ok)
-            npf_json_get_str(j, 0, "error", err, sizeof err);
-        for (x = n->calls; x; x = x->next) {
-            char id[24];
-            snprintf(id, sizeof id, "r%d", x->call_req);
-            if (!x->caller || call_over(x) || strcmp(id, rt) != 0)
-                continue;
-            if (ok) {
-                /* the call is taken; the reply brings our relay, bound now
-                 * while the callee is reached (call_accepted brings it again) */
-                if (x->st == CS_CALLING)
-                    call_relay_setup(x, j, d);
-                return;
-            }
-            npf_logw("call %s: rejected by the platform (%s)", x->call_id_s, err);
-            call_close(x, err, CALL_END_QUIET);
-            return;
+    const m_revoke *m = msg;
+    uint64_t acct = strtoull(m->account_id, NULL, 10);
+    npf_call *x;
+    if (n->callee && n->callee->revoke)
+        n->callee->revoke(n, acct, m->before, m->owner, n->callee_arg);
+    /* sessions admitted by this account's grants end now */
+    for (x = n->calls; x; x = x->next)
+        if (!x->caller && !call_over(x) && x->auth == AUTH_GRANT && x->grant_account == acct) {
+            npf_log("call %s: revoked", x->call_id_s);
+            npf_call_end(x, "revoked");
+        }
+    if (e->id[0])
+        npf_node_reply(n, e->type, e->id, "ok", NULL, NULL);
+}
+
+void node_on_bind_committed(npf_node *n, const m_env *e, const void *msg)
+{
+    const m_bind_committed *m = msg;
+    (void)e;
+    if (n->callee && n->callee->bind_committed)
+        n->callee->bind_committed(n, strtoull(m->account_id, NULL, 10), m->operation_id, n->callee_arg);
+}
+
+/* the reply to our call request: the call is taken, and it brings our
+ * relay, bound now while the callee is reached (call_accepted brings it
+ * again); or the platform refused it */
+void node_on_call(npf_node *n, const m_env *e, const void *msg)
+{
+    const m_call_reply *m = msg;
+    npf_call *x;
+    for (x = n->calls; x; x = x->next) {
+        char id[24];
+        snprintf(id, sizeof id, "r%d", x->call_req);
+        if (!x->caller || call_over(x) || strcmp(id, e->reply_to) != 0)
+            continue;
+        if (strcmp(e->status, "ok") != 0) {
+            npf_logw("call %s: rejected by the platform (%s)", x->call_id_s, e->error);
+            call_close(x, e->error, CALL_END_QUIET);
+        } else if (x->st == CS_CALLING && m->relay.mode[0]) {
+            call_relay_setup(x, &m->relay);
         }
         return;
     }
-    if (npf_json_get(j, d, "call_id") < 0) {
-        if (n->hooks.on_event && npf_json_get(j, 0, "reply_to") < 0)
-            n->hooks.on_event(n, type, j, d, n->hook_arg);  /* mappings_changed, devices_changed ... */
+}
+
+void call_on_rejected(npf_call *c, const void *msg)
+{
+    const m_call_rejected *m = msg;
+    if (!c->caller)
         return;
-    }
-    c = call_find(n, j, d);
-    if (!c || call_over(c))
-        return;
-    if (strcmp(type, "call_accepted") == 0 && c->caller && c->st == CS_CALLING) {
-        call_caller_accepted(c, j, d);
-    } else if (strcmp(type, "call_rejected") == 0 && c->caller) {
-        char err[32] = "";
-        npf_json_get_str(j, d, "error", err, sizeof err);
-        npf_logw("call %s: rejected (%s)", c->call_id_s, err);
-        if (strcmp(err, "no_path") == 0)
-            npf_log("UDP is unusable here and only callers logged in to an account get a relay: "
-                    "log in to an account, or check that UDP is not blocked");
-        else if (strcmp(err, "secure_plan") == 0)
-            npf_log("connect_mode secure on one side: relays only, which takes a caller's account with a paid plan "
-                    "(set connect_mode p2p allows direct paths)");
-        else if (strcmp(err, "quota") == 0)
-            npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
-                    "until next month or a larger plan");
-        call_close(c, err, CALL_END_QUIET);
-    } else if (strcmp(type, "handshake") == 0) {
-        call_handle_handshake(c, j, d);
-    } else if (strcmp(type, "punch_start") == 0) {
-        call_handle_punch_start(c, j, d);
-    } else if (strcmp(type, "punch_info") == 0) {
-        call_handle_punch_info(c, j, d);
-    } else if (strcmp(type, "relay_switch") == 0) {
-        if (npf_json_get(j, d, "relay") >= 0)
-            call_relay_setup(c, j, d);
-    } else if (strcmp(type, "call_ended") == 0) {
-        char r[32] = "closed";
-        npf_json_get_str(j, d, "reason", r, sizeof r);
-        npf_log("call %s: ended by the peer (%s)", c->call_id_s, r);
-        call_close(c, r, CALL_END_QUIET);
-    }
+    npf_logw("call %s: rejected (%s)", c->call_id_s, m->error);
+    if (strcmp(m->error, "no_path") == 0)
+        npf_log("UDP is unusable here and only callers logged in to an account get a relay: "
+                "log in to an account, or check that UDP is not blocked");
+    else if (strcmp(m->error, "secure_plan") == 0)
+        npf_log("connect_mode secure on one side: relays only, which takes a caller's account with a paid plan "
+                "(set connect_mode p2p allows direct paths)");
+    else if (strcmp(m->error, "quota") == 0)
+        npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
+                "until next month or a larger plan");
+    call_close(c, m->error, CALL_END_QUIET);
+}
+
+void call_on_relay_switch(npf_call *c, const void *msg)
+{
+    const m_relay_switch *m = msg;
+    if (m->relay.mode[0])
+        call_relay_setup(c, &m->relay);
+}
+
+void call_on_ended(npf_call *c, const void *msg)
+{
+    const m_call_ended *m = msg;
+    const char *r = m->reason[0] ? m->reason : "closed";
+    npf_log("call %s: ended by the peer (%s)", c->call_id_s, r);
+    call_close(c, r, CALL_END_QUIET);
 }
 
 void node_sig_lost(npf_node *n)

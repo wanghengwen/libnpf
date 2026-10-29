@@ -193,7 +193,7 @@ static int ctl_matching(npf_loop *loop)
     for (i = 0; i <= sizeof invalid / sizeof invalid[0]; i++) {
         const char *id = i == sizeof invalid / sizeof invalid[0] ? "c7" : invalid[i];
         len = snprintf((char *)unit + 3, sizeof unit - 3,
-                       "{\"type\":\"test\",\"reply_to\":\"%s\",\"status\":\"ok\"}", id);
+                       "{\"v\":1,\"type\":\"test\",\"reply_to\":\"%s\",\"status\":\"ok\",\"data\":{}}", id);
         unit[0] = NPF_CU_JSON;
         npf_le16(unit + 1, (uint16_t)len);
         CHECK(npf_tunnel_input_ctrl(c.tun, unit, 3 + (size_t)len) == 0);

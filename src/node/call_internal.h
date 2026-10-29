@@ -193,7 +193,6 @@ static inline void call_at(npf_call *c, int64_t at)
 int64_t call_due(const npf_call *c, int64_t now);
 void call_tick(npf_call *c, int64_t now);
 void call_accept(npf_call *c);
-npf_call *call_find(npf_node *n, const npf_json *j, int d);
 /* the peer's addresses this node sends to (security.md H-1): a candidate;
  * the public IP the sprays aim at */
 int call_peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a);
@@ -211,13 +210,17 @@ void call_hs_free(npf_call *c);         /* the handshake's state wiped and freed
  * then the AnLiu connection */
 void call_data_free(npf_call *c);
 void call_anl_drop(npf_call *c);
+/* the platform's messages to a call (msgs.c): m_call_rejected, m_relay_switch, m_call_ended */
+void call_on_rejected(npf_call *c, const void *m);
+void call_on_relay_switch(npf_call *c, const void *m);
+void call_on_ended(npf_call *c, const void *m);
 
 /* call_handshake.c: the caller's call, the callee's answer, the keys */
 int call_set_targets(npf_call *c, const npf_grant *g);
 int call_finish_handshake(npf_call *c);
-void call_caller_accepted(npf_call *c, const npf_json *j, int d);
-void call_handle_incoming(npf_node *n, const npf_json *j, int d);
-void call_handle_handshake(npf_call *c, const npf_json *j, int d);
+void node_on_incoming(npf_node *n, const m_env *e, const void *m);   /* m_incoming (msgs.c) */
+void call_on_accepted(npf_call *c, const void *m);                     /* m_call_accepted */
+void call_on_handshake(npf_call *c, const void *m);                    /* m_handshake */
 
 /* call_transport.c: AnLiu and its carriers, the tunnel's callbacks, media and UDP adapters */
 int64_t tr_due(const npf_call *c, int64_t now);         /* anl_check's (INT64_MAX: no connection) */
@@ -244,7 +247,7 @@ static inline int call_has_ws(const npf_call *c) { return c->pm.p[PK_WS_RELAY] !
 /* path_mgr.c: the session's paths, the decisions, the allocations, the requests */
 void call_paths_init(npf_call *c);
 void pm_check(npf_call *c);             /* the health rules and the decisions now, the next at pm.check_at */
-void call_relay_setup(npf_call *c, const npf_json *j, int d);
+void call_relay_setup(npf_call *c, const m_relay *r);  /* none: mode "" */
 void call_need(npf_call *c, int need, int64_t now);     /* PM_NEED_* to the platform, its deadline */
 
 /* path_direct.c: the direct path, its check, its loss */
@@ -259,12 +262,12 @@ void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
 
 /* call_reverse.c: reverse mapping (data-channel.md 7.1) */
 void call_rev_close_all(npf_call *c);
-void call_reverse_request(npf_call *c, const char *type, const npf_json *j);
+void call_reverse_request(npf_call *c, const m_env *e);
 
 /* path_ws.c: the WS relay as a carrier of the AnLiu connection (data-channel.md 10) */
 void call_ws_carrier(npf_call *c);      /* paired, keys ready: AnLiu's carrier and the path up */
 void call_ws_failed(npf_call *c, const char *why);
-int call_ws_setup(npf_call *c, const npf_json *j, int r);
+int call_ws_setup(npf_call *c, const m_relay *r);
 void call_ws_leave(npf_call *c);        /* back to UDP: the WS relay connection goes */
 void call_ws_leave_conn(npf_call *c);
 void path_ws_heard(npf_call *c);        /* the path's last_rx from the connection's last frame */
@@ -278,11 +281,11 @@ void call_direct_tick(npf_call *c);     /* direct_at: message 1 again */
 void call_punch_report(npf_call *c, const char *why);
 int call_hard_punches(const npf_node *n, const npf_call *c);
 void call_punch_to(npf_call *c, int st, int64_t at);    /* PN_*: the one transition, at its deadline */
-void call_handle_punch_info(npf_call *c, const npf_json *j, int d);
+void call_on_punch_info(npf_call *c, const void *m);    /* m_punch_info (msgs.c) */
 void call_punch_go(npf_call *c);        /* SCHEDULED at its start, WAIT_KEYS with the keys */
 void call_punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *arg);
 void call_punch_tick(npf_call *c);     /* punch_at */
-void call_handle_punch_start(npf_call *c, const npf_json *j, int d);
+void call_on_punch_start(npf_call *c, const void *m);   /* m_punch_start */
 int call_no_p2p(const npf_call *c);
 
 /* path_udp.c: the UDP relay client (data-channel.md 9) */

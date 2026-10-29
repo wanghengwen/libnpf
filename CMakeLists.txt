@@ -111,6 +111,7 @@ add_library(npf_common STATIC
 
   # wire formats and clients: JSON, DNS, HTTP, WebSocket and TLS, signaling, the WS relay
   src/proto/json.c
+  src/proto/msg.c
   src/proto/dns.c
   src/proto/http.c
   src/ws/ws.c
@@ -131,6 +132,7 @@ add_library(npf_common STATIC
   src/node/node.c
   src/node/node_servers.c
   src/node/node_signal.c
+  src/node/msgs.c
   src/node/node_network.c
   src/node/nat.c
   src/node/home.c

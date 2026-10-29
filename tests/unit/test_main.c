@@ -13,6 +13,7 @@
 static int failures;
 int test_crypto(void);
 int test_json(void);
+int test_msg(void);
 int test_tunnel(void);
 int test_policy(void);
 int test_conf(void);
@@ -226,6 +227,7 @@ int main(void)
 #endif
     failures += test_crypto();
     failures += test_json();
+    failures += test_msg();
     failures += test_tunnel();
     failures += test_policy();
     failures += test_conf();

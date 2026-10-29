@@ -16,7 +16,7 @@
 #define ANL_MTU            1200
 #define ANL_MSG_MAX        (NPF_DATA_HDR + NPF_FRAME_MAX)   /* the largest message on either stream (a data message) */
 
-static void grant_update(npf_call *c, const npf_json *j);
+static void grant_update(npf_call *c, const m_grant_update *m, const npf_json *j);
 static void anl_schedule(npf_call *c);
 static void anl_kick(npf_call *c);
 
@@ -216,60 +216,60 @@ static int ctl_id(const char *s)
     return id;
 }
 
+/* a control message: its table's struct to its handler (refused: a
+ * request answered bad_request), a reply to its request's callback */
 static void tun_control(void *arg, const npf_json *j)
 {
     npf_call *c = arg;
-    char type[32], rt[24];
+    m_env e;
+    union { m_close cl; m_listen_id li; m_grant_update gu; } u;     /* the messages this reads */
+    const npf_msgdesc *d = NULL;
+    char err[96];
     int i;
-    if (npf_json_get_str(j, 0, "type", type, sizeof type) <= 0)
+    if (node_env(j, &e) < 0)
         return;
-    if (npf_json_get_str(j, 0, "reply_to", rt, sizeof rt) > 0) {
-        int id = ctl_id(rt);
+    if (e.reply_to[0]) {
+        int id = ctl_id(e.reply_to);
         for (i = 0; i < NPF_CALL_CTL_MAX; i++) {
             if (c->ctl[i].fn && c->ctl[i].id == id) {
                 npf_ctl_fn fn = c->ctl[i].fn;
                 c->ctl[i].fn = NULL;
-                fn(c, j, npf_json_eq(j, npf_json_get(j, 0, "status"), "ok"), c->ctl[i].arg);
+                fn(c, j, strcmp(e.status, "ok") == 0, c->ctl[i].arg);
                 return;
             }
         }
         return;
     }
-    if (strcmp(type, "close") == 0) {
-        char r[32] = "closed";
-        npf_json_get_str(j, npf_json_get(j, 0, "data"), "reason", r, sizeof r);
+    d = strcmp(e.type, "close") == 0 ? &m_close_d : strcmp(e.type, "reverse_closed") == 0 ? &m_listen_id_d
+        : strcmp(e.type, "grant_update") == 0 ? &m_grant_update_d : NULL;
+    if (d && npf_msg_parse(d, j, e.data, &u, err, sizeof err) < 0) {
+        npf_logw("call %s: %s refused (%s)", c->call_id_s, e.type, err);
+        if (e.id[0])
+            npf_call_ctl_reply(c, e.type, j, "error", "bad_request", NULL);
+    } else if (d == &m_close_d) {
+        const char *r = u.cl.reason[0] ? u.cl.reason : "closed";
         npf_log("call %s: peer closed the session (%s)", c->call_id_s, r);
         call_close(c, r, CALL_END_PEER);        /* the record names the peer (call_end peer) */
-        return;
-    }
-    if (!c->caller && (strcmp(type, "reverse_listen") == 0 || strcmp(type, "reverse_close") == 0)) {
-        call_reverse_request(c, type, j);
-        return;
-    }
-    if (c->caller && strcmp(type, "reverse_closed") == 0) {
-        int64_t id;
-        if (npf_json_get_int(j, npf_json_get(j, 0, "data"), "listen_id", 1, UINT32_MAX, &id) == 0) {
-            if (c->tun)
-                npf_tunnel_rev_del(c->tun, (uint32_t)id);
-            npf_udpf_rev_del(c->udp, (uint32_t)id);
-        }
-        return;
-    }
-    if (!c->caller && strcmp(type, "grant_update") == 0) {
-        grant_update(c, j);
-        return;
-    }
-    if (c->caller && strcmp(type, "resources") == 0) {
+    } else if (!c->caller && (strcmp(e.type, "reverse_listen") == 0 || strcmp(e.type, "reverse_close") == 0)) {
+        call_reverse_request(c, &e);
+    } else if (c->caller && d == &m_listen_id_d) {
+        if (c->tun)
+            npf_tunnel_rev_del(c->tun, (uint32_t)u.li.listen_id);
+        npf_udpf_rev_del(c->udp, (uint32_t)u.li.listen_id);
+    } else if (!c->caller && d == &m_grant_update_d) {
+        grant_update(c, &u.gu, j);
+    } else if (c->caller && strcmp(e.type, "resources") == 0) {
         if (c->n->hooks.on_resources)
-            c->n->hooks.on_resources(c->n, c, j, npf_json_get(j, 0, "data"), c->n->hook_arg);
-        return;
+            c->n->hooks.on_resources(c->n, c, j, e.data, c->n->hook_arg);
+    } else if (!c->caller && c->n->callee && c->n->callee->control) {
+        c->n->callee->control(c->n, c, j, c->n->callee_arg);    /* requests for the program (bind_approve ...) */
+    } else if (e.id[0]) {
+        npf_call_ctl_reply(c, e.type, j, "error", "unsupported_type", NULL);
     }
-    /* requests for the program (bind_approve ...) on the callee */
-    if (!c->caller && c->n->callee && c->n->callee->control)
-        c->n->callee->control(c->n, c, j, c->n->callee_arg);
-    else if (npf_json_get(j, 0, "id") >= 0)
-        npf_call_ctl_reply(c, type, j, "error", "unsupported_type", NULL);
+    if (d)
+        npf_msg_wipe(d, &u);
 }
+
 /* the requests still awaiting a reply get none (the session ended, or its
  * tunnel was replaced): each callback once, with j NULL and ok 0 */
 void call_ctl_fail_all(npf_call *c)
@@ -613,15 +613,13 @@ static void tun_unit(void *arg, int type, const uint8_t *buf, size_t len)
 
 /* grant_update{grant}: a hosted client's new target list (signaling.md
  * "隧道内控制消息"): the same caller key and account, issued later */
-static void grant_update(npf_call *c, const npf_json *j)
+static void grant_update(npf_call *c, const m_grant_update *m, const npf_json *j)
 {
     npf_node *n = c->n;
-    uint8_t g[512];
     npf_grant gr;
     uint64_t acct = 0;
-    int gl = npf_json_get_b64(j, npf_json_get(j, 0, "data"), "grant", g, sizeof g);
-    if (c->auth != AUTH_GRANT || !c->hosted_grant || gl <= 0 || !n->callee || !n->callee->grant_check
-        || n->callee->grant_check(n, g, (size_t)gl, c->peer_pub, &acct, &gr, n->callee_arg) < 0
+    if (c->auth != AUTH_GRANT || !c->hosted_grant || !n->callee || !n->callee->grant_check
+        || n->callee->grant_check(n, m->grant, (size_t)m->grant_len, c->peer_pub, &acct, &gr, n->callee_arg) < 0
         || gr.kind != NPF_GRANT_HOSTED || acct != c->grant_account || gr.issued < c->grant_issued) {
         npf_call_ctl_reply(c, "grant_update", j, "error", "forbidden", NULL);
         return;

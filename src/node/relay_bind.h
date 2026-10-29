@@ -105,11 +105,6 @@ typedef struct relay_ping {
 } relay_ping;
 
 int  relay_ping_parse(const uint8_t *body, size_t len, relay_ping *p);
-/* a relay object (signaling.md "relay") at j[r]: its mode, id and key; the
- * IPv4 addresses (4 at most) into addr, their number returned; -1 no id or key */
-int  relay_obj_parse(const npf_json *j, int r, char mode[8], uint8_t id[8], uint8_t key[32],
-                     struct sockaddr_storage addr[4]);
-
 /* an allocation (NONE -> BINDING from its first address, relay_bind_begin):
  * no cookie, no binds answered */
 void relay_bind_take(relay_c *r, npf_node *n, const uint8_t id[8], const uint8_t key[32],

@@ -5,6 +5,7 @@
 #ifndef NPF_HOME_H
 #define NPF_HOME_H
 
+#include "msgs.h"
 #include "relay_bind.h"
 
 /* after welcome: home_open (a spare, or the one held resumed) when it may */
@@ -20,8 +21,8 @@ void node_home_close(npf_node *n);
 void node_home_stop(npf_node *n);
 /* a datagram on the main socket: 1 when it was the spare's */
 int  node_home_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
-/* the event relay_spare: another spare (the last one taken by a call, or rotated) */
-void node_home_spare(npf_node *n, const npf_json *j, int d);
+/* the event relay_spare (m_relay_spare): another spare (the last one taken by a call, or rotated) */
+void node_on_relay_spare(npf_node *n, const m_env *e, const void *m);
 /* a call's allocation id: 1 when it is the spare, its binding then moved
  * into dst (bound already, or being bound) and the spare no longer here */
 int  node_home_adopt(npf_node *n, const uint8_t id[8], relay_c *dst);

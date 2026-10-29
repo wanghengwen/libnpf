@@ -4,6 +4,7 @@
 #define NPF_NODE_INTERNAL_H
 
 #include "npf/node.h"
+#include "msgs.h"
 
 /* node_servers.c */
 /* a signed list from the login, a push or an external channel (via): 1 when adopted */
@@ -15,6 +16,16 @@ int node_eff_prio(const npf_server_entry *e);
 int node_server_pick(npf_node *n, int prio, int skip);
 
 /* node_signal.c */
+/* a reply to a request of npf_node_request: to its callback (1), or not one (0) */
+int  node_sig_reply(npf_node *n, const m_env *e);
+/* the platform's messages to the node (msgs.c); m: the type's struct */
+void node_on_login(npf_node *n, const m_env *e, const void *m);
+void node_on_server_list(npf_node *n, const m_env *e, const void *m);
+void node_on_upgrade(npf_node *n, const m_env *e, const void *m);
+void node_on_probe(npf_node *n, const m_env *e, const void *m);
+void node_on_keys(npf_node *n, const m_env *e, const void *m);
+void node_on_replaced(npf_node *n, const m_env *e, const void *m);
+void node_on_redirect(npf_node *n, const m_env *e, const void *m);
 int  node_wake_delay(int ms);           /* sig_wake_ms +-20 % (the unit tests) */
 const uint8_t *node_day_key(const npf_node *n, const npf_daykey keys[2]);
 void node_sig_fail_pending(npf_node *n);
@@ -78,8 +89,11 @@ void node_nat_login(npf_node *n);
  * if a hard-side punch held them or just did (nat-traversal.md 8) */
 void call_port_pressure(npf_node *n, const char *what);
 
-/* call.c */
-void node_dispatch(npf_node *n, const char *type, const npf_json *j, int d);
+/* call.c: the platform's messages about calls (msgs.c) */
+void node_on_punch_request(npf_node *n, const m_env *e, const void *m);
+void node_on_revoke(npf_node *n, const m_env *e, const void *m);
+void node_on_bind_committed(npf_node *n, const m_env *e, const void *m);
+void node_on_call(npf_node *n, const m_env *e, const void *m);
 void node_sig_lost(npf_node *n);
 /* returns 1 when the datagram belonged to a call */
 int  node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
