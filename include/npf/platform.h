@@ -38,7 +38,7 @@ typedef struct npf_host_info {
     char arch[32];                  /* x86_64, arm64 */
     char hostname[128];
     char machine_id[128];           /* /etc/machine-id, IOPlatformUUID, MachineGuid */
-    char macs[NPF_HOST_MAX_MACS][NPF_MAC_LEN];   /* aa:bb:cc:dd:ee:ff, network interfaces */
+    char macs[NPF_HOST_MAX_MACS][NPF_MAC_LEN];   /* aa:bb:cc:dd:ee:ff, network interfaces, sorted */
     int  nmacs;
 } npf_host_info;
 void npf_host_info_get(npf_host_info *h);
