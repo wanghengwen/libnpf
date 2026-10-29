@@ -39,8 +39,8 @@
  *     Its callbacks must not block, nor wait for an instance on another
  *     runtime thread; npf_destroy of an instance is refused from any
  *     callback on its thread. npf_runtime_free after the last npf_destroy.
- * Sessions and media streams are numbers (0 = none), never reused while the
- * npf_t lives: a stale number only gives NPF_ENOENT.
+ * Peers, forwards, sessions and media streams are numbers (0 = none), never
+ * reused while the npf_t lives: a stale number only gives NPF_ENOENT.
  *
  * Memory: JSON and text returned by a function belong to the caller, freed
  * with npf_free (NULL: the instance does not run any more, or no memory).
@@ -238,7 +238,8 @@ typedef struct npf_options {
 NPF_API const char *npf_version(void);
 NPF_API int         npf_api_version(void);
 /* the defaults, for size bytes (the application's sizeof: the macros give
- * it), so a library with larger structures never writes past them */
+ * it), so a library with larger structures never writes past them; the
+ * same for every _init */
 NPF_API void        npf_options_init_size(npf_options *o, size_t size);
 NPF_API void        npf_callbacks_init_size(npf_callbacks *cb, size_t size);
 NPF_API void        npf_setup_init_size(npf_setup *s, size_t size);
@@ -280,12 +281,10 @@ NPF_API int   npf_config_set(npf_t *n, const char *key, const char *value, int s
 NPF_API int   npf_save(npf_t *n);
 
 /* ---- objects: peers, forwards, resources ----
- * Peers and forwards are numbers (0 none) never reused while the npf_t lives;
- * a stale one gives NPF_ENOENT. Lists: count is always the number there is;
- * with too small an array the first cap are filled and NPF_ETOOBIG returned.
- * Creating: NPF_OK / NPF_ESAVE (made; not saved yet) give the new one,
- * NPF_EEXIST the one there is (what was given is ignored), other errors 0
- * and nothing made. */
+ * Lists: count is always the number there is; with too small an array the
+ * first cap are filled and NPF_ETOOBIG returned. Creating: NPF_OK /
+ * NPF_ESAVE (made; not saved yet) give the new one, NPF_EEXIST the one there
+ * is (what was given is ignored), other errors 0 and nothing made. */
 
 enum { NPF_TARGET_NUMBER = 1,          /* a node on the platform, by its number */
        NPF_TARGET_DIRECT = 2 };        /* HOST:PORT with a pre-shared key, no platform */
