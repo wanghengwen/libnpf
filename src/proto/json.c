@@ -509,25 +509,28 @@ static size_t json_esc(unsigned char c, char e[6])
     return 6;
 }
 
-/* before a value: the comma when its container has a member already (none
- * at the top level, none after a key) */
-static void jsep(npf_out *o)
+/* before a member's key or an item: the comma when its container has one
+ * already (none at the top level). A member counts from its key, so a value
+ * written with printf after it still gets the comma before the next one */
+static void jcomma(npf_out *o)
 {
-    if (o->jkey) {
-        o->jkey = 0;
-        return;
-    }
-    if (!o->jdepth)
-        return;
-    if (o->jmore & (1u << o->jdepth))
+    if (o->jdepth && (o->jmore >> o->jdepth & 1))
         npf_out_write(o, ",", 1);
     o->jmore |= 1u << o->jdepth;
+}
+
+/* before a value: nothing after a key (it had the comma), else an item's */
+static void jvalue(npf_out *o)
+{
+    if (!o->jkey)
+        jcomma(o);
+    o->jkey = 0;
 }
 
 static void jopen(npf_out *o, char c)
 {
     uint32_t bit;
-    jsep(o);
+    jvalue(o);
     if (o->jdepth >= 31) {                  /* deeper than the masks: never in ours */
         o->failed = 1;
         return;
@@ -552,12 +555,9 @@ void npf_out_jend(npf_out *o)
     o->jdepth--;
 }
 
-/* the member counts from here, so a value written with printf after it
- * still has the comma before the next key */
 void npf_out_jkey(npf_out *o, const char *k)
 {
-    o->jkey = 0;
-    jsep(o);
+    jcomma(o);
     npf_out_json_str(o, k, strlen(k));
     npf_out_write(o, ":", 1);
     o->jkey = 1;
@@ -580,7 +580,7 @@ void npf_out_json_str(npf_out *o, const char *s, size_t n)
 
 void npf_out_jstr(npf_out *o, const char *s)
 {
-    jsep(o);
+    jvalue(o);
     if (s)
         npf_out_json_str(o, s, strlen(s));
     else
@@ -589,7 +589,7 @@ void npf_out_jstr(npf_out *o, const char *s)
 
 void npf_out_jint(npf_out *o, long long v)
 {
-    jsep(o);
+    jvalue(o);
     npf_out_printf(o, "%lld", v);
 }
 
@@ -597,7 +597,7 @@ void npf_out_jb64(npf_out *o, const uint8_t *v, size_t n)
 {
     char b[NPF_B64_LEN(192)];               /* 192 bytes at a time: whole groups of 3 */
     size_t k;
-    jsep(o);
+    jvalue(o);
     npf_out_write(o, "\"", 1);
     for (; n; v += k, n -= k) {
         k = n < 192 ? n : 192;
@@ -610,7 +610,7 @@ void npf_out_jb64(npf_out *o, const uint8_t *v, size_t n)
 
 void npf_out_jraw(npf_out *o, const char *json)
 {
-    jsep(o);
+    jvalue(o);
     npf_out_write(o, json, strlen(json));
 }
 
