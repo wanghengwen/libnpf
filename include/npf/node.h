@@ -264,6 +264,7 @@ struct npf_node {
     npf_sig      *race;             /* a second access point tried at the same time (security.md 7.5) */
     int           race_server;      /* its index into servers */
     int           online;           /* logged in (welcome received) */
+    int           host_full;        /* this connection's login sends the host's JSON (host_required) */
     /* counters for status */
     int64_t       started_unix_ms;  /* npf_node_init's wall clock */
     int64_t       started_mono_ms;

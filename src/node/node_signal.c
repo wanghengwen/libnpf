@@ -382,6 +382,59 @@ static void ping_cb(npf_loop *loop, void *arg)
     n->t_ping = npf_timer_add(n->loop, ivl, ping_cb, n);
 }
 
+/* the leaf of a kept chain "inter | leaf": the platform has its
+ * intermediates (a peer is given the whole chain) */
+static void out_leaf(npf_out *w, const char *k, const uint8_t *chain, size_t len)
+{
+    npf_cert c;
+    int i = npf_cert_parse(chain, len, &c);
+    size_t at = i > 0 && (size_t)i < len ? (size_t)i : 0;
+    npf_out_kb64(w, k, chain + at, len - at);
+}
+
+/* 1 when this node has no certificate or one with less than 30 days left by
+ * its clock: login asks for a new one (the platform's record decides too) */
+static int cert_due(const npf_node *n)
+{
+    npf_cert inter, leaf;
+    int i = npf_cert_parse(n->cert, n->cert_len, &inter);
+    return i <= 0 || npf_cert_parse(n->cert + i, n->cert_len - (size_t)i, &leaf) <= 0
+           || (int64_t)leaf.not_after - npf_node_time(n) / 1000 < 30 * 86400;
+}
+
+/* the host the platform records (OS, machine, interfaces): a node sends the
+ * first 12 bytes of BLAKE2b-256 of its JSON, and the JSON itself only once
+ * the platform said it does not have that one (host_required) */
+static void out_host(npf_node *n, npf_out *w)
+{
+    npf_host_info h;
+    npf_out o = {0};
+    uint8_t d[32];
+    int i;
+    npf_host_info_get(&h);
+    npf_out_jobj(&o);
+    npf_out_kstr(&o, "os", h.os);
+    npf_out_kstr(&o, "arch", h.arch);
+    npf_out_kstr(&o, "hostname", h.hostname);
+    npf_out_kstr(&o, "machine_id", h.machine_id);
+    npf_out_jkey(&o, "macs");
+    npf_out_jarr(&o);
+    for (i = 0; i < h.nmacs; i++)
+        npf_out_jstr(&o, h.macs[i]);
+    npf_out_jend(&o);
+    npf_out_jend(&o);
+    if (o.failed) {
+        w->failed = 1;
+    } else if (n->cfg.callable && !n->host_full) {
+        npf_kdf(d, NULL, 0, o.p, o.len);
+        npf_out_kb64(w, "host_digest", d, 12);
+    } else {
+        npf_out_jkey(w, "host");
+        npf_out_jraw(w, o.p);
+    }
+    npf_out_free(&o);
+}
+
 static void send_login(npf_node *n)
 {
     char num[24];
@@ -391,16 +444,16 @@ static void send_login(npf_node *n)
         npf_out_kstr(&w, "role", "node");
         snprintf(num, sizeof num, "%llu", (unsigned long long)n->cfg.number);
         npf_out_kstr(&w, "number", num);
-        if (n->cert_len)
-            npf_out_kb64(&w, "cert", n->cert, n->cert_len);
+        if (cert_due(n))
+            npf_out_kbool(&w, "renew", 1);
         if (n->account_cert_len)
-            npf_out_kb64(&w, "account_cert", n->account_cert, n->account_cert_len);
+            out_leaf(&w, "account_cert", n->account_cert, n->account_cert_len);
     } else if (n->cfg.hosted_service) {
         npf_out_kstr(&w, "role", "hosted");          /* npf-hosted itself (its key: hosted_keys) */
     } else {
         npf_out_kstr(&w, "role", "client");
         if (n->account_cert_len)
-            npf_out_kb64(&w, "cert", n->account_cert, n->account_cert_len);
+            out_leaf(&w, "cert", n->account_cert, n->account_cert_len);
     }
     if (n->cfg.callable && n->cfg.model) npf_out_kstr(&w, "model", n->cfg.model);
     if (n->cfg.callable && n->cfg.fw) npf_out_kstr(&w, "fw", n->cfg.fw);
@@ -414,24 +467,8 @@ static void send_login(npf_node *n)
     /* the full list's serial: after a seed list from DNS the server still
      * sends the full one */
     npf_out_kint(&w, "sl_serial", n->sl_full_serial ? n->sl_full_serial : n->sl_serial);
-    if (!n->cfg.no_host_report) {
-        /* the platform's connection record: OS, machine, interfaces (report_host = 0: none) */
-        npf_host_info h;
-        int i;
-        npf_host_info_get(&h);
-        npf_out_jkey(&w, "host");
-        npf_out_jobj(&w);
-        npf_out_kstr(&w, "os", h.os);
-        npf_out_kstr(&w, "arch", h.arch);
-        npf_out_kstr(&w, "hostname", h.hostname);
-        npf_out_kstr(&w, "machine_id", h.machine_id);
-        npf_out_jkey(&w, "macs");
-        npf_out_jarr(&w);
-        for (i = 0; i < h.nmacs; i++)
-            npf_out_jstr(&w, h.macs[i]);
-        npf_out_jend(&w);
-        npf_out_jend(&w);
-    }
+    if (!n->cfg.no_host_report)
+        out_host(n, &w);                /* report_host = 0: none */
     npf_out_jend(&w);
     n->login_sent_ms = npf_mono_ms();
     if (w.failed || npf_node_send(n, "login", 1, w.p) < 0)
@@ -707,6 +744,11 @@ void node_on_login(npf_node *n, const m_env *e, const void *m)
         welcome(n, e->j, m);
         return;
     }
+    if (strcmp(e->error, "host_required") == 0 && n->cfg.callable && !n->host_full) {
+        n->host_full = 1;               /* the platform lacks this host digest: the JSON, on this connection */
+        send_login(n);
+        return;
+    }
     npf_logw("login: rejected (%s)", e->error);
     if (strcmp(e->error, "upgrade_required") == 0) {
         node_upgrade_apply(n, e->j, e->data, 1, 1);
@@ -807,6 +849,7 @@ static void sig_ready(npf_sig *s, void *arg)
     } else {
         race_drop(n);
     }
+    n->host_full = 0;
     if (n->cfg.enroll && !n->cfg.number)
         send_enroll(n);                     /* the first message instead of login (security.md 5.2) */
     else

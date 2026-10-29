@@ -161,20 +161,17 @@ static int mac_universal(const char *mac)
     return (strtol(mac, NULL, 16) & 0x02) == 0;
 }
 
-/* the physical network cards' addresses, sorted, into m: only the burnt-in
- * ones when there are any (made-up ones change); their count */
+/* the physical network cards' addresses, sorted (npf_host_info_get), into
+ * m: only the burnt-in ones when there are any (made-up ones change); their
+ * count */
 static int macs_of(const npf_host_info *hi, const char *m[NPF_HOST_MAX_MACS])
 {
-    const char *t;
-    int i, j, k = 0, uni = 0;
+    int i, k = 0, uni = 0;
     for (i = 0; i < hi->nmacs; i++)
         uni |= mac_universal(hi->macs[i]);
     for (i = 0; i < hi->nmacs; i++)
         if (!uni || mac_universal(hi->macs[i]))
             m[k++] = hi->macs[i];
-    for (i = 1; i < k; i++)
-        for (j = i; j > 0 && strcmp(m[j - 1], m[j]) > 0; j--)
-            t = m[j], m[j] = m[j - 1], m[j - 1] = t;
     return k;
 }
 

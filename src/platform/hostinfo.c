@@ -342,6 +342,11 @@ int npf_hw_items(npf_hw_item *it, int max)
 #endif
 #endif
 
+static int mac_cmp(const void *a, const void *b)
+{
+    return strcmp(a, b);
+}
+
 void npf_host_info_get(npf_host_info *h)
 {
     memset(h, 0, sizeof *h);
@@ -354,4 +359,6 @@ void npf_host_info_get(npf_host_info *h)
 #else
     hostinfo_linux(h);
 #endif
+    /* sorted: the same host, the same text (login names it by its digest) */
+    qsort(h->macs, (size_t)h->nmacs, sizeof h->macs[0], mac_cmp);
 }
