@@ -37,7 +37,8 @@ int64_t npf_mono_ms(void)
     LARGE_INTEGER freq, c;
     QueryPerformanceFrequency(&freq);       /* fixed at boot; no cache shared between threads */
     QueryPerformanceCounter(&c);
-    return (int64_t)(c.QuadPart / (freq.QuadPart / 1000));
+    /* whole seconds, then the rest: no overflow, no precision lost (freq: 10 MHz, or the TSC's) */
+    return (int64_t)(c.QuadPart / freq.QuadPart * 1000 + c.QuadPart % freq.QuadPart * 1000 / freq.QuadPart);
 }
 
 int64_t npf_boot_ms(void)
