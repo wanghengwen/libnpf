@@ -394,53 +394,52 @@ int tunnel_flush_local(sublink *s)
 
 /* ---- frames from the peer ---- */
 
-static int handle_control_with(npf_tunnel *t, const uint8_t *p, size_t n, npf_jtok *tok);
+/* the peer's hello (data-channel.md 8): its window and sublinks, once */
+static int hello_in(npf_tunnel *t, const npf_json *j)
+{
+    int d = npf_json_get(j, 0, "data");
+    int64_t w = NPF_INIT_WINDOW, m = NPF_MAX_SUBLINKS;
+    if (t->hello_recv)
+        return -1;
+    npf_json_get_int(j, d, "init_window", 4096, 16 << 20, &w);
+    npf_json_get_int(j, d, "max_sublinks", 1, 4096, &m);
+    if ((uint32_t)w != t->peer_window) {
+        /* sublinks opened before the hello got the default credit (ours
+         * opened early, the peer's whose first data came first): the
+         * difference now (negative: they wait for WINDOWs) */
+        int i;
+        for (i = 0; i < t->nsubs; i++)
+            t->subs[i]->tx_credit += w - (int64_t)t->peer_window;
+    }
+    t->peer_window = (uint32_t)w;
+    t->peer_max = (int)m;
+    t->hello_recv = 1;
+    if (t->caller && !t->hello_sent)
+        npf_tunnel_start(t);        /* calls ready */
+    else if (t->hello_sent && t->io.ready)
+        t->io.ready(t->arg);
+    return 0;
+}
 
+/* a JSON control message: hello here, the others to io.control */
 static int handle_control(npf_tunnel *t, const uint8_t *p, size_t n)
 {
     npf_jtok *tok = npf_scratch(512 * sizeof *tok);     /* 8 KB: not on the stack */
-    int r;
-    if (!tok)
-        return -1;
-    r = handle_control_with(t, p, n, tok);
-    npf_scratch_done(tok);
-    return r;
-}
-
-static int handle_control_with(npf_tunnel *t, const uint8_t *p, size_t n, npf_jtok *tok)
-{
     npf_json j;
     char type[32];
-    if (npf_json_parse(&j, (const char *)p, n, tok, 512) < 0 || tok[0].type != NPF_JT_OBJECT
-        || npf_json_get_str(&j, 0, "type", type, sizeof type) < 0)
+    int r = -1;
+    if (!tok)
         return -1;
-    if (strcmp(type, "hello") == 0) {
-        int d = npf_json_get(&j, 0, "data");
-        int64_t w = NPF_INIT_WINDOW, m = NPF_MAX_SUBLINKS;
-        if (t->hello_recv)
-            return -1;
-        npf_json_get_int(&j, d, "init_window", 4096, 16 << 20, &w);
-        npf_json_get_int(&j, d, "max_sublinks", 1, 4096, &m);
-        if ((uint32_t)w != t->peer_window) {
-            /* sublinks opened before the hello got the default credit (ours
-             * opened early, the peer's whose first data came first): the
-             * difference now (negative: they wait for WINDOWs) */
-            int i;
-            for (i = 0; i < t->nsubs; i++)
-                t->subs[i]->tx_credit += (int64_t)w - (int64_t)t->peer_window;
-        }
-        t->peer_window = (uint32_t)w;
-        t->peer_max = (int)m;
-        t->hello_recv = 1;
-        if (t->caller && !t->hello_sent)
-            npf_tunnel_start(t);        /* calls ready */
-        else if (t->hello_sent && t->io.ready)
-            t->io.ready(t->arg);
-        return 0;
+    if (npf_json_parse(&j, (const char *)p, n, tok, 512) == 0 && tok[0].type == NPF_JT_OBJECT
+        && npf_json_get_str(&j, 0, "type", type, sizeof type) >= 0) {
+        r = 0;
+        if (strcmp(type, "hello") == 0)
+            r = hello_in(t, &j);
+        else if (t->io.control)
+            t->io.control(t->arg, &j);
     }
-    if (t->io.control)
-        t->io.control(t->arg, &j);
-    return 0;
+    npf_scratch_done(tok);
+    return r;
 }
 
 #define SEEN_BITS NPF_MAX_SUBLINKS        /* ids remembered below the largest: as many as may be open */
