@@ -29,7 +29,6 @@ typedef struct pfwd {
     int       up;                   /* listening, or the callee listens (-R) */
     int       asked;                /* -R: a request is outstanding */
     uint32_t  rev_id;               /* -R: the callee's listen_id */
-    int       rport;                /* -R: the port the callee listens on */
     int       backoff;
     npf_timer *t_retry;
     int64_t   retry_at;
@@ -44,7 +43,7 @@ typedef struct pfwd {
     int       suspended;            /* drained: not listening until the quota is back */
     int       idx;                  /* its slot in p->fwds */
     void     *ctx;                  /* the application's (NPF_FWD_OPT_CTX) */
-    int       lport;                /* the port in use (-L / -D: bound here; -R: rport), 0 none */
+    int       lport;                /* the port in use (-L / -D: bound here; -R: the callee's), 0 none */
     int       why_code;             /* NPF_FWD_WHY_* of the last failure */
     int       open;                 /* connections open now (sublinks in the session) */
     uint32_t  nrefused;             /* connections the peer refused (its resources) */
