@@ -241,7 +241,7 @@ npf_destroy(cli);
 | `no_hosted_trust` | `hosted_trust = 0` | 不接受平台为设备所有者及其分享对象签发的授权 |
 | `peer_idle_s` | `peer_idle` | 按需连接的对端（第 7 节）默认的空闲秒数；0 为 300 |
 
-`npf_create` 会校验 `npf_setup`，失败时在 `err` 中说明字段或配置问题。常见原因包括：非直连角色没有 `roots`；同时给出 `serverlist` 和 `serverlist_file`；两者均未给出且没有 `server_url`；给了 `server_url` 却没有 `server_pub`；`cred` 缺少 `password`；同时给出 `cred` 和 `model_cred`；非零 `direct_port` 缺少 `direct_psk`；数值越界。
+`npf_create` 会校验 `npf_setup`，失败时在 `err` 中说明字段或配置问题。常见原因包括：非直连角色没有 `roots`；同时给出 `serverlist` 和 `serverlist_file`；两者均未给出且没有 `server_url`；给了 `server_url` 却没有 `server_pub`；`cred` 缺少 `password`；同时给出 `cred` 和 `model_cred`；非零 `direct_port` 缺少 `direct_psk`；数值越界（按下文的键表，`err` 为 `npf_setup: udp_port: a number from 0 to 65535` 这样的一句；`punch_lead_ms` 只有 −1 表示自动）。
 
 配置文件入口还支持 `serial_file`、`direct_psk_file` 等键。对端由应用通过第 7 节的 API 建立；npf.conf 和 `overrides` 中的 `node =` 行会返回 `NPF_EINVAL`。
 
@@ -256,6 +256,8 @@ npf_destroy(cli);
 - 同一个 `data_dir` 不要同时给两个实例或两个进程用：库不提供目录独占锁，应用需要自行保证独占访问。
 
 **生效的设置**按顺序叠加，后者覆盖前者：npf.conf（或 `npf_setup` 的字段）、`npf_options.overrides`、`local.json` 的 `settings`（带保存的 `npf_config_set` 写在这里）。库从不写 npf.conf；运行时保存的设置、对端、转发和资源都写进 `data_dir/local.json`（临时文件 + rename，原子替换）。
+
+**键表**：库的每个配置键都在一张表里（`src/node/conf.c`，architecture.md 7.1）：类型（字符串、范围内的整数、`0` / `1` 的开关、几个值之一），默认值，以及从哪里来（只能来自 npf.conf 或 `npf_setup`、`npf_config_set` 即时生效、秘密、有对应的 `npf_setup` 字段、相对配置文件的路径、可以多行）。npf.conf、`overrides` 与 `npf_setup` 给出的值在 `npf_create` 时按表检查，不合格返回 `NPF_EINVAL`，`err` 说明哪个键、要什么（如 `npf.conf: max_calls: a number from 0 to 4096`、`overrides: connect_mode: p2p or secure`）；`local.json` 中不合格或只能来自 npf.conf 的设置记一行警告后忽略；`npf_config_set` 同样按表检查。`hosted_exec` 是 64 位的编号，按字符串保存。模块的键由模块自己检查（第 12 节）；模块读库的整数键用 `npf_conf_int`（默认值来自键表）。
 
 **两个开关**（`npf_options.flags`），给自己管理数据的应用：
 
