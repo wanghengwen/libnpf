@@ -138,27 +138,19 @@ static int connect_next(sublink *s)
 
 /* an attempt answered: connected (the others closed, the sublink open) or
  * failed (the next address at once, or the end when none is left) */
-static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s);
-
 static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     sublink *s = arg;
     npf_tunnel *t = s->t;
-    t->depth++;
-    conn_cb_in(loop, fd, ev, s);
-    tunnel_leave(t);
-}
-
-static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
-{
     int err = 0, i, k;
     socklen_t el = sizeof err;
     (void)ev;
+    t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
     getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&err, &el);
     for (k = 0; k < s->ncfd && s->hs->cfd[k] != fd; k++)
         ;
     if (k == s->ncfd)
-        return;
+        goto out;
     npf_loop_del(loop, fd);
     s->hs->cfd[k] = s->hs->cfd[--s->ncfd];
     if (err) {
@@ -167,7 +159,7 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
         /* its turn is now */
         npf_timer_stop(loop, &s->t_he);
         connect_next(s);
-        return;
+        goto out;
     }
     for (i = 0; i < s->ncfd; i++) {     /* the winner: the slower ones go */
         npf_loop_del(loop, s->hs->cfd[i]);
@@ -184,11 +176,12 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
     tunnel_hs_done(s);                  /* connected: no more SOCKS bytes or attempts */
     socks_reply(s, 0);
     s->state = SL_OPEN;
-    if (tunnel_flush_local(s) < 0) {
+    if (tunnel_flush_local(s) < 0)
         tunnel_sub_reset(s, NPF_RST_LOCAL);
-        return;
-    }
-    tunnel_update_ev(s);
+    else
+        tunnel_update_ev(s);
+out:
+    tunnel_leave(t);
 }
 
 /* check the policy for every address, then connect to them (Happy Eyeballs).
@@ -237,8 +230,6 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
 }
 
 /* the worker thread's answer for a domain-name target */
-static void resolved_in(sublink *s, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n);
-
 static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n,
                      void *arg)
 {
@@ -246,18 +237,12 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     npf_tunnel *t = s->t;
     (void)r;
     t->depth++;
-    resolved_in(s, err, addrs, lens, n);
-    tunnel_leave(t);
-}
-
-static void resolved_in(sublink *s, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n)
-{
     s->resolve = NULL;
-    if (err != 0) {
+    if (err != 0)
         socks_fail(s, 4);           /* host unreachable: the name did not resolve */
-        return;
-    }
-    socks_connect_addrs(s, addrs, lens, n);
+    else
+        socks_connect_addrs(s, addrs, lens, n);
+    tunnel_leave(t);
 }
 
 /* a CONNECT's address (ATYP 1 IPv4, 4 IPv6, 3 a name of alen bytes) as text */

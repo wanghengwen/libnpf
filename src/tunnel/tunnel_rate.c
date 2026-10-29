@@ -29,29 +29,22 @@ static void rg_refill(rgroup *g)
     g->down = g->down + add > (int64_t)g->rate ? (int64_t)g->rate : g->down + add;
 }
 
-static void rate_tick_in(npf_tunnel *t);
-
 /* every loop callback into the tunnel holds it (depth): a sublink_done or a
  * transport's write it causes may free the tunnel, which then goes when the
  * callback is done with it (tunnel_leave) */
 static void rate_tick(npf_loop *loop, void *arg)
 {
     npf_tunnel *t = arg;
+    int i;
     (void)loop;
     t->t_rate = NULL;
     t->depth++;
-    rate_tick_in(t);
-    tunnel_leave(t);
-}
-
-static void rate_tick_in(npf_tunnel *t)
-{
-    int i;
     for (i = 0; i < t->nrg; i++)
         rg_refill(&t->rg[i]);
     for (i = 0; i < t->nsubs; i++)
         if (t->subs[i]->rg || t->budget)
             tunnel_update_ev(t->subs[i]);
+    tunnel_leave(t);
 }
 
 /* a group ran dry: its sublinks wait for the next tick */
