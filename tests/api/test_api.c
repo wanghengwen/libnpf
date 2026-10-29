@@ -257,7 +257,8 @@ int main(int argc, char **argv)
     static side a, b, c;
     char da[] = "/tmp/npf-api-a-XXXXXX", db[] = "/tmp/npf-api-b-XXXXXX", ov[256];
     const char *key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";   /* 32 zero bytes */
-    int port = argc > 1 ? atoi(argv[1]) : 47960 + (int)(getpid() % 30), i, t, ok, opened, e;
+    /* below the ephemeral ports (other programs on this machine take those) */
+    int port = argc > 1 ? atoi(argv[1]) : 27760 + (int)(getpid() % 30), i, t, ok, opened, e;
     npf_t *na, *nb;
     uint32_t ms[NTAGS], busy[40], back;
     npf_media_opt mo;

@@ -399,7 +399,7 @@ int main(void)
     char ov[300], err[300];
     static const uint8_t key[32] = {1, 2, 3};
     const char *keyb64 = "AQIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-    /* below the ephemeral ports, apart from the API test's 479xx (ctest -j, other builds at once) */
+    /* below the ephemeral ports, apart from the API test's 277xx (ctest -j, other builds at once) */
     int dport = 27930 + (int)(getpid() % 40), echo, i, j, k, ok;
     int ctx_peer, ctx_fwd, ctx_socks;
     npf_t *a, *b, *c;
