@@ -264,6 +264,7 @@ static void sig_drop(npf_node *n)
 {
     n->sig = NULL;
     n->online = 0;
+    n->move_taken = 0;
     npf_timer_stop(n->loop, &n->t_ping);
     npf_timer_stop(n->loop, &n->t_expect);
 }
@@ -517,6 +518,7 @@ static void move_cb(npf_loop *loop, void *arg)
         return;
     }
     npf_log("signaling: moving to udp");
+    n->move_taken = 0;
     if (!(n->sig_move = udp_open(n, &n->servers[n->cur_server])))
         move_arm(n);
 }
@@ -910,24 +912,33 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
 /* login's reply: welcome, or a refusal */
 void node_on_login(npf_node *n, const m_env *e, const void *m)
 {
+    int late = n->move_taken == 2 && n->msg_sig == n->sig;
     if (!e->reply_to[0])
         return;
-    if (n->sig_move && n->msg_sig == n->sig_move) {     /* the move to UDP */
+    if ((n->sig_move && n->msg_sig == n->sig_move) || late) {  /* the move to UDP */
         if (strcmp(e->status, "ok") == 0) {
-            move_done(n);
+            if (late)
+                n->move_taken = 0;      /* the connection already: the WebSocket went first */
+            else
+                move_done(n);
             n->moving = 1;
             welcome(n, e->j, m);
             n->moving = 0;
-        } else if (strcmp(e->error, "host_required") == 0 && n->cfg.callable && !n->host_full) {
+            return;
+        }
+        if (strcmp(e->error, "host_required") == 0 && n->cfg.callable && !n->host_full) {
             n->host_full = 1;
-            send_login(n, n->sig_move);
-        } else {
+            send_login(n, n->msg_sig);
+            return;
+        }
+        if (!late) {
             npf_log("signaling: udp login refused (%s), staying on ws", e->error);
             npf_sig_close(n->sig_move);
             n->sig_move = NULL;
             move_arm(n);
+            return;
         }
-        return;
+        n->move_taken = 0;              /* refused after all: as any login */
     }
     if (strcmp(e->status, "ok") == 0) {
         welcome(n, e->j, m);
@@ -983,6 +994,8 @@ void node_on_keys(npf_node *n, const m_env *e, const void *m)
 void node_on_replaced(npf_node *n, const m_env *e, const void *m)
 {
     (void)e, (void)m;
+    if (n->sig_move && n->msg_sig == n->sig)
+        n->move_taken = 1;              /* the server took the move's login */
     if ((n->msg_sig && n->msg_sig != n->sig) || n->sig_move)
         return;
     n->replaced_ms = npf_mono_ms();
@@ -1093,6 +1106,17 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         return;
     if (!n->online)
         udp_ended(n, s, why);
+    if (n->sig_move && n->move_taken) {
+        /* the server closed the WebSocket it replaced by the UDP login,
+         * whose welcome is late (lost, sent again): the move, no drop */
+        npf_log("signaling: ws closed after the move, the udp welcome on its way");
+        npf_timer_stop(n->loop, &n->t_expect);
+        n->sig = n->sig_move;
+        n->sig_move = NULL;
+        n->move_taken = 2;
+        sig_expect(n, SIG_REPLY_MS, 0);     /* the welcome is due */
+        return;
+    }
     if (n->sig_move) {              /* the WebSocket went while UDP logs in: UDP goes on */
         npf_log("signaling: disconnected (%s), the udp session goes on", why);
         sig_drop(n);

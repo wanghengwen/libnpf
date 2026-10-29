@@ -112,6 +112,8 @@ typedef struct srv {
     uint8_t cookie[16];
     int no_ack;                         /* no acks to the client's segments */
     int drop_m3;                        /* message 3s dropped before reading */
+    int late_welcome;                   /* the next welcome held back in late, sent by the test */
+    char late[160];
     struct sockaddr_in peer;            /* real sockets: where the client is */
     int fd;                             /* real sockets: the responder's */
 } srv;
@@ -300,7 +302,11 @@ static void take(srv *v, int end, const uint8_t *d, size_t dl)
                     char w[128];
                     snprintf(w, sizeof w, "{\"v\":1,\"type\":\"login\",\"reply_to\":\"r%d\",\"status\":\"ok\",\"data\":{\"server_id\":1}}",
                              atoi(id + 7));
-                    msg_to(v, w);
+                    if (v->late_welcome) {
+                        v->late_welcome = 0;
+                        snprintf(v->late, sizeof v->late, "%s", w);
+                    } else
+                        msg_to(v, w);
                     v->logins++;
                     if (v->on_login)
                         v->on_login(v->on_login_arg);
@@ -1016,6 +1022,7 @@ static void udp_poll(srv *v)
         udp_poll(&v); \
         ws_poll(&w); \
         if (w.closing && ++w.closing > 40) ws_drop(&w);   /* closed some 200 ms after "replaced" */ \
+        if (v.late[0] && w.fd < 0) { msg_to(&v, v.late); v.late[0] = 0; }   /* after the close */ \
     } \
 } while (0)
 
@@ -1098,6 +1105,32 @@ static void t_node(npf_loop *loop)
     EXPECT(!n->sig_old && n->online && n->logins == 1 && n->udp_bad == 0 && n->replaced_ms == 0);
     EXPECT(count_of(logged, "signaling: moving to udp") == 1 && count_of(logged, "on udp, ws closed") == 1);
     EXPECT(count_of(logged, "logged in elsewhere") == 0);
+    npf_node_stop(n);
+    ws_drop(&w);
+    close(v.fd);
+
+    /* the same move with the welcome late (lost, sent again): the server's
+     * close of the WebSocket it replaced comes first. The move all the
+     * same: no drop, one login (before: "disconnected (connection closed),
+     * the udp session goes on" and a second login; natlab sig-loss20,
+     * 2026-10-30) */
+    srv_init(&v, 12);
+    v.fd = lo_socket(SOCK_DGRAM, 0, &v.addr, sizeof v.addr);
+    v.on_login = replace_ws;
+    v.on_login_arg = &w;
+    v.silent = 1;
+    log_clear();
+    REQUIRE_V(node_up(n, loop, &v, &w, url, sizeof url) == 0);
+    NODE_UNTIL(n->online, 4000);
+    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0, "late welcome: on ws first (%s)", logged);
+    v.silent = 0;
+    v.late_welcome = 1;
+    NODE_UNTIL(v.logins == 1 && !v.late[0] && n->move_taken == 0 && n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0, 4000);
+    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0 && !n->sig_move && n->move_taken == 0,
+          "late welcome: moved to udp (%s)", logged);
+    EXPECT(n->logins == 1 && n->udp_bad == 0 && n->replaced_ms == 0);
+    EXPECT(count_of(logged, "ws closed after the move, the udp welcome on its way") == 1);
+    EXPECT(count_of(logged, "the udp session goes on") == 0 && count_of(logged, "signaling: disconnected") == 0);
     npf_node_stop(n);
     ws_drop(&w);
     close(v.fd);

@@ -278,6 +278,8 @@ struct npf_node {
     int           udp_bad;          /* UDP did not answer and the WebSocket logged in: WebSocket only */
     int           udp_silent;       /* this attempt's UDP had no answer (or the server was busy) */
     int           moving;           /* the welcome being handled is sig_move's */
+    int           move_taken;       /* 1: the WebSocket "replaced" by sig_move's login; 2: it went
+                                     * first, sig_move is the connection, its welcome still due */
     int64_t       sig_open_ms;      /* monotonic: the attempt began */
     npf_sig_cookie sig_cookie;      /* the server's, for the next attempts */
     int           online;           /* logged in (welcome received) */
