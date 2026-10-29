@@ -191,7 +191,7 @@ int test_policy(void)
         }
         {   /* -R ports: digits only, as the other rules' ports */
             static const char *const bad[] = {"+2000", " 2000", "2000x", "2000-", "-2000", "1023", "2000-0x8000",
-                                              "lan:+2000", "", NULL};
+                                              "lan:+2000", "02000", "2000-03000", "lan:02000", "", NULL};
             npf_policy p;
             int i;
             memset(&p, 0, sizeof p);

@@ -279,10 +279,12 @@ int npf_res_rules(npf_policy *p, const npf_res *r, int n)
         const char *t = r[i].target;
         if ((k = type_of(&r[i])) < 0)
             return -1;
-        /* a service's target (IPv4:PORT, [IPv6]:PORT) is a rule as it is;
-         * localhost stands for both loopback addresses */
-        if (npf_res_is_service(&r[i]) && split_target(t, host, sizeof host, &port) == 0
-            && strcmp(host, "localhost") == 0) {
+        /* a service's target (IPv4:PORT, [IPv6]:PORT) is a rule as it is
+         * (checked again: never "*", "lan" or a network); localhost stands
+         * for both loopback addresses */
+        if (npf_res_is_service(&r[i]) && split_target(t, host, sizeof host, &port) < 0)
+            return -1;
+        if (npf_res_is_service(&r[i]) && strcmp(host, "localhost") == 0) {
             snprintf(spec, sizeof spec, "127.0.0.1:%d", port);
             if (k_types[k].add(p, spec) < 0)
                 return -1;

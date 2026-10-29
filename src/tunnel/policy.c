@@ -72,12 +72,12 @@ void npf_policy_refresh(npf_policy *p)
 }
 
 /* a decimal number in lo..hi taking the whole string: digits only, no sign,
- * no trailing text (atoi read "typo" as 0, a /0 prefix that allowed every
- * address, and cast 65537 to port 1) */
+ * no leading zero, no trailing text (atoi read "typo" as 0, a /0 prefix that
+ * allowed every address, and cast 65537 to port 1) */
 static int strict_num(const char *s, long lo, long hi, long *out)
 {
     long v = 0;
-    if (!*s)
+    if (!*s || (s[0] == '0' && s[1]))
         return -1;
     for (; *s; s++) {
         if (*s < '0' || *s > '9')
