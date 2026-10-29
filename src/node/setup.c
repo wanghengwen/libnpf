@@ -42,38 +42,32 @@ int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
             return -1;
         }
     }
-    cfg->udp_port = atoi(npf_conf_get(conf, "udp_port", "0"));
-    cfg->max_calls = atoi(npf_conf_get(conf, "max_calls", "0"));
-    cfg->punch_lead_ms = atoi(npf_conf_get(conf, "punch_lead_ms", "-1"));
-    cfg->punch_sockets = atoi(npf_conf_get(conf, "punch_sockets", "0"));
-    cfg->secure = strcmp(npf_conf_get(conf, "connect_mode", "p2p"), "secure") == 0;
+    /* the values as the key table checked them (conf.c), or its defaults */
+    cfg->udp_port = (int)npf_conf_int(conf, "udp_port");
+    cfg->max_calls = (int)npf_conf_int(conf, "max_calls");
+    cfg->punch_lead_ms = (int)npf_conf_int(conf, "punch_lead_ms");
+    cfg->punch_sockets = (int)npf_conf_int(conf, "punch_sockets");
+    cfg->secure = npf_conf_int(conf, "connect_mode") == 1;     /* p2p|secure */
     npf_udp_hook_on(!cfg->secure);         /* p2p: the UDP sockets go around a VPN */
-    cfg->no_portmap = strcmp(npf_conf_get(conf, "portmap", "1"), "0") == 0;
-    cfg->test_one_host = strcmp(npf_conf_get(conf, "test_one_host", "0"), "1") == 0;   /* tests only */
-    cfg->no_host_report = strcmp(npf_conf_get(conf, "report_host", "1"), "0") == 0;
-    cfg->hosted_service = strcmp(npf_conf_get(conf, "hosted_service", "0"), "1") == 0;
-    cfg->hosted_exec = strtoull(npf_conf_get(conf, "hosted_exec", "0"), NULL, 10);
+    cfg->no_portmap = !npf_conf_int(conf, "portmap");
+    cfg->test_one_host = (int)npf_conf_int(conf, "test_one_host");     /* tests only */
+    cfg->no_host_report = !npf_conf_int(conf, "report_host");
+    cfg->hosted_service = (int)npf_conf_int(conf, "hosted_service");
+    cfg->hosted_exec = strtoull(npf_conf_get(conf, "hosted_exec", "0"), NULL, 10);   /* a key's fingerprint: 64 bits */
     if (cfg->hosted_exec) {                 /* only hosted clients may go without signaling */
-        cfg->sig_idle_ms = atoi(npf_conf_get(conf, "sig_idle_s", "0")) * 1000;
-        cfg->sig_wake_ms = atoi(npf_conf_get(conf, "sig_wake_s", "600")) * 1000;
-        cfg->udp_on_demand = cfg->sig_idle_ms > 0 && strcmp(npf_conf_get(conf, "udp_on_demand", "0"), "1") == 0;
-        cfg->udp_public = strcmp(npf_conf_get(conf, "udp_public", "0"), "1") == 0;
+        cfg->sig_idle_ms = (int)npf_conf_int(conf, "sig_idle_s") * 1000;
+        cfg->sig_wake_ms = (int)npf_conf_int(conf, "sig_wake_s") * 1000;
+        cfg->udp_on_demand = cfg->sig_idle_ms > 0 && npf_conf_int(conf, "udp_on_demand");
+        cfg->udp_public = (int)npf_conf_int(conf, "udp_public");
     }
     cfg->doh_servers = npf_conf_get(conf, "doh_servers", NULL);
-    /* the persistent binding (home-binding.md 17.1) */
-    cfg->home_off = strcmp(npf_conf_get(conf, "home_bind", "auto"), "off") == 0;
+    cfg->home_off = npf_conf_int(conf, "home_bind") == 1;     /* auto|off (home-binding.md 17.1) */
     return 0;
 }
 
 int npf_conf_apply_log_level(const npf_conf *conf)
 {
-    const char *v = npf_conf_get(conf, "log_level", "info");
-    int lv = npf_log_level_parse(v);
-    if (lv < 0) {
-        npf_logw("config: unknown log_level '%s' (error, warn, info, debug, trace)", v);
-        return -1;
-    }
-    npf_log_set_level(lv);
+    npf_log_set_level((int)npf_conf_int(conf, "log_level"));     /* its index: NPF_LOG_* */
     return 0;
 }
 

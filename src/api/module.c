@@ -61,7 +61,7 @@ static int fits(const npf_module *m, int count)
                 return 0;
     }
     for (kk = m->keys; kk && *kk; kk++) {
-        if (npf_conf_known(*kk))
+        if (npf_key_find(*kk))
             return 0;
         for (i = 0; i < count; i++)
             if (has_key(g_mods[i], *kk))

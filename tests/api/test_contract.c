@@ -182,7 +182,8 @@ static void file_only(void)
         check(0, "local.json written");
         return;
     }
-    fprintf(f, "{\"settings\":{\"root\":\"AAAA\",\"log\":\"%s/planted.log\",\"peer_idle\":\"7\"}}\n", dir);
+    fprintf(f, "{\"settings\":{\"root\":\"AAAA\",\"log\":\"%s/planted.log\",\"peer_idle\":\"7\",\"max_calls\":\"9999\"}}\n",
+            dir);
     fclose(f);
     npf_options_init(&o);
     o.conf_dir = dir;
@@ -197,6 +198,10 @@ static void file_only(void)
     check(npf_config_get(n, "root", val, sizeof val) == NPF_OK && strcmp(val, "AAAA") != 0,
           "local.json: root ignored");
     check(npf_config_get(n, "log", val, sizeof val) == NPF_OK && !strstr(val, "planted"), "local.json: log ignored");
+    check(npf_config_get(n, "max_calls", val, sizeof val) == NPF_OK && strcmp(val, "32") == 0,
+          "local.json: a value out of the key's range taken");
+    check(npf_config_set(n, "max_calls", "4097", 0, err, sizeof err) == NPF_EINVAL && strstr(err, "0 to 4096"),
+          "set max_calls 4097: taken");
     check(npf_config_set(n, "root", "BBBB", 1, err, sizeof err) != NPF_OK && strstr(err, "npf.conf"),
           "set root: refused, only in npf.conf");
     check(npf_config_set(n, "serverlist_saved", "/tmp/x", 0, err, sizeof err) != NPF_OK, "set serverlist_saved: refused");
@@ -208,6 +213,9 @@ static void file_only(void)
     }
     snprintf(path, sizeof path, "%s/planted.log", dir);
     check(access(path, F_OK) != 0, "the planted log path not written");
+    o.overrides = "udp_port = 70000\n";         /* each source's values as the key table says */
+    check(npf_create(&o, &n, err, sizeof err) == NPF_EINVAL && strstr(err, "overrides: udp_port: a number from 0 to 65535"),
+          "overrides: udp_port 70000 taken");
     rmdir(dir);
 }
 

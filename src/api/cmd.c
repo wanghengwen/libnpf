@@ -326,33 +326,12 @@ void npf_cmd_status_json(npf_t *c, npf_out *o)
 
 /* ---- settings ---- */
 
-static const char *const settable[] = {"log_level", "max_calls", "punch_lead_ms", "punch_sockets", "hosted_trust",
-                                       "connect_mode", "peer_idle", "keep_awake", NULL};
-/* also live, not listed: a hosted client's limits (npf-hosted sets them, the platform decides) */
-static const char *const settable_hosted[] = {"hosted_max_conns", "hosted_ip_conns", "hosted_ip_rate", NULL};
-
-int npf_cmd_is_settable(const char *k)
-{
-    int i;
-    for (i = 0; settable[i]; i++)
-        if (strcmp(settable[i], k) == 0)
-            return 1;
-    for (i = 0; settable_hosted[i]; i++)
-        if (strcmp(settable_hosted[i], k) == 0)
-            return 1;
-    return 0;
-}
-
-static int apply_setting(npf_t *c, const char *k, const char *v, npf_out *o)
+/* a live key's value (checked) in effect */
+static void apply_setting(npf_t *c, const char *k, const char *v)
 {
     npf_node *n = &c->node;
     if (strcmp(k, "log_level") == 0) {
-        int lv = npf_log_level_parse(v);
-        if (lv < 0) {
-            npf_out_printf(o, "log_level: error, warn, info, debug or trace\n");
-            return 2;
-        }
-        npf_log_set_level(lv);
+        npf_log_set_level(npf_log_level_parse(v));      /* one of the key's values (check_value) */
     } else if (strcmp(k, "max_calls") == 0) {
         n->cfg.max_calls = atoi(v);
     } else if (strcmp(k, "punch_lead_ms") == 0) {
@@ -369,14 +348,12 @@ static int apply_setting(npf_t *c, const char *k, const char *v, npf_out *o)
         npf_node_set_secure(n, strcmp(v, "secure") == 0);
     } else if (strcmp(k, "peer_idle") == 0) {
         npf_peers_set_idle(c->peers, (atoi(v) > 0 ? atoi(v) : 300) * 1000);     /* 0: the default, as at a start */
-    } else if (strncmp(k, "hosted_", 7) == 0 && strcmp(k, "hosted_trust") != 0) {     /* settable_hosted */
+    } else if (npf_key_is(k, NPF_K_UNLISTED)) {
         /* a hosted client's limits on its public mappings (npf-hosted sets them from the platform) */
-#define LIMIT(key, def) atoi(strcmp(k, key) == 0 ? v : npf_conf_get(&c->conf, key, def))
-        npf_peers_set_limits(c->peers, LIMIT("hosted_max_conns", "128"), LIMIT("hosted_ip_conns", "32"),
-                             LIMIT("hosted_ip_rate", "120"));
+#define LIMIT(key) (strcmp(k, key) == 0 ? atoi(v) : (int)npf_conf_int(&c->conf, key))
+        npf_peers_set_limits(c->peers, LIMIT("hosted_max_conns"), LIMIT("hosted_ip_conns"), LIMIT("hosted_ip_rate"));
 #undef LIMIT
     }
-    return 0;
 }
 
 const char *npf_cmd_get(npf_t *c, const char *k, char *buf, size_t cap)
@@ -391,37 +368,21 @@ const char *npf_cmd_get(npf_t *c, const char *k, char *buf, size_t cap)
     else if (strcmp(k, "punch_sockets") == 0)
         snprintf(buf, cap, "%d", npf_node_punch_budget(n));
     else if (strcmp(k, "hosted_trust") == 0)
-        snprintf(buf, cap, "%d", c->callee ? c->callee->hosted_trust : atoi(npf_conf_get(&c->conf, "hosted_trust", "1")));
+        snprintf(buf, cap, "%d", c->callee ? c->callee->hosted_trust : (int)npf_conf_int(&c->conf, k));
     else if (strcmp(k, "connect_mode") == 0)
         snprintf(buf, cap, "%s", n->cfg.secure ? "secure" : "p2p");
     else if (strcmp(k, "peer_idle") == 0)
         snprintf(buf, cap, "%d", npf_peers_idle(c->peers) / 1000);
-    else if (strcmp(k, "keep_awake") == 0)  /* the program's (Windows: keep the computer awake) */
-        snprintf(buf, cap, "%s", npf_conf_get(&c->conf, k, "busy"));
     else
-        snprintf(buf, cap, "%s", npf_conf_get(&c->conf, k, ""));
+        snprintf(buf, cap, "%s", npf_conf_get(&c->conf, k, npf_key_find(k) ? npf_key_find(k)->def : ""));
     return buf;
-}
-
-/* integer keys and their ranges (0 = the default where it has one) */
-static const struct {
-    const char *key;
-    long lo, hi;
-} int_keys[] = {{"max_calls", 0, 4096},  {"punch_lead_ms", -1, 5000}, {"punch_sockets", 0, 4096},
-                {"hosted_trust", 0, 1},  {"udp_port", 0, 65535}, {"peer_idle", 0, 86400},
-                {"hosted_max_conns", 0, 100000}, {"hosted_ip_conns", 0, 100000}, {"hosted_ip_rate", 0, 100000}};
-
-/* keys whose values stay out of the log and the replies */
-int npf_cmd_is_secret(const char *k)
-{
-    return strcmp(k, "password") == 0 || strcmp(k, "cred") == 0 || strcmp(k, "model_cred") == 0
-           || strcmp(k, "direct_psk") == 0;
 }
 
 /* 0, or the exit code with the reason in o */
 static int check_value(npf_t *n, const char *k, const char *v, npf_out *o)
 {
-    size_t i;
+    const npf_key *key = npf_key_find(k);
+    char why[96];
     int r;
     if (!npf_conf_value_ok(v)) {
         npf_out_printf(o, "%s: the value must be one line without '#' (and under 1000 bytes)\n", k);
@@ -429,24 +390,10 @@ static int check_value(npf_t *n, const char *k, const char *v, npf_out *o)
     }
     if ((r = npf_mods_check(n, k, v, o)) >= 0)
         return r;                           /* a module's key */
-    if (strcmp(k, "connect_mode") == 0 && strcmp(v, "p2p") != 0 && strcmp(v, "secure") != 0) {
-        npf_out_printf(o, "connect_mode: p2p (direct paths first) or secure (relays only)\n");
+    if (key && npf_key_check(key, v, why, sizeof why) < 0) {
+        npf_out_printf(o, "%s\n", why);
         return 2;
     }
-    if (strcmp(k, "keep_awake") == 0 && strcmp(v, "busy") != 0 && strcmp(v, "ac") != 0 && strcmp(v, "always") != 0
-        && strcmp(v, "off") != 0) {
-        npf_out_printf(o, "keep_awake: busy (while others are connected), ac (on mains power), always or off\n");
-        return 2;
-    }
-    for (i = 0; i < sizeof int_keys / sizeof int_keys[0]; i++)
-        if (strcmp(int_keys[i].key, k) == 0) {
-            char *e;
-            long x = strtol(v, &e, 10);
-            if (!*v || *e || x < int_keys[i].lo || x > int_keys[i].hi) {
-                npf_out_printf(o, "%s: a number from %ld to %ld\n", k, int_keys[i].lo, int_keys[i].hi);
-                return 2;
-            }
-        }
     return 0;
 }
 
@@ -454,30 +401,23 @@ static int check_value(npf_t *n, const char *k, const char *v, npf_out *o)
  * configuration file unless save is 0 */
 int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
 {
-    int live = npf_cmd_is_settable(k), r;
-    const char *shown = npf_cmd_is_secret(k) ? "(hidden)" : v;
-    if (strcmp(k, "node") == 0 || strcmp(k, "cred") == 0) {
-        npf_out_printf(o, "%s: cannot be set this way%s\n", k, strcmp(k, "node") == 0 ? " (peers: npf_peer_create)" : "");
-        return 2;
-    }
-    if (strcmp(k, "resource") == 0) {
-        npf_out_printf(o, "resource: with the resource command\n");
-        return 2;
-    }
+    int live = npf_key_is(k, NPF_K_LIVE), r;
+    const char *shown = npf_key_is(k, NPF_K_SECRET) ? "(hidden)" : v;
     /* where to connect, what to trust, the files written (dir and state
-     * also say where local.json is) */
-    if (npf_conf_file_only(k)) {
-        npf_out_printf(o, "%s: only in npf.conf\n", k);
+     * also say where local.json is); the peers (node) and the resources
+     * have their own calls */
+    if (npf_key_is(k, NPF_K_FILE)) {
+        npf_out_printf(o, "%s: only in npf.conf%s\n", k, strcmp(k, "resource") == 0 ? " (or the resource command)" : "");
         return 2;
     }
-    if (!npf_conf_known(k) && !npf_mod_key_known(c, k)) {   /* libnpf's or a module's */
+    if (!npf_key_find(k) && !npf_mod_key_known(c, k)) {   /* libnpf's or a module's */
         npf_out_printf(o, "%s: not a configuration key\n", k);
         return 2;
     }
     if ((r = check_value(c, k, v, o)) != 0)
         return r;
-    if (live && (r = apply_setting(c, k, v, o)) != 0)
-        return r;
+    if (live)
+        apply_setting(c, k, v);
     if (save) {
         npf_conf_set(&c->lc.settings, k, v);
         if (npf_local_save(&c->lc) < 0) {   /* written with the next change saved */
@@ -545,10 +485,12 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
 void npf_cmd_config_json(npf_t *c, npf_out *o)
 {
     char b[NPF_CONF_VAL_MAX];
-    int i, f = 1;
+    const npf_key *k = NULL;
+    int f = 1;
     npf_out_printf(o, "{");
-    for (i = 0; settable[i]; i++)
-        npf_out_jkstr(o, &f, settable[i], npf_cmd_get(c, settable[i], b, sizeof b));
+    while ((k = npf_key_next(k)))
+        if ((k->flags & (NPF_K_LIVE | NPF_K_UNLISTED)) == NPF_K_LIVE)
+            npf_out_jkstr(o, &f, k->name, npf_cmd_get(c, k->name, b, sizeof b));
     npf_out_printf(o, "}\n");
 }
 

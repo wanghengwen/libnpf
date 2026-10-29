@@ -221,12 +221,22 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
         snprintf(err, errcap, "config: \"node =\" lines are gone: the application makes its peers (npf_peer_create)");
         return NPF_EINVAL;
     }
-    if (o->setup) {                         /* one source for each: a field, or the overrides */
-        const char *k = npf_setup_key_taken(ov);
-        if (k) {
-            snprintf(err, errcap, "overrides: '%s' is a field of npf_setup", k);
+    {   /* each source's values as the key table says; a key of npf_setup's fields from it alone */
+        char why[96];
+        int i;
+        if (npf_conf_check(ro, why, sizeof why) < 0) {
+            snprintf(err, errcap, "%s: %s", conf_path, why);
             return NPF_EINVAL;
         }
+        if (npf_conf_check(ov, why, sizeof why) < 0) {
+            snprintf(err, errcap, "overrides: %s", why);
+            return NPF_EINVAL;
+        }
+        for (i = 0; o->setup && i < ov->n; i++)
+            if (npf_key_is(ov->key[i], NPF_K_SETUP)) {
+                snprintf(err, errcap, "overrides: '%s' is a field of npf_setup", ov->key[i]);
+                return NPF_EINVAL;
+            }
     }
     /* the writable directory: the option, the configuration's "dir", conf_dir */
     if (path_set(&n->data_dir, "%s", o->data_dir                        ? o->data_dir
@@ -248,11 +258,15 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
     if (!(n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS)) {   /* local.json: its settings over the others */
         int i;
         for (i = 0; i < n->lc.settings.n; i++) {
-            if (npf_conf_file_only(n->lc.settings.key[i])) {    /* not from here (npf_cmd_set refuses it) */
-                npf_logw("%s: %s ignored: only in npf.conf", n->lc.path, n->lc.settings.key[i]);
-                continue;
-            }
-            npf_conf_set(&n->conf, n->lc.settings.key[i], n->lc.settings.val[i]);
+            const char *k = n->lc.settings.key[i], *v = n->lc.settings.val[i];
+            const npf_key *key = npf_key_find(k);
+            char why[96];
+            if (key && (key->flags & NPF_K_FILE))    /* not from here (npf_cmd_set refuses it) */
+                npf_logw("%s: %s ignored: only in npf.conf", n->lc.path, k);
+            else if (key && npf_key_check(key, v, why, sizeof why) < 0)
+                npf_logw("%s: %s ignored (%s)", n->lc.path, k, why);
+            else
+                npf_conf_set(&n->conf, k, v);
         }
     }
     if (o->log_level >= 0)

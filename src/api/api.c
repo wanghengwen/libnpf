@@ -134,9 +134,9 @@ static int get_run(npf_t *n, void *arg)
     kv_arg *x = arg;
     char buf[NPF_CONF_VAL_MAX];
     int l;
-    if (!npf_conf_known(x->key) && !npf_mod_key_known(n, x->key))
+    if (!npf_key_find(x->key) && !npf_mod_key_known(n, x->key))
         return NPF_ENOENT;
-    l = snprintf(x->out, x->cap, "%s", npf_cmd_is_secret(x->key) ? "(hidden)" : npf_cmd_get(n, x->key, buf, sizeof buf));
+    l = snprintf(x->out, x->cap, "%s", npf_key_is(x->key, NPF_K_SECRET) ? "(hidden)" : npf_cmd_get(n, x->key, buf, sizeof buf));
     return l < 0 || (size_t)l >= x->cap ? NPF_ETOOBIG : NPF_OK;
 }
 
@@ -161,7 +161,7 @@ static int set_run(npf_t *n, void *arg)
         return NPF_EUNAVAIL;                /* the application keeps the settings */
     r = npf_cmd_set(n, x->key, x->value, x->save, &x->o);
     x->failed = r != 0;
-    return r == 0 ? !npf_cmd_is_settable(x->key) : r == 2 ? NPF_EINVAL : r == NPF_CMD_UNSAVED ? NPF_ESAVE : NPF_EFAIL;
+    return r == 0 ? !npf_key_is(x->key, NPF_K_LIVE) : r == 2 ? NPF_EINVAL : r == NPF_CMD_UNSAVED ? NPF_ESAVE : NPF_EFAIL;
 }
 
 int npf_config_set(npf_t *n, const char *key, const char *value, int save, char *err, size_t errcap)

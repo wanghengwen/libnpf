@@ -22,22 +22,6 @@ void npf_setup_init_size(npf_setup *s, size_t size)
     npf_init_sized(s, size, &d, sizeof d);
 }
 
-/* the keys a field gives: not in the overrides as well */
-static const char *const setup_keys[] = {
-    "root", "serverlist", "serverlist_saved", "server", "server_pub", "doh_servers", "cred", "password",
-    "model_cred", "serial", "serial_file", "hw_info", "model", "direct", "direct_psk", "direct_psk_file",
-    "udp_port", "portmap", "connect_mode", "max_calls", "punch_lead_ms", "punch_sockets", "report_host",
-    "hosted_trust", "peer_idle", NULL};
-
-const char *npf_setup_key_taken(const npf_conf *ov)
-{
-    int i;
-    for (i = 0; setup_keys[i]; i++)
-        if (npf_conf_get(ov, setup_keys[i], NULL))
-            return setup_keys[i];
-    return NULL;
-}
-
 /* a key set; *failed: the first that could not be (too long, no memory) */
 static void set(npf_conf *c, const char *k, const char *v, const char **failed)
 {
@@ -71,6 +55,7 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
     npf_setup s;
     size_t size;
     const char *failed = NULL;
+    char why[96];
     int i;
     npf_setup_init(&s);
     memcpy(&size, us, sizeof size);
@@ -148,11 +133,7 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
         set(c, "direct", d, &failed);
         set_b64(c, "direct_psk", s.direct_psk, &failed);
     }                                   /* none: a direct instance that only calls (its peers have their keys) */
-    /* the network: the ranges of npf_config_set */
-    if (s.udp_port < 0 || s.udp_port > 65535 || s.max_calls < 0 || s.max_calls > 4096 || s.punch_lead_ms < -1
-        || s.punch_lead_ms > 5000 || s.punch_sockets < 0 || s.punch_sockets > 4096 || s.peer_idle_s < 0
-        || s.peer_idle_s > 86400)
-        return bad(err, errcap, "udp_port, max_calls, punch_lead_ms, punch_sockets or peer_idle_s out of range");
+    /* the network (its ranges: the keys', checked below) */
     if (s.udp_port)
         set_int(c, "udp_port", s.udp_port, &failed);
     if (s.no_portmap)
@@ -161,7 +142,7 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
         set(c, "connect_mode", "secure", &failed);
     if (s.max_calls)
         set_int(c, "max_calls", s.max_calls, &failed);
-    if (s.punch_lead_ms >= 0)
+    if (s.punch_lead_ms != -1)          /* -1: automatic, the key's default */
         set_int(c, "punch_lead_ms", s.punch_lead_ms, &failed);
     if (s.punch_sockets)
         set_int(c, "punch_sockets", s.punch_sockets, &failed);
@@ -175,5 +156,7 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
         snprintf(err, errcap, "npf_setup: %s: too long, or no memory", failed);
         return -1;
     }
+    if (npf_conf_check(c, why, sizeof why) < 0)
+        return bad(err, errcap, why);
     return 0;
 }

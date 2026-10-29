@@ -114,10 +114,9 @@ struct npf {
  * when it did not run */
 int  npf_api_op(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg);
 
-/* setup.c: npf_setup's fields as configuration keys (c); 0, or -1 with err */
+/* setup.c: npf_setup's fields as configuration keys (c), their values
+ * checked (npf_conf_check); 0, or -1 with err */
 int  npf_setup_conf(const npf_setup *s, int role, const char *data_dir, npf_conf *c, char *err, size_t errcap);
-/* a key of the overrides that is a field of npf_setup, NULL none */
-const char *npf_setup_key_taken(const npf_conf *ov);
 
 /* ops.c: the operations of npf.h's objects, shared with the command line */
 uint32_t npf_ops_flags(const npf_t *n, const npf_peer *p);  /* NPF_PERSIST, NPF_PLATFORM */
@@ -212,8 +211,6 @@ int  npf_pub_remove(npf_t *n, const char *name, char *err, size_t errcap);
 int  npf_cmd_set(npf_t *n, const char *k, const char *v, int save, npf_out *o);
 const char *npf_cmd_get(npf_t *n, const char *k, char *buf, size_t cap);
 void npf_cmd_sessions_json(npf_t *n, npf_out *o);
-int  npf_cmd_is_settable(const char *k);
-int  npf_cmd_is_secret(const char *k);
 
 /* platform.c */
 int  npf_plat_request(npf_t *n, const char *type, const char *data, int proof, npf_reply_cb cb, void *user,
