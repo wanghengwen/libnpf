@@ -68,6 +68,27 @@ static void test_probe_vector(void)
     CHECK(npf_siv_open(&keys, NPF_DIR_RESP, buf, 52, plain) < 0, "reflection rejected");
 }
 
+/* r classified from n alloc samples p and the main socket's M1, M2 (m: 0 none) */
+static void classify(npf_natprobe_result *r, const uint16_t *p, int n, const uint16_t *m)
+{
+    int k;
+    memset(r, 0, sizeof *r);
+    r->alloc_n = n;
+    for (k = 0; k < n; k++) {
+        r->alloc_got[k] = 1;
+        r->alloc_local[k] = (uint16_t)(40000 + k);
+        r->alloc_mapped[k] = p[k];
+    }
+    for (k = 0; k < 2 && m; k++)
+        if (m[k]) {
+            r->got[k] = 1;
+            r->mapped[k].sin_family = AF_INET;
+            r->mapped[k].sin_addr.s_addr = htonl(0xc6336401);
+            r->mapped[k].sin_port = htons(m[k]);
+        }
+    npf_natprobe_classify_alloc(r);
+}
+
 /* the allocation from mapped ports: a busy sequential NAT (other traffic
  * takes ports in between: seen in natlab's s2b-busy), the range wrapping,
  * and a block of 512 ports in random order; in doubt (sequential but for one
@@ -89,18 +110,28 @@ static void test_alloc(void)
         {{53868, 53863, 53869}, 3, NPF_ALLOC_BLOCK, 0, 0},
         {{53863, 53868, 53869, 53870}, 4, NPF_ALLOC_SEQUENTIAL, 1, 0},
     };
+    /* M1 and M2 samples of the range too: four random ports within 1526,
+     * the main socket's far off (natlab eif-sym; EIM: M1 = M2); a block
+     * with them, one wrapping past 65535 */
+    static const struct { uint16_t p[4], m[2]; int alloc; uint16_t lo, hi; } ranges[] = {
+        {{3108, 2509, 1638, 1582}, {0, 0}, NPF_ALLOC_BLOCK, 1582, 3108},
+        {{3108, 2509, 1638, 1582}, {11786, 20507}, NPF_ALLOC_RANDOM, 0, 0},
+        {{3108, 2509, 1638, 1582}, {36826, 36826}, NPF_ALLOC_RANDOM, 0, 0},
+        {{20311, 20044, 20490, 20120}, {20503, 20012}, NPF_ALLOC_BLOCK, 20012, 20503},
+        {{65400, 1100, 65300, 1200}, {1300, 1300}, NPF_ALLOC_BLOCK, 65300, 1300},
+    };
     size_t c;
-    int k;
+    npf_natprobe_result r;
+    for (c = 0; c < sizeof ranges / sizeof ranges[0]; c++) {
+        classify(&r, ranges[c].p, 4, ranges[c].m);
+        CHECK(r.profile.allocation == ranges[c].alloc
+                  && (ranges[c].alloc != NPF_ALLOC_BLOCK
+                      || (r.profile.block_lo == ranges[c].lo && r.profile.block_hi == ranges[c].hi)),
+              "allocation range case %zu: %d [%u %u], want %d [%u %u]", c, r.profile.allocation,
+              r.profile.block_lo, r.profile.block_hi, ranges[c].alloc, ranges[c].lo, ranges[c].hi);
+    }
     for (c = 0; c < sizeof cases / sizeof cases[0]; c++) {
-        npf_natprobe_result r;
-        memset(&r, 0, sizeof r);
-        r.alloc_n = cases[c].n;
-        for (k = 0; k < cases[c].n; k++) {
-            r.alloc_got[k] = 1;
-            r.alloc_local[k] = (uint16_t)(40000 + k);
-            r.alloc_mapped[k] = cases[c].p[k];
-        }
-        npf_natprobe_classify_alloc(&r);
+        classify(&r, cases[c].p, cases[c].n, NULL);
         CHECK(r.profile.allocation == cases[c].alloc && r.alloc_doubt == cases[c].doubt
                   && (cases[c].alloc != NPF_ALLOC_SEQUENTIAL || r.profile.seq_delta == cases[c].delta),
               "allocation case %zu: %d (delta %d, doubt %d), want %d (%d, %d)", c, r.profile.allocation,

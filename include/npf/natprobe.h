@@ -69,7 +69,8 @@ typedef struct npf_natprobe_result {
 /* the defaults: alloc_sockets 8, filter_test 1, main_fd -1, the rest 0 */
 void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg);
 /* Sets profile.allocation, seq_delta, block_lo / hi and alloc_doubt from
- * the alloc_* samples (fewer than 3 answered: UNKNOWN). */
+ * the alloc_* samples (fewer than 3 answered: UNKNOWN); the block's range
+ * holds M1 and M2 too (got, mapped). */
 void npf_natprobe_classify_alloc(npf_natprobe_result *res);
 
 /* The whole detection on a loop of its own; blocks, about 7 s at most.

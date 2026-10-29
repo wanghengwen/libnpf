@@ -233,8 +233,8 @@ static int seq_step(const uint16_t *p, int n)
 /* port allocation from K (local, mapped) samples, 4.2 */
 void npf_natprobe_classify_alloc(npf_natprobe_result *res)
 {
-    uint16_t p[NPF_NATPROBE_MAX_ALLOC], sorted[NPF_NATPROBE_MAX_ALLOC], tmp, lo, hi;
-    int n = 0, i, j, preserve = 1, best, gap_best = -1, gap_at = 0;
+    uint16_t p[NPF_NATPROBE_MAX_ALLOC], sorted[NPF_NATPROBE_MAX_ALLOC + 2], tmp, lo, hi;
+    int n = 0, m, i, j, preserve = 1, best, gap_best = -1, gap_at = 0;
 
     res->alloc_doubt = 0;
     for (i = 0; i < res->alloc_n; i++) {
@@ -268,20 +268,30 @@ void npf_natprobe_classify_alloc(npf_natprobe_result *res)
         res->alloc_doubt = seq_step(q, n - 1) != 0;
     }
     /* smallest circular range holding every sample: the complement of the
-     * largest gap (a port block may wrap from 65535 back to 1024) */
+     * largest gap (a port block may wrap from 65535 back to 1024). The main
+     * socket's mappings toward E1's IP, M1 and M2, are samples of it too
+     * (two more for APDM, one for EIM / ADM; not M3: a carrier NAT may give
+     * each remote IP a block of its own): four random ports fall within
+     * 4096 in one probe of 1000, five in one of 12000, six in one of
+     * 160000 (a random NAT measured a block: natlab sym-cone, eif-sym,
+     * 2026-10-30) */
     memcpy(sorted, p, (size_t)n * sizeof(p[0]));
-    for (i = 1; i < n; i++)
+    m = n;
+    for (i = 0; i < 2; i++)
+        if (res->got[i] && res->mapped[i].sin_addr.s_addr == res->mapped[0].sin_addr.s_addr)
+            sorted[m++] = ntohs(res->mapped[i].sin_port);
+    for (i = 1; i < m; i++)
         for (j = i; j > 0 && sorted[j - 1] > sorted[j]; j--) {
             tmp = sorted[j]; sorted[j] = sorted[j - 1]; sorted[j - 1] = tmp;
         }
-    for (i = 0; i < n; i++) {
-        int gap = (uint16_t)(sorted[(i + 1) % n] - sorted[i]);
+    for (i = 0; i < m; i++) {
+        int gap = (uint16_t)(sorted[(i + 1) % m] - sorted[i]);
         if (gap > gap_best) {
             gap_best = gap;
             gap_at = i;
         }
     }
-    lo = sorted[(gap_at + 1) % n];
+    lo = sorted[(gap_at + 1) % m];
     hi = sorted[gap_at];
     res->profile.block_lo = lo;
     res->profile.block_hi = hi;     /* lo > hi: the range wraps around */
