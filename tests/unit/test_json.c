@@ -1,9 +1,9 @@
 /* JSON parser / writer edge cases (signaling.md "JSON 与 C 解析约束"). */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "npf/json.h"
-#include "npf/out.h"
 
 static int fails;
 
@@ -39,6 +39,8 @@ static void test_parse(void)
     CHECK(parse("{\"a\":1,\"\\u0061\":2}", &j) < 0, "duplicate key after unescape");
     CHECK(parse("{\"x\":{\"b\":1},\"\\u0078\":2}", &j) < 0, "duplicate key after a nested value");
     CHECK(parse("{\"a\":[1,{\"a\":2}],\"b\":3}", &j) == 0, "same key at another level is fine");
+    CHECK(parse("{\"\\u0074ype\":\"\\u0063all\"}", &j) == 0 && npf_json_eq(&j, npf_json_get(&j, 0, "type"), "call")
+          && !npf_json_eq(&j, 1, "typ"), "an escaped key and value equal after unescaping");
     {   /* many escaped keys (the token array's 256 allow 120): each unescaped once */
         static char big[8192];
         int n = 0, k;
@@ -138,9 +140,20 @@ static void test_writer(void)
     CHECK(!w.failed && w.len == 2 + 200 * 10 + 199 && w.cap >= w.len + 1 && parse(w.p, &j) == 0, "a secret grown");
     npf_out_free(&w);
     CHECK(!w.p && w.secret, "a secret freed");
+    {   /* base64url longer than the writer's 192-byte steps, in a secret */
+        uint8_t in[500], out[500];
+        for (i = 0; i < 500; i++)
+            in[i] = (uint8_t)(i * 7);
+        npf_out_jobj(&w);
+        npf_out_kb64(&w, "k", in, sizeof in);
+        npf_out_jend(&w);
+        CHECK(!w.failed && parse(w.p, &j) == 0 && npf_json_get_b64(&j, 0, "k", out, sizeof out) == 500
+              && memcmp(in, out, 500) == 0, "500 bytes of base64url");
+        npf_out_free(&w);
+    }
 }
 
-/* npf_out's JSON: commas by themselves, text of one's own after a key */
+/* the writer: commas by themselves, text of one's own after a key */
 static void test_out(void)
 {
     npf_out o = {0};
@@ -174,9 +187,41 @@ static void test_out(void)
     npf_out_free(&o);
 }
 
+/* our own big JSON: long arrays, tokens on the heap */
+static void test_big(void)
+{
+    static char s[8192];
+    npf_json j = {0};
+    int n = 0, k, t;
+    for (k = 0; k < 300; k++)
+        n += snprintf(s + n, sizeof s - (size_t)n, "%s%d", k ? "," : "{\"a\":[", k);
+    snprintf(s + n, sizeof s - (size_t)n, "],\"b\":true}");
+    CHECK(parse(s, &j) < 0, "300 items: not in a message");
+    CHECK(npf_json_parse_big(&j, s, strlen(s)) == 0 && (t = npf_json_get(&j, 0, "a")) >= 0 && j.tok[t].size == 300
+          && s[j.tok[t].start] == '[' && s[j.tok[t].end - 1] == ']' && npf_json_get(&j, 0, "b") >= 0,
+          "300 items in our own JSON");
+    npf_json_free(&j);
+    CHECK(!j.tok, "freed");
+    for (n = 0, k = 0; k < 300; k++)
+        n += snprintf(s + n, sizeof s - (size_t)n, "%s\"k%d\":1", k ? "," : "{", k);
+    snprintf(s + n, sizeof s - (size_t)n, "}");
+    CHECK(npf_json_parse_big(&j, s, strlen(s)) < 0 && !j.tok, "an object still at most 256 keys");
+    npf_json_free(&j);
+    CHECK(npf_json_parse_big(&j, "1", 1) == 0 && j.ntok == 1, "one token");
+    npf_json_free(&j);
+    CHECK(npf_json_parse_big(&j, "", 0) < 0, "empty");
+    {
+        char *huge = calloc(1, NPF_JSON_MAX_FILE + 2);
+        CHECK(huge && (memset(huge, ' ', NPF_JSON_MAX_FILE + 1), huge[0] = '1', npf_json_parse_big(&j, huge, NPF_JSON_MAX_FILE + 1) < 0),
+              "more than NPF_JSON_MAX_FILE");
+        free(huge);
+    }
+}
+
 int test_json(void)
 {
     test_parse();
+    test_big();
     test_writer();
     test_out();
     return fails;

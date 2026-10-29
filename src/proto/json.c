@@ -1,3 +1,5 @@
+/* JSON (npf/json.h): the reader, then the writer. */
+#include <stdlib.h>
 #include <string.h>
 
 #include "npf/crypto.h"
@@ -8,6 +10,7 @@ typedef struct parser {
     npf_json *j;
     size_t    pos;
     int       depth;
+    int       items;    /* an array's most */
 } parser;
 
 static void skip_ws(parser *p)
@@ -219,7 +222,7 @@ static int parse_container(parser *p, int is_obj)
         goto done;
     }
     for (;;) {
-        if (count >= NPF_JSON_MAX_ARRAY)
+        if (count >= (is_obj ? NPF_JSON_MAX_ARRAY : p->items))
             return -1;
         skip_ws(p);
         if (is_obj) {
@@ -297,20 +300,11 @@ static int parse_value(parser *p)
     }
 }
 
-static int parse_max(npf_json *j, const char *s, size_t len, npf_jtok *tok, int cap, size_t max)
+static int parse_max(npf_json *j, const char *s, size_t len, npf_jtok *tok, int cap, size_t max, int items)
 {
-    parser p;
-    j->s = s;
-    j->len = len;
-    j->tok = tok;
-    j->cap = cap;
-    j->ntok = 0;
-    if (len > max)
-        return -1;
-    p.j = j;
-    p.pos = 0;
-    p.depth = 0;
-    if (parse_value(&p) < 0)
+    parser p = {j, 0, 0, items};
+    *j = (npf_json){.s = s, .len = len, .tok = tok, .cap = cap};
+    if (len > max || parse_value(&p) < 0)
         return -1;
     skip_ws(&p);
     return p.pos == len ? 0 : -1;
@@ -318,12 +312,25 @@ static int parse_max(npf_json *j, const char *s, size_t len, npf_jtok *tok, int 
 
 int npf_json_parse(npf_json *j, const char *s, size_t len, npf_jtok *tok, int cap)
 {
-    return parse_max(j, s, len, tok, cap, NPF_JSON_MAX_SIZE);
+    return parse_max(j, s, len, tok, cap, NPF_JSON_MAX_SIZE, NPF_JSON_MAX_ARRAY);
 }
 
-int npf_json_parse_file(npf_json *j, const char *s, size_t len, npf_jtok *tok, int cap)
+int npf_json_parse_big(npf_json *j, const char *s, size_t len)
 {
-    return parse_max(j, s, len, tok, cap, NPF_JSON_MAX_FILE);
+    /* a token takes 2 bytes of the text at least ("1," ...) */
+    int cap = len <= NPF_JSON_MAX_FILE ? (int)(len / 2 + 2) : 0;
+    npf_jtok *tok = cap ? malloc((size_t)cap * sizeof *tok) : NULL;
+    if (tok && parse_max(j, s, len, tok, cap, NPF_JSON_MAX_FILE, UINT16_MAX) == 0)
+        return 0;
+    free(tok);
+    *j = (npf_json){0};
+    return -1;
+}
+
+void npf_json_free(npf_json *j)
+{
+    free(j->tok);
+    *j = (npf_json){0};
 }
 
 /* token t, if there is one of that type (0: any) */
@@ -335,18 +342,11 @@ static const npf_jtok *tok_of(const npf_json *j, int t, int type)
 int npf_json_get(const npf_json *j, int obj, const char *key)
 {
     int i, t;
-    size_t kl = strlen(key);
     if (!tok_of(j, obj, NPF_JT_OBJECT))
         return -1;
-    t = obj + 1;
-    for (i = 0; i < j->tok[obj].size; i++) {
-        char x[256];
-        const char *s;
-        int v = t + 1, n = str_view(j, t, x, &s);
-        if (n >= 0 && (size_t)n == kl && memcmp(s, key, kl) == 0)
-            return v;
-        t = j->tok[v].next;
-    }
+    for (i = 0, t = obj + 1; i < j->tok[obj].size; i++, t = j->tok[t + 1].next)
+        if (npf_json_eq(j, t, key))
+            return t + 1;
     return -1;
 }
 
@@ -422,11 +422,10 @@ int npf_json_str(const npf_json *j, int t, char *buf, size_t cap)
 
 int npf_json_eq(const npf_json *j, int t, const char *lit)
 {
-    size_t l = strlen(lit);
-    const npf_jtok *k = tok_of(j, t, NPF_JT_STRING);
-    if (!k || k->escaped)
-        return 0;
-    return k->end - k->start == l && memcmp(j->s + k->start, lit, l) == 0;
+    char x[256];
+    const char *s;
+    int n = tok_of(j, t, NPF_JT_STRING) ? str_view(j, t, x, &s) : -1;
+    return n >= 0 && (size_t)n == strlen(lit) && memcmp(s, lit, (size_t)n) == 0;
 }
 
 int npf_json_int(const npf_json *j, int t, int64_t min, int64_t max, int64_t *out)
@@ -488,3 +487,134 @@ int npf_json_get_b64(const npf_json *j, int obj, const char *key, uint8_t *out, 
 {
     return npf_json_b64(j, npf_json_get(j, obj, key), out, cap);
 }
+
+/* ---- writing ---- */
+
+/* the JSON escape of byte c into e (\" \\ \n \r \t, other control bytes
+ * \u00xx): its length, 0 when c goes as it is */
+static size_t json_esc(unsigned char c, char e[6])
+{
+    static const char hex[] = "0123456789abcdef";
+    e[0] = '\\';
+    switch (c) {
+    case '"': case '\\': e[1] = (char)c; return 2;
+    case '\n': e[1] = 'n'; return 2;
+    case '\r': e[1] = 'r'; return 2;
+    case '\t': e[1] = 't'; return 2;
+    default: break;
+    }
+    if (c >= 0x20)
+        return 0;
+    e[1] = 'u'; e[2] = '0'; e[3] = '0'; e[4] = hex[c >> 4]; e[5] = hex[c & 15];
+    return 6;
+}
+
+/* before a value: the comma when its container has a member already (none
+ * at the top level, none after a key) */
+static void jsep(npf_out *o)
+{
+    if (o->jkey) {
+        o->jkey = 0;
+        return;
+    }
+    if (!o->jdepth)
+        return;
+    if (o->jmore & (1u << o->jdepth))
+        npf_out_write(o, ",", 1);
+    o->jmore |= 1u << o->jdepth;
+}
+
+static void jopen(npf_out *o, char c)
+{
+    uint32_t bit;
+    jsep(o);
+    if (o->jdepth >= 31) {                  /* deeper than the masks: never in ours */
+        o->failed = 1;
+        return;
+    }
+    npf_out_write(o, &c, 1);
+    bit = 1u << ++o->jdepth;
+    o->jmore &= ~bit;
+    o->jarr = c == '[' ? o->jarr | bit : o->jarr & ~bit;
+}
+
+void npf_out_jobj(npf_out *o) { jopen(o, '{'); }
+void npf_out_jarr(npf_out *o) { jopen(o, '['); }
+
+void npf_out_jend(npf_out *o)
+{
+    o->jkey = 0;
+    if (!o->jdepth) {
+        o->failed = 1;
+        return;
+    }
+    npf_out_write(o, o->jarr >> o->jdepth & 1 ? "]" : "}", 1);
+    o->jdepth--;
+}
+
+/* the member counts from here, so a value written with printf after it
+ * still has the comma before the next key */
+void npf_out_jkey(npf_out *o, const char *k)
+{
+    o->jkey = 0;
+    jsep(o);
+    npf_out_json_str(o, k, strlen(k));
+    npf_out_write(o, ":", 1);
+    o->jkey = 1;
+}
+
+void npf_out_json_str(npf_out *o, const char *s, size_t n)
+{
+    size_t i, run = 0, el;              /* run: the plain bytes from there on go in one write */
+    char e[6];
+    npf_out_write(o, "\"", 1);
+    for (i = 0; i < n; i++)
+        if ((el = json_esc((unsigned char)s[i], e))) {
+            npf_out_write(o, s + run, i - run);
+            npf_out_write(o, e, el);
+            run = i + 1;
+        }
+    npf_out_write(o, s + run, n - run);
+    npf_out_write(o, "\"", 1);
+}
+
+void npf_out_jstr(npf_out *o, const char *s)
+{
+    jsep(o);
+    if (s)
+        npf_out_json_str(o, s, strlen(s));
+    else
+        npf_out_write(o, "null", 4);
+}
+
+void npf_out_jint(npf_out *o, long long v)
+{
+    jsep(o);
+    npf_out_printf(o, "%lld", v);
+}
+
+void npf_out_jb64(npf_out *o, const uint8_t *v, size_t n)
+{
+    char b[NPF_B64_LEN(192)];               /* 192 bytes at a time: whole groups of 3 */
+    size_t k;
+    jsep(o);
+    npf_out_write(o, "\"", 1);
+    for (; n; v += k, n -= k) {
+        k = n < 192 ? n : 192;
+        npf_out_write(o, b, npf_b64url_encode(v, k, b));
+    }
+    npf_out_write(o, "\"", 1);
+    if (o->secret)
+        npf_wipe(b, sizeof b);
+}
+
+void npf_out_jraw(npf_out *o, const char *json)
+{
+    jsep(o);
+    npf_out_write(o, json, strlen(json));
+}
+
+void npf_out_kstr(npf_out *o, const char *k, const char *v) { npf_out_jkey(o, k); npf_out_jstr(o, v); }
+void npf_out_kint(npf_out *o, const char *k, long long v) { npf_out_jkey(o, k); npf_out_jint(o, v); }
+void npf_out_kbool(npf_out *o, const char *k, int v) { npf_out_jkey(o, k); npf_out_jraw(o, v ? "true" : "false"); }
+void npf_out_kb64(npf_out *o, const char *k, const uint8_t *v, size_t n) { npf_out_jkey(o, k); npf_out_jb64(o, v, n); }

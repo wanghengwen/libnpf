@@ -28,7 +28,6 @@
 #include <stddef.h>
 
 #include "npf/json.h"
-#include "npf/out.h"
 #include "npf/tunnel.h"
 
 #define NPF_RES_MAX      32

@@ -9,13 +9,10 @@
 #include "npf/json.h"
 #include "npf/local.h"
 #include "npf/resources.h"
-#include "npf/out.h"
 #include "npf/platform.h"
 #include "npf/text.h"
 
 #include "msgs.h"
-
-#define MAX_TOK 32768
 
 int npf_name_valid(const char *s)
 {
@@ -249,16 +246,10 @@ static int device(npf_local *l, const char *s, const npf_json *j, int v, const c
 
 static int parse(npf_local *l, const char *s, size_t len)
 {
-    /* a token takes 2 bytes of the text at least ("1," ...): no 512 KB for a
-     * file of a few hundred tokens */
-    int cap = len / 2 + 8 < MAX_TOK ? (int)(len / 2 + 8) : MAX_TOK;
-    npf_jtok *tok = malloc((size_t)cap * sizeof *tok);
     m_device *m = malloc(sizeof *m);
-    npf_json j;
+    npf_json j = {0};
     int t, i, rc = -1;
-    if (!tok || !m)
-        goto out;
-    if (npf_json_parse_file(&j, s, len, tok, cap) < 0 || j.tok[0].type != NPF_JT_OBJECT)
+    if (!m || npf_json_parse_big(&j, s, len) < 0 || j.tok[0].type != NPF_JT_OBJECT)
         goto out;
     if ((t = npf_json_get(&j, 0, "settings")) >= 0 && j.tok[t].type == NPF_JT_OBJECT) {
         int k = t + 1;
@@ -289,7 +280,7 @@ static int parse(npf_local *l, const char *s, size_t len)
     }
     rc = 0;
 out:
-    free(tok);
+    npf_json_free(&j);
     if (m)
         npf_msg_wipe(&m_device_d, m);       /* the last record's psk, on every path */
     free(m);
