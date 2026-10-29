@@ -97,18 +97,10 @@ static void res_info(const npf_res *r, int flags, int saved, npf_resource_info *
     i->saved = saved;
     snprintf(i->name, sizeof i->name, "%s", r->name);
     snprintf(i->svc, sizeof i->svc, "%s", r->svc);
-    if (npf_res_is_service(r)) {
-        const char *colon = strrchr(r->target, ':');
-        if (colon) {
-            if (r->target[0] == '[')
-                snprintf(i->host, sizeof i->host, "%.*s", (int)(colon - r->target - 2), r->target + 1);
-            else
-                snprintf(i->host, sizeof i->host, "%.*s", (int)(colon - r->target), r->target);
-            i->port = (uint16_t)atoi(colon + 1);
-        }
-    } else {
+    if (npf_res_is_service(r))
+        npf_hostport_split(r->target, i->host, sizeof i->host, &i->port);
+    else
         snprintf(i->rule, sizeof i->rule, "%s", r->target);
-    }
     snprintf(i->path, sizeof i->path, "%s", r->path);
     snprintf(i->desc, sizeof i->desc, "%s", r->desc);
 }

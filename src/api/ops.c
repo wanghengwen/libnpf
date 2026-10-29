@@ -147,6 +147,87 @@ int npf_ops_record_fwd(npf_t *n, npf_peer *p, int i, int add)
     return saved_rc(n);
 }
 
+/* "HOST:PORT" or "[V6]:PORT" into its parts; -1 without a port */
+int npf_hostport_split(const char *s, char *host, size_t cap, uint16_t *port)
+{
+    const char *colon = strrchr(s, ':');
+    if (!colon || (s[0] == '[' && (colon < s + 2 || colon[-1] != ']')))
+        return -1;
+    if (s[0] == '[')
+        snprintf(host, cap, "%.*s", (int)(colon - s - 2), s + 1);
+    else
+        snprintf(host, cap, "%.*s", (int)(colon - s), s);
+    *port = (uint16_t)atoi(colon + 1);
+    return 0;
+}
+
+/* a record's forwards onto its peer brought back (one that does not make
+ * a forward is left out, with a warning) */
+static void restore_fwds(npf_peer *p, const npf_ldev *d)
+{
+    char e[300];
+    int k, r;
+    for (k = 0; k < d->nfwd; k++) {
+        const npf_lfwd *lf = &d->fwd[k];
+        if (lf->opt == 'L' || lf->opt == 'D' || lf->opt == 'R') {
+            npf_fwd_new fn;
+            memset(&fn, 0, sizeof fn);
+            fn.opt = lf->opt;
+            fn.udp = lf->udp;
+            fn.bind = lf->bind[0] ? lf->bind : NULL;
+            fn.port = lf->port;
+            fn.host = lf->host;
+            fn.hostport = lf->hostport;
+            r = npf_peer_forward_add_parts(p, &fn, 1, 0, e, sizeof e);
+        } else {
+            r = npf_peer_forward_add_kind(p, lf->opt, lf->spec, 1, e, sizeof e);
+        }
+        if (r < 0)
+            npf_logw("local.json: %s: a forward left out: %s", d->target, e);
+    }
+}
+
+void npf_ops_restore(npf_t *n)
+{
+    int i;
+    for (i = 0; i < n->lc.ndev; i++) {
+        npf_ldev *d = &n->lc.dev[i];
+        npf_peer_new pn;
+        npf_peer *p;
+        char host[300], path[1600], e[300];
+        uint8_t psk[32];
+        int code;
+        if (!d->save || npf_peers_find(n->peers, d->target))
+            continue;
+        memset(&pn, 0, sizeof pn);
+        memset(psk, 0, sizeof psk);
+        if (!(pn.number = npf_number_parse(d->target))) {      /* a direct peer, with its key */
+            if (npf_hostport_split(d->target, host, sizeof host, &pn.port) < 0)
+                continue;
+            pn.host = host;
+            if (d->psk_file[0] && npf_path_is_abs(d->psk_file))
+                snprintf(path, sizeof path, "%s", d->psk_file);
+            else if (d->psk_file[0])
+                snprintf(path, sizeof path, "%s/%s", n->data_dir, d->psk_file);
+            if (npf_direct_psk(d->psk[0] ? d->psk : NULL, d->psk_file[0] ? path : NULL, psk) < 0) {
+                npf_logw("local.json: %s: no key to connect with: left out", d->target);
+                continue;
+            }
+            pn.psk = psk;
+        }
+        pn.connect = d->on_demand ? NPF_CONNECT_ON_DEMAND : NPF_CONNECT_KEEP;
+        pn.idle_ms = d->idle_ms;
+        p = npf_peers_create(n->peers, &pn, e, sizeof e, &code);
+        npf_wipe(psk, sizeof psk);
+        if (!p) {
+            npf_logw("local.json: %s: %s: left out", d->target, e);
+            continue;
+        }
+        npf_peer_set_tag(p, NPF_PERSIST);
+        restore_fwds(p, d);
+    }
+}
+
 /* ---- this node, sessions, the network, saving ---- */
 
 static int node_get_run(npf_t *n, void *arg)

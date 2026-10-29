@@ -171,7 +171,7 @@ static int create(const npf_options *o, npf_t **out, char *err, size_t errcap)
         goto fail;
     /* a long-running role brings back what it saved (a client's one-off tasks do not) */
     if (n->role != NPF_ROLE_CLIENT && !(n->opt_flags & NPF_OPT_NO_SAVED_OBJECTS))
-        npf_engine_restore_peers(n);
+        npf_ops_restore(n);
     {   /* direct connections (no platform): "direct = [ADDR:]PORT" with its key */
         const char *direct = npf_conf_get(&n->conf, "direct", NULL);
         if (direct && *direct && n->role != NPF_ROLE_CLIENT) {

@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -409,6 +410,7 @@ int main(void)
     uint32_t peer = 0, fwd = 0, socks = 0, other = 0, ids[8];
     size_t count;
     alarm(120);
+    signal(SIGPIPE, SIG_IGN);               /* a connection the library ends while the echo service or a check writes */
     if (!mkdtemp(da) || !mkdtemp(db) || !mkdtemp(dc) || (echo = echo_start()) < 0)
         return 2;
 

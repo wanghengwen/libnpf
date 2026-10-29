@@ -63,8 +63,6 @@ int  sync_call(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg);
  * err (what was made stays in n: npf_engine_config_free) */
 int  npf_engine_config_load(npf_t *n, const npf_options *o, char *err, size_t errcap);
 void npf_engine_config_free(npf_t *n);
-/* the peers saved in local.json, after the modules (their forward kinds) */
-void npf_engine_restore_peers(npf_t *n);
 /* engine_identity.c: the identity and the callee state, after the configuration; 0, or -1 with err */
 int  npf_engine_identity_load(npf_t *n, char *err, size_t errcap);
 void npf_engine_callee_attach(npf_t *n);
@@ -192,6 +190,11 @@ static inline void list_put(op_arg *x, const void *e, size_t esize)
         put_out((char *)x->out + *x->count * x->size, x->size, e, esize);
     (*x->count)++;
 }
+
+/* ops.c: the peers saved in local.json brought back with their forwards,
+ * after the modules (their forward kinds); "HOST:PORT", "[V6]:PORT" split */
+void npf_ops_restore(npf_t *n);
+int  npf_hostport_split(const char *s, char *host, size_t cap, uint16_t *port);
 
 static inline void err_clear(char *err, size_t errcap)
 {
