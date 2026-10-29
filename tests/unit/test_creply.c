@@ -78,7 +78,8 @@ static void frame(uint32_t id, const uint8_t *p, size_t len)
 {
     uint8_t m[NPF_DATA_HDR + 512];
     npf_le32(m, id);
-    memcpy(m + NPF_DATA_HDR, p, len);
+    if (len)                    /* a FIN: p may be NULL */
+        memcpy(m + NPF_DATA_HDR, p, len);
     npf_tunnel_input_data(C, m, NPF_DATA_HDR + len);
 }
 
