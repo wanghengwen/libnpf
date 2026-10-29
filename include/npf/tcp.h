@@ -38,4 +38,8 @@ ssize_t npf_tcp_read(npf_tcp *c, void *p, size_t n);
 ssize_t npf_tcp_write(npf_tcp *c, const void *p, size_t n);
 void    npf_tcp_close(npf_tcp *c);
 
+/* split "wss://host:port/path" (also ws://, https:// and http://); 0 or -1
+ * (a control character or space anywhere: the parts go into HTTP headers) */
+int     npf_url_parse(const char *url, int *tls, char *host, size_t hcap, int *port, char *path, size_t pcap);
+
 #endif

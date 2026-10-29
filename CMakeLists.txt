@@ -84,8 +84,9 @@ if(NPF_WITH_TLS AND NOT NPF_USE_OPENSSL)
   endif()
 endif()
 
+# TLS: mbedTLS (tls.c), or OpenSSL; without TLS, tls.c's stubs
 set(_npf_tls_src src/ws/tls.c)
-if(NPF_USE_OPENSSL)
+if(NPF_USE_OPENSSL AND NPF_WITH_TLS)
   set(_npf_tls_src src/ws/tls_openssl.c)
 endif()
 
@@ -113,6 +114,7 @@ add_library(npf_common STATIC
   src/proto/json.c
   src/proto/dns.c
   src/proto/http.c
+  src/ws/tcp.c
   src/ws/ws.c
   ${_npf_tls_src}
   src/proto/sig.c

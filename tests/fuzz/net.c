@@ -2,6 +2,7 @@
  * Their public symbols satisfy the static archive's references in this binary. */
 #include "../../src/proto/http.c"
 #include "../../src/ws/ws.c"
+#include "../../src/ws/tcp.c"
 
 static void discard_http(int status, const uint8_t *body, size_t len, const char *err, void *arg)
 {

@@ -14,7 +14,6 @@
 #include "npf/http.h"
 #include "npf/platform.h"
 #include "npf/tcp.h"
-#include "npf/ws.h"                 /* npf_url_parse */
 
 enum { H_CONNECTING, H_SEND, H_READ };     /* H_CONNECTING: npf_tcp (TLS too) */
 
