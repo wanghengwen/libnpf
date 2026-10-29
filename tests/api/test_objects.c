@@ -8,6 +8,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -399,6 +400,7 @@ int main(void)
     uint32_t peer = 0, fwd = 0, socks = 0, other = 0, ids[8];
     size_t count;
     alarm(120);
+    signal(SIGPIPE, SIG_IGN);           /* a write to a connection a refusing forward closed: an error, not the end */
     if (!mkdtemp(da) || !mkdtemp(db) || !mkdtemp(dc) || (echo = echo_start()) < 0)
         return 2;
 
