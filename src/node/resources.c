@@ -253,7 +253,7 @@ void npf_res_json(npf_out *o, const npf_res *r, int n)
 int npf_res_rules(npf_policy *p, const npf_res *r, int n)
 {
     char host[64], spec[96];
-    int i, k, port;
+    int i, k, port = 0;
     npf_policy_clear(p);
     for (i = 0; i < n; i++) {
         const char *t = r[i].target;

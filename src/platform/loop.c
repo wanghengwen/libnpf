@@ -144,7 +144,7 @@ struct npf_loop {
     WSAPOLLFD *pfd;
     unsigned  *pgen;            /* pfd entry -> the registration it was taken from */
     int       *own;             /* pfd entry -> its loop's child (-1: the host's own) */
-    int        npfd;            /* pfd, pgen and own have room for this many */
+    size_t     npfd;            /* pfd, pgen and own have room for this many */
 #endif
 };
 
@@ -845,25 +845,12 @@ static void wait_io(npf_loop *l, int wait)
 }
 #else
 /* pfd and its parallel arrays (pgen, own) for need entries */
-static int pfd_room(npf_loop *l, int need)
+static int pfd_room(npf_loop *l, size_t need)
 {
-    int cap = need + 64;
-    WSAPOLLFD *p;
-    unsigned *g;
-    int *o;
-    if (l->npfd >= need)
-        return 0;
-    if (!(p = realloc(l->pfd, (size_t)cap * sizeof *p)))
+    size_t c1 = l->npfd, c2 = l->npfd;     /* the same capacity for each */
+    if (npf_grow(&l->pfd, &c1, need, sizeof *l->pfd, 64) < 0 || npf_grow(&l->pgen, &c2, need, sizeof *l->pgen, 64) < 0)
         return -1;
-    l->pfd = p;
-    if (!(g = realloc(l->pgen, (size_t)cap * sizeof *g)))
-        return -1;
-    l->pgen = g;
-    if (!(o = realloc(l->own, (size_t)cap * sizeof *o)))
-        return -1;
-    l->own = o;
-    l->npfd = cap;
-    return 0;
+    return npf_grow(&l->own, &l->npfd, need, sizeof *l->own, 64);
 }
 
 static void wait_io(npf_loop *l, int wait)
@@ -871,7 +858,7 @@ static void wait_io(npf_loop *l, int wait)
     int i, k, n = 0, total = l->nh + 1;
     for (k = 0; k < l->nkids; k++)
         total += l->kids[k]->nh;
-    if (pfd_room(l, total) < 0)
+    if (pfd_room(l, (size_t)total) < 0)
         return;
     l->pfd[n].fd = l->wake_fd;
     l->pfd[n].events = POLLRDNORM;
