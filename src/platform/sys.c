@@ -206,6 +206,11 @@ int npf_abspath(const char *p, char *out, size_t cap)
 }
 
 #else /* POSIX */
+#ifdef __linux__
+#include <linux/sockios.h>
+#include <netinet/tcp.h>
+#include <sys/ioctl.h>
+#endif
 
 #include <fcntl.h>
 #include <ifaddrs.h>
@@ -573,6 +578,30 @@ int npf_sock_starved(void)
 {
     int e = npf_sock_err();
     return e == NPF_SE(MFILE) || e == NPF_SE(NOBUFS) || e == ENFILE || e == ENOMEM;
+}
+
+/* A TCP connection's kernel side, for a log line when it stalls: the bytes
+ * not yet acked and not yet sent, retransmissions, RTT and RTO (Linux; "-"
+ * elsewhere). Bytes stuck here with retransmissions: the path; none while
+ * the peer heard nothing: ours. */
+const char *npf_sock_tcp_diag(int fd, char *buf, size_t cap)
+{
+#ifdef __linux__
+    struct tcp_info ti;
+    socklen_t tl = sizeof ti;
+    int outq = -1, unsent = -1;
+    ioctl(fd, SIOCOUTQ, &outq);
+    ioctl(fd, SIOCOUTQNSD, &unsent);
+    if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &ti, &tl) == 0) {
+        snprintf(buf, cap, "kernel send queue %d B (%d unsent), %u segments unacked, %u retransmits now (%u total), "
+                 "rtt %u ms, rto %u ms", outq, unsent, ti.tcpi_unacked, ti.tcpi_retransmits, ti.tcpi_total_retrans,
+                 ti.tcpi_rtt / 1000, ti.tcpi_rto / 1000);
+        return buf;
+    }
+#endif
+    (void)fd;
+    snprintf(buf, cap, "-");
+    return buf;
 }
 
 const char *npf_sock_strerror(void)

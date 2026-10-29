@@ -30,9 +30,36 @@ static int hook(int fd, int family, void *arg)
     return answer;
 }
 
+#ifdef __linux__
+/* npf_sock_tcp_diag on a connected loopback socket: its queues, empty */
+static void tcp_diag(void)
+{
+    struct sockaddr_in a;
+    socklen_t al = sizeof a;
+    char d[200];
+    int l = socket(AF_INET, SOCK_STREAM, 0), c = socket(AF_INET, SOCK_STREAM, 0);
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK(l >= 0 && c >= 0 && bind(l, (struct sockaddr *)&a, sizeof a) == 0 && listen(l, 1) == 0
+          && getsockname(l, (struct sockaddr *)&a, &al) == 0 && connect(c, (struct sockaddr *)&a, sizeof a) == 0,
+          "a loopback TCP connection");
+    npf_sock_tcp_diag(c, d, sizeof d);
+    {
+        static const char want[] = "kernel send queue 0 B (0 unsent), 0 segments unacked";
+        CHECK(strncmp(d, want, sizeof want - 1) == 0, "TCP diag: %s", d);
+    }
+    close(c);
+    close(l);
+}
+#endif
+
 int test_sys(void)
 {
     int arg = 0, fd;
+#ifdef __linux__
+    tcp_diag();
+#endif
     fd = npf_udp_socket(AF_INET, 0);                /* no hook yet */
     CHECK(fd >= 0 && seen == 0, "a socket without a hook");
     npf_sock_close(fd);

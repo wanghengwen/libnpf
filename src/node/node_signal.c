@@ -290,8 +290,10 @@ static void sig_refused(npf_node *n, int weight)
 void node_sig_abort(npf_node *n, const char *why)
 {
     npf_sig *s = n->sig;
+    char d[300];
     race_drop(n);
-    npf_logw("signaling: %s, reconnecting", why);
+    npf_logw("signaling: %s, reconnecting (%s)", why,
+             s && npf_sig_ws(s) ? npf_ws_diag(npf_sig_ws(s), d, sizeof d) : "no connection");
     sig_down(s, why, n);            /* n->sig = NULL, reconnect scheduled */
     npf_sig_close(s);
 }
