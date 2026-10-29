@@ -66,43 +66,43 @@ static int echo_start(void)
     return ntohs(a.sin_port);
 }
 
-/* through a forward listening on port: what is sent comes back */
-static int echoes(int port)
+/* a connection to 127.0.0.1:port (reads time out after 5 s), -1 none */
+static int lo_connect(int port)
 {
     struct sockaddr_in a;
-    char b[16] = "";
     struct timeval tv = {5, 0};
-    int fd = socket(AF_INET, SOCK_STREAM, 0), ok;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     a.sin_port = htons((uint16_t)port);
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    ok = connect(fd, (struct sockaddr *)&a, sizeof a) == 0 && write(fd, "ping", 4) == 4 && read(fd, b, 4) == 4
-         && memcmp(b, "ping", 4) == 0;
-    close(fd);
+    if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+/* through a forward listening on port: what is sent comes back */
+static int echoes(int port)
+{
+    char b[16] = "";
+    int fd = lo_connect(port), ok = fd >= 0 && write(fd, "ping", 4) == 4 && read(fd, b, 4) == 4 && memcmp(b, "ping", 4) == 0;
+    if (fd >= 0)
+        close(fd);
     return ok;
 }
 
 /* a SOCKS5 CONNECT through port to 127.0.0.1:tport: the reply code (0 ok), -1 none */
 static int socks_connect(int port, int tport)
 {
-    struct sockaddr_in a;
-    unsigned char b[16];
-    struct timeval tv = {5, 0};
-    int fd = socket(AF_INET, SOCK_STREAM, 0), rep = -1;
-    unsigned char req[10] = {5, 1, 0, 1, 127, 0, 0, 1, 0, 0};
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    a.sin_port = htons((uint16_t)port);
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    req[8] = (unsigned char)(tport >> 8);
-    req[9] = (unsigned char)tport;
-    if (connect(fd, (struct sockaddr *)&a, sizeof a) == 0 && write(fd, "\5\1\0", 3) == 3 && read(fd, b, 2) == 2
-        && write(fd, req, 10) == 10 && read(fd, b, 10) >= 2)
+    unsigned char b[16], req[10] = {5, 1, 0, 1, 127, 0, 0, 1, (unsigned char)(tport >> 8), (unsigned char)tport};
+    int fd = lo_connect(port), rep = -1;
+    if (fd >= 0 && write(fd, "\5\1\0", 3) == 3 && read(fd, b, 2) == 2 && write(fd, req, 10) == 10 && read(fd, b, 10) >= 2)
         rep = b[1];
-    close(fd);
+    if (fd >= 0)
+        close(fd);
     return rep;
 }
 
