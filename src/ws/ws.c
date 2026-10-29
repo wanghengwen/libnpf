@@ -1,4 +1,7 @@
 /* WebSocket client (npf/ws.h) on npf_tcp (tcp.c). */
+#ifndef _WIN32
+#define _GNU_SOURCE         /* struct addrinfo (resolve.h) */
+#endif
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>

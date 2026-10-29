@@ -1,5 +1,8 @@
 /* The TCP connection, with TLS or without, of a WebSocket (ws.c) and of an
  * HTTP request (http.c), and the URLs they are given (npf/tcp.h). */
+#ifndef _WIN32
+#define _GNU_SOURCE         /* struct addrinfo (resolve.h) */
+#endif
 #include <stdlib.h>
 #include <string.h>
 
