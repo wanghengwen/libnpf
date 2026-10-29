@@ -12,6 +12,7 @@
 #include <strings.h>
 
 #include "npf/http.h"
+#include "npf/out.h"
 #include "npf/platform.h"
 #include "npf/tcp.h"
 
@@ -216,15 +217,10 @@ static void h_io(npf_loop *loop, int fd, unsigned ev, void *arg)
     }
     for (;;) {
         ssize_t r;
-        if (h->in_len + 4096 + 1 > h->in_cap) {     /* in_len is within max + 16 KB (below) */
-            size_t cap = h->in_cap ? h->in_cap * 2 : 16384;
-            uint8_t *p;
-            if (!(p = realloc(h->in, cap))) {
-                h_fail(h, "no memory");
-                return;
-            }
-            h->in = p;
-            h->in_cap = cap;
+        /* in_len is within max + 16 KB (below) */
+        if (npf_grow(&h->in, &h->in_cap, h->in_len + 4096 + 1, 1, 16384) < 0) {
+            h_fail(h, "no memory");
+            return;
         }
         r = npf_tcp_read(&h->tcp, h->in + h->in_len, h->in_cap - h->in_len - 1);
         if (r == NPF_TLS_WANT_READ || r == NPF_TLS_WANT_WRITE)

@@ -83,7 +83,8 @@ struct npf {
     npf_log_ctx   logctx;
     /* sessions and media streams by number */
     npf_sess     *sess;             /* nsess of capsess, grown up to NPF_MAX_SESS */
-    int           nsess, capsess;
+    int           nsess;
+    size_t        capsess;
     uint32_t      next_sess;
     npf_med      *med;              /* NPF_MAX_MEDIA, made with the first stream (under the API lock) */
     int           nmed;

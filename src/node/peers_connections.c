@@ -127,17 +127,11 @@ uint64_t peers_conn_add(pfwd *f, const struct sockaddr_storage *from, int ip)
 {
     npf_peers *ps = f->p->ps;
     pconn *c;
-    if (ps->nconns == ps->capconns) {
-        int n = ps->capconns ? ps->capconns * 2 : 32;
-        pconn *nc = realloc(ps->conns, (size_t)n * sizeof *nc);
-        if (!nc) {                          /* not recorded: nor counted (it would never be uncounted) */
-            f->nconns--;
-            if (ip >= 0)
-                ps->ips[ip].conns--;
-            return 0;
-        }
-        ps->conns = nc;
-        ps->capconns = n;
+    if (npf_grow(&ps->conns, &ps->capconns, (size_t)ps->nconns + 1, sizeof *ps->conns, 32) < 0) {
+        f->nconns--;                        /* not recorded: nor counted (it would never be uncounted) */
+        if (ip >= 0)
+            ps->ips[ip].conns--;
+        return 0;
     }
     c = &ps->conns[ps->nconns++];
     memset(c, 0, sizeof *c);
@@ -189,14 +183,8 @@ void peers_conn_gone(npf_peers *ps, uint64_t cid, const char *why)
 static void sub_add(npf_peers *ps, npf_call *c, uint32_t sid, int fid)
 {
     pfwd *f;
-    if (ps->nsubs == ps->capsubs) {
-        int n = ps->capsubs ? ps->capsubs * 2 : 32;
-        struct psub *ns = realloc(ps->subs, (size_t)n * sizeof *ns);
-        if (!ns)
-            return;
-        ps->subs = ns;
-        ps->capsubs = n;
-    }
+    if (npf_grow(&ps->subs, &ps->capsubs, (size_t)ps->nsubs + 1, sizeof *ps->subs, 32) < 0)
+        return;
     ps->subs[ps->nsubs].call = c;
     ps->subs[ps->nsubs].sid = sid;
     ps->subs[ps->nsubs].fid = fid;

@@ -507,36 +507,31 @@ int node_home_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const s
 
 /* ---- what it says ---- */
 
-size_t npf_node_home_status(npf_node *n, char *buf, size_t cap)
+int npf_node_home_status(npf_node *n, npf_out *w)
 {
     struct npf_home *h = n->home;
-    npf_jw w;
     char a[64] = "", r[64];
-    int k;
-    buf[0] = 0;
     if (!h)
         return 0;
     if (h->r.state)
         npf_addr_str(CUR(h), a, sizeof a);
-    npf_jw_init(&w, buf, cap);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "state", k_state[H_STATE(h)]);
+    npf_out_jobj(w);
+    npf_out_kstr(w, "state", k_state[H_STATE(h)]);
     if (h->r.state) {
-        npf_jw_kint(&w, "server", h->server);
-        npf_jw_kstr(&w, "relay", a);
+        npf_out_kint(w, "server", h->server);
+        npf_out_kstr(w, "relay", a);
     }
     if (h->R.ss_family)
-        npf_jw_kstr(&w, "addr", npf_addr_str(&h->R, r, sizeof r));
-    npf_jw_kint(&w, "iv_s", h->t_s);
-    npf_jw_kstr(&w, "learn", learn_str(h->learn));
-    npf_jw_kint(&w, "last_ping_ms", h->keepalives ? npf_mono_ms() - h->ping_mark : -1);
-    npf_jw_kint(&w, "rtt_ms", h->rtt);
-    npf_jw_kint(&w, "moved", (int64_t)h->moved);
-    npf_jw_kint(&w, "drops", (int64_t)h->drops);
-    npf_jw_kint(&w, "keepalives", (int64_t)h->keepalives);
-    npf_jw_kint(&w, "taken", (int64_t)h->taken);
-    npf_jw_kint(&w, "since", h->since);
-    npf_jw_end(&w);
-    k = npf_jw_finish(&w);
-    return k > 0 ? (size_t)k : 0;
+        npf_out_kstr(w, "addr", npf_addr_str(&h->R, r, sizeof r));
+    npf_out_kint(w, "iv_s", h->t_s);
+    npf_out_kstr(w, "learn", learn_str(h->learn));
+    npf_out_kint(w, "last_ping_ms", h->keepalives ? npf_mono_ms() - h->ping_mark : -1);
+    npf_out_kint(w, "rtt_ms", h->rtt);
+    npf_out_kint(w, "moved", (int64_t)h->moved);
+    npf_out_kint(w, "drops", (int64_t)h->drops);
+    npf_out_kint(w, "keepalives", (int64_t)h->keepalives);
+    npf_out_kint(w, "taken", (int64_t)h->taken);
+    npf_out_kint(w, "since", h->since);
+    npf_out_jend(w);
+    return 1;
 }

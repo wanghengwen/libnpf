@@ -246,13 +246,11 @@ static int input_fairness(npf_loop *loop)
 
 static int buffer_lengths(npf_loop *loop)
 {
-    npf_jw w;
+    npf_out o = {0};
     wbuf b = {0};
-    char buf[16];
     (void)loop;
-    npf_jw_init(&w, buf, sizeof buf);
-    npf_jw_raw(&w, "x", SIZE_MAX);
-    CHECK(npf_jw_finish(&w) == -1);
+    npf_out_write(&o, "x", SIZE_MAX);
+    CHECK(o.failed && !o.p);
     b.len = 1;
     CHECK(tunnel_wb_put(&b, "x", SIZE_MAX) == -1 && !b.p);
     return 0;

@@ -140,7 +140,8 @@ struct npf_peers {
     int           fwd_seq;          /* the last forward number given out */
     /* public connections: open ones, the source addresses, the limits */
     pconn        *conns;
-    int           nconns, capconns;
+    int           nconns;
+    size_t        capconns;
     uint64_t      conn_seq;
     ipent        *ips;
     int           lim_mapping, lim_address, lim_rate;
@@ -154,7 +155,8 @@ struct npf_peers {
         uint32_t  sid;
         int       fid;
     } *subs;
-    int           nsubs, capsubs;
+    int           nsubs;
+    size_t        capsubs;
     uint8_t      *ubuf;             /* a datagram read from a UDP forward */
     struct kind_reg {               /* the modules' kinds of forward */
         const npf_fwd_kind *k;

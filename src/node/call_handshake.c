@@ -93,13 +93,12 @@ npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, con
 static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *password, const uint8_t pinned[32],
                             const uint8_t *grant, size_t grant_len)
 {
-    char data[4096];
     npf_call *c;
     uint8_t pro[64], msg[256], cmsg[32], sid[24];
     size_t pl;
     int len;
-    char num[24], hs[NPF_B64_LEN(256)];
-    npf_jw w;
+    char num[24];
+    npf_out w = {0};
     if (!n->online)
         return NULL;
     c = call_new(n, 1);
@@ -128,24 +127,21 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
     len = npf_noise_write(&c->hs->noise, NULL, 0, msg, sizeof msg);
     if (len < 0)
         goto fail;
-    npf_b64url_encode(msg, (size_t)len, hs);
     snprintf(num, sizeof num, "%llu", (unsigned long long)number);
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "call_id", c->call_id_s);
-    npf_jw_kstr(&w, "callee", num);
-    npf_jw_kstr(&w, "auth", c->auth == AUTH_PAKE ? "pake" : c->auth == AUTH_GRANT ? "grant" : "ik");
-    npf_jw_kstr(&w, "hs", hs);
+    npf_out_jobj(&w);
+    npf_out_kstr(&w, "call_id", c->call_id_s);
+    npf_out_kstr(&w, "callee", num);
+    npf_out_kstr(&w, "auth", c->auth == AUTH_PAKE ? "pake" : c->auth == AUTH_GRANT ? "grant" : "ik");
+    npf_out_kb64(&w, "hs", msg, (size_t)len);
     if (c->auth == AUTH_GRANT)
-        npf_jw_kb64(&w, "grant", c->hs->grant, c->hs->grant_len);
+        npf_out_kb64(&w, "grant", c->hs->grant, c->hs->grant_len);
     if (c->auth == AUTH_PAKE)
-        npf_jw_kb64(&w, "cpace", cmsg, 32);
+        npf_out_kb64(&w, "cpace", cmsg, 32);
     npf_node_write_nat(n, &w);
     npf_node_write_cands(n, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) < 0)
-        goto fail;
-    c->call_req = npf_node_send(n, "call", 1, data);
+    npf_out_jend(&w);
+    c->call_req = w.failed ? -1 : npf_node_send(n, "call", 1, w.p);
+    npf_out_free(&w);
     if (c->call_req < 0)
         goto fail;
     c->st = CS_CALLING;
@@ -293,11 +289,10 @@ void node_on_incoming(npf_node *n, const m_env *e, const void *msg)
 {
     const m_incoming *m = msg;
     const char *req = e->id, *err;
-    char data[4096], hs_b[NPF_B64_LEN(512)];
     uint8_t out[512], ymsg[32];
     int ol = -1;
     npf_call *c;
-    npf_jw w;
+    npf_out w = {0};
     if (!req[0])
         return;
     if (!n->callee) {
@@ -346,20 +341,20 @@ void node_on_incoming(npf_node *n, const m_env *e, const void *msg)
         call_free(c);
         return;
     }
-    npf_b64url_encode(out, (size_t)ol, hs_b);
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
-    npf_jw_kstr(&w, "hs", hs_b);
+    npf_out_jobj(&w);
+    npf_out_kb64(&w, "hs", out, (size_t)ol);
     if (c->auth == AUTH_PAKE)
-        npf_jw_kb64(&w, "cpace", ymsg, 32);
+        npf_out_kb64(&w, "cpace", ymsg, 32);
     npf_node_write_nat(n, &w);
     npf_node_write_cands(n, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) < 0) {
+    npf_out_jend(&w);
+    if (w.failed) {
+        npf_out_free(&w);
         call_free(c);
         return;
     }
-    npf_node_reply(n, "incoming", req, "ok", NULL, data);
+    npf_node_reply(n, "incoming", req, "ok", NULL, w.p);
+    npf_out_free(&w);
     c->st = CS_ANSWERED;
     npf_log("call %s: incoming %s call accepted", c->call_id_s, c->auth == AUTH_PAKE ? "pairing" : "paired");
     if (m->relay.mode[0])

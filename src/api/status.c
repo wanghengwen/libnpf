@@ -33,7 +33,7 @@ void npf_session_out(npf_t *n, npf_call *call, npf_out *o)
     npf_call_info i;
     char who[40];
     npf_call_info_get(call, &i);
-    npf_out_jopen(o, '{');
+    npf_out_jobj(o);
     npf_out_kint(o, "session", npf_session_of(n, call));
     npf_out_kstr(o, "peer", npf_who(&i, who, sizeof who));
     npf_out_kstr(o, "path", i.path);
@@ -43,16 +43,16 @@ void npf_session_out(npf_t *n, npf_call *call, npf_out *o)
         npf_out_kstr(o, "app", i.app);
     if (i.hosted)
         npf_out_kbool(o, "hosted", 1);
-    npf_out_jclose(o, '}');
+    npf_out_jend(o);
 }
 
 void npf_sessions_out(npf_t *n, npf_out *o)
 {
     int i;
-    npf_out_jopen(o, '[');
+    npf_out_jarr(o);
     for (i = 0; i < n->nsess; i++)
         npf_session_out(n, n->sess[i].call, o);
-    npf_out_jclose(o, ']');
+    npf_out_jend(o);
 }
 
 /* a peer's forwards: their parts and state (npf_forward_info's fields) */
@@ -60,7 +60,7 @@ static void mappings_out(const npf_peer *p, npf_out *o)
 {
     static const char *const states[] = {"waiting", "up", "failed"};
     int i;
-    npf_out_jopen(o, '[');
+    npf_out_jarr(o);
     for (i = 0; i < npf_peer_nfwd(p); i++) {
         npf_fwd_state st;
         char kind[2] = {0}, text[120];
@@ -69,7 +69,7 @@ static void mappings_out(const npf_peer *p, npf_out *o)
         if (npf_peer_forward_state(p, i, &st) < 0
             || !npf_peer_forward_info(p, i, &kind[0], &label, &perm, text, sizeof text))
             continue;
-        npf_out_jopen(o, '{');
+        npf_out_jobj(o);
         npf_out_kint(o, "id", npf_peer_forward_id(p, i));
         if (st.opt == 'L' || st.opt == 'D' || st.opt == 'R') {
             npf_out_kstr(o, "kind", st.opt == 'L' ? "local" : st.opt == 'D' ? "socks" : "remote");
@@ -97,9 +97,9 @@ static void mappings_out(const npf_peer *p, npf_out *o)
             npf_out_kint(o, "refused", st.refused);
             npf_out_kstr(o, "refused_why", st.refused_why);
         }
-        npf_out_jclose(o, '}');
+        npf_out_jend(o);
     }
-    npf_out_jclose(o, ']');
+    npf_out_jend(o);
 }
 
 /* this computer's private IPv4 addresses, those on the default route's network
@@ -110,7 +110,7 @@ static void lan_addrs_out(npf_out *o)
     uint32_t gw = 0, ip, mask;
     int n = npf_if_list(ifs, 32), i, pass, on_gw, have_gw = npf_default_gw4(&gw) == 0;
     char a[INET_ADDRSTRLEN];
-    npf_out_jopen(o, '[');
+    npf_out_jarr(o);
     for (pass = 0; pass < 2; pass++)
         for (i = 0; i < n; i++) {
             const uint8_t *b = ifs[i].addr;
@@ -121,9 +121,9 @@ static void lan_addrs_out(npf_out *o)
             mask = ifs[i].prefix > 0 && ifs[i].prefix <= 32 ? htonl(0xffffffffu << (32 - ifs[i].prefix)) : 0;
             on_gw = have_gw && mask && (ip & mask) == (gw & mask);
             if (on_gw == (pass == 0))
-                npf_out_jitem(o, inet_ntop(AF_INET, b, a, sizeof a));
+                npf_out_jstr(o, inet_ntop(AF_INET, b, a, sizeof a));
         }
-    npf_out_jclose(o, ']');
+    npf_out_jend(o);
 }
 
 /* the system it runs on, read once (it does not change while running;
@@ -141,10 +141,10 @@ static void host_out(npf_out *o)
         }
         __atomic_store_n(&lock, 0, __ATOMIC_RELEASE);
     }
-    npf_out_jopen(o, '{');
+    npf_out_jobj(o);
     npf_out_kstr(o, "os", hi.os);
     npf_out_kstr(o, "arch", hi.arch);
-    npf_out_jclose(o, '}');
+    npf_out_jend(o);
 }
 
 static void nat_out(const npf_node *n, npf_out *o)
@@ -154,13 +154,13 @@ static void nat_out(const npf_node *n, npf_out *o)
     int known = n->nat_valid && n->nat_udp;
     memset(&ss, 0, sizeof ss);
     memcpy(&ss, &n->srflx, sizeof n->srflx);
-    npf_out_jopen(o, '{');
+    npf_out_jobj(o);
     npf_out_kbool(o, "udp", known);
     npf_out_kstr(o, "mapping", npf_nat_mapping_str(n->nat.mapping));
     npf_out_kstr(o, "allocation", npf_nat_alloc_str(n->nat.allocation));
     npf_out_kstr(o, "filtering", npf_nat_filter_str(n->nat.filtering));
     npf_out_kstr(o, "srflx", known ? npf_addr_str(&ss, a, sizeof a) : NULL);
-    npf_out_jclose(o, '}');
+    npf_out_jend(o);
 }
 
 static const char *nul_if_empty(const char *s)
@@ -174,9 +174,9 @@ static void peers_out(npf_t *c, npf_out *o)
     npf_peer *p;
     char b[400];
     int need;
-    npf_out_jopen(o, '[');
+    npf_out_jarr(o);
     for (p = npf_peers_first(c->peers); p; p = npf_peer_next(p)) {
-        npf_out_jopen(o, '{');
+        npf_out_jobj(o);
         npf_out_kstr(o, "name", npf_peer_name(p));
         npf_out_kstr(o, "label", nul_if_empty(npf_peer_label(p)));
         npf_out_kstr(o, "nick", nul_if_empty(npf_peer_nick(p)));
@@ -202,9 +202,9 @@ static void peers_out(npf_t *c, npf_out *o)
             npf_out_jkey(o, "resources");
             npf_out_jraw(o, npf_peer_resources(p));
         }
-        npf_out_jclose(o, '}');
+        npf_out_jend(o);
     }
-    npf_out_jclose(o, ']');
+    npf_out_jend(o);
 }
 
 /* the calls not closed yet (the session callback's are the established ones) */
@@ -212,14 +212,14 @@ static void calls_out(npf_t *c, npf_out *o)
 {
     npf_call *call;
     char a[80];
-    npf_out_jopen(o, '[');
+    npf_out_jarr(o);
     for (call = npf_node_calls(&c->node); call; call = npf_call_next(call)) {
         npf_call_info i;
         npf_peer *p = npf_peer_of_call(c, call);
         npf_call_info_get(call, &i);
         if (i.state == NPF_CALL_CLOSED)
             continue;
-        npf_out_jopen(o, '{');
+        npf_out_jobj(o);
         npf_out_kstr(o, "id", i.id);
         npf_out_kstr(o, "direction", i.caller ? "out" : "in");
         npf_out_kstr(o, "peer", p ? npf_peer_name(p) : npf_who(&i, a, sizeof a));
@@ -240,24 +240,24 @@ static void calls_out(npf_t *c, npf_out *o)
         npf_out_kstr(o, "app", nul_if_empty(i.app));
         if (i.hosted)
             npf_out_kbool(o, "hosted", 1);
-        npf_out_jclose(o, '}');
+        npf_out_jend(o);
     }
-    npf_out_jclose(o, ']');
+    npf_out_jend(o);
 }
 
 void npf_status_out(npf_t *c, npf_out *o)
 {
     npf_node *n = &c->node;
-    char a[80], hb[1024];
-    npf_out_jopen(o, '{');
+    char a[80];
+    npf_out_jobj(o);
     npf_out_kstr(o, "version", npf_version());
     npf_out_jkey(o, "host");                    /* the system it runs on (the console's log header) */
     host_out(o);
     npf_out_jkey(o, "app");                     /* the program npf runs in (npf_options.app_name) */
-    npf_out_jopen(o, '{');
+    npf_out_jobj(o);
     npf_out_kstr(o, "name", c->app_name);
     npf_out_kstr(o, "ver", c->app_ver);
-    npf_out_jclose(o, '}');
+    npf_out_jend(o);
     snprintf(a, sizeof a, "%llu", (unsigned long long)c->number);
     npf_out_kstr(o, "number", c->has_number ? a : NULL);
     npf_out_kstr(o, "role", n->cfg.callable ? "node" : "client");
@@ -267,12 +267,12 @@ void npf_status_out(npf_t *c, npf_out *o)
         static const char *const st[] = {"none", "enrolling", "enrolled", "refused"};
         int s = c->has_number && n->enroll_state != NPF_ENROLL_REFUSED ? NPF_ENROLL_DONE : n->enroll_state;
         npf_out_jkey(o, "enroll");
-        npf_out_jopen(o, '{');
+        npf_out_jobj(o);
         npf_out_kstr(o, "state", st[s]);
         npf_out_kstr(o, "error", nul_if_empty(n->enroll_error));
         npf_out_kstr(o, "reason", nul_if_empty(n->enroll_reason));
         npf_out_kint(o, "at", n->enroll_at_unix_ms / 1000);
-        npf_out_jclose(o, '}');
+        npf_out_jend(o);
     }
     npf_out_kbool(o, "online", n->online);
     npf_out_kint(o, "server", n->online ? n->server_id : 0);
@@ -283,13 +283,13 @@ void npf_status_out(npf_t *c, npf_out *o)
         npf_out_kbool(o, "server_refused", 1);  /* the platform turned the login down: not the network */
     if (n->upgrade.required || n->upgrade.latest[0]) {     /* the platform's upgrade policy for this program */
         npf_out_jkey(o, "upgrade");
-        npf_out_jopen(o, '{');
+        npf_out_jobj(o);
         npf_out_kbool(o, "required", n->upgrade.required);
         npf_out_kstr(o, "min", nul_if_empty(n->upgrade.min));
         npf_out_kstr(o, "latest", nul_if_empty(n->upgrade.latest));
         npf_out_kstr(o, "url", nul_if_empty(n->upgrade.url));
         npf_out_kstr(o, "notes", nul_if_empty(n->upgrade.notes));
-        npf_out_jclose(o, '}');
+        npf_out_jend(o);
     }
     snprintf(a, sizeof a, "%llu", (unsigned long long)n->account_id);
     npf_out_kstr(o, "account", n->account_id ? a : NULL);
@@ -304,9 +304,9 @@ void npf_status_out(npf_t *c, npf_out *o)
     npf_out_kint(o, "calls_in", n->calls_in);
     npf_out_jkey(o, "nat");
     nat_out(n, o);
-    if (npf_node_home_status(n, hb, sizeof hb)) {  /* the spare allocation (home-binding.md 14.1) */
+    if (n->home) {                              /* the spare allocation (home-binding.md 14.1) */
         npf_out_jkey(o, "home");
-        npf_out_jraw(o, hb);
+        npf_node_home_status(n, o);
     }
     npf_out_kstr(o, "log_level", npf_log_level_name(npf_log_get_level()));
     npf_out_jkey(o, "lan_addrs");               /* where the LAN reaches a forward open to it */
@@ -318,5 +318,5 @@ void npf_status_out(npf_t *c, npf_out *o)
     peers_out(c, o);
     npf_out_jkey(o, "sessions");
     calls_out(c, o);
-    npf_out_jclose(o, '}');
+    npf_out_jend(o);
 }

@@ -407,18 +407,17 @@ void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *
 /* the callee's profile and candidates, before the platform's next round */
 void node_on_punch_request(npf_node *n, const m_env *e, const void *m)
 {
-    char data[2048];
-    npf_jw w;
+    npf_out w = {0};
     (void)m;
     if (!e->id[0])
         return;
-    npf_jw_init(&w, data, sizeof data);
-    npf_jw_obj(&w);
+    npf_out_jobj(&w);
     npf_node_write_nat(n, &w);
     npf_node_write_cands(n, &w);
-    npf_jw_end(&w);
-    if (npf_jw_finish(&w) > 0)
-        npf_node_reply(n, e->type, e->id, "ok", NULL, data);
+    npf_out_jend(&w);
+    if (!w.failed)
+        npf_node_reply(n, e->type, e->id, "ok", NULL, w.p);
+    npf_out_free(&w);
 }
 
 void node_on_revoke(npf_node *n, const m_env *e, const void *msg)

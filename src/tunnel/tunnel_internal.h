@@ -94,7 +94,8 @@ struct npf_tunnel {
      * hundred at most: one cache line per 16), the last one found first */
     sublink   **subs;
     uint32_t   *ids;
-    int         nsubs, cap, last;
+    int         nsubs, last;
+    size_t      cap;
     uint32_t    next_id;
     uint32_t    peer_max_seen;  /* largest peer-opened id */
     uint64_t    peer_seen[NPF_MAX_SUBLINKS / 64];  /* the NPF_MAX_SUBLINKS peer ids below it (its
