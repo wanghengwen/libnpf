@@ -32,6 +32,8 @@ void npf_sig_close(npf_sig *s);
 int  npf_sig_ping(npf_sig *s);
 /* monotonic ms of the last frame from the server, 0 = none yet */
 int64_t npf_sig_last_rx(const npf_sig *s);
+/* monotonic ms of our last message or ping sent, 0 = none yet */
+int64_t npf_sig_last_tx(const npf_sig *s);
 /* its queues, ours and the kernel's, for a log line when it stalls (npf_ws_diag) */
 const char *npf_sig_diag(const npf_sig *s, char *buf, size_t cap);
 /* Noise handshake hash (binds enrollment signatures to this connection) */

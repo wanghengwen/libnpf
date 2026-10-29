@@ -367,19 +367,27 @@ void node_sig_probe(npf_node *n)
     sig_expect(n, SIG_PONG_MS, 1);
 }
 
+/* A ping only when the connection was quiet one way or the other for an
+ * interval: nothing sent (the NAT's mapping, the server's read deadline) or
+ * nothing heard (is the server there). A connection busy both ways needs
+ * none; its requests are watched on their own (SIG_REPLY_MS). Each ping's
+ * watch notices silence within 10 s. */
 static void ping_cb(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
-    int ivl = (n->ping_s > 0 ? n->ping_s : 25) * 1000;
+    int64_t ivl = (n->ping_s > 0 ? n->ping_s : 25) * 1000, now = npf_mono_ms();
+    int64_t tx = npf_sig_last_tx(n->sig), rx = npf_sig_last_rx(n->sig);
+    int64_t due = (tx < rx ? tx : rx) + ivl;
     (void)loop;
     n->t_ping = NULL;
-    /* no check of its own for silence here: each ping's watch notices it
-     * within 10 s (sooner than three intervals of silence ever could: at
-     * ping_s 5 both came due at once, and the reason was either one) */
+    if (due > now) {
+        n->t_ping = npf_timer_add(n->loop, (int)(due - now), ping_cb, n);
+        return;
+    }
     npf_logt("sig: ping");
     npf_sig_ping(n->sig);
     sig_expect(n, SIG_PONG_MS, 1);      /* its pong in time, else the connection goes */
-    n->t_ping = npf_timer_add(n->loop, ivl, ping_cb, n);
+    n->t_ping = npf_timer_add(n->loop, (int)ivl, ping_cb, n);
 }
 
 static void send_login(npf_node *n)
