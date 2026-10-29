@@ -95,63 +95,68 @@ static void ext_clear(npf_ldev *d)
 {
     int i;
     for (i = 0; i < d->next; i++) {
-        free(d->ext_key[i]);
-        free(d->ext_val[i]);
+        free(d->ext[i].key);
+        free(d->ext[i].val);
     }
-    free(d->ext_key);
-    free(d->ext_val);
-    d->ext_key = d->ext_val = NULL;
+    free(d->ext);
+    d->ext = NULL;
     d->next = 0;
+}
+
+static int ext_find(const npf_ldev *d, const char *key)
+{
+    int i;
+    for (i = 0; i < d->next; i++)
+        if (strcmp(d->ext[i].key, key) == 0)
+            return i;
+    return -1;
 }
 
 const char *npf_local_ext(const npf_ldev *d, const char *key)
 {
-    int i;
-    for (i = 0; i < d->next; i++)
-        if (strcmp(d->ext_key[i], key) == 0)
-            return d->ext_val[i];
-    return NULL;
+    int i = ext_find(d, key);
+    return i < 0 ? NULL : d->ext[i].val;
+}
+
+/* key's value: (a copy of) the JSON text json[0..n) */
+static int ext_put(npf_ldev *d, const char *key, const char *json, size_t n)
+{
+    struct npf_lext *e;
+    int i = ext_find(d, key);
+    char *v = malloc(n + 1);
+    if (!v)
+        return -1;
+    memcpy(v, json, n);
+    v[n] = 0;
+    if (i >= 0) {
+        free(d->ext[i].val);
+        d->ext[i].val = v;
+        return 0;
+    }
+    if (d->next >= NPF_LOCAL_MAX_EXT || !(e = realloc(d->ext, (size_t)(d->next + 1) * sizeof *e))) {
+        free(v);
+        return -1;
+    }
+    d->ext = e;
+    if (!(e[d->next].key = strdup(key))) {
+        free(v);
+        return -1;
+    }
+    e[d->next++].val = v;
+    return 0;
 }
 
 int npf_local_ext_set(npf_ldev *d, const char *key, const char *json)
 {
-    char **k, **v, *nk, *nv;
     int i;
-    for (i = 0; i < d->next; i++)
-        if (strcmp(d->ext_key[i], key) == 0) {
-            if (!json) {                    /* removed */
-                free(d->ext_key[i]);
-                free(d->ext_val[i]);
-                d->next--;
-                memmove(&d->ext_key[i], &d->ext_key[i + 1], (size_t)(d->next - i) * sizeof *d->ext_key);
-                memmove(&d->ext_val[i], &d->ext_val[i + 1], (size_t)(d->next - i) * sizeof *d->ext_val);
-                return 0;
-            }
-            if (!(nv = strdup(json)))
-                return -1;
-            free(d->ext_val[i]);
-            d->ext_val[i] = nv;
-            return 0;
-        }
-    if (!json)
-        return 0;
-    if (d->next >= NPF_LOCAL_MAX_EXT)
-        return -1;
-    if (!(k = realloc(d->ext_key, (size_t)(d->next + 1) * sizeof *k)))
-        return -1;
-    d->ext_key = k;
-    if (!(v = realloc(d->ext_val, (size_t)(d->next + 1) * sizeof *v)))
-        return -1;
-    d->ext_val = v;
-    nk = strdup(key);
-    nv = strdup(json);
-    if (!nk || !nv) {
-        free(nk);
-        free(nv);
-        return -1;
+    if (json)
+        return ext_put(d, key, json, strlen(json));
+    if ((i = ext_find(d, key)) >= 0) {      /* removed */
+        free(d->ext[i].key);
+        free(d->ext[i].val);
+        d->next--;
+        memmove(&d->ext[i], &d->ext[i + 1], (size_t)(d->next - i) * sizeof *d->ext);
     }
-    d->ext_key[d->next] = nk;
-    d->ext_val[d->next++] = nv;
     return 0;
 }
 
@@ -300,21 +305,11 @@ static int parse(npf_local *l, const char *s, size_t len)
             {   /* the other keys are the modules': kept as they are */
                 int q = v + 1;
                 for (n = 0; n < j.tok[v].size; n++, q = j.tok[q + 1].next) {
-                    char key[48], *val;
-                    if (npf_json_str(&j, q, key, sizeof key) < 0 || core_key(key))
-                        continue;
-                    /* the value's text (a string's with its quotes) */
-                    int str = j.tok[q + 1].type == NPF_JT_STRING;
+                    char key[48];
+                    int str = j.tok[q + 1].type == NPF_JT_STRING;  /* the value's text: a string's with its quotes */
                     size_t vs = j.tok[q + 1].start - (str ? 1 : 0), vl = j.tok[q + 1].end + (str ? 1 : 0) - vs;
-                    if (!(val = malloc(vl + 1)))
+                    if (npf_json_str(&j, q, key, sizeof key) >= 0 && !core_key(key) && ext_put(d, key, s + vs, vl) < 0)
                         goto out;
-                    memcpy(val, s + vs, vl);
-                    val[vl] = 0;
-                    if (npf_local_ext_set(d, key, val) < 0) {
-                        free(val);
-                        goto out;
-                    }
-                    free(val);
                 }
             }
         }
@@ -398,12 +393,19 @@ void npf_local_free(npf_local *l)
     npf_conf_free(&l->settings);
 }
 
-static void kstr(npf_out *o, int *first, const char *ind, const char *k, const char *v)
+/* the next member's key, on a line of its own at indent ind (a comma
+ * before all but the first); its value follows */
+static void member(npf_out *o, int *first, const char *ind, const char *k)
 {
     npf_out_printf(o, "%s\n%s", *first ? "" : ",", ind);
     *first = 0;
     npf_out_json_str(o, k, strlen(k));
     npf_out_printf(o, ": ");
+}
+
+static void kstr(npf_out *o, int *first, const char *ind, const char *k, const char *v)
+{
+    member(o, first, ind, k);
     npf_out_json_str(o, v, strlen(v));
 }
 
@@ -413,52 +415,51 @@ int npf_local_save(npf_local *l)
     int i, k, first = 1, f2, rc;
     npf_out_printf(&o, "{");
     if (l->settings.n) {
-        npf_out_printf(&o, "\n  \"settings\": {");
-        f2 = 1;
-        for (i = 0; i < l->settings.n; i++)
+        member(&o, &first, "  ", "settings");
+        npf_out_printf(&o, "{");
+        for (i = 0, f2 = 1; i < l->settings.n; i++)
             kstr(&o, &f2, "    ", l->settings.key[i], l->settings.val[i]);
         npf_out_printf(&o, "\n  }");
-        first = 0;
     }
     if (l->nstart) {
-        npf_out_printf(&o, "%s\n  \"start\": [", first ? "" : ",");
+        member(&o, &first, "  ", "start");
+        npf_out_printf(&o, "[");
         for (i = 0; i < l->nstart; i++) {
             npf_out_printf(&o, "%s", i ? ", " : "");
             npf_out_json_str(&o, l->start[i], strlen(l->start[i]));
         }
         npf_out_printf(&o, "]");
-        first = 0;
     }
-    npf_out_printf(&o, "%s\n  \"devices\": {", first ? "" : ",");
-    f2 = 1;
-    for (i = 0; i < l->ndev; i++) {
+    member(&o, &first, "  ", "devices");
+    npf_out_printf(&o, "{");
+    for (i = 0, f2 = 1; i < l->ndev; i++) {
         const npf_ldev *d = &l->dev[i];
         int f3 = 1;
         if (!d->name[0] && !d->nick[0] && !d->save && !d->has_key && !d->next)
             continue;                       /* nothing left to keep */
-        npf_out_printf(&o, "%s\n    ", f2 ? "" : ",");
-        f2 = 0;
-        npf_out_json_str(&o, d->target, strlen(d->target));
-        npf_out_printf(&o, ": {");
+        member(&o, &f2, "    ", d->target);
+        npf_out_printf(&o, "{");
         if (d->name[0])
             kstr(&o, &f3, "      ", "name", d->name);
         if (d->nick[0])
             kstr(&o, &f3, "      ", "nick", d->nick);
         if (d->save) {
-            npf_out_printf(&o, "%s\n      \"save\": true", f3 ? "" : ",");
-            f3 = 0;
+            member(&o, &f3, "      ", "save");
+            npf_out_printf(&o, "true");
             if (d->on_demand)
                 kstr(&o, &f3, "      ", "connect", "on_demand");
-            if (d->idle_ms)                 /* on demand, or for when it is */
-                npf_out_printf(&o, ",\n      \"idle_ms\": %d", d->idle_ms);
+            if (d->idle_ms) {               /* on demand, or for when it is */
+                member(&o, &f3, "      ", "idle_ms");
+                npf_out_printf(&o, "%d", d->idle_ms);
+            }
         }
         if (d->psk_file[0])
             kstr(&o, &f3, "      ", "psk_file", d->psk_file);
         if (d->psk[0])
             kstr(&o, &f3, "      ", "psk", d->psk);
         if (d->nfwd) {
-            npf_out_printf(&o, "%s\n      \"forwards\": [", f3 ? "" : ",");
-            f3 = 0;
+            member(&o, &f3, "      ", "forwards");
+            npf_out_printf(&o, "[");
             for (k = 0; k < d->nfwd; k++) {
                 const npf_lfwd *lf = &d->fwd[k];
                 npf_out_printf(&o, "%s\n        {\"kind\": ", k ? "," : "");
@@ -486,20 +487,20 @@ int npf_local_save(npf_local *l)
             kstr(&o, &f3, "      ", "key", b);
         }
         if (d->resources) {
-            npf_out_printf(&o, "%s\n      \"resources\": %s", f3 ? "" : ",", d->resources);
-            f3 = 0;
+            member(&o, &f3, "      ", "resources");
+            npf_out_printf(&o, "%s", d->resources);
         }
-        for (k = 0; k < d->next; k++) {     /* the modules' keys */
-            npf_out_printf(&o, "%s\n      ", f3 ? "" : ",");
-            npf_out_json_str(&o, d->ext_key[k], strlen(d->ext_key[k]));
-            npf_out_printf(&o, ": %s", d->ext_val[k]);
-            f3 = 0;
+        for (k = 0; k < d->next; k++) {     /* the modules' keys, their values as they are */
+            member(&o, &f3, "      ", d->ext[k].key);
+            npf_out_printf(&o, "%s", d->ext[k].val);
         }
         npf_out_printf(&o, "\n    }");
     }
     npf_out_printf(&o, "\n  }");
-    if (l->resources)
-        npf_out_printf(&o, ",\n  \"resources\": %s", l->resources);
+    if (l->resources) {
+        member(&o, &first, "  ", "resources");
+        npf_out_printf(&o, "%s", l->resources);
+    }
     npf_out_printf(&o, "\n}\n");
     rc = o.failed || o.len > NPF_JSON_MAX_FILE ? -1 : npf_file_write(l->path, o.p, o.len, 0600);
     npf_out_free(&o);
