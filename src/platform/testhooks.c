@@ -1,18 +1,37 @@
 /* Test hooks (npf/testhooks.h) */
 #include "npf/sys.h"
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/log.h"
 #include "npf/testhooks.h"
 
 void npf_th_read(npf_test_hooks *t)
 {
-    const char *v = getenv("NPF_TEST_DROP_P2P");
+    static const struct { const char *name; size_t off; int num; } sw[] = {
+#define TH_N(f, name) {name, offsetof(npf_test_hooks, f), 1},
+#define TH_S(f, name) {name, offsetof(npf_test_hooks, f), 0},
+        NPF_TEST_HOOKS(TH_N, TH_S)
+#undef TH_N
+#undef TH_S
+    };
+    char on[512] = "";
+    size_t i, k = 0;
     memset(t, 0, sizeof *t);
-    t->no_p2p = getenv("NPF_NO_P2P") != NULL;
-    t->drop_bind_ack = getenv("NPF_TEST_DROP_BIND_ACK") != NULL;
-    t->drop_p2p_ms = v ? atoll(v) : -1;
-    t->drop_p2p_port = v && strchr(v, ':') ? atoi(strchr(v, ':') + 1) : 0;
-    t->block_relay = getenv("NPF_TEST_BLOCK_RELAY");
-    t->udp_again_ms = (v = getenv("NPF_TEST_UDP_AGAIN_MS")) ? atoll(v) : 0;
+    for (i = 0; i < sizeof sw / sizeof sw[0]; i++) {
+        const char *v = getenv(sw[i].name);
+        void *p = (char *)t + sw[i].off;
+        if (!v || !*v || (sw[i].num && strtoll(v, NULL, 10) <= 0))
+            continue;                   /* off */
+        if (sw[i].num)
+            *(int64_t *)p = strtoll(v, NULL, 10);
+        else
+            *(const char **)p = v;
+        if (k < sizeof on)
+            k += (size_t)snprintf(on + k, sizeof on - k, " %s=%s", sw[i].name, v);
+    }
+    if (k)
+        npf_logw("test switches on:%s", on);
 }

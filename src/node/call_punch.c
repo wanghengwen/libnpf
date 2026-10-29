@@ -25,15 +25,14 @@ static void write_pressure(const npf_call *c, npf_jw *w)
 {
     const npf_node *n = c->n;
     int64_t now = npf_mono_ms();
-    const char *t;
-    if ((n->port_pressure && now - n->port_pressure < PRESSURE_KEEP_MS) || getenv("NPF_TEST_PUNCH_GAP_MS")) {
+    if ((n->port_pressure && now - n->port_pressure < PRESSURE_KEEP_MS) || n->th.punch_gap_ms) {
         npf_jw_kbool(w, "pressure", 1);
         npf_jw_kint(w, "hard_ago_ms", n->hard_punch_end ? now - n->hard_punch_end : -1);
     }
-    if ((t = getenv("NPF_TEST_PUNCH_GAP_MS")) != NULL)
-        npf_jw_kint(w, "test_gap_ms", atoll(t));
-    if ((t = getenv("NPF_TEST_REPUNCH_MS")) != NULL)
-        npf_jw_kint(w, "test_backoff_ms", atoll(t));
+    if (n->th.punch_gap_ms)
+        npf_jw_kint(w, "test_gap_ms", n->th.punch_gap_ms);
+    if (n->th.repunch_ms)
+        npf_jw_kint(w, "test_backoff_ms", n->th.repunch_ms);
 }
 
 /* no punching in this session: connect_mode secure on either side (relays
@@ -358,7 +357,7 @@ void call_punch_go(npf_call *c)
                     c->call_id_s, c->punch_round, c->pcfg->plan.n_sockets, want);
     }
     c->pcfg->fd6 = c->n->udp6_fd;
-    c->pcfg->test_deaf = getenv("NPF_TEST_PUNCH_FAIL") != NULL;
+    c->pcfg->test_deaf = c->n->th.punch_fail_ms != 0;
     c->pcfg->quiet = punch_quiet;
     if (c->pcfg->plan.measure) {        /* S2's hard side: its first new socket's mapping, from E1 */
         const uint8_t *pk = node_day_key(c->n, c->n->probe_keys);
@@ -619,12 +618,12 @@ void call_on_punch_start(npf_call *c, const void *msg)
      * side sprays after it (the hard side's step and sockets) */
     pl->measure = strcmp(strat, "S2") == 0 && pl->side == NPF_PUNCH_HARD;
     pl->peer_n = strcmp(strat, "S2") == 0 && pl->side == NPF_PUNCH_EASY ? (int)m->peer_n : 0;
-    if (getenv("NPF_TEST_PUNCH_FAIL"))  /* tests: NPF_TEST_PUNCH_FAIL=ms: every round fails, after ms */
-        pl->timeout_ms = atoi(getenv("NPF_TEST_PUNCH_FAIL"));
-    if (getenv("NPF_TEST_S3_HARD")) {   /* tests: this side opens N sockets (the node budget) */
+    if (c->n->th.punch_fail_ms)         /* tests: every round fails, after this */
+        pl->timeout_ms = (int)c->n->th.punch_fail_ms;
+    if (c->n->th.s3_hard) {             /* tests: this side opens N sockets (the node budget) */
         pl->strategy = NPF_PUNCH_S3;
         pl->side = NPF_PUNCH_HARD;
-        pl->n_sockets = atoi(getenv("NPF_TEST_S3_HARD"));
+        pl->n_sockets = (int)c->n->th.s3_hard;
     }
     start_at = m->start_at >= 0 ? m->start_at : npf_node_time(c->n);
     npf_log("call %s: punch round %d %s %s, %d peer candidates, start in %lld ms", c->call_id_s, c->punch_round, strat,
@@ -636,8 +635,7 @@ void call_on_punch_start(npf_call *c, const void *msg)
     if (c->n->punch_lead_ms > 0 && !(pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD))
         firewall_open(c);
     v = start_at - npf_node_time(c->n) - c->n->punch_lead_ms;
-    if (getenv("NPF_TEST_PUNCH_DELAY"))     /* tests: this side starts late (a slow plan, as over a loaded link) */
-        v += atoi(getenv("NPF_TEST_PUNCH_DELAY"));
+    v += c->n->th.punch_delay_ms;       /* tests: this side starts late (a slow plan, as over a loaded link) */
     call_punch_to(c, PN_SCHEDULED, npf_mono_ms() + (v > 0 ? v : 0));
 }
 /* the NAT measured again: after a network change (npf_node_network,

@@ -722,7 +722,7 @@ void npf_peers_on_login(npf_peers *ps)
         }
         if (p->direct || p->t_retry)
             continue;
-        if (waiting > 1 && !p->call && !p->waiting && !p->finished && !getenv("NPF_TEST_NO_SPREAD")) {
+        if (waiting > 1 && !p->call && !p->waiting && !p->finished && !ps->n->th.no_spread) {
             /* many peers: spread the calls (and their punching); tests that
              * need concurrent punches turn it off (NPF_TEST_NO_SPREAD) */
             int d = (int)npf_rand_range(0, LOGIN_SPREAD_MS);

@@ -286,7 +286,7 @@ static void test_held(void)
     if (!loop || !c || !s)
         return;
     g_media = npf_media_new(s, 1, &mio, NULL);
-    g_udp = npf_udpf_new(loop, s, 0, NULL, &uio, NULL);
+    g_udp = npf_udpf_new(loop, s, 0, NULL, &uio, NULL, 0);
     anl_set_accept(s, accept_npf);
     anl_set_accept(c, accept_client);
 

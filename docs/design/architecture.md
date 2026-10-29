@@ -690,56 +690,45 @@ TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 
 ## 6. 测试钩子
 
-| 开关 | 作用 | 读取位置 | 用它的测试 |
-|---|---|---|---|
-| `NPF_NO_UDP` | 没有 UDP：报 `udp = 0`，会话走 WS，没有备用分配 | `node/node.c:npf_node_init`（一次） | loopback、media、quota、rlink、udp-fwd、udp、wsswitch |
-| `NPF_NO_P2P` | 不打洞，只走中转 | `node/call_path.c:call_no_p2p`（每次） | fwd-billing、loopback、quota、rlink、wsswitch |
-| `NPF_NO_HOME` | 没有备用分配 | `node/home.c:home_allowed` | callsetup、natlab |
-| `NPF_TEST_DROP_P2P` | `ms[:port]`：直连建立后这么久切断（可只切一个端口） | `npf_node_init`（一次） | loopback、mesh |
-| `NPF_TEST_BLOCK_RELAY` | 这些中转地址或 URL 不可达 | `npf_node_init`（一次） | loopback、natlab |
-| `NPF_TEST_DROP_BIND_ACK` | 丢掉确认绑定的 `BIND_ACK` | `call_relay.c:relay_ack_in`、`home.c:ack_in` | loopback |
-| `NPF_TEST_UDP_FAIL` | 文件出现时 IPv4 主套接字失效 | `npf_node_init`（一次） | homebind、resume |
-| `NPF_TEST_WS_FILE` | 文件存在期间没有 UDP | `npf_node_init`（一次） | wsswitch |
-| `NPF_TEST_PUNCH_FAIL` | 每一轮都失败（`ms` 后） | `call_punch.c:call_handle_punch_start`、`call_start_punch_now` | callsetup、loopback、resume |
-| `NPF_TEST_PUNCH_DELAY` | 这一侧晚开始 | `call_handle_punch_start` | loopback、natlab |
-| `NPF_TEST_S3_HARD` | 这一侧当 S3 难侧、开 N 个套接字 | `call_handle_punch_start` | mesh |
-| `NPF_TEST_PUNCH_GAP_MS` | 报端口紧张与测试间隔（测试平台用） | `call_punch.c:write_pressure` | mesh |
-| `NPF_TEST_REPUNCH_MS` | 测试平台的退避 | `write_pressure` | loopback、resume |
-| `NPF_TEST_NO_SPREAD` | 登录后不分散对端的呼叫 | `peers.c:npf_peers_on_login` | mesh |
-| `NPF_TEST_PUB_IP` | 报一个伪造的公网 IP | `nat.c:npf_node_write_nat` | natlab |
-| `NPF_TEST_CANDS_EXTRA` | 加伪造的候选 | `nat.c:npf_node_write_cands` | natlab |
-| `NPF_TEST_CANDS_LATE` | 启动后这么久不报候选 | `npf_node_write_cands` | punch |
-| `NPF_TEST_HOST6` | 这些 IPv6 地址算全局地址 | `nat.c:gather` | punch |
-| `NPF_TEST_ONLY_HOST6` | 不报 IPv4 候选 | `gather` | punch |
-| `NPF_TEST_PORTMAP_GW` | 端口映射的替身网关 | `ice/portmap.c:gateway`、`nodemap.c:pm_deliver` | punch、test_portmap |
-| `NPF_TEST_SOURCES_AFTER_MS` | 外部渠道更早启动 | `sources.c:node_sources_check` | sources |
-| `NPF_TEST_UPGRADE_RETRY_MS` | 必须升级时的重连间隔 | `node_signal.c:schedule_reconnect` | upgrade、upgradeinstall |
-| `NPF_TEST_UDP_IDLE_MS` | UDP 流的空闲时间 | `udpfwd.c:npf_udpf_new` | udp |
-| `NPF_TEST_UDP_MAX_AGE_MS` | UDP 流数据报的最长等待 | `npf_udpf_new` | 无（诊断） |
-| `NPF_TEST_PACE` | 限制 AnLiu 的发送速率 | `call_transport.c:call_start_transport` | 无（诊断） |
+第 6 步之后（2026-10-29）：测试开关都在 `include/npf/testhooks.h` 的一张表 `NPF_TEST_HOOKS` 里，每个开关一行：结构里的成员、环境变量名、作用与起作用的文件；结构 `npf_test_hooks` 和 `platform/testhooks.c:npf_th_read` 读取用的表都由它展开。`npf_node_init` 用 `npf_th_read` 把开关读进节点自己的 `n->th`，每个节点一次（不是每个数据报、每个呼叫）；之后各处只读 `n->th`，库里别处没有 `getenv`（npf 的 `scripts/check.sh` 检查）。开关只有两种：数（正数才算开，没设、空、0、负数都是 0）和文字（没设或空是 `NULL`）。有开关打开时节点创建时记一行 `WARN test switches on: NPF_X=v ...`（原来只有 `NPF_TEST_UDP_FAIL`、`NPF_TEST_WS_FILE` 生效时、`NPF_NO_P2P`、`NPF_NO_UDP` 在各自的日志里提一句，那几行照旧）。
 
-另有配置键 `test_one_host`（安全设计 11.1）：它是配置而不是环境变量，留在配置里。
+| 开关 | 类型 | 作用 | 起作用 | 用它的测试 |
+|---|---|---|---|---|
+| `NPF_NO_UDP` | 数 | 没有 UDP：报 `udp = 0`，会话走 WS，没有备用分配；`NPF_TEST_WS_FILE` 在运行中改它 | `nat.c`、`path_mgr.c`、`home.c` | loopback、media、quota、rlink、udp、wsswitch、natlab、`tests/bench/relay.sh`、realnet udp-fwd |
+| `NPF_NO_P2P` | 数 | 不打洞，只走中转 | `call_punch.c:call_no_p2p` | loopback、quota、rlink、wsswitch、natlab、`relay.sh`、realnet fwd-billing |
+| `NPF_NO_HOME` | 数 | 没有备用分配 | `home.c:home_allowed` | callsetup、natlab |
+| `NPF_TEST_DROP_P2P` | 数 | 直连建立后这么久（ms）切断 | `path_direct.c:call_p2p_cut` | loopback、mesh |
+| `NPF_TEST_DROP_P2P_PORT` | 数 | ……只切到对方这个端口的那条（**新**，原来是 `DROP_P2P=ms:port`） | 同上 | mesh |
+| `NPF_TEST_BLOCK_RELAY` | 文字 | 这些中转地址或 URL 不可达 | `path_udp.c:call_relay_blocked` | loopback、wsswitch、natlab；单元 `test_call.c`、`test_direct.c` 直接改 `n->th` |
+| `NPF_TEST_DROP_BIND_ACK` | 数 | 丢掉确认绑定的 `BIND_ACK` | `path_udp.c`、`home.c:ack_in` | loopback |
+| `NPF_TEST_UDP_FAIL` | 文字 | 文件出现时 IPv4 主套接字失效 | `node_network.c:watch_cb` | homebind、resume |
+| `NPF_TEST_WS_FILE` | 文字 | 文件存在期间没有 UDP（改 `n->th.no_udp`） | `watch_cb` | wsswitch |
+| `NPF_TEST_PUNCH_FAIL` | 数 | 每一轮都失败（ms 后） | `call_punch.c` | callsetup、loopback、resume |
+| `NPF_TEST_PUNCH_DELAY` | 数 | 这一侧晚开始（ms） | `call_punch.c` | loopback、natlab |
+| `NPF_TEST_S3_HARD` | 数 | 这一侧当 S3 难侧、开 N 个套接字 | `call_punch.c` | mesh |
+| `NPF_TEST_PUNCH_GAP_MS` | 数 | 报端口紧张与测试间隔（测试平台用） | `call_punch.c:write_pressure` | mesh |
+| `NPF_TEST_REPUNCH_MS` | 数 | 测试平台的退避 | `write_pressure` | loopback、resume |
+| `NPF_TEST_NO_SPREAD` | 数 | 登录后不分散对端的呼叫 | `peers.c:npf_peers_on_login` | mesh |
+| `NPF_TEST_PUB_IP` | 文字 | 报一个伪造的公网 IP | `nat.c:npf_node_write_nat` | natlab |
+| `NPF_TEST_CANDS_EXTRA` | 文字 | 加伪造的候选 | `nat.c:npf_node_write_cands` | natlab |
+| `NPF_TEST_CANDS_LATE` | 数 | 第一次报候选后这么久不报 | `npf_node_write_cands` | punch |
+| `NPF_TEST_HOST6` | 文字 | 这些 IPv6 地址算全局地址，不报 IPv4 候选（并入了 `NPF_TEST_ONLY_HOST6`） | `nat.c:gather` | punch |
+| `NPF_TEST_PORTMAP_GW` | 文字 | 端口映射的替身网关 | `nodemap.c`（传给 `npf_portmap_*` 的 `at`） | punch |
+| `NPF_TEST_SOURCES_AFTER_MS` | 数 | 外部渠道更早启动 | `sources.c:node_sources_check` | sources |
+| `NPF_TEST_UPGRADE_RETRY_MS` | 数 | 必须升级时的重连间隔 | `node_signal.c:schedule_reconnect` | upgrade、upgradeinstall |
+| `NPF_TEST_UDP_IDLE_MS` | 数 | UDP 流的空闲时间 | `call_transport.c`（传给 `npf_udpf_new`） | udp |
+| `NPF_TEST_UDP_AGAIN_MS` | 数 | 只因中转不通而在 WS 上、UDP 仍可用时多久试回 UDP（Q4） | `path_mgr.c` | natlab |
 
-**提议**：
+**去掉的**：`NPF_TEST_PACE`、`NPF_TEST_UDP_MAX_AGE_MS`（诊断用，没有测试用；`udpfwd.c` 里只为后者存在的 `max_age_ms` 一起去掉），`NPF_TEST_ONLY_HOST6`（总是和 `NPF_TEST_HOST6` 一起用，并入）。npf 的模块与程序自己的开关（`NPF_TEST_IDLE_MS`、`NPF_TEST_QUOTA_AGAIN_MS`、`NPF_TEST_UPGRADE_WATCH_MS`、`NPF_TEST_FILES_MS`、`NPF_TEST_CALLER_CHECK`）不在这张表里：库不认程序的键（第 7 节）。另有配置键 `test_one_host`（安全设计 11.1）：它是配置而不是环境变量，留在配置里。
 
-```c
-/* src/platform/testhooks.c：进程启动后第一次用到时读一次，之后只读 */
-typedef struct npf_test_hooks {
-    int         no_udp, no_p2p, no_home, drop_bind_ack, no_spread, only_host6;
-    int64_t     drop_p2p_ms;  int drop_p2p_port;
-    const char *block_relay, *udp_fail_file, *ws_file, *pub_ip, *cands_extra, *host6, *portmap_gw;
-    int64_t     punch_fail_ms, punch_delay_ms, punch_gap_ms, repunch_ms, cands_late_ms,
-                sources_after_ms, upgrade_retry_ms, udp_idle_ms, udp_max_age_ms, pace;
-    int         s3_hard;
-    int         any;                           /* 有任何一个打开：启动时记一行 WARN */
-} npf_test_hooks;
-const npf_test_hooks *npf_th(void);
-```
+**行为上的变化**：
 
-- 构建选项 `NPF_TEST_HOOKS`，默认 `ON`（集成测试与 natlab 用的 `build-rel` 需要它）；关掉时 `npf_th()` 返回全零的常量，编译器把分支去掉，库里没有 `getenv`。是否在给厂家的安装包（`libnpf.a`、`libnpf.so`）里关掉，见 Q9。
-- 启动时有任何钩子打开就记一行 WARN 列出它们（今天只有部分开关在生效时各记一行，例如 `NPF_TEST_UDP_FAIL`、`NPF_TEST_WS_FILE`、`NPF_NO_P2P`、`NPF_NO_UDP`）。
-- （1a：节点保留 `n->th`，指向 `npf_th()` 的结构，路径经它读开关。第 3 步之后的瘦身：`n->th` 是节点里的一份，`npf_node_init` 用 `npf_th_read` 读入，没有进程级的副本、`npf_th()` 和它的一次性锁；测试改自己节点的那份。仍是每个节点读一次，不是每个数据报或每个呼叫。）
-- `npf_node` 里的 `test_cut_ms`、`test_cut_port`、`test_block_relay`、`test_udp_fail`、`test_ws_file` 移走（5 个成员，`node.c:npf_node_init` 读入）；`test_no_udp` 不是常量（`NPF_TEST_WS_FILE` 在运行中改它，`node_network.c:watch_cb`），留在节点里作为状态，初值取自钩子。
+- 原来 `nat.c`、`call_punch.c`、`peers.c`、`sources.c`、`node_signal.c`、`udpfwd.c`、`ice/portmap.c` 在每次用到时 `getenv`（每个呼叫、每次写候选、每个 UDP 流）；现在节点创建时读一次，进程运行中改环境不再生效（没有测试这样用）。
+- 数开关的 0 与负数是关：原来大多只看设没设（`NPF_NO_P2P=0` 也算开，`NPF_TEST_DROP_P2P=0` 是"立即切断"，loopback 改用 `=1`）；空的文字开关算没设。
+- 节点的 `test_udp_fail`、`test_ws_file`、`test_no_udp` 并进 `n->th`。不在节点里的两处改由调用者给：`npf_portmap_request` / `_remove` / `_net` 多一个参数 `at`（网关的 `IP:PORT`，`NULL` 为默认路由的网关；`test_portmap.c` 直接传替身网关，不再 `setenv`），`npf_udpf_new` 多一个 `idle_ms`。
+- 构建选项 `NPF_TEST_HOOKS`（原提议，关掉时没有 `getenv`）没有做：Q9 决定发布构建保留测试钩子；要做时只需在 `npf_th_read` 的循环外加一个条件。
+
+**安全**：开关只从进程自己的环境读，不来自信令、中转、对端、配置文件或 API；能给进程设环境变量的人本来就能以这个用户运行任何程序，远端（平台、对端）打不开任何一个。发给平台的测试字段（`test_gap_ms`、`test_backoff_ms`）只在打开 `test_one_host` 的平台上生效（signaling.md）；`NPF_TEST_PUB_IP`、`NPF_TEST_CANDS_EXTRA` 伪造的地址要过平台的地址检查（安全设计 11.1），和一个恶意节点自己能发的一样。启动时的 WARN 让开着的开关不会悄悄留在产品里。
 
 ## 7. 库的边界（后续步骤）
 
@@ -797,7 +786,7 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 | **3** 打洞与呼叫的状态机 | `call_punch.c`、`call.c`、`call_handshake.c` | −120 | 中 | punch、callsetup、loopback；natlab 各策略 | 第 3.1、3.2 节逐行 | 漏记接受而丢掉 `punch_update`（10-27 (1)）；端口给错轮次（10-27 (4)） |
 | **4** 描述表：呼叫相关的消息（实际见下文"4、5 实际"） | 新 `proto/msg.c`；`call*.c`、`home.c`、`relay_bind.c` 约 25 种消息 | −100（±100） | 低–中：解析的边界 | `test_json`、`tests/fuzz`；`test_home.c` 里平台的向量；集成全部 | 每张表的往返（解析 → 写出 → 解析）；按表生成的模糊输入；对照 signaling.md 的字段表 | 缺必需字段被静默忽略；同一字段两处范围不同；秘密字段忘了擦除 |
 | **5** 描述表：其余消息；配置键表（实际见下文） | `node_signal.c`、`call_reverse.c`、`call_transport.c`（控制）、`proto/wsrelay.c`；`conf.c`、`api/engine_config.c`、`api/setup.c`、`node/setup.c`、`api/cmd.c` | −250 | 中：配置的优先次序 | `test_conf`；API 测试（`test_contract`、`test_api` 的 `npf_config_*`）；`test_module` | 每个键的来源优先次序；`npf_setup` 与 `overrides` 冲突 | 一个键在两处有不同的解析；只能来自 npf.conf 的键从别处进来 |
-| **6** 测试钩子 | 新 `platform/testhooks.c`；13 个文件里的 `getenv` | −20 | 低 | 全部（它们用这些开关） | `NPF_TEST_HOOKS=OFF` 的构建里没有 `getenv`（检查符号） | 每个数据报或每个呼叫读环境变量；钩子悄悄地开着 |
+| **6** 测试钩子（实际见下文"6 实际"） | 新 `platform/testhooks.c`；13 个文件里的 `getenv` | −20 | 低 | 全部（它们用这些开关） | `NPF_TEST_HOOKS=OFF` 的构建里没有 `getenv`（检查符号） | 每个数据报或每个呼叫读环境变量；钩子悄悄地开着 |
 | **7** 库的边界 | npf 的键移到模块；对端层只用 `npf_call_*` | −100（npf +100） | 中：npf 的模块 | npf 的客户端测试、`test_module`、API 测试 | — | 库认得程序自己的键 |
 | **8** 主被叫的不对称 | `call*.c` 的 47 处 `c->caller` 收进一个"角色"表 | −50 | 低 | 全部 | 角色表的单元测试 | — |
 
@@ -819,9 +808,11 @@ typedef struct npf_cfg {                       /* 每个实例一份，内部 */
 
 **第二波（描述表）实际**（2026-10-29，int-w1 之后）：库的 `src` + `include` 37 496 → 37 431 行（−65；不计注释与空行 30 977 → 30 904，−73），`src/node` 15 718 → 15 709（−9），`src/proto` 1 617 → 1 564（−53）（用同一个脚本数前后两版）。走描述表的：服务器列表（`node_servers.c` −33）、`state.json`（`callee.c` −13）、`local.json` 的设备记录（`local.c` −21），新表与生成宏 `msgs.h` / `msgs.c` +54；WS 中转连接改在 `npf_sig` 上（`wsrelay.c` −57，`sig.c` +2，`sig.h` −3）。没有走的（不省行）：`wsrelay.c` 的 4 种控制消息、隧道的 `hello`、`api/` 与 `peers.c` 等平台应答的回调（每处一两个字段）。安全评审的几项一并做了：缺失的对象按字段缺失（`absent` 递归）、`NODE_MSG` 与 `D()` 的编译期大小检查、`STRICT`（`reverse_listen`）、`grant_update` 送来相同的目标列表时不再分配与记 INFO（同一秒签发的 `issued` 相等仍接受，signaling.md）。测试：`test_msg.c` 的表检查覆盖 `node_filedescs`，新增嵌套缺失、`STRICT`、必需数组、服务器列表、`state.json`、设备记录的用例；模糊测试的 `msg` 目标跑全部表，新目标 `control`（离线节点上主被叫两侧的 `call_control`，即隧道控制消息的分发与处理器）。
 
+**6 实际**（2026-10-29）：库的 `src` + `include` 37 496 → 37 524 行（+28；不计注释与空行 30 977 → 31 001，+24），`src/node` 15 718 → 15 701 行（−17），计划是 −20。`getenv` 从 12 个文件 35 处变成 `platform/testhooks.c` 的 1 处。去掉的：各处的 `getenv` 与 `atoi` / `atoll`（多数一处两三行，`call_punch.c:write_pressure` 的局部变量、`call_transport.c` 的 `NPF_TEST_PACE` 块、`sources.c`、`node_signal.c` 的块），节点的三个测试成员，`udpfwd.c` 的 `max_age_ms`，`NPF_TEST_ONLY_HOST6` 一个开关，`NPF_TEST_DROP_P2P` 的 `ms:port` 解析，`test_portmap.c` 的 `setenv`；加的：开关表（25 行，每行带注释）、展开结构与读取表的宏、通用的读取与 WARN（约 30 行），`npf_portmap_*` 的网关参数与 `pm_job.gw`。比计划多，是因为原来大多数开关一行就读完（`getenv(...) != NULL`），集中以后每个开关仍要一行表、一处使用；得到的是表中这一行最后一列那两条：每个数据报或每个呼叫读环境变量（原来写候选、每个 `punch_start`、每个 UDP 流都读），钩子悄悄地开着（现在启动时 WARN，`check.sh` 不许库里别处有 `getenv`）。新增单元测试 15 行（`test_sys.c`：开、关、0、空、数、文字）。热路径：`call_p2p_cut`（每个直连数据报）照旧读 `n->th` 的两个整数。
+
 合计库净减约 800 行（±30 %），新增单元测试约 1 500 行。1a–1d 合起来就是"第 1 步：路径抽象及其截止时间与状态机"；四个小步各自可以合入、现场测试，任何一步都可以单独回退。
 
-**关于第 8 步**：`c->caller` 的大部分不是打洞调度带来的，而是协议与安全模型的角色：主叫是打洞的控制方（`NOMINATE`）、只有主叫发 `relay_release` 与 `relay_switch{unreachable}`、主叫打开数据流而被叫在接受回调里取它、被叫有目标策略与密钥份额、主叫的中转先于接受到达（`rearly`）、首次配对的 `hello` 次序、被叫发 `call_established`、被叫以第一个 `punch_start` 或自己的 `call_established` 为接受（第 3 步，Q6）、只有主叫让出难侧轮次（`busy`）。`call_transport.c` 的 20 处多是流与策略的所有权。平台接管打洞调度之后，与调度有关的不对称已经去掉（signaling.md "`punch_result` 与重试"）。所以这一步只是把这些角色差异集中成一张表，收益有限，放在最后。
+**关于第 8 步**：`c->caller` 的大部分不是打洞调度带来的，而是协议与安全模型的角色：主叫是打洞的控制方（`NOMINATE`）、只有主叫发 `relay_release` 与 `relay_switch{unreachable}`、主叫打开数据流而被叫在接受回调里取它、被叫有目标策略与密钥份额、主叫的中转先于接受到达（`rearly`）、首次配对的 `hello` 次序、被叫发 `call_established`、被叫以第一个 `punch_start` 或自己的 `call_established` 为接受（第 3 步，Q6）、只有主叫让出难侧轮次（`busy`）。`call_transport.c` 的 20 处多是流与策略的所有权。平台接管打洞调度之后，与调度有关的不对称已经去掉（signaling.md "`punch_result` 与重试"）。所以这一步只是把这些角色差异集中成一张表，收益有限，放在最后。第 6 步之后再数（2026-10-29）：`call*.c`、`path*.c` 里按主被叫分支的约 50 处，`call_transport.c` 19 处（流与隧道的所有权、AnLiu 的角色、控制消息谁可以收：那一段正随消息表改动），`udpfwd.c` 另有 18 处是 UDP 转发自己的方向，不属于呼叫。角色表能收进的只有常量那几类：AnLiu 角色（`call_transport.c`）、打洞的控制方（`call_punch.c`）、`path_direct.c` 的两个 SIV 方向、隧道与媒体的方向、谁开流，约 10 处；其余是行为（谁发 `relay_release`、谁等接受、谁让出难侧轮次），放进表也是一个标志或函数，不比 `if (c->caller)` 短。
 
 ## 9. 不做的事与取舍
 

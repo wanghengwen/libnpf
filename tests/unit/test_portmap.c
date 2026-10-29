@@ -68,7 +68,7 @@ int test_portmap_gw(void)
 {
     struct sockaddr_in a;
     socklen_t al = sizeof a;
-    char env[64];
+    char at[64];
     pthread_t th;
     npf_portmap res;
     int64_t t0;
@@ -82,24 +82,22 @@ int test_portmap_gw(void)
         CHECK(0, "stand-in gateway");
         return fails;
     }
-    snprintf(env, sizeof env, "127.0.0.1:%u", ntohs(a.sin_port));
-    setenv("NPF_TEST_PORTMAP_GW", env, 1);
+    snprintf(at, sizeof at, "127.0.0.1:%u", ntohs(a.sin_port));
     pthread_create(&th, NULL, gateway, NULL);
 
     memset(&res, 0, sizeof res);
-    CHECK(npf_portmap_request(4242, 3600, &res) == 0 && res.method == NPF_PORTMAP_PCP, "PCP mapping made");
+    CHECK(npf_portmap_request(at, 4242, 3600, &res) == 0 && res.method == NPF_PORTMAP_PCP, "PCP mapping made");
     CHECK(res.internal_port == 4242 && res.external_port == 40000, "the reply for our port taken (%u -> %u)",
           res.internal_port, res.external_port);
 
-    CHECK(npf_portmap_remove(4242, NPF_PORTMAP_PCP) == 0, "removed");
+    CHECK(npf_portmap_remove(at, 4242, NPF_PORTMAP_PCP) == 0, "removed");
     __atomic_store_n(&gw_mode, 1, __ATOMIC_RELEASE);
     t0 = npf_mono_ms();
-    CHECK(npf_portmap_remove(4242, NPF_PORTMAP_PCP) < 0, "a removal answered for another port does not count");
+    CHECK(npf_portmap_remove(at, 4242, NPF_PORTMAP_PCP) < 0, "a removal answered for another port does not count");
     CHECK(npf_mono_ms() - t0 < 1000, "one short try (%lld ms)", (long long)(npf_mono_ms() - t0));
 
     __atomic_store_n(&gw_stop, 1, __ATOMIC_RELEASE);
     pthread_join(th, NULL);
     close(gw_fd);
-    unsetenv("NPF_TEST_PORTMAP_GW");
     return fails;
 }

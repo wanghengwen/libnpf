@@ -43,7 +43,7 @@ static void gather(npf_node *n)
     struct in_addr v4[8];
     struct in6_addr v6[8];
     int c4, c6, i;
-    const char *t6 = getenv("NPF_TEST_HOST6");  /* tests: these IPv6 addresses count as global (::1) */
+    const char *t6 = n->th.host6;       /* tests: these IPv6 addresses count as global (::1) */
     n->ncands = 0;
     /* S0 first: a global IPv6 address needs no NAT traversal, only the firewall's */
     if (n->udp6_fd >= 0) {
@@ -59,7 +59,7 @@ static void gather(npf_node *n)
                     add_host6(n, &ip);
         }
     }
-    if (getenv("NPF_TEST_ONLY_HOST6"))  /* tests: no IPv4 candidates (the session must use IPv6) */
+    if (t6)                             /* tests: and no IPv4 candidates (the session must use IPv6) */
         return;
     {
         struct sockaddr_storage ss;
@@ -108,7 +108,7 @@ static void nat_settled(npf_node *n, int first)
         npf_log("nat: udp=%d map=%s alloc=%s filter=%s srflx=%s cands=%d%s", n->nat_udp,
                 npf_nat_mapping_str(n->nat.mapping), npf_nat_alloc_str(n->nat.allocation), npf_nat_filter_str(n->nat.filtering),
                 n->nat_valid && n->nat_udp ? npf_addr_str(&ss, a, sizeof a) : "-", n->ncands,
-                n->test_no_udp ? " (tests: reported as udp=0, NPF_NO_UDP)" : "");
+                n->th.no_udp ? " (tests: reported as udp=0, NPF_NO_UDP)" : "");
     }
     /* a network change: the calls' platforms hear the new profile and punch
      * again; the first profile: the calls made without candidates get them.
@@ -340,7 +340,7 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
     npf_jw_key(w, "nat");
     npf_jw_obj(w);
     /* no probe servers configured: assume UDP works (local tests) */
-    npf_jw_kbool(w, "udp", n->test_no_udp ? 0 : n->nat_valid ? n->nat_udp : 1);   /* tests: force the WS relay */
+    npf_jw_kbool(w, "udp", n->th.no_udp ? 0 : n->nat_valid ? n->nat_udp : 1);   /* tests: force the WS relay */
     node_portmap_write(n, w);       /* the router's port mapping: enums only, secure too */
     if (n->cfg.secure) {            /* connect_mode secure: relays only, nothing of the addresses */
         npf_jw_kbool(w, "secure", 1);
@@ -362,8 +362,8 @@ void npf_node_write_nat(npf_node *n, npf_jw *w)
     npf_jw_kbool(w, "ip_varies", n->nat.ip_varies);
     if (n->punch_lead_ms > 0)       /* a host firewall: this side sends first, S1 keeps the agreed start */
         npf_jw_kbool(w, "lead", 1);
-    if (getenv("NPF_TEST_PUB_IP"))      /* tests: a forged public IP (the platform must not spray it) */
-        npf_jw_kstr(w, "pub_ip", getenv("NPF_TEST_PUB_IP"));
+    if (n->th.pub_ip)                   /* tests: a forged public IP (the platform must not spray it) */
+        npf_jw_kstr(w, "pub_ip", n->th.pub_ip);
     else if (n->nat_valid && n->nat_udp)
         npf_jw_kstr(w, "pub_ip", inet_ntop(AF_INET, &n->pub_ip, ip, sizeof ip));
     npf_jw_kint(w, "at", n->nat.measured_at);
@@ -374,12 +374,11 @@ void npf_node_write_cands(npf_node *n, npf_jw *w)
 {
     int i, none = n->cfg.secure;      /* secure: none, the peer learns no address */
     char a[64];
-    const char *late = getenv("NPF_TEST_CANDS_LATE");
-    if (late) {     /* tests: none for this many ms after the first time (a node just come up) */
+    if (n->th.cands_late_ms) {  /* tests: none for this many ms after the first time (a node just come up) */
         static int64_t first;
         if (!first)
             first = npf_mono_ms();
-        none |= npf_mono_ms() - first < atoll(late);
+        none |= npf_mono_ms() - first < n->th.cands_late_ms;
     }
     npf_jw_key(w, "cand");
     npf_jw_arr(w);
@@ -389,9 +388,9 @@ void npf_node_write_cands(npf_node *n, npf_jw *w)
         npf_jw_kstr(w, "a", npf_addr_str(&n->cands[i].a, a, sizeof a));
         npf_jw_end(w);
     }
-    if (getenv("NPF_TEST_CANDS_EXTRA") && !none) {     /* tests: forged candidates "t=addr,..." */
+    if (n->th.cands_extra && !none) {      /* tests: forged candidates "t=addr,..." */
         char buf[512], *tok, *save, *eq;
-        snprintf(buf, sizeof buf, "%s", getenv("NPF_TEST_CANDS_EXTRA"));
+        snprintf(buf, sizeof buf, "%s", n->th.cands_extra);
         for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save))
             if ((eq = strchr(tok, '=')) != NULL) {
                 *eq = 0;

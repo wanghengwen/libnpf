@@ -182,16 +182,16 @@ static int try_map(int method, const struct sockaddr_in *gw, uint16_t internal_p
     return ok;
 }
 
-static int gateway(struct sockaddr_in *gw)
+static int gateway(struct sockaddr_in *gw, const char *at)
 {
     char gs[INET_ADDRSTRLEN];
     uint32_t a;
     memset(gw, 0, sizeof(*gw));
     gw->sin_family = AF_INET;
     gw->sin_port = htons(NPF_PORTMAP_PORT);
-    if (getenv("NPF_TEST_PORTMAP_GW")) {      /* tests: "IP:PORT" of a stand-in gateway */
+    if (at) {                               /* "IP:PORT" of a stand-in gateway */
         char ip[64], *colon;
-        snprintf(ip, sizeof ip, "%s", getenv("NPF_TEST_PORTMAP_GW"));
+        snprintf(ip, sizeof ip, "%s", at);
         if ((colon = strrchr(ip, ':')) != NULL) {
             *colon = 0;
             gw->sin_port = htons((uint16_t)atoi(colon + 1));
@@ -209,10 +209,10 @@ static int gateway(struct sockaddr_in *gw)
     return 0;
 }
 
-int npf_portmap_request(uint16_t internal_port, uint32_t lifetime, npf_portmap *res)
+int npf_portmap_request(const char *at, uint16_t internal_port, uint32_t lifetime, npf_portmap *res)
 {
     struct sockaddr_in gw;
-    if (gateway(&gw) < 0)
+    if (gateway(&gw, at) < 0)
         return -2;
     if (try_map(NPF_PORTMAP_PCP, &gw, internal_port, lifetime, res, RETRIES) == 0)
         return 0;
@@ -220,21 +220,21 @@ int npf_portmap_request(uint16_t internal_port, uint32_t lifetime, npf_portmap *
     return try_map(NPF_PORTMAP_NATPMP, &gw, internal_port, lifetime, res, RETRIES);
 }
 
-int npf_portmap_remove(uint16_t internal_port, int method)
+int npf_portmap_remove(const char *at, uint16_t internal_port, int method)
 {
     struct sockaddr_in gw;
     npf_portmap res;
-    if (gateway(&gw) < 0)
+    if (gateway(&gw, at) < 0)
         return -1;
     return try_map(method == NPF_PORTMAP_NATPMP ? NPF_PORTMAP_NATPMP : NPF_PORTMAP_PCP, &gw, internal_port, 0, &res, 1);
 }
 
-uint64_t npf_portmap_net(void)
+uint64_t npf_portmap_net(const char *at)
 {
     struct sockaddr_in gw;
     struct in_addr local;
     int fd;
-    if (gateway(&gw) < 0)
+    if (gateway(&gw, at) < 0)
         return 0;
     if ((fd = udp_connect(&gw, &local)) < 0)
         local.s_addr = 0;

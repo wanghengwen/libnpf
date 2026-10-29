@@ -2,10 +2,15 @@
  * one while it is on, none when off or for other sockets; a failing hook
  * leaves a working socket. Without one, the built-in VPN bypass: no VPN here,
  * nothing bound; tunnel interface names known; a listening UDP port is
- * never shared (npf_sock_listen_opts). */
+ * never shared (npf_sock_listen_opts). The test switches (npf/testhooks.h):
+ * unset, empty and 0 are off. */
+#define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "npf/testhooks.h"
 
 static int fails;
 
@@ -71,6 +76,19 @@ int test_sys(void)
         CHECK(mine >= 0 && bind(mine, (struct sockaddr *)&a, sizeof a) < 0, "its port is not taken over");
         npf_sock_close(mine);
         npf_sock_close(other);
+    }
+    {
+        static const char *env[][2] = {{"NPF_NO_P2P", "1"}, {"NPF_TEST_DROP_P2P", "0"}, {"NPF_TEST_UDP_AGAIN_MS", "15000"},
+                                       {"NPF_TEST_BLOCK_RELAY", ""}, {"NPF_TEST_PUB_IP", "192.0.2.66"}};
+        npf_test_hooks t;
+        size_t i;
+        for (i = 0; i < sizeof env / sizeof env[0]; i++)
+            setenv(env[i][0], env[i][1], 1);
+        npf_th_read(&t);
+        CHECK(t.no_p2p == 1 && !t.drop_p2p_ms && t.udp_again_ms == 15000 && !t.block_relay && !t.no_udp
+              && t.pub_ip && strcmp(t.pub_ip, "192.0.2.66") == 0, "test switches: on, off, a number, a text");
+        for (i = 0; i < sizeof env / sizeof env[0]; i++)
+            unsetenv(env[i][0]);
     }
     return fails;
 }

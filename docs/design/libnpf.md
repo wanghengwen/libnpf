@@ -624,6 +624,7 @@ target_link_libraries(acme-app PRIVATE npf_common)
 
 - 每条日志格式为“日期 时间.毫秒 级别 消息”。有 `log` 回调时交给回调，否则写到 stderr；`npf_log_json` 给出最近的日志（`NPF_OPT_NO_LOG_RING` 可以关掉）。日志回调在产生日志的线程执行，创建和销毁阶段也可能调用；建议只做日志收集，避免在其中改变实例生命周期。业务回调的 API 调用规则见第 8 节；
 - 连不上时先看状态 JSON 的 `online`、`nat` 和对端的状态；会话的 `path` 说明走的是直连还是中转；
+- 测试开关：以 `NPF_TEST_`、`NPF_NO_` 开头的环境变量（`include/npf/testhooks.h` 一行一个，architecture.md 第 6 节）只给集成测试用，发布构建里也有。库只从进程自己的环境读、每个实例创建时读一次，有一个打开时记一行 `WARN test switches on: ...`；产品里不要设它们，看到这行说明进程的环境里有测试开关；
 - 在 `p2p` 模式下检测到 VPN 占用默认路由时，库会尝试让 UDP 套接字和信令连接使用物理网卡。是否成功取决于平台支持、可用网卡和绑定权限，不能保证绕过 VPN；网络变化后调用 `npf_network_changed` 让库立即重新检查。
 
 ## 14. 限制与后续

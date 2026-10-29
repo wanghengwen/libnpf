@@ -177,7 +177,7 @@ int test_resolve(void)
         memset(&uio, 0, sizeof uio);
         uio.unit = unit_sink;
         l = npf_loop_new();
-        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL);     /* callee, frames put in by hand */
+        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL, 0);     /* callee, frames put in by hand */
         HOLD(1);
         g_units = 0;
         for (i = 0; i < 10; i++) {
@@ -212,7 +212,7 @@ int test_resolve(void)
         CHECK(npf_policy_add_udp(&pol, "127.0.0.1:9") == 0, "a udp resource");
         uio.unit = unit_sink;
         l = npf_loop_new();
-        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL);
+        u = npf_udpf_new(l, NULL, 0, &pol, &uio, NULL, 0);
         npf_udpf_set_shared(u, &node_sh, &key_sh);
         g_units = 0;
         for (i = 0; i < 3; i++) {
