@@ -190,7 +190,7 @@ static int receive_limits(void)
     s = anl_stream_open(w, &opt, &err);
     CHECK(s);
     mio.on_open = take_media; mio.on_frame = got_media; mio.on_closed = closed_media;
-    m = npf_media_new(NULL, w, 1, &mio, NULL);
+    m = npf_media_new(w, 1, &mio, NULL);
     CHECK(m && npf_media_accept(m, s, &opt) == 0 && npf_media_poll(m) == 0);
     CHECK(queue_frame(s, NPF_MEDIA_FRAME_MAX + 1) == 0);
     CHECK(npf_media_drain(m, s) == 0);

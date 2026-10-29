@@ -568,7 +568,7 @@ static const npf_media_io media_io = {m_kick, m_open, m_frame, m_closed, m_ended
 npf_media *call_media_of(npf_call *c)
 {
     if (!c->media && !call_over(c) && c->tun && c->anl)
-        c->media = npf_media_new(c->n->loop, c->anl, !c->caller, &media_io, c);
+        c->media = npf_media_new(c->anl, !c->caller, &media_io, c);
     return c->media;
 }
 
