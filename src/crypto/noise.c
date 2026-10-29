@@ -122,7 +122,6 @@ static int enc_hash(npf_noise_hs *hs, const uint8_t *in, size_t len, uint8_t *ou
 static int dec_hash(npf_noise_hs *hs, const uint8_t *in, size_t len, uint8_t *out)
 {
     uint8_t h[64];
-    int n;
     if (!hs->cs.has_key) {
         mix_hash(hs, in, len);
         memmove(out, in, len);
@@ -130,8 +129,7 @@ static int dec_hash(npf_noise_hs *hs, const uint8_t *in, size_t len, uint8_t *ou
     }
     memcpy(h, hs->h, 64);
     mix_hash(hs, in, len);          /* h after = HASH(h || ciphertext) */
-    n = npf_noise_decrypt(&hs->cs, h, 64, in, len, out);
-    return n;
+    return npf_noise_decrypt(&hs->cs, h, 64, in, len, out);
 }
 
 int npf_noise_init(npf_noise_hs *hs, int pattern_id, int initiator,
@@ -139,47 +137,32 @@ int npf_noise_init(npf_noise_hs *hs, int pattern_id, int initiator,
                    const uint8_t *s_sk, const uint8_t *rs, const uint8_t *psk)
 {
     const pattern *p;
-    size_t nl;
     if (pattern_id < NPF_NOISE_XK || pattern_id > NPF_NOISE_NNPSK0)
         return -1;
     p = &patterns[pattern_id];
     memset(hs, 0, sizeof *hs);
     hs->pattern = pattern_id;
     hs->initiator = initiator;
-    nl = strlen(p->name);
-    if (nl <= 64) {
-        memcpy(hs->h, p->name, nl);
-    } else {
-        npf_hash2(hs->h, p->name, nl, NULL, 0);
-    }
+    memcpy(hs->h, p->name, strlen(p->name));    /* every name is shorter than the hash: no hashing */
     memcpy(hs->ck, hs->h, 64);
     mix_hash(hs, prologue, prologue_len);
 
+    /* every pattern here except NN needs a local static on both sides; an
+     * initiator knows the responder's beforehand where the pattern says so */
+    if ((!s_sk && pattern_id != NPF_NOISE_NNPSK0) || (p->pre_rs && initiator && !rs))
+        return -1;
     if (s_sk) {
         memcpy(hs->s_sk, s_sk, 32);
         npf_x25519_pub(hs->s_pub, hs->s_sk);
-        hs->has_s = 1;
     }
     if (rs) {
         memcpy(hs->rs, rs, 32);
         hs->has_rs = 1;
     }
-    if (psk) {
-        memcpy(hs->psk, psk, 32);
-        hs->has_psk = 1;
-    }
-    /* every pattern here except NN needs a local static on both sides */
-    if (!hs->has_s && pattern_id != NPF_NOISE_NNPSK0)
-        return -1;
-    if (p->pre_rs) {
-        if (initiator) {
-            if (!hs->has_rs)
-                return -1;
-            mix_hash(hs, hs->rs, 32);
-        } else {
-            mix_hash(hs, hs->s_pub, 32);
-        }
-    }
+    if (psk)
+        npf_noise_set_psk(hs, psk);
+    if (p->pre_rs)
+        mix_hash(hs, initiator ? hs->rs : hs->s_pub, 32);
     return 0;
 }
 
@@ -201,14 +184,27 @@ static int npf_noise_my_turn(const npf_noise_hs *hs)
     return !hs->done && ((hs->step % 2 == 0) == (hs->initiator != 0));
 }
 
-/* the DH for a token from this side's point of view */
-static int token_dh(npf_noise_hs *hs, int t)
+/* an e token's key, sent or received */
+static void mix_e(npf_noise_hs *hs, const uint8_t pub[32])
+{
+    mix_hash(hs, pub, 32);
+    if (patterns[hs->pattern].psk)
+        mix_key(hs, pub, 32, 0);
+}
+
+/* a psk or DH token, from this side's point of view */
+static int token_mix(npf_noise_hs *hs, int t)
 {
     uint8_t shared[32];
     const uint8_t *sk, *pk;
     int r;
     int ini = hs->initiator;
     switch (t) {
+    case T_PSK:
+        if (!hs->has_psk)
+            return -1;
+        mix_key(hs, hs->psk, 32, 1);
+        return 0;
     case T_EE: sk = hs->e_sk; pk = hs->re; break;
     case T_ES: sk = ini ? hs->e_sk : hs->s_sk; pk = ini ? hs->rs : hs->re; break;
     case T_SE: sk = ini ? hs->s_sk : hs->e_sk; pk = ini ? hs->re : hs->rs; break;
@@ -239,11 +235,8 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
             if (!hs->fixed_e)
                 npf_random(hs->e_sk, 32);
             npf_x25519_pub(hs->e_pub, hs->e_sk);
-            hs->has_e = 1;
             memcpy(out + o, hs->e_pub, 32);
-            mix_hash(hs, hs->e_pub, 32);
-            if (p->psk)
-                mix_key(hs, hs->e_pub, 32, 0);
+            mix_e(hs, hs->e_pub);
             o += 32;
             break;
         case T_S:
@@ -254,13 +247,8 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
                 return -1;
             o += (size_t)n;
             break;
-        case T_PSK:
-            if (!hs->has_psk)
-                return -1;
-            mix_key(hs, hs->psk, 32, 1);
-            break;
         default:
-            if (token_dh(hs, tok[i]))
+            if (token_mix(hs, tok[i]))
                 return -1;
         }
     }
@@ -270,9 +258,7 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
     if (n < 0)
         return -1;
     o += (size_t)n;
-    hs->step++;
-    if (hs->step == p->nmsg)
-        hs->done = 1;
+    hs->done = ++hs->step == p->nmsg;
     return (int)o;
 }
 
@@ -291,10 +277,7 @@ int npf_noise_read(npf_noise_hs *hs, const uint8_t *msg, size_t len, uint8_t *pa
             if (o + 32 > len)
                 return -1;
             memcpy(hs->re, msg + o, 32);
-            hs->has_re = 1;
-            mix_hash(hs, hs->re, 32);
-            if (p->psk)
-                mix_key(hs, hs->re, 32, 0);
+            mix_e(hs, hs->re);
             o += 32;
             break;
         case T_S:
@@ -306,13 +289,8 @@ int npf_noise_read(npf_noise_hs *hs, const uint8_t *msg, size_t len, uint8_t *pa
             hs->has_rs = 1;
             o += need;
             break;
-        case T_PSK:
-            if (!hs->has_psk)
-                return -1;
-            mix_key(hs, hs->psk, 32, 1);
-            break;
         default:
-            if (token_dh(hs, tok[i]))
+            if (token_mix(hs, tok[i]))
                 return -1;
         }
     }
@@ -322,9 +300,7 @@ int npf_noise_read(npf_noise_hs *hs, const uint8_t *msg, size_t len, uint8_t *pa
     n = dec_hash(hs, msg + o, need, payload);
     if (n < 0)
         return -1;
-    hs->step++;
-    if (hs->step == p->nmsg)
-        hs->done = 1;
+    hs->done = ++hs->step == p->nmsg;
     return n;
 }
 

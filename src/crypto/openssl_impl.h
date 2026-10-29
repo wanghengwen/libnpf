@@ -117,38 +117,26 @@ static int ossl_dh(uint8_t out[32], const uint8_t sk[32], const uint8_t pk[32])
     return ok ? 0 : -1;
 }
 
-static int ossl_seal(const uint8_t key[32], const uint8_t nonce[12], const void *ad, size_t ad_len,
-                     const uint8_t *in, size_t len, uint8_t *out)
+/* ChaCha20-Poly1305 either way: enc, the tag into tag; else checked against
+ * it. len: the text's, without the tag */
+static int ossl_aead(int enc, const uint8_t key[32], const uint8_t nonce[12], const void *ad, size_t ad_len,
+                     const uint8_t *in, size_t len, uint8_t *tag, uint8_t *out)
 {
     EVP_CIPHER_CTX *ctx;
     int n = 0, tail = 0, ok;
     if (len > INT_MAX || ad_len > INT_MAX) return -1;
     ctx = EVP_CIPHER_CTX_new();
-    ok = ctx && ossl_chachapoly() && EVP_EncryptInit_ex2(ctx, ossl_chachapoly(), key, nonce, NULL) == 1
-        && (!ad_len || EVP_EncryptUpdate(ctx, NULL, &n, ad, (int)ad_len) == 1)
-        && EVP_EncryptUpdate(ctx, out, &n, in, (int)len) == 1 && (size_t)n == len
-        && EVP_EncryptFinal_ex(ctx, out + n, &tail) == 1 && tail == 0
-        && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, out + len) == 1;
+    ok = ctx && ossl_chachapoly() && EVP_CipherInit_ex2(ctx, ossl_chachapoly(), key, nonce, enc, NULL) == 1
+        && (enc || EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, tag) == 1)
+        && (!ad_len || EVP_CipherUpdate(ctx, NULL, &n, ad, (int)ad_len) == 1)
+        && EVP_CipherUpdate(ctx, out, &n, in, (int)len) == 1 && (size_t)n == len
+        && EVP_CipherFinal_ex(ctx, out + n, &tail) == 1 && tail == 0
+        && (!enc || EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, 16, tag) == 1);
     EVP_CIPHER_CTX_free(ctx);
-    if (!ok) OPENSSL_cleanse(out, len + 16);
-    return ok ? 0 : -1;
-}
-
-static int ossl_open(const uint8_t key[32], const uint8_t nonce[12], const void *ad, size_t ad_len,
-                     const uint8_t *in, size_t len, uint8_t *out)
-{
-    EVP_CIPHER_CTX *ctx;
-    int n = 0, tail = 0, ok;
-    if (len < 16 || len - 16 > INT_MAX || ad_len > INT_MAX) return -1;
-    len -= 16;
-    ctx = EVP_CIPHER_CTX_new();
-    ok = ctx && ossl_chachapoly() && EVP_DecryptInit_ex2(ctx, ossl_chachapoly(), key, nonce, NULL) == 1
-        && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG, 16, (void *)(in + len)) == 1
-        && (!ad_len || EVP_DecryptUpdate(ctx, NULL, &n, ad, (int)ad_len) == 1)
-        && EVP_DecryptUpdate(ctx, out, &n, in, (int)len) == 1 && (size_t)n == len
-        && EVP_DecryptFinal_ex(ctx, out + n, &tail) == 1 && tail == 0;
-    EVP_CIPHER_CTX_free(ctx);
-    /* EVP writes plaintext before checking its tag; never leave it on failure. */
-    if (!ok) OPENSSL_cleanse(out, len);
+    /* EVP writes plaintext before checking its tag: never left after a failure */
+    if (!ok) {
+        OPENSSL_cleanse(out, len);
+        if (enc) OPENSSL_cleanse(tag, 16);
+    }
     return ok ? 0 : -1;
 }

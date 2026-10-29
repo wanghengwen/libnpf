@@ -38,7 +38,7 @@ typedef struct npf_noise_hs {
     uint8_t  e_sk[32], e_pub[32];
     uint8_t  rs[32], re[32];
     uint8_t  psk[32];
-    int      has_s, has_e, has_rs, has_re, has_psk;
+    int      has_rs, has_psk;
     int      fixed_e;               /* tests: e_sk preset */
 } npf_noise_hs;
 

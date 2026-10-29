@@ -9,6 +9,17 @@
 #include "openssl_impl.h"
 #endif
 
+/* BLAKE2b of a || b, keyed when key_len (Monocypher's) */
+static void b2(uint8_t *out, size_t size, const void *key, size_t key_len, const void *a, size_t a_len,
+               const void *b, size_t b_len)
+{
+    crypto_blake2b_ctx ctx;
+    crypto_blake2b_keyed_init(&ctx, size, key, key_len);
+    crypto_blake2b_update(&ctx, a, a_len);
+    crypto_blake2b_update(&ctx, b, b_len);
+    crypto_blake2b_final(&ctx, out);
+}
+
 void npf_kdf(uint8_t out[32], const void *key, size_t key_len, const void *msg, size_t msg_len)
 {
     npf_kdf2(out, key, key_len, msg, msg_len, NULL, 0);
@@ -17,17 +28,13 @@ void npf_kdf(uint8_t out[32], const void *key, size_t key_len, const void *msg, 
 void npf_kdf2(uint8_t out[32], const void *key, size_t key_len,
               const void *a, size_t a_len, const void *b, size_t b_len)
 {
-    crypto_blake2b_ctx ctx;
 #ifdef NPF_USE_OPENSSL
     /* OpenSSL 3.0 has no variable-length unkeyed BLAKE2b: Monocypher's then
      * (and when EVP fails to allocate: these helpers cannot fail) */
     if (key_len && ossl_mac(out, 32, 0, key, key_len, a, a_len, b, b_len) == 0)
         return;
 #endif
-    crypto_blake2b_keyed_init(&ctx, 32, key, key_len);
-    crypto_blake2b_update(&ctx, a, a_len);
-    crypto_blake2b_update(&ctx, b, b_len);
-    crypto_blake2b_final(&ctx, out);
+    b2(out, 32, key, key_len, a, a_len, b, b_len);
 }
 
 #ifndef NPF_USE_OPENSSL
@@ -57,7 +64,7 @@ int npf_aead_seal(const uint8_t key[32], const uint8_t nonce[12], const void *ad
                    const uint8_t *in, size_t len, uint8_t *out)
 {
 #ifdef NPF_USE_OPENSSL
-    return ossl_seal(key, nonce, ad, ad_len, in, len, out);
+    return ossl_aead(1, key, nonce, ad, ad_len, in, len, out + len, out);
 #else
     crypto_chacha20_ietf(out, in, len, key, nonce, 1);
     poly_tag(out + len, key, nonce, ad, ad_len, out, len);
@@ -68,13 +75,15 @@ int npf_aead_seal(const uint8_t key[32], const uint8_t nonce[12], const void *ad
 int npf_aead_open(const uint8_t key[32], const uint8_t nonce[12], const void *ad, size_t ad_len,
                   const uint8_t *in, size_t len, uint8_t *out)
 {
-#ifdef NPF_USE_OPENSSL
-    return ossl_open(key, nonce, ad, ad_len, in, len, out);
-#else
+#ifndef NPF_USE_OPENSSL
     uint8_t tag[16];
+#endif
     if (len < NPF_AEAD_TAG_SIZE)
         return -1;
     len -= NPF_AEAD_TAG_SIZE;
+#ifdef NPF_USE_OPENSSL
+    return ossl_aead(0, key, nonce, ad, ad_len, in, len, (uint8_t *)(in + len), out);
+#else
     poly_tag(tag, key, nonce, ad, ad_len, in, len);
     if (crypto_verify16(tag, in + len))
         return -1;
@@ -85,21 +94,16 @@ int npf_aead_open(const uint8_t key[32], const uint8_t nonce[12], const void *ad
 
 void npf_hash2(uint8_t out[64], const void *a, size_t alen, const void *b, size_t blen)
 {
-    crypto_blake2b_ctx ctx;
 #ifdef NPF_USE_OPENSSL
     if (ossl_hash2(out, a, alen, b, blen) == 0) return;
 #endif
-    crypto_blake2b_init(&ctx, 64);
-    crypto_blake2b_update(&ctx, a, alen);
-    crypto_blake2b_update(&ctx, b, blen);
-    crypto_blake2b_final(&ctx, out);
+    b2(out, 64, NULL, 0, a, alen, b, blen);
 }
 
 void npf_hmac_blake2b(uint8_t out[64], const uint8_t *key, size_t key_len,
                       const uint8_t *data, size_t data_len)
 {
     uint8_t k[128], pad[128], inner[64];
-    crypto_blake2b_ctx ctx;
     size_t i;
 #ifdef NPF_USE_OPENSSL
     if (ossl_mac(out, 64, 1, key, key_len, data, data_len, NULL, 0) == 0) return;
@@ -110,15 +114,9 @@ void npf_hmac_blake2b(uint8_t out[64], const uint8_t *key, size_t key_len,
     else
         memcpy(k, key, key_len);
     for (i = 0; i < 128; i++) pad[i] = k[i] ^ 0x36;
-    crypto_blake2b_init(&ctx, 64);
-    crypto_blake2b_update(&ctx, pad, 128);
-    crypto_blake2b_update(&ctx, data, data_len);
-    crypto_blake2b_final(&ctx, inner);
+    b2(inner, 64, NULL, 0, pad, 128, data, data_len);
     for (i = 0; i < 128; i++) pad[i] = k[i] ^ 0x5c;
-    crypto_blake2b_init(&ctx, 64);
-    crypto_blake2b_update(&ctx, pad, 128);
-    crypto_blake2b_update(&ctx, inner, 64);
-    crypto_blake2b_final(&ctx, out);
+    b2(out, 64, NULL, 0, pad, 128, inner, 64);
     crypto_wipe(k, sizeof k);
     crypto_wipe(pad, sizeof pad);
     crypto_wipe(inner, sizeof inner);
@@ -149,44 +147,49 @@ void npf_identity_wipe(npf_identity *id)
 uint64_t npf_fp(const uint8_t dh_pub[32])
 {
     uint8_t h[32];
-    crypto_blake2b(h, 32, dh_pub, 32);
+    b2(h, 32, NULL, 0, dh_pub, 32, NULL, 0);
     return npf_rd64(h);
 }
 
-/* Ed25519 has no streaming interface in Monocypher; domain-separated messages
- * are short (certificates, grants, bind proofs), so concatenate on the stack. */
+/* Ed25519 has no streaming interface in Monocypher: domain | msg in one
+ * buffer, on the stack for the short ones (certificates, grants, bind
+ * proofs), else on the heap (server lists, up to 64 KiB); NULL: no memory */
 #define SIGN2_MAX 4096
+
+static uint8_t *cat2(uint8_t stack[SIGN2_MAX], const void *a, size_t al, const void *b, size_t bl)
+{
+    uint8_t *p = stack;
+    if (al > SIZE_MAX - bl || (al + bl > SIGN2_MAX && !(p = malloc(al + bl))))
+        return NULL;
+    memcpy(p, a, al);
+    if (bl)
+        memcpy(p + al, b, bl);
+    return p;
+}
 
 void npf_sign2(uint8_t sig[64], const uint8_t sign_sk[64],
                const void *domain, size_t dlen, const void *msg, size_t len)
 {
-    uint8_t buf[SIGN2_MAX];
-    if (dlen > sizeof buf || len > sizeof buf - dlen) {
-        memset(sig, 0, 64);
+    uint8_t stack[SIGN2_MAX], *buf = cat2(stack, domain, dlen, msg, len);
+    if (!buf) {
+        memset(sig, 0, 64);             /* never verifies */
         return;
     }
-    memcpy(buf, domain, dlen);
-    memcpy(buf + dlen, msg, len);
 #ifdef NPF_USE_OPENSSL
-    if (ossl_sign(sig, sign_sk, buf, dlen + len) == 0) return;
+    if (ossl_sign(sig, sign_sk, buf, dlen + len) != 0)
 #endif
-    crypto_ed25519_sign(sig, sign_sk, buf, dlen + len);
+        crypto_ed25519_sign(sig, sign_sk, buf, dlen + len);
+    if (buf != stack)
+        free(buf);
 }
 
 int npf_verify2(const uint8_t sig[64], const uint8_t pub[32],
                 const void *domain, size_t dlen, const void *msg, size_t len)
 {
-    uint8_t stack[SIGN2_MAX], *buf = stack;
+    uint8_t stack[SIGN2_MAX], *buf = cat2(stack, domain, dlen, msg, len);
     int r;
-    if (dlen > SIZE_MAX - len)
+    if (!buf)
         return -1;
-    if (dlen + len > sizeof stack) {
-        buf = malloc(dlen + len);      /* server lists (up to 64 KiB) */
-        if (!buf)
-            return -1;
-    }
-    memcpy(buf, domain, dlen);
-    memcpy(buf + dlen, msg, len);
 #ifdef NPF_USE_OPENSSL
     r = ossl_verify(sig, pub, buf, dlen + len);
 #else
@@ -277,34 +280,17 @@ static int b64val(char c)
 
 int npf_b64url_decode(const char *in, size_t n, uint8_t *out, size_t cap)
 {
-    size_t i, o = 0, rem = n % 4;
-    uint32_t v;
-    int a, b, c, d;
-    if (rem == 1)
+    size_t i, o = 0;
+    uint32_t acc = 0;
+    int bits = 0, v;
+    if (n % 4 == 1 || n / 4 * 3 + (n % 4 ? n % 4 - 1 : 0) > cap)
         return -1;
-    if (n / 4 * 3 + (rem ? rem - 1 : 0) > cap)
-        return -1;
-    for (i = 0; i + 3 < n; i += 4) {
-        a = b64val(in[i]); b = b64val(in[i + 1]); c = b64val(in[i + 2]); d = b64val(in[i + 3]);
-        if ((a | b | c | d) < 0)
+    for (i = 0; i < n; i++) {
+        if ((v = b64val(in[i])) < 0)
             return -1;
-        v = ((uint32_t)a << 18) | ((uint32_t)b << 12) | ((uint32_t)c << 6) | (uint32_t)d;
-        out[o++] = (uint8_t)(v >> 16);
-        out[o++] = (uint8_t)(v >> 8);
-        out[o++] = (uint8_t)v;
+        acc = acc << 6 | (uint32_t)v;
+        if ((bits += 6) >= 8)
+            out[o++] = (uint8_t)(acc >> (bits -= 8));
     }
-    if (rem == 2) {
-        a = b64val(in[i]); b = b64val(in[i + 1]);
-        if ((a | b) < 0 || (b & 15))
-            return -1;
-        out[o++] = (uint8_t)((a << 2) | (b >> 4));
-    } else if (rem == 3) {
-        a = b64val(in[i]); b = b64val(in[i + 1]); c = b64val(in[i + 2]);
-        if ((a | b | c) < 0 || (c & 3))
-            return -1;
-        v = ((uint32_t)a << 18) | ((uint32_t)b << 12) | ((uint32_t)c << 6);
-        out[o++] = (uint8_t)(v >> 16);
-        out[o++] = (uint8_t)(v >> 8);
-    }
-    return (int)o;
+    return acc & ((1u << bits) - 1) ? -1 : (int)o;  /* the tail's spare bits zero: one text per value */
 }

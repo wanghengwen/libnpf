@@ -95,13 +95,16 @@ void npf_siv_seal(const npf_siv_keys *keys, int dir, uint8_t *buf, size_t plen)
 
 int npf_siv_open(const npf_siv_keys *keys, int dir, const uint8_t *in, size_t len, uint8_t *plain)
 {
-    uint8_t tag[16], d = 0;
-    size_t plen, i;
+    uint8_t tag[16];
+    size_t plen;
     if (len < NPF_SIV_TAG_SIZE)
         return -1;
     plen = len - NPF_SIV_TAG_SIZE;
     crypto_chacha20_ietf(plain, in + NPF_SIV_TAG_SIZE, plen, keys->enc[dir], in, 0);
     npf_siphash128(keys->mac[dir], plain, plen, tag);
-    for (i = 0; i < NPF_SIV_TAG_SIZE; i++) d |= (uint8_t)(tag[i] ^ in[i]);
-    return d == 0 ? (int)plen : -1;
+    if (npf_ct_eq(tag, in, NPF_SIV_TAG_SIZE)) {
+        npf_wipe(plain, plen);              /* nothing unauthenticated left behind */
+        return -1;
+    }
+    return (int)plen;
 }

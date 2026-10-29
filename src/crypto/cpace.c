@@ -52,15 +52,16 @@ int npf_cpace_finish(npf_cpace *c, const uint8_t peer[32], int initiator, uint8_
 {
     uint8_t K[32];
     crypto_blake2b_ctx h;
-    if (npf_x25519(K, c->y, peer) < 0)
-        return -1;
-    crypto_blake2b_keyed_init(&h, 32, K, 32);
-    crypto_blake2b_update(&h, (const uint8_t *)"npf-cpace-isk-v1", 16);
-    crypto_blake2b_update(&h, c->sid, c->sid_len);
-    crypto_blake2b_update(&h, initiator ? c->Y : peer, 32);
-    crypto_blake2b_update(&h, initiator ? peer : c->Y, 32);
-    crypto_blake2b_final(&h, isk);
+    int r = npf_x25519(K, c->y, peer);
+    if (r == 0) {
+        crypto_blake2b_keyed_init(&h, 32, K, 32);
+        crypto_blake2b_update(&h, (const uint8_t *)"npf-cpace-isk-v1", 16);
+        crypto_blake2b_update(&h, c->sid, c->sid_len);
+        crypto_blake2b_update(&h, initiator ? c->Y : peer, 32);
+        crypto_blake2b_update(&h, initiator ? peer : c->Y, 32);
+        crypto_blake2b_final(&h, isk);
+    }
     crypto_wipe(K, 32);
-    crypto_wipe(c->y, 32);
-    return 0;
+    crypto_wipe(c->y, 32);                  /* also after a failure */
+    return r;
 }
