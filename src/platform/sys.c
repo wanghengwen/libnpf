@@ -207,9 +207,14 @@ int npf_abspath(const char *p, char *out, size_t cap)
 
 #else /* POSIX */
 #ifdef __linux__
-#include <linux/sockios.h>
 #include <netinet/tcp.h>
 #include <sys/ioctl.h>
+#ifndef SIOCOUTQ                        /* linux/sockios.h, absent with musl */
+#define SIOCOUTQ TIOCOUTQ
+#endif
+#ifndef SIOCOUTQNSD
+#define SIOCOUTQNSD 0x894B
+#endif
 #endif
 
 #include <fcntl.h>
