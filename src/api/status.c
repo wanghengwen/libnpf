@@ -317,5 +317,4 @@ void npf_status_out(npf_t *c, npf_out *o)
     npf_out_jkey(o, "sessions");
     calls_out(c, o);
     npf_out_jclose(o, '}');
-    npf_out_write(o, "\n", 1);
 }

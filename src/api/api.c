@@ -400,6 +400,7 @@ static int stats_run(npf_t *n, void *arg)
     npf_call_media_stats cs;
     npf_media_stats st;
     int rc;
+    memset(&st, 0, sizeof st);
     if (!m)
         return NPF_ENOENT;
     if ((rc = npf_call_media_get_stats(m->call, m->lid, &cs)) < 0)

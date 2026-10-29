@@ -511,7 +511,10 @@ static void fire_timers(npf_loop *l)
 /* the wait (ms, -1 none) shortened to what comes due at due (INT64_MAX: nothing) */
 static int wait_until(int wait, int64_t due, int64_t now)
 {
-    int64_t d = due - now;
+    int64_t d;
+    if (due == INT64_MAX)
+        return wait;
+    d = due - now;
     if (d < 0)
         d = 0;
     if (d > INT_MAX)

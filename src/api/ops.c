@@ -147,17 +147,22 @@ int npf_ops_record_fwd(npf_t *n, npf_peer *p, int i, int add)
     return saved_rc(n);
 }
 
-/* "HOST:PORT" or "[V6]:PORT" into its parts; -1 without a port */
+/* "HOST:PORT" or "[V6]:PORT" into its parts; -1 without a port 1..65535 */
 int npf_hostport_split(const char *s, char *host, size_t cap, uint16_t *port)
 {
     const char *colon = strrchr(s, ':');
+    char *end;
+    long p;
     if (!colon || (s[0] == '[' && (colon < s + 2 || colon[-1] != ']')))
+        return -1;
+    p = strtol(colon + 1, &end, 10);
+    if (end == colon + 1 || *end || p < 1 || p > 65535)
         return -1;
     if (s[0] == '[')
         snprintf(host, cap, "%.*s", (int)(colon - s - 2), s + 1);
     else
         snprintf(host, cap, "%.*s", (int)(colon - s), s);
-    *port = (uint16_t)atoi(colon + 1);
+    *port = (uint16_t)p;
     return 0;
 }
 
