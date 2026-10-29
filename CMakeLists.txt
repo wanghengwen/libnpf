@@ -84,6 +84,13 @@ if(NPF_WITH_TLS AND NOT NPF_USE_OPENSSL)
   endif()
 endif()
 
+# the system layer: sys.c, and the half for this system
+if(WIN32)
+  set(_npf_sys_src src/platform/sys_win.c)
+else()
+  set(_npf_sys_src src/platform/sys_posix.c)
+endif()
+
 # TLS: mbedTLS (tls.c), or OpenSSL; without TLS, tls.c's stubs
 set(_npf_tls_src src/ws/tls.c)
 if(NPF_USE_OPENSSL AND NPF_WITH_TLS)
@@ -94,6 +101,7 @@ add_library(npf_common STATIC
   # the platform layer: system calls, the event loop, logging, name resolution
   src/platform/platform.c
   src/platform/sys.c
+  ${_npf_sys_src}
   src/platform/loop.c
   src/platform/log.c
   src/platform/out.c
