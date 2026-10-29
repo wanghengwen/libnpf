@@ -23,13 +23,7 @@
 #include "media.h"
 #include "npf/loop.h"
 #include "udpfwd.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 /* datagrams on their way: one queue a side */
 #define QMAX 512
@@ -371,10 +365,8 @@ static void test_held(void)
 
 int test_anlsec(void)
 {
-    fails = 0;
     test_conv();
     test_rcv_wnd();
     test_held();
-    printf("anlsec: %s\n", fails ? "FAIL" : "ok");
     return fails;
 }

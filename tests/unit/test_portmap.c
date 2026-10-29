@@ -14,13 +14,7 @@
 
 #include "npf/platform.h"
 #include "npf/portmap.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 static int gw_fd;
 static int gw_mode;        /* 0: a wrong reply, then the right one; 1: wrong replies only */

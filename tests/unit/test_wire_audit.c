@@ -2,8 +2,8 @@
 #include "../../src/proto/http.c"
 #include "../../src/ws/ws.c"
 #include <stdio.h>
+#include "test.h"
 
-#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
 
 static int closed;
 static void close_from_callback(npf_ws *ws, int code, const char *why, void *arg)
@@ -22,16 +22,16 @@ int main(int argc, char **argv)
     (void)argc;
     if (!argv[1] || strcmp(argv[1], "ws_close") == 0) {
         npf_ws *ws = calloc(1, sizeof *ws);
-        CHECK(ws);
+        REQUIRE(ws);
         ws->tcp.fd = -1;
         ws->state = ST_CONNECTING;              /* npf_tcp: resolving */
         ws->cbs.on_close = close_from_callback;
         ws_fail(ws, 0, "resolution failed");
-        CHECK(closed == 1);
+        REQUIRE(closed == 1);
     }
     if (!argv[1] || strcmp(argv[1], "http_cancel") == 0) {
         npf_http *h = calloc(1, sizeof *h);
-        CHECK(h);
+        REQUIRE(h);
         h->tcp.fd = -1;
         h->fn = cancel_from_callback;
         h->arg = h;
@@ -42,10 +42,10 @@ int main(int argc, char **argv)
         buf b = {0};
         int tls, port;
         char host[256], path[512];
-        CHECK(npf_url_parse("ws://example.com/a\r\nInjected: yes", &tls, host, sizeof host, &port, path, sizeof path) == -1);
-        CHECK(send_frame2(&ws, 2, "x", 1, "x", SIZE_MAX) == -1 && ws.out.len == 0);
+        REQUIRE(npf_url_parse("ws://example.com/a\r\nInjected: yes", &tls, host, sizeof host, &port, path, sizeof path) == -1);
+        REQUIRE(send_frame2(&ws, 2, "x", 1, "x", SIZE_MAX) == -1 && ws.out.len == 0);
         b.len = 1;
-        CHECK(buf_room(&b, SIZE_MAX) == -1 && !b.p);
+        REQUIRE(buf_room(&b, SIZE_MAX) == -1 && !b.p);
     }
     return 0;
 }

@@ -8,18 +8,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "npf/loop.h"
-#include "npf/platform.h"
 #include "npf/resolve.h"
 #include "npf/crypto.h"
 #include "../../src/node/udpfwd.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 /* shared with the workers: atomics (ThreadSanitizer) */
 static int g_hold;                  /* the fake DNS answers only when 0 */
@@ -102,8 +94,7 @@ int test_resolve(void)
     /* 3. delivered normally */
     l = npf_loop_new();
     r[0] = npf_resolve_start(l, "fast.example", 80, SOCK_STREAM, got, NULL);
-    for (i = 0; i < 500 && g_delivered == 0; i++)
-        npf_loop_once(l, 10);
+    LOOP_UNTIL(l, g_delivered, 5000);
     CHECK(g_delivered == 1, "delivered once (%d)", g_delivered);
 
     /* 4. the budget, against a dead DNS server. (a) lookups nobody cancels:
@@ -155,8 +146,7 @@ int test_resolve(void)
     npf_sleep_ms(50);
     CHECK(CALLS() == RESOLVE_PEER_WORKERS, "the peers' lookups run on %d threads (%d)", RESOLVE_PEER_WORKERS, CALLS());
     CHECK(npf_resolve_start(l, "own.example", 80, SOCK_STREAM, got, NULL) != NULL, "the node's own lookup has room");
-    for (i = 0; i < 300 && g_delivered == 0; i++)
-        npf_loop_once(l, 10);
+    LOOP_UNTIL(l, g_delivered, 3000);
     CHECK(g_delivered == 1, "the node's own lookup answered while the peers' wait (%d)", g_delivered);
     for (i = 0; i < RESOLVE_CAPACITY; i++)
         npf_resolve_cancel(r[i]);

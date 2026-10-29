@@ -11,13 +11,7 @@
 #include <string.h>
 
 #include "path.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 typedef struct fake {
     npf_path p;
@@ -273,7 +267,6 @@ static void probed(void)
 int test_path_health(void)
 {
     int k;
-    fails = 0;
     CHECK(pm_rules_of[PK_DIRECT].t_idle == 20000 && pm_rules_of[PK_UDP_RELAY].t_idle == 20000,
           "the idle silence of the direct path and the UDP relay (Q3)");
     for (k = 0; k < PK_N; k++) {

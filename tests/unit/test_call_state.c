@@ -36,29 +36,9 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "call_internal.h"
+#include "test.h"
 
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
-
-static char seen[8192];
-static size_t seen_len;
 static char states[64];             /* the public states the hook heard, as digits */
-
-static void log_hook(void *user, int level, const char *line)
-{
-    size_t l = strlen(line);
-    (void)user, (void)level;
-    if (seen_len + l + 2 < sizeof seen) {
-        memcpy(seen + seen_len, line, l);
-        seen_len += l;
-        seen[seen_len++] = '\n';
-        seen[seen_len] = 0;
-    }
-}
 
 static void state_hook(npf_node *n, npf_call *c, int st, const char *why, void *arg)
 {
@@ -72,8 +52,7 @@ static void state_hook(npf_node *n, npf_call *c, int st, const char *why, void *
 
 static void clear(void)
 {
-    seen_len = 0;
-    seen[0] = 0;
+    log_clear();
     states[0] = 0;
 }
 
@@ -144,7 +123,7 @@ static void call_rows(npf_node *n)
     call_set_state(c, CS_CONNECTING, NULL);
     CHECK(c->st == CS_HALF, "a state went back");
     call_set_state(c, CS_UP, NULL);         /* the peer's hello */
-    CHECK(c->st == CS_UP && !c->limit_at && strcmp(states, "23") == 0 && !strstr(seen, "call_established"),
+    CHECK(c->st == CS_UP && !c->limit_at && strcmp(states, "23") == 0 && !strstr(logged, "call_established"),
           "the peer's hello: UP, no limit, nothing to the platform (%s)", states);
     node_sig_lost(n);
     CHECK(!call_over(c), "an established call ended with the signaling");
@@ -187,8 +166,8 @@ static void call_rows(npf_node *n)
         return;
     t0 = c->limit_at;
     call_punch_report(c, "network");
-    CHECK(npf_call_state(c) == NPF_CALL_CONNECTING && !call_accepted(c) && !strstr(seen, "punch_update"),
-          "a callee not accepted told the platform: %s", seen);
+    CHECK(npf_call_state(c) == NPF_CALL_CONNECTING && !call_accepted(c) && !strstr(logged, "punch_update"),
+          "a callee not accepted told the platform: %s", logged);
     sig(n, "punch_start", "{\"data\":{\"call_id\":\"%s\",\"round\":%lld}}", c->call_id_s, 1);
     CHECK(c->st == CS_CONNECTING && call_accepted(c) && c->limit_at >= t0 && !states[0],
           "the first punch_start: accepted, the limit from now (%s)", states);
@@ -196,7 +175,7 @@ static void call_rows(npf_node *n)
     sig(n, "punch_start", "{\"data\":{\"call_id\":\"%s\",\"round\":%lld}}", c->call_id_s, 1);
     CHECK(c->limit_at == t0, "a second punch_start moved the limit");
     call_set_state(c, CS_UP, NULL);
-    CHECK(!c->limit_at && strstr(seen, "call_established") && strcmp(states, "3") == 0, "UP: call_established not sent");
+    CHECK(!c->limit_at && strstr(logged, "call_established") && strcmp(states, "3") == 0, "UP: call_established not sent");
     npf_call_end(c, "test");
 
     /* Q6 (10-27 (1)): established through the relay, no punch_start yet */
@@ -205,9 +184,9 @@ static void call_rows(npf_node *n)
     if (!c)
         return;
     call_set_state(c, CS_UP, NULL);
-    CHECK(call_accepted(c) && strstr(seen, "call_established"), "call_established: not accepted");
+    CHECK(call_accepted(c) && strstr(logged, "call_established"), "call_established: not accepted");
     call_punch_report(c, "path_lost");
-    CHECK(strstr(seen, "punch_update (path_lost)") != NULL, "the callee's punch_update dropped: %s", seen);
+    CHECK(strstr(logged, "punch_update (path_lost)") != NULL, "the callee's punch_update dropped: %s", logged);
     call_accept(c);
     CHECK(!c->limit_at, "an accept after UP armed the limit again");
     npf_call_end(c, "test");
@@ -266,7 +245,7 @@ static void punch_rows(npf_node *n)
     call_tick(c, c->punch_at);              /* no keys */
     CHECK(c->punch_st == PN_WAIT_KEYS && pn_ok(c), "the start without keys: %d", c->punch_st);
     punch_info(c, 1, "\"stop\":true");
-    CHECK(c->punch_st == PN_NONE && pn_ok(c) && strstr(seen, "let go by the peer"), "let go: %d", c->punch_st);
+    CHECK(c->punch_st == PN_NONE && pn_ok(c) && strstr(logged, "let go by the peer"), "let go: %d", c->punch_st);
 
     punch_start(c, 2, "");
     CHECK(c->punch_st == PN_SCHEDULED && !c->punch_port && pn_ok(c), "round 2: %d", c->punch_st);
@@ -332,7 +311,7 @@ static void punch_rows(npf_node *n)
     CHECK(o->punch_st == PN_RUNNING && call_hard_punches(n, c) == 1, "another hard-side punch");
     punch_start(c, 7, ",\"strategy\":\"S3\",\"side\":\"hard\",\"n_sockets\":8");
     call_tick(c, c->punch_at);
-    CHECK(c->punch_st == PN_NONE && !c->punch && pn_ok(c) && strstr(seen, "punch round 7"), "busy: %d", c->punch_st);
+    CHECK(c->punch_st == PN_NONE && !c->punch && pn_ok(c) && strstr(logged, "punch round 7"), "busy: %d", c->punch_st);
 
     /* the move to the WS relay and the call's end while running: IDLE, the sockets back */
     n->hard_punch_end = 0;
@@ -351,28 +330,19 @@ int test_call_state(void)
 {
     static npf_node node;
     npf_loop *loop = npf_loop_new();
-    npf_node_cfg cfg;
     npf_node_hooks hooks;
-    npf_identity id;
     npf_log_ctx lc, *old;
-    uint8_t seed[32], b[32];
+    uint8_t b[32];
 
-    memset(&cfg, 0, sizeof cfg);
     memset(&hooks, 0, sizeof hooks);
-    memset(&lc, 0, sizeof lc);
-    cfg.offline = 1;
     hooks.on_call_state = state_hook;
-    npf_random(seed, 32);
-    npf_identity_from_seed(&id, seed);
-    CHECK(loop && npf_node_init(&node, loop, &cfg, &id, &hooks, NULL) == 0, "set-up");
+    CHECK(offline_node(&node, loop, &hooks, NULL) == 0, "set-up");
     if (fails)
         return fails;
     npf_random(b, 32);
     npf_b64url_encode(b, 8, pid);
     npf_b64url_encode(b, 32, pkey);
-    lc.hook = log_hook;
-    lc.level = NPF_LOG_DEBUG;
-    old = npf_log_ctx_swap(&lc);
+    old = log_capture(&lc);
 
     call_rows(&node);
     punch_rows(&node);

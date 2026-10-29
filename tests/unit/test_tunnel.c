@@ -1,7 +1,10 @@
-/* Two tunnels joined in memory: hello, SOCKS5 CONNECT through the callee to a
- * local TCP server, 3 MB with flow control, FIN, and a policy denial; a
- * request with data after it in one frame, the greeting deadline, Happy
- * Eyeballs over a name's addresses. */
+/* Two tunnels joined in memory (A the caller, B the callee, pumped as the
+ * transport would): hello, SOCKS5 CONNECT through the callee to a local TCP
+ * server, 3 MB with flow control, FIN, and a policy denial; virtual local
+ * ends; then frames put straight into the callee: a request with data after
+ * it in one frame, the greeting deadline, ids out of order, the sublinks'
+ * limit, RESETs; Happy Eyeballs over a name's addresses; tunnels freed from
+ * their own callbacks; the caller's sublinks before the callee's hello. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -10,20 +13,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
-#include <sys/socket.h>
 #include <unistd.h>
 
 #include "npf/crypto.h"
-#include "npf/loop.h"
-#include "npf/platform.h"
 #include "npf/tunnel.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 #define TOTAL (3 * 1024 * 1024)
 
@@ -40,6 +34,7 @@ typedef struct end {
 static npf_loop *loop;
 static end A, B;
 static npf_timer *t_pump;
+static npf_policy pol;              /* the callee's: "lan" */
 
 static void pump(npf_loop *l, void *arg);
 
@@ -178,56 +173,6 @@ static int app_read(int fd, uint8_t *pattern_ok, size_t *got, int *eof)
                 *pattern_ok = 0;
         *got += (size_t)r;
     }
-}
-
-/* read exactly n bytes from the application's end, running the loop */
-static int app_take(npf_loop *loop, int fd, uint8_t *out, size_t n)
-{
-    size_t got = 0;
-    int64_t until = npf_mono_ms() + 5000;
-    while (got < n && npf_mono_ms() < until) {
-        ssize_t r = recv(fd, out + got, n - got, MSG_DONTWAIT);
-        if (r > 0)
-            got += (size_t)r;
-        else if (r == 0)
-            return -1;
-        else
-            npf_loop_once(loop, 5);
-    }
-    return got == n ? 0 : -1;
-}
-
-/* -D: the application speaks SOCKS5 itself; split: greeting, then the
- * request after the method reply (as curl does) */
-static int socks_app(npf_loop *loop, npf_tunnel *t, uint16_t port, int split)
-{
-    int sp[2], eof = 0;
-    uint8_t rep[10], ok = 1, req[13] = {5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 0};
-    size_t got = 0;
-    int64_t until;
-    req[11] = (uint8_t)(port >> 8);
-    req[12] = (uint8_t)port;
-    socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
-    if (npf_tunnel_open(t, sp[0], 1, NULL, 0) < 0)
-        return -1;
-    fcntl(sp[1], F_SETFL, O_NONBLOCK);
-    if (split) {
-        if (send(sp[1], req, 3, 0) != 3 || app_take(loop, sp[1], rep, 2) < 0 || rep[0] != 5 || rep[1] != 0
-            || send(sp[1], req + 3, 10, 0) != 10)
-            return -1;
-    } else if (send(sp[1], req, 13, 0) != 13 || app_take(loop, sp[1], rep, 2) < 0 || rep[0] != 5 || rep[1] != 0) {
-        return -1;
-    }
-    if (app_take(loop, sp[1], rep, 10) < 0 || rep[0] != 5 || rep[1] != 0)
-        return -1;                      /* the CONNECT reply, once: the server's method reply was dropped */
-    until = npf_mono_ms() + 10000;
-    while (!eof && npf_mono_ms() < until) {
-        npf_loop_once(loop, 5);
-        if (app_read(sp[1], &ok, &got, &eof) < 0)
-            break;
-    }
-    close(sp[1]);
-    return got == TOTAL && ok && eof ? 0 : -1;
 }
 
 /* the callee's check of a hosted grant's targets: this port is not one */
@@ -387,21 +332,6 @@ static void sink_accept(npf_loop *l, int lfd, unsigned ev, void *arg)
         npf_loop_add(l, k->fd, NPF_EV_READ, sink_io, k);
 }
 
-static int listen_lo(int backlog, uint16_t *port)
-{
-    struct sockaddr_in a;
-    socklen_t al = sizeof a;
-    int fd = npf_socket(AF_INET, SOCK_STREAM, 0, 0);
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (fd < 0 || bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || listen(fd, backlog) < 0
-        || getsockname(fd, (struct sockaddr *)&a, &al) < 0)
-        return -1;
-    *port = ntohs(a.sin_port);
-    return fd;
-}
-
 #ifdef __linux__ /* the happy eyeballs case below is Linux only */
 /* the test resolver: "he.test" is a port that never answers, then the target */
 static uint16_t he_dead, he_live;
@@ -444,63 +374,163 @@ static int tag_of(const struct sockaddr_storage *a)
                                           : ((const struct sockaddr_in *)a)->sin_port);
 }
 
-int test_tunnel(void)
+
+/* a target that sends TOTAL bytes of the pattern to each connection */
+static target tg;
+static uint16_t tport;
+
+/* the sink listening on loopback: its port */
+static uint16_t sink_start(sink *k)
 {
-    static const npf_tunnel_io io = {io_write_ctrl, io_write_data, io_backlog, io_ready, NULL, io_broken, NULL, NULL,
-                                     io_sublink_done, NULL};
-    static const npf_tunnel_io io_b = {io_write_ctrl, io_write_data, io_backlog, io_ready, NULL, io_broken, NULL,
-                                       io_target_ok, NULL, NULL};
-    int sid;
-    npf_policy pol;
-    target tg;
     struct sockaddr_in a;
-    socklen_t al = sizeof a;
-    int sp[2], sp2[2], eof = 0, i;
-    uint8_t ok = 1;
-    size_t got = 0;
-    int64_t until;
+    memset(k, 0, sizeof *k);
+    k->ok = 1;
+    k->fd = -1;
+    k->lfd = lo_socket(SOCK_STREAM, 4, &a, sizeof a);
+    npf_loop_add(loop, k->lfd, NPF_EV_READ, sink_accept, k);
+    return ntohs(a.sin_port);
+}
 
-    loop = npf_loop_new();
-    memset(&pol, 0, sizeof pol);
-    npf_policy_add(&pol, "lan");           /* the host and its LAN (a resource) */
-    npf_policy_refresh(&pol);
-    memset(&A, 0, sizeof A);
-    memset(&B, 0, sizeof B);
-    A.peer = &B;
-    B.peer = &A;
-    A.t = npf_tunnel_new(loop, 1, &io, &A, NULL);
-    B.t = npf_tunnel_new(loop, 0, &io_b, &B, &pol);
-    npf_tunnel_start(B.t);              /* the callee says hello first */
-    for (i = 0; i < 50 && !(A.ready && B.ready); i++)
-        npf_loop_once(loop, 5);
-    CHECK(A.ready && B.ready, "hello exchange");
+static void sink_stop(sink *k)
+{
+    npf_loop_del(loop, k->lfd);
+    close(k->lfd);
+    if (k->fd >= 0) {
+        npf_loop_del(loop, k->fd);
+        close(k->fd);
+    }
+}
 
-    memset(&tg, 0, sizeof tg);
-    tg.lfd = npf_socket(AF_INET, SOCK_STREAM, 0, 0);
-    memset(&a, 0, sizeof a);
-    a.sin_family = AF_INET;
-    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    bind(tg.lfd, (struct sockaddr *)&a, sizeof a);
-    listen(tg.lfd, 4);
-    getsockname(tg.lfd, (struct sockaddr *)&a, &al);
-    npf_loop_add(loop, tg.lfd, NPF_EV_READ, target_accept, &tg);
+static const npf_tunnel_io io_caller = {io_write_ctrl, io_write_data, io_backlog, io_ready, NULL, io_broken, NULL, NULL,
+                                        io_sublink_done, NULL};
+static const npf_tunnel_io io_callee = {io_write_ctrl, io_write_data, io_backlog, io_ready, NULL, io_broken, NULL,
+                                        io_target_ok, NULL, NULL};
 
-    /* port mapping style sublink: the tunnel speaks SOCKS5 for the application */
+/* a caller's and a callee's tunnel, joined */
+static void ends_new(end *c, end *d)
+{
+    memset(c, 0, sizeof *c);
+    memset(d, 0, sizeof *d);
+    c->peer = d;
+    d->peer = c;
+    c->t = npf_tunnel_new(loop, 1, &io_caller, c, NULL);
+    d->t = npf_tunnel_new(loop, 0, &io_callee, d, &pol);
+}
+
+static void ends_free(end *c, end *d)
+{
+    npf_tunnel_free(c->t);
+    npf_tunnel_free(d->t);
+    free(c->q);
+    free(c->dq);
+    free(d->q);
+    free(d->dq);
+}
+
+/* the ends not pumped: what e wrote, given to its peer now (0: all taken) */
+static void hand_ctrl(end *e)
+{
+    if (e->len)
+        npf_tunnel_input_ctrl(e->peer->t, e->q, e->len);
+    e->len = 0;
+}
+
+static int hand_data(end *e)
+{
+    size_t off;
+    int r = 0;
+    for (off = 0; off + 4 <= e->dlen; off += 4 + npf_rd32(e->dq + off))
+        r |= npf_tunnel_input_data(e->peer->t, e->dq + off + 4, npf_rd32(e->dq + off));
+    e->dlen = 0;
+    return r;
+}
+
+/* the sublinks of A and B gone (at most a second) */
+static void settle(void)
+{
+    LOOP_UNTIL(loop, !npf_tunnel_count(A.t) && !npf_tunnel_count(B.t), 1000);
+}
+
+/* a socket pair for a local sublink: sp[0] to the tunnel, sp[1] the
+ * application's (non-blocking) */
+static void app_pair(int sp[2])
+{
     socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
-    sid = npf_tunnel_open(A.t, sp[0], 0, "127.0.0.1", ntohs(a.sin_port));
-    CHECK(sid > 0, "open sublink (id %d)", sid);
     fcntl(sp[1], F_SETFL, O_NONBLOCK);
-    until = npf_mono_ms() + 10000;
-    while (!eof && npf_mono_ms() < until) {
+}
+
+/* run the loop, reading the application's end until its EOF (first: until
+ * its first bytes), at most ms: the bytes read, whether they were the
+ * pattern, the EOF */
+static size_t app_drain(int fd, int first, int ms, uint8_t *ok, int *eof)
+{
+    size_t got = 0;
+    int64_t until = npf_mono_ms() + ms;
+    *ok = 1;
+    *eof = 0;
+    while (!*eof && !(first && got) && npf_mono_ms() < until) {
         npf_loop_once(loop, 5);
-        if (app_read(sp[1], &ok, &got, &eof) < 0)
+        if (app_read(fd, ok, &got, eof) < 0)
             break;
     }
+    return got;
+}
+
+/* read exactly n bytes from the application's end, running the loop */
+static int app_take(int fd, uint8_t *out, size_t n)
+{
+    size_t got = 0;
+    int64_t until = npf_mono_ms() + 5000;
+    while (got < n && npf_mono_ms() < until) {
+        ssize_t r = recv(fd, out + got, n - got, MSG_DONTWAIT);
+        if (r > 0)
+            got += (size_t)r;
+        else if (r == 0)
+            return -1;
+        else
+            npf_loop_once(loop, 5);
+    }
+    return got == n ? 0 : -1;
+}
+
+/* -D: the application speaks SOCKS5 itself; split: greeting, then the
+ * request after the method reply (as curl does) */
+static int socks_app(int split)
+{
+    int sp[2], eof;
+    uint8_t rep[10], ok, req[13] = {5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, (uint8_t)(tport >> 8), (uint8_t)tport};
+    size_t got;
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
+    if (npf_tunnel_open(A.t, sp[0], 1, NULL, 0) < 0)
+        return -1;
+    fcntl(sp[1], F_SETFL, O_NONBLOCK);
+    if (send(sp[1], req, split ? 3 : 13, 0) != (split ? 3 : 13) || app_take(sp[1], rep, 2) < 0 || rep[0] != 5
+        || rep[1] != 0 || (split && send(sp[1], req + 3, 10, 0) != 10))
+        return -1;
+    if (app_take(sp[1], rep, 10) < 0 || rep[0] != 5 || rep[1] != 0)
+        return -1;                      /* the CONNECT reply, once: the server's method reply was dropped */
+    got = app_drain(sp[1], 0, 10000, &ok, &eof);
+    close(sp[1]);
+    return got == TOTAL && ok && eof ? 0 : -1;
+}
+
+/* ---- the cases ---- */
+
+/* port mapping style sublink: the tunnel speaks SOCKS5 for the application */
+static void mapping(void)
+{
+    int sp[2], sid, eof;
+    uint8_t ok;
+    size_t got;
+    app_pair(sp);
+    tg.sent = 0;
+    sid = npf_tunnel_open(A.t, sp[0], 0, "127.0.0.1", tport);
+    CHECK(sid > 0, "open sublink (id %d)", sid);
+    got = app_drain(sp[1], 0, 10000, &ok, &eof);
     CHECK(got == TOTAL && ok, "3 MB through the tunnel (got %zu, pattern %d)", got, ok);
     CHECK(eof, "FIN from the target reached the application");
     close(sp[1]);
-    for (i = 0; i < 40; i++)
-        npf_loop_once(loop, 5);
+    settle();
     CHECK(npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0, "sublinks released (%d, %d)",
           npf_tunnel_count(A.t), npf_tunnel_count(B.t));
     CHECK(done_n == 1 && done_id == (uint32_t)sid && done_st.out == TOTAL, "sublink_done: %d, id %u, %llu bytes written",
@@ -508,562 +538,488 @@ int test_tunnel(void)
     CHECK(done_st.connect_ms >= 0 && done_st.first_byte_ms >= done_st.connect_ms && strcmp(done_end, "peer_closed") == 0,
           "sublink_done: target reached in %d ms, first byte at %d ms, ended %s", done_st.connect_ms,
           done_st.first_byte_ms, done_end);
+}
 
-    /* -D: the greeting answered here, the request after it or pipelined */
+/* -D: the greeting answered here, the request after it or pipelined */
+static void socks(void)
+{
     tg.sent = 0;
-    CHECK(socks_app(loop, A.t, ntohs(a.sin_port), 1) == 0, "-D: greeting answered locally, then the request");
+    CHECK(socks_app(1) == 0, "-D: greeting answered locally, then the request");
     tg.sent = 0;
-    CHECK(socks_app(loop, A.t, ntohs(a.sin_port), 0) == 0, "-D: greeting and request in one write");
-    for (i = 0; i < 40; i++)
-        npf_loop_once(loop, 5);
+    CHECK(socks_app(0) == 0, "-D: greeting and request in one write");
+    settle();
+}
 
-    /* a name target: resolved off the loop thread, then connected like an address */
-    socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
-    fcntl(sp2[1], F_SETFL, O_NONBLOCK);
+/* a name target: resolved off the loop thread, then connected like an
+ * address; "nc -z" through a name: the application connects and closes at
+ * once, the FIN comes while the name resolves; both ends release the
+ * sublink (the callee freed its own quietly, the caller's waited for good) */
+static void names(void)
+{
+    int sp[2], eof;
+    uint8_t ok;
+    size_t got;
+    app_pair(sp);
     tg.sent = 0;
-    CHECK(npf_tunnel_open(A.t, sp2[0], 0, "localhost", ntohs(a.sin_port)) > 0, "open sublink by name");
-    eof = 0;
-    got = 0;
-    ok = 1;
-    until = npf_mono_ms() + 10000;
-    while (!eof && npf_mono_ms() < until) {
-        npf_loop_once(loop, 5);
-        if (app_read(sp2[1], &ok, &got, &eof) < 0)
-            break;
-    }
+    CHECK(npf_tunnel_open(A.t, sp[0], 0, "localhost", tport) > 0, "open sublink by name");
+    got = app_drain(sp[1], 0, 10000, &ok, &eof);
     CHECK(got == TOTAL && ok && eof, "3 MB through a resolved name (got %zu)", got);
-    close(sp2[1]);
-    for (i = 0; i < 40; i++)
-        npf_loop_once(loop, 5);
+    close(sp[1]);
+    settle();
 
-    /* "nc -z" through a name: the application connects and closes at once,
-     * the FIN comes while the name resolves; both ends release the sublink
-     * (the callee freed its own quietly, the caller's waited for good) */
-    socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
     tg.sent = 0;
-    CHECK(npf_tunnel_open(A.t, sp2[0], 0, "localhost", ntohs(a.sin_port)) > 0, "open a sublink by name to close it");
-    close(sp2[1]);
-    until = npf_mono_ms() + 5000;
-    while ((npf_tunnel_count(A.t) || npf_tunnel_count(B.t)) && npf_mono_ms() < until)
-        npf_loop_once(loop, 5);
+    CHECK(npf_tunnel_open(A.t, sp[0], 0, "localhost", tport) > 0, "open a sublink by name to close it");
+    close(sp[1]);
+    LOOP_UNTIL(loop, !npf_tunnel_count(A.t) && !npf_tunnel_count(B.t), 5000);
     CHECK(npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0, "closed while resolving: released (%d, %d)",
           npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+}
 
-    /* a public target is refused by the default policy (D22): the application sees a close */
-    socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
-    fcntl(sp2[1], F_SETFL, O_NONBLOCK);
-    npf_tunnel_open(A.t, sp2[0], 0, "1.1.1.1", 80);
-    eof = 0;
-    got = 0;
-    until = npf_mono_ms() + 3000;
-    while (!eof && npf_mono_ms() < until) {
-        npf_loop_once(loop, 5);
-        ok = 1;
-        app_read(sp2[1], &ok, &got, &eof);
-    }
+/* a public target is refused by the default policy (D22), a target by the
+ * callee's target_ok (a hosted grant without it): the application sees a close */
+static void refused(void)
+{
+    int sp[2], eof;
+    uint8_t ok;
+    size_t got;
+    app_pair(sp);
+    npf_tunnel_open(A.t, sp[0], 0, "1.1.1.1", 80);
+    got = app_drain(sp[1], 0, 3000, &ok, &eof);
     CHECK(eof && got == 0, "public target refused");
-    close(sp2[1]);
-    for (i = 0; i < 40; i++)
-        npf_loop_once(loop, 5);
+    close(sp[1]);
+    settle();
 
-    /* a target the callee's target_ok refuses (a hosted grant without it) */
-    socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
-    fcntl(sp2[1], F_SETFL, O_NONBLOCK);
-    refused_port = ntohs(a.sin_port);
+    app_pair(sp);
+    refused_port = tport;
     tg.sent = 0;
-    npf_tunnel_open(A.t, sp2[0], 0, "127.0.0.1", refused_port);
-    eof = 0;
-    got = 0;
-    until = npf_mono_ms() + 3000;
-    while (!eof && npf_mono_ms() < until) {
-        npf_loop_once(loop, 5);
-        ok = 1;
-        app_read(sp2[1], &ok, &got, &eof);
-    }
+    npf_tunnel_open(A.t, sp[0], 0, "127.0.0.1", refused_port);
+    got = app_drain(sp[1], 0, 3000, &ok, &eof);
     CHECK(eof && got == 0, "a target not in the hosted grant refused");
     refused_port = 0;
-    close(sp2[1]);
-    for (i = 0; i < 40; i++)
-        npf_loop_once(loop, 5);
+    close(sp[1]);
+    settle();
     CHECK(strcmp(done_end, "target_refused") == 0 && done_st.connect_ms < 0 && done_st.first_byte_ms < 0,
           "sublink_done of the refused target: ended %s (the policy: target_refused) (target reached %d ms)", done_end, done_st.connect_ms);
+}
 
-    /* a rate group: 3 MB at 2 MB/s (1 s of burst) takes about a second */
-    {
-        int64_t t0 = npf_mono_ms(), el;
-        socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
-        fcntl(sp2[1], F_SETFL, O_NONBLOCK);
-        tg.sent = 0;
-        CHECK(npf_tunnel_open_rated(A.t, sp2[0], 0, "127.0.0.1", ntohs(a.sin_port), 7, 2u << 20) > 0, "open rated");
-        eof = 0;
-        got = 0;
-        ok = 1;
-        until = npf_mono_ms() + 10000;
-        while (!eof && npf_mono_ms() < until) {
-            npf_loop_once(loop, 5);
-            if (app_read(sp2[1], &ok, &got, &eof) < 0)
-                break;
-        }
-        el = npf_mono_ms() - t0;
-        CHECK(got == TOTAL && ok && eof && el >= 400 && el < 3000, "3 MB at 2 MB/s in %lld ms (got %zu)",
-              (long long)el, got);
-        close(sp2[1]);
-        for (i = 0; i < 40; i++)
-            npf_loop_once(loop, 5);
+/* a rate group: 3 MB at 2 MB/s (1 s of burst) takes about a second */
+static void rated(void)
+{
+    int sp[2], eof;
+    uint8_t ok;
+    size_t got;
+    int64_t t0 = npf_mono_ms(), el;
+    app_pair(sp);
+    tg.sent = 0;
+    CHECK(npf_tunnel_open_rated(A.t, sp[0], 0, "127.0.0.1", tport, 7, 2u << 20) > 0, "open rated");
+    got = app_drain(sp[1], 0, 10000, &ok, &eof);
+    el = npf_mono_ms() - t0;
+    CHECK(got == TOTAL && ok && eof && el >= 400 && el < 3000, "3 MB at 2 MB/s in %lld ms (got %zu)", (long long)el, got);
+    close(sp[1]);
+    settle();
+}
+
+/* a virtual local end v (said: 1 skips "hello", 2 says nothing) to host:port */
+static int vend_open(vend *v, int said, int room, const char *host, uint16_t port)
+{
+    int sid;
+    memset(v, 0, sizeof *v);
+    v->ok = 1;
+    v->room = room;
+    v->said = said;
+    v->t = A.t;
+    tg.sent = 0;
+    sid = npf_tunnel_open_v(A.t, &k_vend, v, host, port);
+    v->sid = (uint32_t)sid;
+    return sid;
+}
+
+/* a virtual local end: 3 MB written to it in pieces as room comes, its end
+ * (FIN), the peer's FIN to it, then closed (not reset); to a refused target:
+ * closed with reset; gone by itself mid-transfer: the peer's side is reset,
+ * closed is not called */
+static void virtual_end(void)
+{
+    vend v;
+    int64_t until;
+    int sid = vend_open(&v, 1, 1, "127.0.0.1", tport);  /* the target closes with unread bytes as RST */
+    CHECK(sid > 0, "open a virtual sublink (id %d)", sid);
+    until = npf_mono_ms() + 15000;
+    while (!v.closed && npf_mono_ms() < until) {
+        npf_timer_add(loop, 0, room_tick, &v);
+        npf_loop_once(loop, 1);
     }
+    CHECK(v.got == TOTAL && v.ok && v.shut && v.closed == 1 && !v.reset && v.said == 2,
+          "virtual end: 3 MB in %d writes (got %zu, pattern %d), its FIN, the peer's, closed once without reset "
+          "(%d, %d, %d; ended %s)", v.writes, v.got, v.ok, v.shut, v.closed, v.reset, done_end);
+    CHECK(strcmp(done_end, "peer_closed") == 0 || strcmp(done_end, "local_closed") == 0,
+          "virtual end: sublink_done says %s", done_end);
+    settle();
+    CHECK(npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0, "virtual: sublinks released (%d, %d)",
+          npf_tunnel_count(A.t), npf_tunnel_count(B.t));
 
-    /* a virtual local end: 3 MB written to it in pieces as room comes, its
-     * end (FIN), the peer's FIN to it, then closed (not reset) */
-    {
-        vend v;
-        memset(&v, 0, sizeof v);
-        v.ok = 1;
-        v.room = 1;
-        v.said = 1;                     /* the target closes with unread bytes as RST */
-        v.t = A.t;
-        tg.sent = 0;
-        sid = npf_tunnel_open_v(A.t, &k_vend, &v, "127.0.0.1", ntohs(a.sin_port));
-        CHECK(sid > 0, "open a virtual sublink (id %d)", sid);
-        v.sid = (uint32_t)sid;
-        until = npf_mono_ms() + 15000;
-        while (!v.closed && npf_mono_ms() < until) {
-            npf_timer_add(loop, 0, room_tick, &v);
-            npf_loop_once(loop, 1);
-        }
-        CHECK(v.got == TOTAL && v.ok && v.shut && v.closed == 1 && !v.reset && v.said == 2,
-              "virtual end: 3 MB in %d writes (got %zu, pattern %d), its FIN, the peer's, closed once without reset "
-              "(%d, %d, %d; ended %s)", v.writes, v.got, v.ok, v.shut, v.closed, v.reset, done_end);
-        CHECK(strcmp(done_end, "peer_closed") == 0 || strcmp(done_end, "local_closed") == 0,
-              "virtual end: sublink_done says %s", done_end);
-        for (i = 0; i < 40; i++)
-            npf_loop_once(loop, 5);
-        CHECK(npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0, "virtual: sublinks released (%d, %d)",
-              npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+    sid = vend_open(&v, 2, 0, "1.1.1.1", 80);       /* nothing to say: no FIN either */
+    LOOP_UNTIL(loop, v.closed, 3000);
+    CHECK(sid > 0 && v.closed == 1 && v.reset, "virtual end, refused target: closed with reset (%d, %d)", v.closed,
+          v.reset);
 
-        /* a refused target: closed with reset */
-        memset(&v, 0, sizeof v);
-        v.ok = 1;
-        v.t = A.t;
-        v.said = 2;                     /* nothing to say: no FIN either */
-        sid = npf_tunnel_open_v(A.t, &k_vend, &v, "1.1.1.1", 80);
-        v.sid = (uint32_t)sid;
-        until = npf_mono_ms() + 3000;
-        while (!v.closed && npf_mono_ms() < until)
-            npf_loop_once(loop, 5);
-        CHECK(sid > 0 && v.closed == 1 && v.reset, "virtual end, refused target: closed with reset (%d, %d)", v.closed,
-              v.reset);
-
-        /* the local end goes by itself mid-transfer: the peer's side is reset, closed is not called */
-        memset(&v, 0, sizeof v);
-        v.ok = 1;
-        v.t = A.t;
-        v.room = 1;
-        v.said = 1;
-        tg.sent = 0;
-        sid = npf_tunnel_open_v(A.t, &k_vend, &v, "127.0.0.1", ntohs(a.sin_port));
-        v.sid = (uint32_t)sid;
-        until = npf_mono_ms() + 5000;
-        while (v.got < 100000 && npf_mono_ms() < until) {
-            npf_timer_add(loop, 0, room_tick, &v);
-            npf_loop_once(loop, 1);
-        }
-        npf_tunnel_vclose(A.t, v.sid, 1);
-        for (i = 0; i < 60; i++)
-            npf_loop_once(loop, 5);
-        CHECK(v.got >= 100000 && v.closed == 0 && npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0,
-              "virtual end gone by itself: both sides released, closed not called (%d; %d, %d)", v.closed,
-              npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+    vend_open(&v, 1, 1, "127.0.0.1", tport);
+    until = npf_mono_ms() + 5000;
+    while (v.got < 100000 && npf_mono_ms() < until) {
+        npf_timer_add(loop, 0, room_tick, &v);
+        npf_loop_once(loop, 1);
     }
+    npf_tunnel_vclose(A.t, v.sid, 1);
+    settle();
+    CHECK(v.got >= 100000 && v.closed == 0 && npf_tunnel_count(A.t) == 0 && npf_tunnel_count(B.t) == 0,
+          "virtual end gone by itself: both sides released, closed not called (%d; %d, %d)", v.closed,
+          npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+}
 
-    /* a virtual end closed by its owner right after its last bytes went to
-     * the transport: they arrive, then the close (a RESET on the control
-     * lane overtook them) */
-    {
-        sink k;
-        vsend vs;
-        uint16_t kp;
-        memset(&k, 0, sizeof k);
-        memset(&vs, 0, sizeof vs);
-        k.ok = 1;
-        k.fd = -1;
-        k.lfd = listen_lo(4, &kp);
-        npf_loop_add(loop, k.lfd, NPF_EV_READ, sink_accept, &k);
-        sid = npf_tunnel_open_v(A.t, &k_vsend, &vs, "127.0.0.1", kp);
-        CHECK(sid > 0, "a sending virtual end");
-        until = npf_mono_ms() + 5000;
-        while (vs.sent < SEND_TOTAL && npf_mono_ms() < until)
-            npf_loop_once(loop, 1);
-        npf_tunnel_vclose(A.t, (uint32_t)sid, 0);
-        until = npf_mono_ms() + 5000;
-        while ((k.got < SEND_TOTAL || k.fd >= 0 || npf_tunnel_count(A.t) || npf_tunnel_count(B.t))
-               && npf_mono_ms() < until)
-            npf_loop_once(loop, 5);
-        CHECK(k.got == SEND_TOTAL && k.ok && k.fd < 0 && vs.closed == 0 && npf_tunnel_count(A.t) == 0
-                  && npf_tunnel_count(B.t) == 0,
-              "closed after its last bytes: all of them, then the target's EOF (%zu of %d; %d, %d)", k.got,
-              SEND_TOTAL, npf_tunnel_count(A.t), npf_tunnel_count(B.t));
-        npf_loop_del(loop, k.lfd);
-        close(k.lfd);
-    }
+/* a virtual end closed by its owner right after its last bytes went to the
+ * transport: they arrive, then the close (a RESET on the control lane
+ * overtook them) */
+static void virtual_close(void)
+{
+    sink k;
+    vsend vs;
+    uint16_t kp = sink_start(&k);
+    int sid;
+    memset(&vs, 0, sizeof vs);
+    sid = npf_tunnel_open_v(A.t, &k_vsend, &vs, "127.0.0.1", kp);
+    CHECK(sid > 0, "a sending virtual end");
+    LOOP_UNTIL(loop, vs.sent >= SEND_TOTAL, 5000);
+    npf_tunnel_vclose(A.t, (uint32_t)sid, 0);
+    LOOP_UNTIL(loop, k.got >= SEND_TOTAL && k.fd < 0 && !npf_tunnel_count(A.t) && !npf_tunnel_count(B.t), 5000);
+    CHECK(k.got == SEND_TOTAL && k.ok && k.fd < 0 && vs.closed == 0 && npf_tunnel_count(A.t) == 0
+              && npf_tunnel_count(B.t) == 0,
+          "closed after its last bytes: all of them, then the target's EOF (%zu of %d; %d, %d)", k.got,
+          SEND_TOTAL, npf_tunnel_count(A.t), npf_tunnel_count(B.t));
+    sink_stop(&k);
+}
 
-    /* the order of a name's addresses: the families in turns */
-    {
-        struct sockaddr_storage a[5];
-        socklen_t l[5] = {0};
-        v6(&a[0], 1), v6(&a[1], 2), v4(&a[2], 3), v4(&a[3], 4), v6(&a[4], 5);
-        npf_he_order(a, l, 5);
-        CHECK(tag_of(&a[0]) == 1 && tag_of(&a[1]) == 3 && tag_of(&a[2]) == 2 && tag_of(&a[3]) == 4
-                  && tag_of(&a[4]) == 5, "v6 v6 v4 v4 v6 tried as v6 v4 v6 v4 v6");
-        v4(&a[0], 1), v6(&a[1], 2), v6(&a[2], 3);
-        npf_he_order(a, l, 3);
-        CHECK(tag_of(&a[0]) == 1 && tag_of(&a[1]) == 2 && tag_of(&a[2]) == 3, "v4 v6 v6 kept");
-    }
+/* the order of a name's addresses: the families in turns */
+static void he_order(void)
+{
+    struct sockaddr_storage a[5];
+    socklen_t l[5] = {0};
+    v6(&a[0], 1), v6(&a[1], 2), v4(&a[2], 3), v4(&a[3], 4), v6(&a[4], 5);
+    npf_he_order(a, l, 5);
+    CHECK(tag_of(&a[0]) == 1 && tag_of(&a[1]) == 3 && tag_of(&a[2]) == 2 && tag_of(&a[3]) == 4 && tag_of(&a[4]) == 5,
+          "v6 v6 v4 v4 v6 tried as v6 v4 v6 v4 v6");
+    v4(&a[0], 1), v6(&a[1], 2), v6(&a[2], 3);
+    npf_he_order(a, l, 3);
+    CHECK(tag_of(&a[0]) == 1 && tag_of(&a[1]) == 2 && tag_of(&a[2]) == 3, "v4 v6 v6 kept");
+}
 
 #ifdef __linux__
-    /* Happy Eyeballs: the name's first address never answers (a listener
-     * whose queue is full drops the SYN), the second is the target: reached
-     * after the delay, not after the 10 s deadline */
-    {
-        int dead, filler, el;
-        int64_t t0;
-        dead = listen_lo(0, &he_dead);
-        filler = npf_socket(AF_INET, SOCK_STREAM, 0, 0);
-        {
-            struct sockaddr_in d;
-            memset(&d, 0, sizeof d);
-            d.sin_family = AF_INET;
-            d.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            d.sin_port = htons(he_dead);
-            connect(filler, (struct sockaddr *)&d, sizeof d);   /* fills the queue (backlog 0) */
-        }
-        {
-            fd_set w;                   /* its handshake done: it is in the queue */
-            struct timeval tv = {2, 0};
-            FD_ZERO(&w);
-            FD_SET(filler, &w);
-            select(filler + 1, NULL, &w, NULL, &tv);
-        }
-
-        he_live = ntohs(a.sin_port);
-        npf_tunnel_test_resolve = he_resolve;
-        socketpair(AF_UNIX, SOCK_STREAM, 0, sp2);
-        fcntl(sp2[1], F_SETFL, O_NONBLOCK);
-        tg.sent = 0;
-        t0 = npf_mono_ms();
-        CHECK(npf_tunnel_open(A.t, sp2[0], 0, "he.test", 1) > 0, "open a sublink to he.test");
-        eof = 0;
-        got = 0;
-        ok = 1;
-        until = npf_mono_ms() + 9000;
-        while (!got && npf_mono_ms() < until) {
-            npf_loop_once(loop, 5);
-            if (app_read(sp2[1], &ok, &got, &eof) < 0)
-                break;
-        }
-        el = (int)(npf_mono_ms() - t0);
-        CHECK(got > 0 && el >= 200 && el < 3000, "Happy Eyeballs: the second address after %d ms (got %zu)", el, got);
-        close(sp2[1]);
-        npf_tunnel_test_resolve = NULL;
-        for (i = 0; i < 40; i++)
-            npf_loop_once(loop, 5);
-        close(filler);
-        close(dead);
-    }
+/* Happy Eyeballs: the name's first address never answers (a listener whose
+ * queue is full drops the SYN), the second is the target: reached after the
+ * delay, not after the 10 s deadline */
+static void happy_eyeballs(void)
+{
+    struct sockaddr_in d;
+    int sp[2], eof, el, dead = lo_socket(SOCK_STREAM, 0, &d, sizeof d), filler = socket(AF_INET, SOCK_STREAM, 0);
+    fd_set w;
+    struct timeval tv = {2, 0};
+    uint8_t ok;
+    size_t got;
+    int64_t t0;
+    connect(filler, (struct sockaddr *)&d, sizeof d);   /* fills the queue (backlog 0) */
+    FD_ZERO(&w);                                        /* its handshake done: it is in the queue */
+    FD_SET(filler, &w);
+    select(filler + 1, NULL, &w, NULL, &tv);
+    he_dead = ntohs(d.sin_port);
+    he_live = tport;
+    npf_tunnel_test_resolve = he_resolve;
+    app_pair(sp);
+    tg.sent = 0;
+    t0 = npf_mono_ms();
+    CHECK(npf_tunnel_open(A.t, sp[0], 0, "he.test", 1) > 0, "open a sublink to he.test");
+    got = app_drain(sp[1], 1, 9000, &ok, &eof);
+    el = (int)(npf_mono_ms() - t0);
+    CHECK(got > 0 && el >= 200 && el < 3000, "Happy Eyeballs: the second address after %d ms (got %zu)", el, got);
+    close(sp[1]);
+    npf_tunnel_test_resolve = NULL;
+    settle();
+    close(filler);
+    close(dead);
+}
 #endif
 
-    /* frames put straight into the callee from here on (ids above the
-     * caller's: the caller's later sublinks would look late to it) */
-    /* a request with data pipelined after it in one frame, together over the
-     * 600-byte parse buffer: the data waits for the connection, then goes */
-    {
-        sink k;
-        uint16_t kp;
-        uint8_t msg[4 + 13 + 2000];
-        int before = npf_tunnel_count(B.t);
-        memset(&k, 0, sizeof k);
-        k.ok = 1;
-        k.fd = -1;
-        k.lfd = listen_lo(4, &kp);
-        npf_loop_add(loop, k.lfd, NPF_EV_READ, sink_accept, &k);
-        npf_le32(msg, 2001);
-        memcpy(msg + 4, (const uint8_t[]){5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1}, 11);
-        msg[15] = (uint8_t)(kp >> 8);
-        msg[16] = (uint8_t)kp;
-        for (i = 0; i < 2000; i++)
-            msg[17 + i] = (uint8_t)(i * 7);
-        CHECK(npf_tunnel_input_data(B.t, msg, sizeof msg) == 0, "request and 2000 bytes in one frame: taken");
-        until = npf_mono_ms() + 3000;
-        while (k.got < 2000 && npf_mono_ms() < until)
-            npf_loop_once(loop, 5);
-        CHECK(k.got == 2000 && k.ok && npf_tunnel_count(B.t) == before + 1,
-              "the data after the request reached the target (%zu bytes, pattern %d)", k.got, k.ok);
-        npf_le32(msg, 2001);
-        npf_tunnel_input_data(B.t, msg, 4);     /* its FIN */
-        for (i = 0; i < 20; i++)
-            npf_loop_once(loop, 5);
-        npf_loop_del(loop, k.lfd);
-        close(k.lfd);
-        if (k.fd >= 0) {
-            npf_loop_del(loop, k.fd);
-            close(k.fd);
-        }
-    }
+/* frames put straight into the callee from here on (ids above the
+ * caller's: the caller's later sublinks would look late to it) */
 
-    /* a greeting that never completes: the sublink goes after the deadline */
-    {
-        uint8_t msg[4 + 2];
-        int before = npf_tunnel_count(B.t);
-        int64_t t0;
-        npf_tunnel_greet_ms = 150;
-        npf_le32(msg, 2003);
-        msg[4] = 5;
-        msg[5] = 2;                         /* two methods announced, none sent */
-        CHECK(npf_tunnel_input_data(B.t, msg, sizeof msg) == 0 && npf_tunnel_count(B.t) == before + 1,
-              "a half greeting opens a sublink");
-        t0 = npf_mono_ms();
-        while (npf_tunnel_count(B.t) > before && npf_mono_ms() - t0 < 2000)
-            npf_loop_once(loop, 5);
-        CHECK(npf_tunnel_count(B.t) == before && npf_mono_ms() - t0 >= 100,
-              "released after the greeting deadline (%lld ms)", (long long)(npf_mono_ms() - t0));
-        npf_tunnel_greet_ms = 10000;
-    }
+/* a request with data pipelined after it in one frame, together over the
+ * 600-byte parse buffer: the data waits for the connection, then goes */
+static void pipelined(void)
+{
+    sink k;
+    uint16_t kp = sink_start(&k);
+    uint8_t msg[4 + 13 + 2000];
+    int before = npf_tunnel_count(B.t), i;
+    npf_le32(msg, 2001);
+    memcpy(msg + 4, (const uint8_t[]){5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1}, 11);
+    msg[15] = (uint8_t)(kp >> 8);
+    msg[16] = (uint8_t)kp;
+    for (i = 0; i < 2000; i++)
+        msg[17 + i] = (uint8_t)(i * 7);
+    CHECK(npf_tunnel_input_data(B.t, msg, sizeof msg) == 0, "request and 2000 bytes in one frame: taken");
+    LOOP_UNTIL(loop, k.got >= 2000, 3000);
+    CHECK(k.got == 2000 && k.ok && npf_tunnel_count(B.t) == before + 1,
+          "the data after the request reached the target (%zu bytes, pattern %d)", k.got, k.ok);
+    npf_tunnel_input_data(B.t, msg, 4);     /* its FIN */
+    LOOP_UNTIL(loop, k.fd < 0 && npf_tunnel_count(B.t) == before, 1000);
+    sink_stop(&k);
+}
 
-    /* first data out of id order (-D takes the id at accept, sends after the
-     * greeting): the smaller id still opens; a RESET that overtakes the data
-     * of an id below the largest keeps it closed too */
-    {
-        uint8_t msg[4 + 3] = {0, 0, 0, 0, 5, 1, 0}, rst[3 + 5] = {NPF_CU_RESET, 5, 0};
-        uint32_t ids[] = {3003, 3001}, k;
-        int before = npf_tunnel_count(B.t);
-        for (k = 0; k < 2; k++) {
-            npf_le32(msg, ids[k]);
-            npf_tunnel_input_data(B.t, msg, sizeof msg);
-        }
-        CHECK(npf_tunnel_count(B.t) == before + 2, "a smaller id's first data after a larger one's opens it (%d)",
-              npf_tunnel_count(B.t) - before);
-        npf_le32(rst + 3, 3007);
-        rst[7] = NPF_RST_LOCAL;
-        npf_tunnel_input_data(B.t, (npf_le32(msg, 3009), msg), sizeof msg);
-        npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
-        npf_tunnel_input_data(B.t, (npf_le32(msg, 3007), msg), sizeof msg);
-        npf_tunnel_input_data(B.t, (npf_le32(msg, 3001), msg), sizeof msg);   /* seen: no second sublink */
-        CHECK(npf_tunnel_count(B.t) == before + 3, "reset below the largest, then its data: closed (%d)",
-              npf_tunnel_count(B.t) - before);
-        for (k = 3001; k <= 3009; k += 2) {               /* the ones opened here go */
-            npf_le32(rst + 3, k);
-            npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
-        }
-        CHECK(npf_tunnel_count(B.t) == before, "released by their resets (%d)", npf_tunnel_count(B.t) - before);
-    }
+/* a greeting that never completes: the sublink goes after the deadline */
+static void greeting_deadline(void)
+{
+    uint8_t msg[4 + 2];
+    int before = npf_tunnel_count(B.t);
+    int64_t t0;
+    npf_tunnel_greet_ms = 150;
+    npf_le32(msg, 2003);
+    msg[4] = 5;
+    msg[5] = 2;                         /* two methods announced, none sent */
+    CHECK(npf_tunnel_input_data(B.t, msg, sizeof msg) == 0 && npf_tunnel_count(B.t) == before + 1,
+          "a half greeting opens a sublink");
+    t0 = npf_mono_ms();
+    LOOP_UNTIL(loop, npf_tunnel_count(B.t) <= before, 2000);
+    CHECK(npf_tunnel_count(B.t) == before && npf_mono_ms() - t0 >= 100,
+          "released after the greeting deadline (%lld ms)", (long long)(npf_mono_ms() - t0));
+    npf_tunnel_greet_ms = 10000;
+}
 
-    /* as many sublinks as the limit from the peer, the largest id first (all
-     * below it within the ids remembered): all open; one more is refused */
-    {
-        uint8_t msg[4 + 2] = {0, 0, 0, 0, 5, 1}, rst[3 + 5] = {NPF_CU_RESET, 5, 0};  /* half a greeting */
-        int before = npf_tunnel_count(B.t), k, room = NPF_MAX_SUBLINKS - before;
-        const uint32_t base = 5001;
-        for (k = room - 1; k >= 0; k--) {
-            npf_le32(msg, base + 2 * (uint32_t)k);
-            npf_tunnel_input_data(B.t, msg, sizeof msg);
-        }
-        CHECK(npf_tunnel_count(B.t) == NPF_MAX_SUBLINKS, "%d sublinks open in any order (%d)", NPF_MAX_SUBLINKS,
-              npf_tunnel_count(B.t));
-        npf_le32(msg, base + 2 * (uint32_t)room);
+/* first data out of id order (-D takes the id at accept, sends after the
+ * greeting): the smaller id still opens; a RESET that overtakes the data
+ * of an id below the largest keeps it closed too */
+static void id_order(void)
+{
+    uint8_t msg[4 + 3] = {0, 0, 0, 0, 5, 1, 0}, rst[3 + 5] = {NPF_CU_RESET, 5, 0};
+    uint32_t ids[] = {3003, 3001}, k;
+    int before = npf_tunnel_count(B.t);
+    for (k = 0; k < 2; k++) {
+        npf_le32(msg, ids[k]);
         npf_tunnel_input_data(B.t, msg, sizeof msg);
-        CHECK(npf_tunnel_count(B.t) == NPF_MAX_SUBLINKS, "one more refused (%d)", npf_tunnel_count(B.t));
-        rst[7] = NPF_RST_LOCAL;
-        for (k = 0; k < room; k++) {
-            npf_le32(rst + 3, base + 2 * (uint32_t)k);
-            npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
-        }
-        CHECK(npf_tunnel_count(B.t) == before, "all released (%d)", npf_tunnel_count(B.t) - before);
     }
-
-    /* a RESET on the control lane can overtake the sublink's first data: the
-     * late data must not open it (ids are never reused) */
-    {
-        uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0}, msg[4 + 3] = {0, 0, 0, 0, 5, 1, 0};
-        int before = npf_tunnel_count(B.t);
-        npf_le32(rst + 3, 1001);
-        rst[7] = NPF_RST_LOCAL;
-        npf_le32(msg, 1001);
-        CHECK(npf_tunnel_input_ctrl(B.t, rst, sizeof rst) == 0 && npf_tunnel_input_data(B.t, msg, sizeof msg) == 0
-              && npf_tunnel_count(B.t) == before, "RESET before the first data: the sublink stays closed");
-        /* a malformed data message breaks the tunnel */
-        fails_expected = 1;
-        CHECK(npf_tunnel_input_data(B.t, msg, 3) < 0, "a data message shorter than its header");
-        fails_expected = 0;
+    CHECK(npf_tunnel_count(B.t) == before + 2, "a smaller id's first data after a larger one's opens it (%d)",
+          npf_tunnel_count(B.t) - before);
+    npf_le32(rst + 3, 3007);
+    rst[7] = NPF_RST_LOCAL;
+    npf_tunnel_input_data(B.t, (npf_le32(msg, 3009), msg), sizeof msg);
+    npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
+    npf_tunnel_input_data(B.t, (npf_le32(msg, 3007), msg), sizeof msg);
+    npf_tunnel_input_data(B.t, (npf_le32(msg, 3001), msg), sizeof msg);   /* seen: no second sublink */
+    CHECK(npf_tunnel_count(B.t) == before + 3, "reset below the largest, then its data: closed (%d)",
+          npf_tunnel_count(B.t) - before);
+    for (k = 3001; k <= 3009; k += 2) {               /* the ones opened here go */
+        npf_le32(rst + 3, k);
+        npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
     }
+    CHECK(npf_tunnel_count(B.t) == before, "released by their resets (%d)", npf_tunnel_count(B.t) - before);
+}
 
-    /* a control unit cut by the stream's reads: byte by byte, then one
-     * whole and the next one's head in one read; each still acts once */
-    {
-        uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0}, two[2 * (3 + 5)];
-        int sp3[2], sp4[2], id1, id2, before = npf_tunnel_count(A.t);
-        size_t k;
-        socketpair(AF_UNIX, SOCK_STREAM, 0, sp3);
-        socketpair(AF_UNIX, SOCK_STREAM, 0, sp4);
-        id1 = npf_tunnel_open(A.t, sp3[0], 0, "127.0.0.1", 9);
-        id2 = npf_tunnel_open(A.t, sp4[0], 0, "127.0.0.1", 9);
-        CHECK(id1 > 0 && id2 > 0 && npf_tunnel_count(A.t) == before + 2, "two sublinks to reset");
-        npf_le32(rst + 3, (uint32_t)id1);
-        rst[7] = NPF_RST_LOCAL;
-        for (k = 0; k < sizeof rst; k++)
-            CHECK(npf_tunnel_input_ctrl(A.t, rst + k, 1) == 0, "a byte of a unit");
-        CHECK(npf_tunnel_count(A.t) == before + 1, "a RESET fed byte by byte reset its sublink (%d)",
-              npf_tunnel_count(A.t) - before);
-        memcpy(two, rst, sizeof rst);           /* the same id again: nothing to do */
-        memcpy(two + sizeof rst, rst, sizeof rst);
-        npf_le32(two + sizeof rst + 3, (uint32_t)id2);
-        CHECK(npf_tunnel_input_ctrl(A.t, two, sizeof rst + 2) == 0 && npf_tunnel_count(A.t) == before + 1,
-              "a whole unit and the next one's head: the head waits");
-        CHECK(npf_tunnel_input_ctrl(A.t, two + sizeof rst + 2, sizeof rst - 2) == 0
-              && npf_tunnel_count(A.t) == before, "its rest: the second sublink reset (%d)", npf_tunnel_count(A.t) - before);
-        close(sp3[1]);
-        close(sp4[1]);
+/* as many sublinks as the limit from the peer, the largest id first (all
+ * below it within the ids remembered): all open; one more is refused */
+static void limit(void)
+{
+    uint8_t msg[4 + 2] = {0, 0, 0, 0, 5, 1}, rst[3 + 5] = {NPF_CU_RESET, 5, 0};  /* half a greeting */
+    int before = npf_tunnel_count(B.t), k, room = NPF_MAX_SUBLINKS - before;
+    const uint32_t base = 5001;
+    for (k = room - 1; k >= 0; k--) {
+        npf_le32(msg, base + 2 * (uint32_t)k);
+        npf_tunnel_input_data(B.t, msg, sizeof msg);
     }
-
-    /* a callback that frees the tunnel (sublink_done, inside the peer's
-     * RESET): the tunnel goes at the end of that input, nothing in it used
-     * after (ASan) */
-    {
-        uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0};
-        int sp3[2], id;
-        socketpair(AF_UNIX, SOCK_STREAM, 0, sp3);
-        id = npf_tunnel_open(A.t, sp3[0], 0, "127.0.0.1", 9);
-        CHECK(id > 0, "a sublink to reset");
-        npf_le32(rst + 3, (uint32_t)id);
-        rst[7] = NPF_RST_LOCAL;
-        free_in_done = &A.t;
-        CHECK(npf_tunnel_input_ctrl(A.t, rst, sizeof rst) < 0 && A.t == NULL,
-              "freed from its own callback: gone once the input returns");
-        free_in_done = NULL;
-        close(sp3[1]);
+    CHECK(npf_tunnel_count(B.t) == NPF_MAX_SUBLINKS, "%d sublinks open in any order (%d)", NPF_MAX_SUBLINKS,
+          npf_tunnel_count(B.t));
+    npf_le32(msg, base + 2 * (uint32_t)room);
+    npf_tunnel_input_data(B.t, msg, sizeof msg);
+    CHECK(npf_tunnel_count(B.t) == NPF_MAX_SUBLINKS, "one more refused (%d)", npf_tunnel_count(B.t));
+    rst[7] = NPF_RST_LOCAL;
+    for (k = 0; k < room; k++) {
+        npf_le32(rst + 3, base + 2 * (uint32_t)k);
+        npf_tunnel_input_ctrl(B.t, rst, sizeof rst);
     }
+    CHECK(npf_tunnel_count(B.t) == before, "all released (%d)", npf_tunnel_count(B.t) - before);
+}
 
-    /* the same from a timer (review 2026-10-24): a local SOCKS greeting
-     * that never comes; at its deadline sublink_done frees the tunnel, which
-     * goes when the timer is done with it (ASan: no use after free) */
-    {
-        end C, D;
-        int sp4[2], k;
-        int64_t t0;
-        memset(&C, 0, sizeof C);
-        memset(&D, 0, sizeof D);
-        C.peer = &D;                        /* not pumped: the hellos are passed here */
-        D.peer = &C;
-        C.t = npf_tunnel_new(loop, 1, &io, &C, NULL);
-        D.t = npf_tunnel_new(loop, 0, &io_b, &D, &pol);
-        npf_tunnel_start(D.t);
-        for (k = 0; k < 4; k++) {
-            if (D.len) {
-                npf_tunnel_input_ctrl(C.t, D.q, D.len);
-                D.len = 0;
-            }
-            if (C.len) {
-                npf_tunnel_input_ctrl(D.t, C.q, C.len);
-                C.len = 0;
-            }
-        }
-        /* the caller key's share (review 2026-10-24): one peer sublink
-         * allowed there, the second refused though the node has room */
-        {
-            npf_tunnel_shared node_sh = {0, 1000, 0, (int64_t)1 << 40}, key_sh = {0, 1, 0, (int64_t)1 << 40};
-            int sa[2], sb[2], before = npf_tunnel_count(D.t);
-            size_t off;
-            npf_tunnel_set_shared(D.t, &node_sh, &key_sh);
-            socketpair(AF_UNIX, SOCK_STREAM, 0, sa);
-            socketpair(AF_UNIX, SOCK_STREAM, 0, sb);
-            CHECK(npf_tunnel_open(C.t, sa[0], 0, "127.0.0.1", 9) > 0 && npf_tunnel_open(C.t, sb[0], 0, "127.0.0.1", 9) > 0,
-                  "two sublinks opened toward the callee");
-            for (off = 0; off + 4 <= C.dlen;) {
-                size_t m = npf_rd32(C.dq + off);
-                npf_tunnel_input_data(D.t, C.dq + off + 4, m);
-                off += 4 + m;
-            }
-            C.dlen = 0;
-            CHECK(npf_tunnel_count(D.t) == before + 1 && key_sh.subs == 1 && node_sh.subs == 1,
-                  "the key's share takes one, refuses the other (%d open, key %d, node %d)",
-                  npf_tunnel_count(D.t) - before, key_sh.subs, node_sh.subs);
-            npf_tunnel_free(D.t);                       /* its sublinks go: the shares count down */
-            D.t = NULL;
-            CHECK(key_sh.subs == 0 && key_sh.rx == 0 && node_sh.subs == 0 && node_sh.rx == 0,
-                  "the shares back to zero when the tunnel goes");
-            close(sa[1]);
-            close(sb[1]);
-        }
-        socketpair(AF_UNIX, SOCK_STREAM, 0, sp4);
-        npf_tunnel_greet_ms = 0;
-        CHECK(C.t && npf_tunnel_open(C.t, sp4[0], 1, NULL, 0) >= 0, "a local SOCKS sublink waiting for its greeting");
-        free_in_done = &C.t;
-        t0 = npf_mono_ms();
-        while (C.t && npf_mono_ms() - t0 < 2000)
-            npf_loop_once(loop, 5);
-        CHECK(C.t == NULL, "freed from its own callback at the greeting deadline");
-        free_in_done = NULL;
-        npf_tunnel_greet_ms = 10000;
-        npf_tunnel_free(C.t);
-        npf_tunnel_free(D.t);
-        free(C.q);
-        free(C.dq);
-        free(D.q);
-        free(D.dq);
-        close(sp4[1]);
+/* a RESET on the control lane can overtake the sublink's first data: the
+ * late data must not open it (ids are never reused); a malformed data
+ * message breaks the tunnel */
+static void reset_first(void)
+{
+    uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0}, msg[4 + 3] = {0, 0, 0, 0, 5, 1, 0};
+    int before = npf_tunnel_count(B.t);
+    npf_le32(rst + 3, 1001);
+    rst[7] = NPF_RST_LOCAL;
+    npf_le32(msg, 1001);
+    CHECK(npf_tunnel_input_ctrl(B.t, rst, sizeof rst) == 0 && npf_tunnel_input_data(B.t, msg, sizeof msg) == 0
+          && npf_tunnel_count(B.t) == before, "RESET before the first data: the sublink stays closed");
+    fails_expected = 1;
+    CHECK(npf_tunnel_input_data(B.t, msg, 3) < 0, "a data message shorter than its header");
+    fails_expected = 0;
+}
+
+/* a control unit cut by the stream's reads: byte by byte, then one whole
+ * and the next one's head in one read; each still acts once */
+static void ctrl_cut(void)
+{
+    uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0}, two[2 * (3 + 5)];
+    int sp3[2], sp4[2], id1, id2, before = npf_tunnel_count(A.t);
+    size_t k;
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp3);
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp4);
+    id1 = npf_tunnel_open(A.t, sp3[0], 0, "127.0.0.1", 9);
+    id2 = npf_tunnel_open(A.t, sp4[0], 0, "127.0.0.1", 9);
+    CHECK(id1 > 0 && id2 > 0 && npf_tunnel_count(A.t) == before + 2, "two sublinks to reset");
+    npf_le32(rst + 3, (uint32_t)id1);
+    rst[7] = NPF_RST_LOCAL;
+    for (k = 0; k < sizeof rst; k++)
+        CHECK(npf_tunnel_input_ctrl(A.t, rst + k, 1) == 0, "a byte of a unit");
+    CHECK(npf_tunnel_count(A.t) == before + 1, "a RESET fed byte by byte reset its sublink (%d)",
+          npf_tunnel_count(A.t) - before);
+    memcpy(two, rst, sizeof rst);           /* the same id again: nothing to do */
+    memcpy(two + sizeof rst, rst, sizeof rst);
+    npf_le32(two + sizeof rst + 3, (uint32_t)id2);
+    CHECK(npf_tunnel_input_ctrl(A.t, two, sizeof rst + 2) == 0 && npf_tunnel_count(A.t) == before + 1,
+          "a whole unit and the next one's head: the head waits");
+    CHECK(npf_tunnel_input_ctrl(A.t, two + sizeof rst + 2, sizeof rst - 2) == 0
+          && npf_tunnel_count(A.t) == before, "its rest: the second sublink reset (%d)", npf_tunnel_count(A.t) - before);
+    close(sp3[1]);
+    close(sp4[1]);
+}
+
+/* a callback that frees the tunnel (sublink_done, inside the peer's RESET):
+ * the tunnel goes at the end of that input, nothing in it used after (ASan) */
+static void free_in_reset(void)
+{
+    uint8_t rst[3 + 5] = {NPF_CU_RESET, 5, 0};
+    int sp[2], id;
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
+    id = npf_tunnel_open(A.t, sp[0], 0, "127.0.0.1", 9);
+    CHECK(id > 0, "a sublink to reset");
+    npf_le32(rst + 3, (uint32_t)id);
+    rst[7] = NPF_RST_LOCAL;
+    free_in_done = &A.t;
+    CHECK(npf_tunnel_input_ctrl(A.t, rst, sizeof rst) < 0 && A.t == NULL,
+          "freed from its own callback: gone once the input returns");
+    free_in_done = NULL;
+    close(sp[1]);
+}
+
+/* the caller key's share (review 2026-10-24): one peer sublink allowed
+ * there, the second refused though the node has room; then the same free
+ * from a timer: a local SOCKS greeting that never comes; at its deadline
+ * sublink_done frees the tunnel, which goes when the timer is done with it
+ * (ASan: no use after free) */
+static void shares_and_timer_free(void)
+{
+    npf_tunnel_shared node_sh = {0, 1000, 0, (int64_t)1 << 40}, key_sh = {0, 1, 0, (int64_t)1 << 40};
+    end C, D;
+    int sa[2], sb[2], sp[2], k, before;
+    ends_new(&C, &D);                   /* not pumped: the hellos are passed here */
+    npf_tunnel_start(D.t);
+    for (k = 0; k < 4; k++) {
+        hand_ctrl(&D);
+        hand_ctrl(&C);
     }
+    before = npf_tunnel_count(D.t);
+    npf_tunnel_set_shared(D.t, &node_sh, &key_sh);
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sa);
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sb);
+    CHECK(npf_tunnel_open(C.t, sa[0], 0, "127.0.0.1", 9) > 0 && npf_tunnel_open(C.t, sb[0], 0, "127.0.0.1", 9) > 0,
+          "two sublinks opened toward the callee");
+    hand_data(&C);
+    CHECK(npf_tunnel_count(D.t) == before + 1 && key_sh.subs == 1 && node_sh.subs == 1,
+          "the key's share takes one, refuses the other (%d open, key %d, node %d)",
+          npf_tunnel_count(D.t) - before, key_sh.subs, node_sh.subs);
+    npf_tunnel_free(D.t);               /* its sublinks go: the shares count down */
+    D.t = NULL;
+    CHECK(key_sh.subs == 0 && key_sh.rx == 0 && node_sh.subs == 0 && node_sh.rx == 0,
+          "the shares back to zero when the tunnel goes");
+    close(sa[1]);
+    close(sb[1]);
 
-    /* the caller opens its sublinks after its own hello, before the
-     * callee's (data-channel.md 8, a peer the handshake authenticated): the
-     * callee takes them before its own hello is out (it goes then); a
-     * first pairing's caller (no npf_tunnel_open_early) waits */
-    {
-        end E, G;
-        int se[2], id;
-        memset(&E, 0, sizeof E);
-        memset(&G, 0, sizeof G);
-        E.peer = &G;                        /* not pumped: passed here */
-        G.peer = &E;
-        E.t = npf_tunnel_new(loop, 1, &io, &E, NULL);
-        G.t = npf_tunnel_new(loop, 0, &io_b, &G, &pol);
-        socketpair(AF_UNIX, SOCK_STREAM, 0, se);
-        npf_tunnel_start(E.t);
-        CHECK(npf_tunnel_open(E.t, se[0], 0, "127.0.0.1", ntohs(a.sin_port)) < 0,
-              "no sublink before the callee's hello without open_early");
-        npf_tunnel_open_early(E.t);
-        id = npf_tunnel_open(E.t, se[0], 0, "127.0.0.1", ntohs(a.sin_port));
-        CHECK(id > 0 && !E.ready, "a sublink opened after our hello, before the callee's (%d)", id);
-        {
-            size_t off;
-            for (off = 0; off + 4 <= E.dlen;) {     /* its request first: the callee's hello not out yet */
-                size_t m = npf_rd32(E.dq + off);
-                CHECK(npf_tunnel_input_data(G.t, E.dq + off + 4, m) == 0, "the request before the callee's hello");
-                off += 4 + m;
-            }
-            E.dlen = 0;
-        }
-        CHECK(G.len > 0 && npf_tunnel_count(G.t) == 1, "the callee took it, its hello went (%zu, %d)", G.len,
-              npf_tunnel_count(G.t));
-        npf_tunnel_input_ctrl(G.t, E.q, E.len);
-        E.len = 0;
-        npf_tunnel_input_ctrl(E.t, G.q, G.len);
-        G.len = 0;
-        CHECK(E.ready && G.ready, "both ready once the hellos crossed");
-        npf_tunnel_free(E.t);
-        npf_tunnel_free(G.t);
-        free(E.q);
-        free(E.dq);
-        free(G.q);
-        free(G.dq);
-        close(se[1]);
-    }
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
+    npf_tunnel_greet_ms = 0;
+    CHECK(C.t && npf_tunnel_open(C.t, sp[0], 1, NULL, 0) >= 0, "a local SOCKS sublink waiting for its greeting");
+    free_in_done = &C.t;
+    LOOP_UNTIL(loop, !C.t, 2000);
+    CHECK(C.t == NULL, "freed from its own callback at the greeting deadline");
+    free_in_done = NULL;
+    npf_tunnel_greet_ms = 10000;
+    ends_free(&C, &D);
+    close(sp[1]);
+}
 
-    npf_tunnel_free(A.t);
-    npf_tunnel_free(B.t);
+/* the caller opens its sublinks after its own hello, before the callee's
+ * (data-channel.md 8, a peer the handshake authenticated): the callee takes
+ * them before its own hello is out (it goes then); a first pairing's caller
+ * (no npf_tunnel_open_early) waits */
+static void open_early(void)
+{
+    end E, G;
+    int se[2], id;
+    ends_new(&E, &G);                   /* not pumped: passed here */
+    socketpair(AF_UNIX, SOCK_STREAM, 0, se);
+    npf_tunnel_start(E.t);
+    CHECK(npf_tunnel_open(E.t, se[0], 0, "127.0.0.1", tport) < 0, "no sublink before the callee's hello without open_early");
+    npf_tunnel_open_early(E.t);
+    id = npf_tunnel_open(E.t, se[0], 0, "127.0.0.1", tport);
+    CHECK(id > 0 && !E.ready, "a sublink opened after our hello, before the callee's (%d)", id);
+    CHECK(hand_data(&E) == 0, "the request before the callee's hello");   /* the callee's hello not out yet */
+    CHECK(G.len > 0 && npf_tunnel_count(G.t) == 1, "the callee took it, its hello went (%zu, %d)", G.len,
+          npf_tunnel_count(G.t));
+    hand_ctrl(&E);
+    hand_ctrl(&G);
+    CHECK(E.ready && G.ready, "both ready once the hellos crossed");
+    ends_free(&E, &G);
+    close(se[1]);
+}
+
+int test_tunnel(void)
+{
+    struct sockaddr_in a;
+    loop = npf_loop_new();
+    memset(&pol, 0, sizeof pol);
+    npf_policy_add(&pol, "lan");           /* the host and its LAN (a resource) */
+    npf_policy_refresh(&pol);
+    ends_new(&A, &B);
+    npf_tunnel_start(B.t);              /* the callee says hello first */
+    LOOP_UNTIL(loop, A.ready && B.ready, 250);
+    CHECK(A.ready && B.ready, "hello exchange");
+    memset(&tg, 0, sizeof tg);
+    tg.lfd = lo_socket(SOCK_STREAM, 4, &a, sizeof a);
+    tport = ntohs(a.sin_port);
+    npf_loop_add(loop, tg.lfd, NPF_EV_READ, target_accept, &tg);
+
+    mapping();
+    socks();
+    names();
+    refused();
+    rated();
+    virtual_end();
+    virtual_close();
+    he_order();
+#ifdef __linux__
+    happy_eyeballs();
+#endif
+    pipelined();
+    greeting_deadline();
+    id_order();
+    limit();
+    reset_first();
+    ctrl_cut();
+    free_in_reset();
+    shares_and_timer_free();
+    open_early();
+
+    ends_free(&A, &B);
     npf_loop_del(loop, tg.lfd);
     close(tg.lfd);
     npf_loop_free(loop);
-    free(A.q);
-    free(B.q);
-    free(A.dq);
-    free(B.dq);
     return fails;
 }

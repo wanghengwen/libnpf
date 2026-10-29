@@ -14,8 +14,8 @@
 #include "npf/platform.h"
 #include "call_internal.h"
 #include "../../src/tunnel/tunnel_internal.h"
+#include "test.h"
 
-#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); return 1; } } while (0)
 
 typedef struct fixture {
     npf_tunnel *t;
@@ -77,12 +77,12 @@ static int recursive_reset(npf_loop *loop)
     fixture f;
     int sp[2], id;
     setup(&f, loop);
-    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
+    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
     id = npf_tunnel_open(f.t, sp[0], 0, "127.0.0.1", 80);
-    CHECK(id > 0);
+    REQUIRE(id > 0);
     f.recurse = 1;
-    CHECK(npf_tunnel_sub_reset(f.t, (uint32_t)id, "local_reset") == 0);
-    CHECK(f.done == 1 && f.reset_result == -1 && npf_tunnel_count(f.t) == 0);
+    REQUIRE(npf_tunnel_sub_reset(f.t, (uint32_t)id, "local_reset") == 0);
+    REQUIRE(f.done == 1 && f.reset_result == -1 && npf_tunnel_count(f.t) == 0);
     npf_tunnel_free(f.t);
     close(sp[1]);
     return 0;
@@ -94,7 +94,7 @@ static int start_freed(npf_loop *loop)
     f.t->hello_sent = 0;
     f.free_ctrl = 1;
     npf_tunnel_start(f.t);
-    CHECK(!f.t);
+    REQUIRE(!f.t);
     return 0;
 }
 static int open_freed(npf_loop *loop)
@@ -102,12 +102,12 @@ static int open_freed(npf_loop *loop)
     fixture f;
     int sp[2], id;
     setup(&f, loop);
-    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
+    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
     f.free_data = 1;
     id = npf_tunnel_open(f.t, sp[0], 0, "127.0.0.1", 80);
-    CHECK(id == -1 && !f.t);
+    REQUIRE(id == -1 && !f.t);
     /* A failed open leaves ownership with its caller. */
-    CHECK(send(sp[0], "x", 1, MSG_NOSIGNAL) == 1);
+    REQUIRE(send(sp[0], "x", 1, MSG_NOSIGNAL) == 1);
     close(sp[0]);
     close(sp[1]);
     return 0;
@@ -118,13 +118,13 @@ static int credit_limit(npf_loop *loop)
     uint8_t cu[11] = {NPF_CU_WINDOW, 8, 0};
     int sp[2], id;
     setup(&f, loop);
-    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
+    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
     id = npf_tunnel_open(f.t, sp[0], 0, "127.0.0.1", 80);
-    CHECK(id > 0);
+    REQUIRE(id > 0);
     npf_le32(cu + 3, (uint32_t)id);
     npf_le32(cu + 7, UINT32_MAX);
-    CHECK(npf_tunnel_input_ctrl(f.t, cu, sizeof cu) == 0);
-    CHECK(npf_tunnel_count(f.t) == 0 && f.done == 1);
+    REQUIRE(npf_tunnel_input_ctrl(f.t, cu, sizeof cu) == 0);
+    REQUIRE(npf_tunnel_count(f.t) == 0 && f.done == 1);
     npf_tunnel_free(f.t);
     close(sp[1]);
     return 0;
@@ -139,11 +139,11 @@ static int reply_json(npf_loop *loop)
     char id[24];
     setup(&f, loop);
     c.tun = f.t;
-    CHECK(npf_json_parse(&j, req, sizeof req - 1, tok, 32) == 0);
-    CHECK(npf_call_ctl_reply(&c, "bad\"type", &j, "error", "bad\"error", NULL) == 0);
-    CHECK(f.control_len > NPF_CU_HDR);
-    CHECK(npf_json_parse(&out, (char *)f.control + NPF_CU_HDR, f.control_len - NPF_CU_HDR, otok, 64) == 0);
-    CHECK(npf_json_get_str(&out, 0, "reply_to", id, sizeof id) > 0 && strcmp(id, "a\"b\\c") == 0);
+    REQUIRE(npf_json_parse(&j, req, sizeof req - 1, tok, 32) == 0);
+    REQUIRE(npf_call_ctl_reply(&c, "bad\"type", &j, "error", "bad\"error", NULL) == 0);
+    REQUIRE(f.control_len > NPF_CU_HDR);
+    REQUIRE(npf_json_parse(&out, (char *)f.control + NPF_CU_HDR, f.control_len - NPF_CU_HDR, otok, 64) == 0);
+    REQUIRE(npf_json_get_str(&out, 0, "reply_to", id, sizeof id) > 0 && strcmp(id, "a\"b\\c") == 0);
     npf_tunnel_free(f.t);
     return 0;
 }
@@ -160,18 +160,18 @@ static int ctl_sequence(npf_loop *loop)
     setup(&f, loop);
     c.tun = f.t;
     c.ctl_seq = INT_MAX;
-    CHECK(npf_call_ctl_request(&c, "test", NULL, NULL, NULL) == -1);
+    REQUIRE(npf_call_ctl_request(&c, "test", NULL, NULL, NULL) == -1);
     /* A response callback is required to reserve a request slot. */
-    for (i = 0; i < NPF_CALL_CTL_MAX; i++) CHECK(!c.ctl[i].fn);
+    for (i = 0; i < NPF_CALL_CTL_MAX; i++) REQUIRE(!c.ctl[i].fn);
     c.ctl[0].id = 1;
     c.ctl[0].fn = ctl_done;
-    CHECK(npf_call_ctl_request(&c, "test", NULL, ctl_done, NULL) == 0);
-    CHECK(c.ctl_seq == 2 && c.ctl[1].id == 2);
+    REQUIRE(npf_call_ctl_request(&c, "test", NULL, ctl_done, NULL) == 0);
+    REQUIRE(c.ctl_seq == 2 && c.ctl[1].id == 2);
     npf_tunnel_free(f.t);
     {
         npf_node n = {0};
         n.req_seq = INT_MAX;
-        CHECK(npf_node_send(&n, "test", 1, NULL) == -1 && n.req_seq == INT_MAX);
+        REQUIRE(npf_node_send(&n, "test", 1, NULL) == -1 && n.req_seq == INT_MAX);
     }
     return 0;
 }
@@ -188,7 +188,7 @@ static int ctl_matching(npf_loop *loop)
     c.n = &n;
     c.caller = 1;
     c.tun = call_tunnel_new(&c);
-    CHECK(c.tun);
+    REQUIRE(c.tun);
     c.ctl[0].id = 7; c.ctl[0].fn = ctl_done; c.ctl[0].arg = &calls;
     for (i = 0; i <= sizeof invalid / sizeof invalid[0]; i++) {
         const char *id = i == sizeof invalid / sizeof invalid[0] ? "c7" : invalid[i];
@@ -196,8 +196,8 @@ static int ctl_matching(npf_loop *loop)
                        "{\"v\":1,\"type\":\"test\",\"reply_to\":\"%s\",\"status\":\"ok\",\"data\":{}}", id);
         unit[0] = NPF_CU_JSON;
         npf_le16(unit + 1, (uint16_t)len);
-        CHECK(npf_tunnel_input_ctrl(c.tun, unit, 3 + (size_t)len) == 0);
-        CHECK(calls == (i == sizeof invalid / sizeof invalid[0]));
+        REQUIRE(npf_tunnel_input_ctrl(c.tun, unit, 3 + (size_t)len) == 0);
+        REQUIRE(calls == (i == sizeof invalid / sizeof invalid[0]));
     }
     npf_tunnel_free(c.tun);
     return 0;
@@ -209,13 +209,13 @@ static int gone_window(npf_loop *loop)
     int sp[2], id, i;
     uint8_t data[NPF_FRAME_MAX] = {0};
     setup(&f, loop);
-    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
+    REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
     id = npf_tunnel_open(f.t, sp[0], 0, "127.0.0.1", 80);
-    CHECK(id > 0);
+    REQUIRE(id > 0);
     tunnel_find(f.t, (uint32_t)id)->gone = 1;
     for (i = 0; i <= NPF_INIT_WINDOW / NPF_FRAME_MAX; i++)
-        CHECK(data_frame(&f, (uint32_t)id, data, sizeof data) == 0);
-    CHECK(npf_tunnel_count(f.t) == 0 && f.done == 1);
+        REQUIRE(data_frame(&f, (uint32_t)id, data, sizeof data) == 0);
+    REQUIRE(npf_tunnel_count(f.t) == 0 && f.done == 1);
     npf_tunnel_free(f.t);
     close(sp[1]);
     return 0;
@@ -229,17 +229,17 @@ static int input_fairness(npf_loop *loop)
     int in = npf_socket(AF_INET, SOCK_DGRAM, 0, 0), out = npf_socket(AF_INET, SOCK_DGRAM, 0, 0);
     int sz = 4 << 20, i, remaining = 0;
     char byte;
-    CHECK(in >= 0 && out >= 0);
+    REQUIRE(in >= 0 && out >= 0);
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    CHECK(bind(in, (struct sockaddr *)&a, sizeof a) == 0);
-    CHECK(getsockname(in, (struct sockaddr *)&a, &al) == 0);
-    CHECK(setsockopt(in, SOL_SOCKET, SO_RCVBUF, &sz, sizeof sz) == 0);
+    REQUIRE(bind(in, (struct sockaddr *)&a, sizeof a) == 0);
+    REQUIRE(getsockname(in, (struct sockaddr *)&a, &al) == 0);
+    REQUIRE(setsockopt(in, SOL_SOCKET, SO_RCVBUF, &sz, sizeof sz) == 0);
     for (i = 0; i < 300; i++)
-        CHECK(sendto(out, "x", 1, 0, (struct sockaddr *)&a, sizeof a) == 1);
+        REQUIRE(sendto(out, "x", 1, 0, (struct sockaddr *)&a, sizeof a) == 1);
     call_p2p_input_cb(loop, in, NPF_EV_READ, &c);
     while (recv(in, &byte, 1, MSG_DONTWAIT) == 1) remaining++;
-    CHECK(remaining > 0);                   /* one event cannot drain an unbounded flood */
+    REQUIRE(remaining > 0);                   /* one event cannot drain an unbounded flood */
     close(in); close(out);
     return 0;
 }
@@ -250,9 +250,9 @@ static int buffer_lengths(npf_loop *loop)
     wbuf b = {0};
     (void)loop;
     npf_out_write(&o, "x", SIZE_MAX);
-    CHECK(o.failed && !o.p);
+    REQUIRE(o.failed && !o.p);
     b.len = 1;
-    CHECK(tunnel_wb_put(&b, "x", SIZE_MAX) == -1 && !b.p);
+    REQUIRE(tunnel_wb_put(&b, "x", SIZE_MAX) == -1 && !b.p);
     return 0;
 }
 
@@ -262,10 +262,10 @@ static int crypto_lengths(npf_loop *loop)
     npf_noise_cs cs = {0};
     uint8_t psk[32] = {1}, out[256];
     (void)loop;
-    CHECK(npf_noise_init(&hs, NPF_NOISE_NNPSK0, 1, "test", 4, NULL, NULL, psk) == 0);
-    CHECK(npf_noise_write(&hs, (const uint8_t *)"x", SIZE_MAX, out, sizeof out) == -1);
-    CHECK(npf_noise_encrypt(&cs, NULL, 0, (const uint8_t *)"x", SIZE_MAX, out) == -1 && cs.n == 0);
-    CHECK(npf_noise_decrypt(&cs, NULL, 0, (const uint8_t *)"x", SIZE_MAX, out) == -1 && cs.n == 0);
+    REQUIRE(npf_noise_init(&hs, NPF_NOISE_NNPSK0, 1, "test", 4, NULL, NULL, psk) == 0);
+    REQUIRE(npf_noise_write(&hs, (const uint8_t *)"x", SIZE_MAX, out, sizeof out) == -1);
+    REQUIRE(npf_noise_encrypt(&cs, NULL, 0, (const uint8_t *)"x", SIZE_MAX, out) == -1 && cs.n == 0);
+    REQUIRE(npf_noise_decrypt(&cs, NULL, 0, (const uint8_t *)"x", SIZE_MAX, out) == -1 && cs.n == 0);
     npf_wipe(&hs, sizeof hs);
     return 0;
 }
@@ -283,16 +283,16 @@ static int gone_buffer(npf_loop *loop)
     int id;
     setup(&f, loop);
     id = npf_tunnel_open_v(f.t, &idle_io, NULL, "127.0.0.1", 80);
-    CHECK(id > 0);
+    REQUIRE(id > 0);
     s = tunnel_find(f.t, (uint32_t)id);
     s->wq.p = malloc(NPF_INIT_WINDOW);
-    CHECK(s->wq.p);
+    REQUIRE(s->wq.p);
     s->wq.cap = NPF_INIT_WINDOW;
     s->wq.len = 100;
     npf_tunnel_vclose(f.t, (uint32_t)id, 0);
     npf_loop_once(loop, 0);
     s = tunnel_find(f.t, (uint32_t)id);
-    CHECK(s && s->gone && !s->wq.p && !s->wq.cap && s->rx_freed == 100);
+    REQUIRE(s && s->gone && !s->wq.p && !s->wq.cap && s->rx_freed == 100);
     npf_tunnel_free(f.t);
     return 0;
 }
@@ -305,7 +305,7 @@ static int idle_rate(npf_loop *loop)
     s.t = &t; s.rg = &g;
     g.rate = UINT32_MAX;
     g.at_ms = npf_mono_ms() - 4000000000LL;
-    CHECK(tunnel_rate_allow(&s, 1, 16) == 16 && g.up == UINT32_MAX);
+    REQUIRE(tunnel_rate_allow(&s, 1, 16) == 16 && g.up == UINT32_MAX);
     return 0;
 }
 
@@ -354,9 +354,9 @@ static int timer_limit(npf_loop *loop)
 {
     int called = 0;
     npf_timer *t = npf_timer_add(loop, INT64_MAX, timer_flag, &called);
-    CHECK(t);
+    REQUIRE(t);
     npf_loop_once(loop, 0);
-    CHECK(!called);
+    REQUIRE(!called);
     npf_timer_cancel(loop, t);
     return 0;
 }
@@ -366,9 +366,9 @@ static int callee_lock(npf_loop *loop)
     npf_node node = {0};
     uint8_t seed[32] = {0};
     char dir[] = "/tmp/npf-audit-lock-XXXXXX", path[128];
-    CHECK(mkdtemp(dir));
+    REQUIRE(mkdtemp(dir));
     snprintf(path, sizeof path, "%s/state", dir);
-    CHECK(npf_callee_init(&d, path, 123, seed, "password") == 0);
+    REQUIRE(npf_callee_init(&d, path, 123, seed, "password") == 0);
     node.loop = loop;
     npf_callee_attach(&d, &node);
     npf_timer_cancel(loop, d.t_watch);
@@ -377,9 +377,8 @@ static int callee_lock(npf_loop *loop)
     d.fails = 4;
     d.lock_secs = INT64_MAX;                 /* a syntactically valid local state value */
     d.ops.pair_failed(&node, &d);
-    CHECK(d.lock_secs == 86400 && d.locked_until > time(NULL));
-    unlink(path);
-    rmdir(dir);
+    REQUIRE(d.lock_secs == 86400 && d.locked_until > time(NULL));
+    rm_dir(dir);
     return 0;
 }
 
@@ -398,7 +397,7 @@ int main(int argc, char **argv)
     npf_loop *loop = npf_loop_new();
     size_t i;
     int failures = 0;
-    CHECK(loop);
+    REQUIRE(loop);
     for (i = 0; i < sizeof cases / sizeof cases[0]; i++)
         if (argc == 1 || strcmp(argv[1], cases[i].name) == 0)
             failures += cases[i].fn(loop);

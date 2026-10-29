@@ -24,13 +24,7 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "call_internal.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 typedef struct bind_seen {
     uint8_t txid[NPF_TXID_SIZE];
@@ -38,19 +32,6 @@ typedef struct bind_seen {
     uint64_t kseq;
     uint8_t cookie[RELAY_COOKIE_SIZE];
 } bind_seen;
-
-static int udp_on_loopback(struct sockaddr_storage *ss)
-{
-    struct sockaddr_in *a = (struct sockaddr_in *)ss;
-    socklen_t l = sizeof *a;
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    memset(ss, 0, sizeof *ss);
-    a->sin_family = AF_INET;
-    a->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (fd < 0 || bind(fd, (struct sockaddr *)a, sizeof *a) < 0 || getsockname(fd, (struct sockaddr *)a, &l) < 0)
-        return -1;
-    return fd;
-}
 
 /* the next RELAY_BIND the client sent within ms: 1, 0 none */
 static int next_bind(int fd, const npf_siv_keys *keys, int ms, bind_seen *b)
@@ -181,12 +162,9 @@ int test_relay(void)
 {
     static npf_node node;
     npf_loop *loop = npf_loop_new();
-    npf_node_cfg cfg;
-    npf_node_hooks hooks;
-    npf_identity id;
     npf_siv_keys keys;
     struct sockaddr_storage relay, me;
-    uint8_t seed[32], rid[8], akey[32], foreign[NPF_TXID_SIZE], zero[NPF_TXID_SIZE] = {0};
+    uint8_t rid[8], akey[32], foreign[NPF_TXID_SIZE], zero[NPF_TXID_SIZE] = {0};
     uint8_t ck1[RELAY_COOKIE_SIZE] = {1, 1, 1, 1, 1, 1, 1, 1}, ck2[RELAY_COOKIE_SIZE] = {2, 2, 2, 2, 2, 2, 2, 2},
             ck3[RELAY_COOKIE_SIZE] = {3, 3, 3, 3, 3, 3, 3, 3};
     char js[512], rb[16], kb[48], ra[64];
@@ -199,14 +177,9 @@ int test_relay(void)
     int fr, fc, len;
 
     bind_table();
-    memset(&cfg, 0, sizeof cfg);
-    memset(&hooks, 0, sizeof hooks);
-    cfg.offline = 1;
-    npf_random(seed, 32);
-    npf_identity_from_seed(&id, seed);
-    fr = udp_on_loopback(&relay);
-    fc = udp_on_loopback(&me);
-    CHECK(loop && fr >= 0 && fc >= 0 && npf_node_init(&node, loop, &cfg, &id, &hooks, NULL) == 0, "set-up");
+    fr = lo_socket(SOCK_DGRAM, 0, &relay, sizeof relay);
+    fc = lo_socket(SOCK_DGRAM, 0, &me, sizeof me);
+    CHECK(fr >= 0 && fc >= 0 && offline_node(&node, loop, NULL, NULL) == 0, "set-up");
     if (fails)
         return fails;
     node.udp_fd = fc;                   /* the node's main socket: the test's */
@@ -369,11 +342,8 @@ int test_relay_data(void)
 {
     static npf_node node;
     npf_loop *loop = npf_loop_new();
-    npf_node_cfg cfg;
-    npf_node_hooks hooks;
-    npf_identity id;
     struct sockaddr_storage r1, r2, me;
-    uint8_t seed[32], rid1[8], rid2[8], key1[32], key2[32], w[2048], got[2048], dgram[40], hint[3];
+    uint8_t rid1[8], rid2[8], key1[32], key2[32], w[2048], got[2048], dgram[40], hint[3];
     npf_jtok tok[2][32];
     npf_json j[2];
     rdata_keys k1, k2;
@@ -386,15 +356,10 @@ int test_relay_data(void)
 
     fails = 0;
     rdata_vectors();
-    memset(&cfg, 0, sizeof cfg);
-    memset(&hooks, 0, sizeof hooks);
-    cfg.offline = 1;
-    npf_random(seed, 32);
-    npf_identity_from_seed(&id, seed);
-    f1 = udp_on_loopback(&r1);
-    f2 = udp_on_loopback(&r2);
-    fc = udp_on_loopback(&me);
-    CHECK(loop && f1 >= 0 && f2 >= 0 && fc >= 0 && npf_node_init(&node, loop, &cfg, &id, &hooks, NULL) == 0, "set-up");
+    f1 = lo_socket(SOCK_DGRAM, 0, &r1, sizeof r1);
+    f2 = lo_socket(SOCK_DGRAM, 0, &r2, sizeof r2);
+    fc = lo_socket(SOCK_DGRAM, 0, &me, sizeof me);
+    CHECK(f1 >= 0 && f2 >= 0 && fc >= 0 && offline_node(&node, loop, NULL, NULL) == 0, "set-up");
     if (fails)
         return fails;
     node.udp_fd = fc;

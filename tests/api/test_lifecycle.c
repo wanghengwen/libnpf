@@ -5,12 +5,11 @@
 #define _GNU_SOURCE
 #include <stdlib.h>
 #include <pthread.h>
-#include <stdio.h>
-#include <unistd.h>
 static void *test_calloc(size_t count, size_t size);
 #define calloc test_calloc
 #include "../../src/api/api_thread.c"
 #undef calloc
+#include "api_test.h"
 
 static pthread_mutex_t test_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t test_cv = PTHREAD_COND_INITIALIZER;
@@ -38,16 +37,13 @@ static void *destroy_thread(void *arg)
 }
 int main(void)
 {
-    char dir[] = "/tmp/npf-lifecycle-XXXXXX", err[300], path[400];
-    npf_options o;
+    char dir[] = "/tmp/npf-lifecycle-XXXXXX", err[300];
     npf_t *n;
     pthread_t caller, destroyer;
     int closing = 0, ok;
     alarm(30);
-    if (!mkdtemp(dir)) return 2;
-    npf_options_init(&o);
-    o.conf_dir = dir; o.role = NPF_ROLE_DIRECT; o.overrides = "udp_port = 0\n";
-    if (npf_create(&o, &n, err, sizeof err) || npf_start(n)) return 2;
+    if (!mkdtemp(dir) || !(n = instance(dir, NPF_ROLE_DIRECT, "udp_port = 0\n", NULL, err, sizeof err)) || npf_start(n))
+        return 2;
     pthread_mutex_lock(&test_mu);
     armed = 1;
     pthread_create(&caller, NULL, query_thread, n);
@@ -67,9 +63,7 @@ int main(void)
     pthread_mutex_unlock(&test_mu);
     pthread_join(caller, NULL);
     pthread_join(destroyer, NULL);
-    snprintf(path, sizeof path, "%s/identity", dir); unlink(path);
-    snprintf(path, sizeof path, "%s/seed", dir); unlink(path);
-    rmdir(dir);
-    printf("%s destroy waits for an entered, not-yet-posted API call\n", ok ? "PASS" : "FAIL");
-    return !ok;
+    rm_dir(dir);
+    check(ok, "destroy waits for an entered, not-yet-posted API call");
+    return fails != 0;
 }

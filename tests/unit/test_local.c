@@ -9,13 +9,7 @@
 
 #include "npf/local.h"
 #include "npf/sys.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 static void put(const char *dir, const char *name, const char *text)
 {
@@ -130,6 +124,6 @@ int test_local(void)
         CHECK(stat(lp, &st) == 0 && st.st_size == 15 && (st.st_mode & 0777) == 0, "and not written over");
         chmod(lp, 0600);
     }
-
+    rm_dir(dir);
     return fails;
 }

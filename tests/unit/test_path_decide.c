@@ -15,13 +15,7 @@
 #include <string.h>
 
 #include "path.h"
-
-static int fails;
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { fails++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
+#include "test.h"
 
 static npf_path p[PK_N];
 static npf_pm m;
@@ -225,7 +219,6 @@ static void ws(void)
 
 int test_path_decide(void)
 {
-    fails = 0;
     direct();
     standby();
     udp_lost();

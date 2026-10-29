@@ -11,6 +11,7 @@ static void *test_realloc(void *p, size_t size);
 #undef npf_ws_send
 #undef npf_ws_free
 #include <unistd.h>
+#include "test.h"
 
 static int failing, sends, gone, left;
 static void *test_realloc(void *p, size_t size) { return failing && size > 256 ? NULL : realloc(p, size); }
@@ -52,7 +53,6 @@ static void msg_in(npf_wsr *r, uint8_t type, uint8_t ev, size_t len)
     uint8_t m[2] = {type, ev};
     ws_msg(NULL, m, len, 1, r);
 }
-#define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); return 1; } } while (0)
 int main(void)
 {
     npf_local l = {0};
@@ -60,43 +60,43 @@ int main(void)
     long len;
     npf_wsr *r;
     npf_loop *loop;
-    CHECK(mkdtemp(dir));
+    REQUIRE(mkdtemp(dir));
     snprintf(l.path, sizeof l.path, "%s/local.json", dir);
     memset(value, 'a', sizeof value - 1); value[sizeof value - 1] = 0;
     npf_conf_set(&l.settings, "server", value);
-    CHECK(npf_local_save(&l) == 0);
+    REQUIRE(npf_local_save(&l) == 0);
     len = npf_file_read(l.path, &before);
     failing = 1;
-    CHECK(npf_local_save(&l) < 0);
+    REQUIRE(npf_local_save(&l) < 0);
     failing = 0;
-    CHECK(npf_file_read(l.path, &after) == len && memcmp(before, after, (size_t)len) == 0);
-    free(before); free(after); unlink(l.path); rmdir(dir);
+    REQUIRE(npf_file_read(l.path, &after) == len && memcmp(before, after, (size_t)len) == 0);
+    free(before); free(after); rm_dir(dir);
     npf_local_free(&l);
 
     loop = npf_loop_new();
-    CHECK(loop);
+    REQUIRE(loop);
     r = relay_new(loop);
     ws_open(NULL, r);                   /* the bind not sent */
-    CHECK(gone == 1 && sends == 1);
+    REQUIRE(gone == 1 && sends == 1);
     npf_loop_once(loop, 0);
 
     /* the relay's events, one byte each; anything else ends the connection */
     r = relay_new(loop);
     gone = 0;
     msg_in(r, NPF_WSR_CTL, 9, 2);
-    CHECK(gone == 1 && !paired);
+    REQUIRE(gone == 1 && !paired);
     r = relay_new(loop);
     gone = 0;
     msg_in(r, NPF_WSR_CTL, NPF_WSR_PAIRED, 2);
-    CHECK(paired == 1 && r->paired && !gone && !paired_udp);
+    REQUIRE(paired == 1 && r->paired && !gone && !paired_udp);
     /* the peer on a UDP allocation (the relay bridges): told */
     msg_in(r, NPF_WSR_CTL, NPF_WSR_PAIRED_UDP, 2);
-    CHECK(paired == 2 && paired_udp);
+    REQUIRE(paired == 2 && paired_udp);
     msg_in(r, NPF_WSR_ANL, 0, 1);       /* an empty datagram: nothing */
     msg_in(r, NPF_WSR_CTL, NPF_WSR_PEER_GONE, 2);
-    CHECK(left == 1 && !gone && r->paired);     /* told, still paired: the peer comes back */
+    REQUIRE(left == 1 && !gone && r->paired);     /* told, still paired: the peer comes back */
     msg_in(r, NPF_WSR_CTL, NPF_WSR_PAIRED, 1);
-    CHECK(gone == 1);                   /* closed and freed (wsr_down) */
+    REQUIRE(gone == 1);                   /* closed and freed (wsr_down) */
     npf_loop_once(loop, 0);
     npf_loop_free(loop);
     puts("PASS failed serialization preserves the file; failed relay bind releases once; the relay's events");

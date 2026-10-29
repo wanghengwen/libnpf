@@ -1,3 +1,6 @@
+/* npf_unit_tests [NAME...]: every unit test linked into one program (the
+ * named ones only), each one's time; and this file's own: the version,
+ * known answers, the probe packets, the port allocation, the wake delays. */
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
@@ -9,53 +12,14 @@
 #include "npf/natprobe.h"
 #include "npf/portmap.h"
 #include "npf/version.h"
+#include "test.h"
 
-static int failures;
-int test_crypto(void);
-int test_json(void);
-int test_msg(void);
-int test_tunnel(void);
-int test_policy(void);
-int test_conf(void);
-int test_local(void);
-int test_direct(void);
-int test_loop(void);
-int test_log(void);
-int test_resolve(void);
-int test_dns(void);
-int test_punch(void);
-int test_anlsec(void);
-int test_sys(void);
-int test_text(void);
-int test_creply(void);
-int test_portmap_gw(void);
-int test_callee(void);
-int test_relay(void);
-int test_relay_data(void);
-int test_peeraddr(void);
-int test_home(void);
-int test_call(void);
-int test_call_state(void);
-int test_path(void);
-int test_path_health(void);
-int test_path_decide(void);
-int test_peers(void);
+int test_crypto(void), test_json(void), test_msg(void), test_tunnel(void), test_policy(void), test_conf(void),
+    test_local(void), test_direct(void), test_loop(void), test_log(void), test_resolve(void), test_dns(void),
+    test_punch(void), test_anlsec(void), test_sys(void), test_text(void), test_creply(void), test_portmap_gw(void),
+    test_callee(void), test_relay(void), test_relay_data(void), test_peeraddr(void), test_home(void), test_call(void),
+    test_call_state(void), test_path(void), test_path_health(void), test_path_decide(void), test_peers(void);
 int node_wake_delay(int ms);        /* node_signal.c */
-
-#define CHECK(cond, ...) do { \
-    if (!(cond)) { failures++; fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
-                   fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } \
-} while (0)
-
-static void hex2bin(const char *hex, uint8_t *out, size_t n)
-{
-    size_t i;
-    for (i = 0; i < n; i++) {
-        unsigned v;
-        sscanf(hex + 2 * i, "%2x", &v);
-        out[i] = (uint8_t)v;
-    }
-}
 
 /* the same known answers as AnLiu test.c (the construction must stay identical) */
 static void test_kat(void)
@@ -100,45 +64,48 @@ static void test_probe_vector(void)
         npf_siv_derive(&k, key, "NPF-TEST-v01");
         CHECK(npf_pkt_open(&k, NPF_DIR_RESP, big, sizeof big, plain, &pkt) < 0, "an oversized packet is refused");
     }
-    {   /* the allocation from mapped ports: a busy sequential NAT (other
-         * traffic takes ports in between: seen in natlab's s2b-busy), the
-         * range wrapping, and a block of 512 ports in random order; in doubt
-         * (sequential but for one sample: RN-16's node e right after its
-         * restart, a mapping left from its last process), not with three
-         * samples, and an older port first is still sequential */
-        static const struct { uint16_t p[6]; int n, alloc, delta, doubt; } cases[] = {
-            {{21878, 21880, 21884, 21887}, 4, NPF_ALLOC_SEQUENTIAL, 2, 0},
-            {{27847, 27848, 27851, 27853}, 4, NPF_ALLOC_SEQUENTIAL, 1, 0},
-            {{24278, 24280, 24282, 24284, 24307}, 5, NPF_ALLOC_SEQUENTIAL, 2, 0},
-            {{29997, 29998, 20000, 20001, 20002, 20003}, 6, NPF_ALLOC_SEQUENTIAL, 1, 0},
-            {{20311, 20044, 20490, 20120}, 4, NPF_ALLOC_BLOCK, 0, 0},
-            {{20100, 20130, 20090, 20200, 20150}, 5, NPF_ALLOC_BLOCK, 0, 0},
-            {{53868, 53863, 53869, 53870}, 4, NPF_ALLOC_BLOCK, 0, 1},
-            {{53868, 53869, 53870, 53863}, 4, NPF_ALLOC_BLOCK, 0, 1},
-            {{40100, 40101, 40102, 40104, 33000}, 5, NPF_ALLOC_RANDOM, 0, 1},
-            {{53868, 53863, 53869}, 3, NPF_ALLOC_BLOCK, 0, 0},
-            {{53863, 53868, 53869, 53870}, 4, NPF_ALLOC_SEQUENTIAL, 1, 0},
-        };
-        size_t c;
-        int k;
-        for (c = 0; c < sizeof cases / sizeof cases[0]; c++) {
-            npf_natprobe_result r;
-            memset(&r, 0, sizeof r);
-            r.alloc_n = cases[c].n;
-            for (k = 0; k < cases[c].n; k++) {
-                r.alloc_got[k] = 1;
-                r.alloc_local[k] = (uint16_t)(40000 + k);
-                r.alloc_mapped[k] = cases[c].p[k];
-            }
-            npf_natprobe_classify_alloc(&r);
-            CHECK(r.profile.allocation == cases[c].alloc && r.alloc_doubt == cases[c].doubt
-                      && (cases[c].alloc != NPF_ALLOC_SEQUENTIAL || r.profile.seq_delta == cases[c].delta),
-                  "allocation case %zu: %d (delta %d, doubt %d), want %d (%d, %d)", c, r.profile.allocation,
-                  r.profile.seq_delta, r.alloc_doubt, cases[c].alloc, cases[c].delta, cases[c].doubt);
-        }
-    }
     CHECK(npf_siv_open(&keys, NPF_DIR_REQ, buf, 52, plain) == 40, "open own direction");
     CHECK(npf_siv_open(&keys, NPF_DIR_RESP, buf, 52, plain) < 0, "reflection rejected");
+}
+
+/* the allocation from mapped ports: a busy sequential NAT (other traffic
+ * takes ports in between: seen in natlab's s2b-busy), the range wrapping,
+ * and a block of 512 ports in random order; in doubt (sequential but for one
+ * sample: RN-16's node e right after its restart, a mapping left from its
+ * last process), not with three samples, and an older port first is still
+ * sequential */
+static void test_alloc(void)
+{
+    static const struct { uint16_t p[6]; int n, alloc, delta, doubt; } cases[] = {
+        {{21878, 21880, 21884, 21887}, 4, NPF_ALLOC_SEQUENTIAL, 2, 0},
+        {{27847, 27848, 27851, 27853}, 4, NPF_ALLOC_SEQUENTIAL, 1, 0},
+        {{24278, 24280, 24282, 24284, 24307}, 5, NPF_ALLOC_SEQUENTIAL, 2, 0},
+        {{29997, 29998, 20000, 20001, 20002, 20003}, 6, NPF_ALLOC_SEQUENTIAL, 1, 0},
+        {{20311, 20044, 20490, 20120}, 4, NPF_ALLOC_BLOCK, 0, 0},
+        {{20100, 20130, 20090, 20200, 20150}, 5, NPF_ALLOC_BLOCK, 0, 0},
+        {{53868, 53863, 53869, 53870}, 4, NPF_ALLOC_BLOCK, 0, 1},
+        {{53868, 53869, 53870, 53863}, 4, NPF_ALLOC_BLOCK, 0, 1},
+        {{40100, 40101, 40102, 40104, 33000}, 5, NPF_ALLOC_RANDOM, 0, 1},
+        {{53868, 53863, 53869}, 3, NPF_ALLOC_BLOCK, 0, 0},
+        {{53863, 53868, 53869, 53870}, 4, NPF_ALLOC_SEQUENTIAL, 1, 0},
+    };
+    size_t c;
+    int k;
+    for (c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        npf_natprobe_result r;
+        memset(&r, 0, sizeof r);
+        r.alloc_n = cases[c].n;
+        for (k = 0; k < cases[c].n; k++) {
+            r.alloc_got[k] = 1;
+            r.alloc_local[k] = (uint16_t)(40000 + k);
+            r.alloc_mapped[k] = cases[c].p[k];
+        }
+        npf_natprobe_classify_alloc(&r);
+        CHECK(r.profile.allocation == cases[c].alloc && r.alloc_doubt == cases[c].doubt
+                  && (cases[c].alloc != NPF_ALLOC_SEQUENTIAL || r.profile.seq_delta == cases[c].delta),
+              "allocation case %zu: %d (delta %d, doubt %d), want %d (%d, %d)", c, r.profile.allocation,
+              r.profile.seq_delta, r.alloc_doubt, cases[c].alloc, cases[c].delta, cases[c].doubt);
+    }
 }
 
 static void test_pkt(void)
@@ -220,71 +187,74 @@ static void test_portmap(void)
 }
 #endif
 
-int main(void)
+/* the platform's wake on demand: sig_wake_ms +-20 %, drawn each time
+ * (instances asleep together drift apart) */
+static void test_wake(void)
 {
-    {
-        unsigned a, b, c;
-        char end;
-        /* the project() version: MAJOR.MINOR.PATCH, nothing after it */
-        CHECK(sscanf(npf_version(), "%u.%u.%u%c", &a, &b, &c, &end) == 3, "version %s", npf_version());
+    int i, d, lo = 1 << 30, hi = 0, same = 1, first = node_wake_delay(600000);
+    for (i = 0; i < 2000; i++) {
+        d = node_wake_delay(600000);
+        lo = d < lo ? d : lo;
+        hi = d > hi ? d : hi;
+        same &= d == first;
     }
+    CHECK(lo >= 480000 && hi <= 720000 && lo < 490000 && hi > 710000 && !same, "wake delays %d .. %d", lo, hi);
+    CHECK(node_wake_delay(1) == 1 && node_wake_delay(5) >= 4 && node_wake_delay(5) <= 6, "short wake delays");
+}
+
+static int test_own(void)
+{
+    unsigned a, b, c;
+    char end;
+    struct in6_addr v6[8];
+    struct in_addr v4[8];
+    int c6 = npf_gather_host(AF_INET6, v6, 8), c4 = npf_gather_host(AF_INET, v4, 8);
+    /* the project() version: MAJOR.MINOR.PATCH, nothing after it */
+    CHECK(sscanf(npf_version(), "%u.%u.%u%c", &a, &b, &c, &end) == 3, "version %s", npf_version());
+    CHECK(c6 >= 0 && c6 <= 8 && c4 >= 0 && c4 <= 8, "gathered host addresses: %d, %d", c6, c4);
     test_kat();
     test_probe_vector();
+    test_alloc();
     test_pkt();
 #ifdef NPF_PORTMAP
     test_portmap();
 #endif
-    failures += test_crypto();
-    failures += test_json();
-    failures += test_msg();
-    failures += test_tunnel();
-    failures += test_policy();
-    failures += test_conf();
-    failures += test_local();
-    failures += test_direct();
-    failures += test_loop();
-    failures += test_log();
-    failures += test_resolve();
-    failures += test_dns();
-    failures += test_anlsec();
-    failures += test_sys();
-    failures += test_text();
-    failures += test_creply();
+    test_wake();
+    return fails;
+}
+
+static const struct {
+    const char *name;
+    int (*fn)(void);
+} tests[] = {
+    {"main", test_own}, {"crypto", test_crypto}, {"json", test_json}, {"msg", test_msg}, {"tunnel", test_tunnel},
+    {"policy", test_policy}, {"conf", test_conf}, {"local", test_local}, {"direct", test_direct}, {"loop", test_loop},
+    {"log", test_log}, {"resolve", test_resolve}, {"dns", test_dns}, {"anlsec", test_anlsec}, {"sys", test_sys},
+    {"text", test_text}, {"creply", test_creply},
 #ifdef NPF_PORTMAP
-    failures += test_portmap_gw();
+    {"portmap", test_portmap_gw},
 #endif
-    failures += test_callee();
-    failures += test_relay();
-    failures += test_relay_data();
-    failures += test_peeraddr();
-    failures += test_home();
-    failures += test_call();
-    failures += test_call_state();
-    failures += test_path();
-    failures += test_path_health();
-    failures += test_path_decide();
-    failures += test_peers();
-    failures += test_punch();
-    {   /* the periodic wake of signaling on demand: sig_wake_ms +-20 %, drawn
-         * each time (instances asleep together drift apart) */
-        int i, d, lo = 1 << 30, hi = 0, same = 1, first = node_wake_delay(600000);
-        for (i = 0; i < 2000; i++) {
-            d = node_wake_delay(600000);
-            lo = d < lo ? d : lo;
-            hi = d > hi ? d : hi;
-            same &= d == first;
-        }
-        CHECK(lo >= 480000 && hi <= 720000 && lo < 490000 && hi > 710000 && !same, "wake delays %d .. %d", lo, hi);
-        CHECK(node_wake_delay(1) == 1 && node_wake_delay(5) >= 4 && node_wake_delay(5) <= 6, "short wake delays");
+    {"callee", test_callee}, {"relay", test_relay}, {"relay_data", test_relay_data}, {"peeraddr", test_peeraddr},
+    {"home", test_home}, {"call", test_call}, {"call_state", test_call_state}, {"path", test_path},
+    {"path_health", test_path_health}, {"path_decide", test_path_decide}, {"peers", test_peers}, {"punch", test_punch},
+};
+
+int main(int argc, char **argv)
+{
+    size_t i;
+    int k, total = 0, run;
+    for (i = 0; i < sizeof tests / sizeof tests[0]; i++) {
+        int64_t t0 = npf_mono_ms();
+        int n;
+        for (k = 1, run = argc == 1; k < argc; k++)
+            run |= strcmp(argv[k], tests[i].name) == 0;
+        if (!run)
+            continue;
+        n = tests[i].fn();
+        total += n;
+        printf("%-12s %s %5lld ms\n", tests[i].name, n ? "FAIL" : "ok  ", (long long)(npf_mono_ms() - t0));
     }
-    { struct in6_addr v6[8]; struct in_addr v4[8];
-      int c6 = npf_gather_host(AF_INET6, v6, 8), c4 = npf_gather_host(AF_INET, v4, 8);
-      CHECK(c6 >= 0 && c6 <= 8, "gather host6 count %d", c6);
-      CHECK(c4 >= 0 && c4 <= 8, "gather host4 count %d", c4); }
-    if (failures) {
-        fprintf(stderr, "%d failure(s)\n", failures);
-        return 1;
-    }
-    printf("ok\n");
-    return 0;
+    if (total)
+        fprintf(stderr, "%d failure(s)\n", total);
+    return total != 0;
 }
