@@ -189,6 +189,18 @@ int test_policy(void)
             for (i = 0; bad[i]; i++)
                 CHECK(npf_res_from_line(&b, bad[i], e, sizeof e) < 0, "bad resource %s refused", bad[i]);
         }
+        {   /* -R ports: digits only, as the other rules' ports */
+            static const char *const bad[] = {"+2000", " 2000", "2000x", "2000-", "-2000", "1023", "2000-0x8000",
+                                              "lan:+2000", "", NULL};
+            npf_policy p;
+            int i;
+            memset(&p, 0, sizeof p);
+            for (i = 0; bad[i]; i++)
+                CHECK(npf_policy_add_reverse(&p, bad[i]) < 0, "reverse ports \"%s\" refused", bad[i]);
+            CHECK(p.nrev == 0 && npf_policy_add_reverse(&p, "lan:2000-2001") == 0 && npf_policy_add_reverse(&p, "1024") == 0
+                      && p.nrev == 2 && p.rev[0].lo == 2000 && p.rev[0].hi == 2001 && p.rev[0].lan && p.rev[1].lo == 1024,
+                  "reverse ports taken: lan:2000-2001, 1024");
+        }
         {   /* JSON there and back; names unique */
             npf_out o = {0};
             char *n1, *n2;
