@@ -37,8 +37,7 @@ struct npf_http {
 
 static void h_free(npf_http *h)
 {
-    if (h->t)
-        npf_timer_cancel(h->loop, h->t);
+    npf_timer_cancel(h->loop, h->t);
     npf_tcp_close(&h->tcp);
     free(h->in);
     free(h);

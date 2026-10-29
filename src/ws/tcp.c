@@ -88,9 +88,7 @@ static void tcp_timeout(npf_loop *loop, void *arg)
 static int tcp_next(npf_tcp *c)
 {
     int fd = -1, one = 1;
-    if (c->t)
-        npf_timer_cancel(c->loop, c->t);
-    c->t = NULL;
+    npf_timer_stop(c->loop, &c->t);
     tcp_drop(c);
     while (c->icand < c->ncand) {
         int i = c->icand++;
@@ -186,8 +184,7 @@ int npf_tcp_step(npf_tcp *c, unsigned events)
          * checks SO_ERROR above; without an error the socket must be writable */
         if (!(events & NPF_EV_WRITE))
             return 0;
-        npf_timer_cancel(c->loop, c->t);
-        c->t = NULL;
+        npf_timer_stop(c->loop, &c->t);
         c->state = c->tls ? TCP_TLS : TCP_READY;
     }
     if (c->state == TCP_TLS) {
@@ -229,9 +226,7 @@ ssize_t npf_tcp_write(npf_tcp *c, const void *p, size_t n)
 
 void npf_tcp_close(npf_tcp *c)
 {
-    if (c->t)
-        npf_timer_cancel(c->loop, c->t);
-    c->t = NULL;
+    npf_timer_stop(c->loop, &c->t);
     npf_resolve_cancel(c->resolve);
     c->resolve = NULL;
     tcp_drop(c);
