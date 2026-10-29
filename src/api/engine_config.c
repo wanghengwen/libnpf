@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "engine_internal.h"
+#include "api_internal.h"
 
 /* ---- configuration ---- */
 
@@ -143,7 +143,7 @@ void npf_engine_restore_peers(npf_t *n)
             npf_logw("local.json: %s: %s: left out", d->target, e);
             continue;
         }
-        npf_peer_set_tag(p, PEER_SAVED);
+        npf_peer_set_tag(p, NPF_PERSIST);
         for (k = 0; k < d->nfwd; k++) {
             const npf_lfwd *lf = &d->fwd[k];
             int r;
@@ -239,7 +239,6 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
     npf_mkdir_p(n->data_dir);
     if (npf_local_load(&n->lc, n->data_dir, err, errcap) < 0)
         return NPF_EFAIL;
-    n->local_path = n->lc.path;
     if (npf_conf_copy(&n->conf, ro) < 0) {
         snprintf(err, errcap, "no memory");
         return NPF_EFAIL;

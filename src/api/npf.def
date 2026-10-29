@@ -4,6 +4,7 @@ EXPORTS
     npf_api_version
     npf_options_init_size
     npf_callbacks_init_size
+    npf_setup_init_size
     npf_create
     npf_start
     npf_run
@@ -17,33 +18,20 @@ EXPORTS
     npf_log_json
     npf_config_get
     npf_config_set
-    npf_command
-    npf_request
-    npf_sessions_json
-    npf_public_json
-    npf_session_send
-    npf_media_opt_default_size
-    npf_media_open
-    npf_media_send
-    npf_media_stats_get
-    npf_media_close
-    npf_setup_init_size
     npf_save
     npf_peer_opt_init_size
-    npf_peer_info_init_size
     npf_peer_create
-    npf_peer_remove_id
+    npf_peer_remove
     npf_peer_find
     npf_peer_list
-    npf_peer_get
+    npf_peer_get_size
     npf_peer_connect_now
     npf_peer_setopt
     npf_forward_opt_init_size
-    npf_forward_info_init_size
     npf_forward_create
     npf_forward_remove
     npf_forward_list
-    npf_forward_get
+    npf_forward_get_size
     npf_forward_setopt
     npf_resource_init_size
     npf_resource_put
@@ -54,9 +42,17 @@ EXPORTS
     npf_pairing_list_size
     npf_pairing_remove
     npf_owner_reset
-    npf_node_info_init_size
-    npf_session_info_init_size
-    npf_node_get
-    npf_session_get
+    npf_node_get_size
+    npf_session_get_size
     npf_session_list
     npf_network_changed
+    npf_command
+    npf_request
+    npf_sessions_json
+    npf_public_json
+    npf_session_send
+    npf_media_opt_init_size
+    npf_media_open
+    npf_media_send
+    npf_media_stats_get_size
+    npf_media_close

@@ -1,98 +1,88 @@
-/* libnpf: the operations of npf.h's objects (peers, forwards, resources, a
- * device's pairing, this node's state), each a public function that runs on
- * the instance's thread (npf_api_op). The command line (cmd_peers.c,
- * publish.c, nodes.c) parses its words and goes through the same layer
- * below it: the peers' structured primitives (npf/peers.h) and the records
- * in local.json (npf_ops_record). The library has no command syntax for
- * peers and forwards: the application has its own over these. What a peer
- * may do depends on where it comes from: the application's (made, or
- * brought back from local.json) or the platform's (NPF_PLATFORM). Here the
- * structures' defaults, the records and this node; the peers in ops_peer.c,
- * the forwards in ops_forward.c, the resources in ops_resource.c, a
- * device's pairing in ops_pairing.c; what they share in ops_internal.h. */
+/* libnpf: the operations of npf.h's objects, each a public function that
+ * runs on the instance's thread (npf_api_op): the peers in ops_peer.c, the
+ * forwards in ops_forward.c, the resources in ops_resource.c, a device's
+ * pairing in ops_pairing.c; here the structures' defaults, what the
+ * operations share, the records in local.json, this node and its sessions.
+ * The library has no command syntax for peers and forwards: the program's
+ * command line (npf's modules) has its own over these same functions. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
-#include <stddef.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf_int.h"
+#include "api_internal.h"
 #include "npf/module.h"
-#include "npf/resources.h"
-#include "ops_internal.h"
 
 /* ---- the structures' defaults ---- */
 
-void npf_peer_opt_init_size(npf_peer_opt *o, size_t size)
+/* the defaults d into the application's s of size bytes (its sizeof): what
+ * both builds know, zeros past this build's structure, size first */
+static void init_sized(void *s, size_t size, const void *d, size_t dsize)
 {
-    npf_peer_opt d;
-    memset(&d, 0, sizeof d);
-    d.target = NPF_TARGET_NUMBER;
-    npf_init_sized(o, size, &d, sizeof d);
+    if (!s || size < sizeof(size_t))
+        return;
+    put_out(s, size, d, dsize);
+    memcpy(s, &size, sizeof size);
 }
 
-void npf_peer_info_init_size(npf_peer_info *o, size_t size)
-{
-    npf_peer_info d;
-    memset(&d, 0, sizeof d);
-    npf_init_sized(o, size, &d, sizeof d);
-}
-
-void npf_forward_opt_init_size(npf_forward_opt *o, size_t size)
-{
-    npf_forward_opt d;
-    memset(&d, 0, sizeof d);
-    d.kind = NPF_FWD_LOCAL;
-    npf_init_sized(o, size, &d, sizeof d);
-}
-
-void npf_forward_info_init_size(npf_forward_info *o, size_t size)
-{
-    npf_forward_info d;
-    memset(&d, 0, sizeof d);
-    npf_init_sized(o, size, &d, sizeof d);
-}
-
-void npf_resource_init_size(npf_resource *r, size_t size)
-{
-    npf_resource d;
-    memset(&d, 0, sizeof d);
-    d.type = NPF_RES_TCP;
-    npf_init_sized(r, size, &d, sizeof d);
-}
-
-void npf_node_info_init_size(npf_node_info *o, size_t size)
-{
-    npf_node_info d;
-    memset(&d, 0, sizeof d);
-    npf_init_sized(o, size, &d, sizeof d);
-}
-
-void npf_session_info_init_size(npf_session_info *o, size_t size)
-{
-    npf_session_info d;
-    memset(&d, 0, sizeof d);
-    npf_init_sized(o, size, &d, sizeof d);
-}
-
-
-/* ---- peers: where they come from ---- */
-
-uint32_t npf_ops_flags(const npf_t *n, const npf_peer *p)
-{
-    (void)n;
-    switch (npf_peer_tag(p)) {
-    case PEER_SAVED: return NPF_PERSIST;
-    case PEER_PLATFORM: return NPF_PLATFORM;
-    default: return 0;
+#define DEFAULTS(T, ...)                                                                                             \
+    void T##_init_size(T *s, size_t size)                                                                            \
+    {                                                                                                                \
+        T d = {0, __VA_ARGS__};                                                                                      \
+        init_sized(s, size, &d, sizeof d);                                                                           \
     }
+
+DEFAULTS(npf_options, .log_level = -1)
+DEFAULTS(npf_callbacks, .user = NULL)
+DEFAULTS(npf_setup, .punch_lead_ms = -1)
+DEFAULTS(npf_peer_opt, .target = NPF_TARGET_NUMBER)
+DEFAULTS(npf_forward_opt, .kind = NPF_FWD_LOCAL)
+DEFAULTS(npf_resource, .type = NPF_RES_TCP)
+DEFAULTS(npf_media_opt, .prio = 1, .max_age_ms = 500, .fec = -1)
+
+/* ---- what the operations share ---- */
+
+int op_fail(op_arg *x, int rc, const char *fmt, ...)
+{
+    va_list ap;
+    if (x && x->err && x->errcap) {
+        va_start(ap, fmt);
+        vsnprintf(x->err, x->errcap, fmt, ap);
+        va_end(ap);
+    }
+    return rc;
 }
 
+int op_get(npf_t *n, int (*fn)(npf_t *n, void *arg), uint32_t id, void *out, size_t size)
+{
+    op_arg x = {.id = id, .out = out, .size = size};
+    return out ? npf_api_op(n, fn, &x) : NPF_EINVAL;
+}
 
-/* forward i of p as a record */
+int op_list(npf_t *n, int (*fn)(npf_t *n, void *arg), uint32_t id, void *out, size_t size, size_t cap,
+            size_t *count)
+{
+    op_arg x = {.id = id, .out = out, .size = size, .cap = cap, .count = count};
+    int rc;
+    if (!count || (cap && !out))
+        return NPF_EINVAL;
+    *count = 0;
+    rc = npf_api_op(n, fn, &x);
+    return rc != NPF_OK ? rc : *count > cap ? NPF_ETOOBIG : NPF_OK;
+}
+
+const char *npf_source_name(int tag)
+{
+    return tag == NPF_PERSIST ? "saved" : tag == NPF_PLATFORM ? "platform" : "temporary";
+}
+
+/* ---- the records in local.json ---- */
+
+/* forward i of p as a record: 0, 1 when it is not one to save, -1 none */
 static int lfwd_of(const npf_peer *p, int i, npf_lfwd *lf)
 {
     npf_fwd_state st;
@@ -109,7 +99,7 @@ static int lfwd_of(const npf_peer *p, int i, npf_lfwd *lf)
     } else {
         snprintf(lf->spec, sizeof lf->spec, "%s", st.spec);
     }
-    return st.perm && !st.ext ? 0 : 1;      /* 1: not one to save */
+    return st.perm && !st.ext ? 0 : 1;
 }
 
 int npf_ops_record(npf_t *n, npf_peer *p, int save, const char *psk_file)
@@ -131,7 +121,7 @@ int npf_ops_record(npf_t *n, npf_peer *p, int save, const char *psk_file)
             snprintf(d->psk_file, sizeof d->psk_file, "%s", psk_file);
             d->psk[0] = 0;
         } else if (!d->psk_file[0] && !d->psk[0] && npf_peer_psk(p)) {
-            d->psk[npf_b64url_encode(npf_peer_psk(p), 32, d->psk)] = 0;  /* saved later (PERSIST): its key */
+            d->psk[npf_b64url_encode(npf_peer_psk(p), 32, d->psk)] = 0;  /* a direct peer: its key */
         }
         for (i = 0; i < npf_peer_nfwd(p); i++) {
             npf_lfwd lf;
@@ -157,16 +147,15 @@ int npf_ops_record_fwd(npf_t *n, npf_peer *p, int i, int add)
     return saved_rc(n);
 }
 
-
 /* ---- this node, sessions, the network, saving ---- */
 
 static int node_get_run(npf_t *n, void *arg)
 {
+    op_arg *x = arg;
     npf_node_info i;
     struct sockaddr_storage ss;
     char a[80];
     memset(&i, 0, sizeof i);
-    i.size = sizeof i;
     i.number = n->has_number ? n->number : 0;
     i.role = n->role;
     i.online = n->node.online;
@@ -185,19 +174,18 @@ static int node_get_run(npf_t *n, void *arg)
     i.peers = n->peers ? npf_peers_count(n->peers) : 0;
     i.sessions = n->nsess;
     i.unsaved = n->lc.unsaved;
-    return copy_out(arg, &i, sizeof i) < 0 ? NPF_EINVAL : NPF_OK;
+    put_out(x->out, x->size, &i, sizeof i);
+    return NPF_OK;
 }
 
-int npf_node_get(npf_t *n, npf_node_info *out)
+int npf_node_get_size(npf_t *n, npf_node_info *out, size_t size)
 {
-    if (!out)
-        return NPF_EINVAL;
-    return npf_api_op(n, node_get_run, out);
+    return op_get(n, node_get_run, 0, out, size);
 }
 
 static int session_get_run(npf_t *n, void *arg)
 {
-    pid_arg *x = arg;
+    op_arg *x = arg;
     npf_session_info i;
     npf_call_info ci;
     int k;
@@ -207,39 +195,31 @@ static int session_get_run(npf_t *n, void *arg)
         return NPF_ENOENT;
     npf_call_info_get(n->sess[k].call, &ci);
     memset(&i, 0, sizeof i);
-    i.size = sizeof i;
-    i.peer = n->sess[k].peer && peer_of(n, n->sess[k].peer) ? n->sess[k].peer : 0;
+    i.peer = peer_of(n, n->sess[k].peer) ? n->sess[k].peer : 0;     /* 0: removed since (or none) */
     i.number = ci.number;
     i.outgoing = ci.caller;
     i.path = ci.path_code;
     snprintf(i.call_id, sizeof i.call_id, "%s", ci.id);
-    return copy_out(x->out, &i, sizeof i) < 0 ? NPF_EINVAL : NPF_OK;
+    put_out(x->out, x->size, &i, sizeof i);
+    return NPF_OK;
 }
 
-int npf_session_get(npf_t *n, uint32_t session, npf_session_info *out)
+int npf_session_get_size(npf_t *n, uint32_t session, npf_session_info *out, size_t size)
 {
-    pid_arg x = {.id = session, .out = out};
-    if (!out)
-        return NPF_EINVAL;
-    return npf_api_op(n, session_get_run, &x);
+    return op_get(n, session_get_run, session, out, size);
 }
 
 static int session_list_run(npf_t *n, void *arg)
 {
-    list_arg *x = arg;
     int k;
     for (k = 0; k < n->nsess; k++)
-        list_put(x, n->sess[k].id);
-    return list_rc(*x->count, x->cap);
+        list_put(arg, &n->sess[k].id, sizeof n->sess[k].id);
+    return NPF_OK;
 }
 
 int npf_session_list(npf_t *n, uint32_t *sessions, size_t cap, size_t *count)
 {
-    list_arg x = {.ids = sessions, .cap = cap, .count = count};
-    if (!count || (cap && !sessions))
-        return NPF_EINVAL;
-    *count = 0;
-    return npf_api_op(n, session_list_run, &x);
+    return op_list(n, session_list_run, 0, sessions, sizeof *sessions, cap, count);
 }
 
 /* npf_network_changed and the command netcheck (an app: the network under a

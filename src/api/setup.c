@@ -12,15 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf_int.h"
-
-void npf_setup_init_size(npf_setup *s, size_t size)
-{
-    npf_setup d;
-    memset(&d, 0, sizeof d);
-    d.punch_lead_ms = -1;
-    npf_init_sized(s, size, &d, sizeof d);
-}
+#include "api_internal.h"
 
 /* the keys a field gives: not in the overrides as well */
 static const char *const setup_keys[] = {

@@ -49,7 +49,7 @@ static void inits(void)
     check(cb->size == offsetof(npf_callbacks, log) && all(buf, offsetof(npf_callbacks, log), sizeof buf, 0xaa),
           "callbacks: written up to the caller's size only");
     memset(buf, 0xaa, sizeof buf);
-    npf_media_opt_default(mo);
+    npf_media_opt_init(mo);
     check(mo->size == sizeof *mo && all(buf, sizeof *mo, sizeof buf, 0xaa), "media options: the macro passes sizeof");
 }
 

@@ -1,8 +1,7 @@
-/* libnpf: the public functions of npf.h. Each one runs on the library thread:
- * at once when called there (callbacks) or before npf_start / npf_run;
- * otherwise posted to the loop while the caller waits for the result
- * (npf_media_send only queues a copy). The thread itself, the runtime and
- * sync_call in api_thread.c. */
+/* libnpf: npf.h's queries, settings, commands, platform requests, and a
+ * session's application data and media streams. Each runs on the
+ * instance's thread (npf_api_op); npf_media_send from another thread only
+ * queues a copy. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -16,39 +15,7 @@
 #include "api_internal.h"
 #include "npf/module.h"
 
-/* ---- the lifetime guard: every call below goes through it ---- */
-
-typedef struct op_job {
-    int  (*fn)(npf_t *n, void *arg);
-    void  *arg;
-    int    rc;
-} op_job;
-
-static void op_run(npf_t *n, void *arg)
-{
-    op_job *j = arg;
-    j->rc = j->fn(n, j->arg);
-}
-
-static int op_sync(npf_t *n, void *arg)
-{
-    op_job *j = arg;
-    int r = sync_call(n, op_run, j);
-    return r < 0 ? r : j->rc;
-}
-
-/* fn on the library thread, with a reference held: fn's answer, or
- * NPF_EINVAL / NPF_ESTATE / NPF_ENOMEM when it did not run */
-int npf_api_op(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
-{
-    op_job j;
-    j.fn = fn;
-    j.arg = arg;
-    j.rc = NPF_OK;
-    return npf_api_guard(n, op_sync, &j);
-}
-
-/* ---- queries ---- */
+/* ---- queries: JSON for the caller (npf_free) ---- */
 
 typedef struct q_arg {
     int     max, close;
@@ -57,7 +24,7 @@ typedef struct q_arg {
 
 static int status_run(npf_t *n, void *arg)
 {
-    npf_cmd_status_json(n, &((q_arg *)arg)->o);
+    npf_status_out(n, &((q_arg *)arg)->o);
     return NPF_OK;
 }
 
@@ -72,19 +39,18 @@ static int log_run(npf_t *n, void *arg)
     q_arg *q = arg;
     char *buf = malloc((size_t)q->max + 1);
     (void)n;
-    if (buf) {
-        size_t len = npf_log_recent(buf, (size_t)q->max + 1);
-        npf_out_printf(&q->o, "{\"lines\":");
-        npf_out_json_str(&q->o, buf, len);
-        npf_out_printf(&q->o, "}\n");
-        free(buf);
-    }
+    if (!buf)
+        return NPF_ENOMEM;
+    npf_out_printf(&q->o, "{\"lines\":");
+    npf_out_json_str(&q->o, buf, npf_log_recent(buf, (size_t)q->max + 1));
+    npf_out_printf(&q->o, "}");
+    free(buf);
     return NPF_OK;
 }
 
 static int sessions_run(npf_t *n, void *arg)
 {
-    npf_cmd_sessions_json(n, &((q_arg *)arg)->o);
+    npf_sessions_out(n, &((q_arg *)arg)->o);
     return NPF_OK;
 }
 
@@ -101,16 +67,19 @@ static int public_run(npf_t *n, void *arg)
 static char *query(npf_t *n, int (*fn)(npf_t *n, void *arg), int max, int close)
 {
     q_arg q;
+    int rc;
     memset(&q, 0, sizeof q);
     q.max = max > 0 ? max : 16384;
     if (q.max > NPF_LOG_RING)
-        q.max = NPF_LOG_RING;                /* no query can return more bytes than the ring holds */
+        q.max = NPF_LOG_RING;               /* no query can return more bytes than the ring holds */
     q.close = close != 0;
-    if (npf_api_op(n, fn, &q) < 0 || q.o.failed) {
+    rc = npf_api_op(n, fn, &q);
+    npf_out_write(&q.o, "\n", 1);
+    if (rc != NPF_OK || q.o.failed) {
         npf_out_free(&q.o);
         return NULL;
     }
-    return q.o.p;                           /* npf_out text: malloc'd, freed by npf_free */
+    return q.o.p;                           /* npf_out's text: malloc'd, freed by npf_free */
 }
 
 char *npf_status_json(npf_t *n) { return query(n, status_run, 0, 0); }
@@ -123,10 +92,10 @@ char *npf_public_json(npf_t *n, int close) { return query(n, public_run, 0, clos
 
 typedef struct kv_arg {
     const char *key, *value;
-    int         save, failed;           /* failed: npf_cmd_set said why in o */
+    int         save;
     char       *out;
     size_t      cap;
-    npf_out     o;
+    npf_out     o;                      /* npf_cmd_set's text: why it failed */
 } kv_arg;
 
 static int get_run(npf_t *n, void *arg)
@@ -142,13 +111,9 @@ static int get_run(npf_t *n, void *arg)
 
 int npf_config_get(npf_t *n, const char *key, char *out, size_t cap)
 {
-    kv_arg x;
+    kv_arg x = {.key = key, .out = out, .cap = cap};
     if (!key || !out || !cap)
         return NPF_EINVAL;
-    memset(&x, 0, sizeof x);
-    x.key = key;
-    x.out = out;
-    x.cap = cap;
     return npf_api_op(n, get_run, &x);
 }
 
@@ -160,25 +125,20 @@ static int set_run(npf_t *n, void *arg)
     if (x->save && (n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS))
         return NPF_EUNAVAIL;                /* the application keeps the settings */
     r = npf_cmd_set(n, x->key, x->value, x->save, &x->o);
-    x->failed = r != 0;
     return r == 0 ? !npf_cmd_is_settable(x->key) : r == 2 ? NPF_EINVAL : r == NPF_CMD_UNSAVED ? NPF_ESAVE : NPF_EFAIL;
 }
 
 int npf_config_set(npf_t *n, const char *key, const char *value, int save, char *err, size_t errcap)
 {
-    kv_arg x;
+    kv_arg x = {.key = key, .value = value, .save = save};
     int r;
     if (!key || !value)
         return NPF_EINVAL;
-    memset(&x, 0, sizeof x);
-    x.key = key;
-    x.value = value;
-    x.save = save;
     r = npf_api_op(n, set_run, &x);
     if (x.o.failed)
         r = NPF_ENOMEM;
-    else if (x.failed && err && errcap)
-        snprintf(err, errcap, "%s", x.o.p ? x.o.p : "failed");
+    else if (r < 0 && x.o.p && err && errcap)
+        snprintf(err, errcap, "%s", x.o.p);
     npf_out_free(&x.o);
     return r;
 }
@@ -205,33 +165,28 @@ static int c_run(npf_t *n, void *arg)
 
 int npf_command(npf_t *n, int argc, const char *const *argv, npf_text_cb cb, void *user)
 {
-    c_arg x;
-    char **own, **work;
+    c_arg x = {.argc = argc, .cb = cb, .user = user};
+    char **own;
     int i, rc = NPF_ENOMEM;
     if (!n || argc < 1 || !argv)
         return NPF_EINVAL;
-    /* own: the copies, freed here; work: what the command gets, which it may
-     * rearrange (connect drops its options in place) */
-    own = calloc((size_t)argc + 1, sizeof *own);
-    work = calloc((size_t)argc + 1, sizeof *work);
-    for (i = 0; own && work && i < argc; i++)
-        if (!(own[i] = strdup(argv[i] ? argv[i] : "")))
-            break;
-    if (own && work && i == argc) {
-        memcpy(work, own, (size_t)argc * sizeof *work);
-        x.argc = argc;
-        x.argv = work;
-        x.cb = cb;
-        x.user = user;
+    /* the copies own[0..argc) are freed here; the command gets own[argc..]
+     * to the same strings, which it may rearrange (connect drops its
+     * options in place) */
+    if (!(own = calloc(2 * (size_t)argc + 1, sizeof *own)))
+        return NPF_ENOMEM;
+    for (i = 0; i < argc && (own[i] = strdup(argv[i] ? argv[i] : "")); i++)
+        ;
+    if (i == argc) {
+        memcpy(own + argc, own, (size_t)argc * sizeof *own);
+        x.argv = own + argc;
         rc = npf_api_op(n, c_run, &x);
     }
-    for (i = 0; own && i < argc; i++) {
-        if (own[i])
-            npf_wipe(own[i], strlen(own[i]));      /* passwords */
+    for (i = 0; i < argc && own[i]; i++) {
+        npf_wipe(own[i], strlen(own[i]));   /* passwords */
         free(own[i]);
     }
     free(own);
-    free(work);
     return rc;
 }
 
@@ -251,16 +206,10 @@ static int r_run(npf_t *n, void *arg)
 
 int npf_request(npf_t *n, const char *type, const char *data_json, int key_proof, npf_reply_cb cb, void *user)
 {
-    r_arg x;
+    r_arg x = {.type = type, .data = data_json, .proof = key_proof, .cb = cb, .user = user};
     int rc;
     if (!n || !type)
         return NPF_EINVAL;
-    memset(&x, 0, sizeof x);
-    x.type = type;
-    x.data = data_json;
-    x.proof = key_proof;
-    x.cb = cb;
-    x.user = user;
     rc = npf_api_op(n, r_run, &x);
     if (rc != NPF_OK && x.err.p)
         npf_log("npf_request %s: %s", type, x.err.p);
@@ -270,11 +219,13 @@ int npf_request(npf_t *n, const char *type, const char *data_json, int key_proof
 
 /* ---- sessions: application data and media ---- */
 
+/* a session's data, a media stream's frame (from this thread) */
 typedef struct s_arg {
     uint32_t    id;
+    int         flags;
     const void *buf;
-    size_t      len;                    /* stats: out's size */
-    npf_media_stats *st;
+    size_t      len;
+    int64_t     t;                      /* a frame: max_age counts from here */
 } s_arg;
 
 static int send_run(npf_t *n, void *arg)
@@ -288,32 +239,17 @@ static int send_run(npf_t *n, void *arg)
 
 int npf_session_send(npf_t *n, uint32_t session, const void *buf, size_t len)
 {
-    s_arg x;
+    s_arg x = {.id = session, .buf = buf, .len = len};
     if (!n || (!buf && len))
         return NPF_EINVAL;
     if (len > 16384)
         return NPF_ETOOBIG;
-    memset(&x, 0, sizeof x);
-    x.id = session;
-    x.buf = buf;
-    x.len = len;
     return npf_api_op(n, send_run, &x);
-}
-
-void npf_media_opt_default_size(npf_media_opt *o, size_t size)
-{
-    npf_media_opt d;
-    memset(&d, 0, sizeof d);
-    d.prio = 1;
-    d.max_age_ms = 500;
-    d.fec = -1;
-    d.rcv_deadline_ms = -1;
-    npf_init_sized(o, size, &d, sizeof d);
 }
 
 typedef struct m_open {
     uint32_t session, media;
-    const npf_media_opt *o;
+    npf_media_opt o;
 } m_open;
 
 static int open_run(npf_t *n, void *arg)
@@ -327,15 +263,15 @@ static int open_run(npf_t *n, void *arg)
         return NPF_ENOENT;
     if (n->nmed >= NPF_MAX_MEDIA)
         return NPF_EBUSY;
-    co.tag = x->o->tag;
-    co.prio = x->o->prio < 0 || x->o->prio > 3 ? 1 : x->o->prio;
-    co.max_age_ms = x->o->max_age_ms;
-    co.drop_until_key = x->o->drop_until_key;
-    co.fec = x->o->fec;
-    co.fec_ratio = x->o->fec_ratio;
-    co.latency_rtt = x->o->latency_rtt;
-    co.rcv_deadline_ms = x->o->rcv_deadline_ms;
-    co.rcv_drop_until_key = x->o->rcv_drop_until_key;
+    memset(&co, 0, sizeof co);
+    co.tag = x->o.tag;
+    co.prio = x->o.prio < 0 || x->o.prio > 3 ? 1 : x->o.prio;
+    co.max_age_ms = x->o.max_age_ms;
+    co.drop_until_key = x->o.drop_until_key;
+    co.fec = x->o.fec;
+    co.fec_ratio = x->o.fec_ratio;
+    co.latency_rtt = x->o.latency_rtt;
+    co.rcv_drop_until_key = x->o.rcv_drop_until_key;
     if (!(lid = npf_call_media_open(call, &co, &e)))
         return e ? e : NPF_ESTATE;
     if (!(x->media = npf_media_add(n, x->session, call, lid))) {
@@ -345,206 +281,161 @@ static int open_run(npf_t *n, void *arg)
     return NPF_OK;
 }
 
-uint32_t npf_media_open(npf_t *n, uint32_t session, const npf_media_opt *o, int *err)
+int npf_media_open(npf_t *n, uint32_t session, const npf_media_opt *o, uint32_t *media)
 {
-    m_open x;
-    npf_media_opt opt;
-    int e;
-    if (!err)
-        err = &e;
-    npf_media_opt_default(&opt);
-    if (o) {                                /* what the application's build has, defaults for the rest */
-        if (o->size < offsetof(npf_media_opt, rcv_drop_until_key) + sizeof o->rcv_drop_until_key) {
-            *err = NPF_EINVAL;
-            return 0;
-        }
-        memcpy(&opt, o, o->size < sizeof opt ? o->size : sizeof opt);
-        opt.size = sizeof opt;
-    }
-    o = &opt;
-    if (o->tag < 0 || o->tag > 999) {
-        *err = NPF_EINVAL;
-        return 0;
-    }
-    memset(&x, 0, sizeof x);
-    x.session = session;
-    x.o = o;
-    *err = npf_api_op(n, open_run, &x);
-    return *err == NPF_OK ? x.media : 0;
+    m_open x = {.session = session};
+    int rc;
+    if (!media)
+        return NPF_EINVAL;
+    *media = 0;
+    npf_media_opt_init(&x.o);
+    if ((o && take_in(&x.o, sizeof x.o, o, SIZE_TO(npf_media_opt, rcv_drop_until_key)) < 0) || x.o.tag < 0
+        || x.o.tag > 999)
+        return NPF_EINVAL;
+    if ((rc = npf_api_op(n, open_run, &x)) == NPF_OK)
+        *media = x.media;
+    return rc;
 }
 
+static int frame_run(npf_t *n, void *arg)
+{
+    s_arg *x = arg;
+    npf_med *m = npf_media_find(n, x->id);
+    if (!m)
+        return NPF_ENOENT;
+    return npf_call_media_send(m->call, m->lid, x->flags & NPF_FRAME_KEY, x->buf, x->len, x->t);
+}
+
+/* a frame queued from another thread: its copy follows */
 typedef struct m_frame {
-    npf_t   *n;
-    uint32_t media;
-    int      flags;
-    int64_t  t;                     /* npf_media_send: max_age counts from here */
-    size_t   len;
-    uint8_t  data[];
+    npf_t  *n;
+    s_arg   x;
+    uint8_t data[];
 } m_frame;
 
-static int frame_send(npf_t *n, uint32_t media, int flags, const void *d, size_t len, int64_t t)
-{
-    npf_med *m = n->ended ? NULL : npf_media_find(n, media);
-    if (!m)
-        return n->ended ? NPF_ESTATE : NPF_ENOENT;
-    return npf_call_media_send(m->call, m->lid, flags & NPF_FRAME_KEY, d, len, t);
-}
-
-static void frame_run(npf_loop *loop, void *arg)
+/* the frame leaves the queue: sent (if its stream is still there) or dropped */
+static void frame_done(void *arg)
 {
     m_frame *f = arg;
     npf_t *n = f->n;
+    LOCK();
+    n->send_queued -= f->x.len;
+    n->send_jobs--;
+    UNLOCK();
+    free(f);
+}
+
+static void frame_posted(npf_loop *loop, void *arg)
+{
+    m_frame *f = arg;
     (void)loop;
-    LOCK();
-    f->n->send_queued -= f->len;
-    f->n->send_jobs--;
-    UNLOCK();
-    frame_send(f->n, f->media, f->flags, f->data, f->len, f->t);
-    free(f);
+    if (!f->n->ended)
+        frame_run(f->n, &f->x);
+    frame_done(f);
 }
 
-static void frame_drop(void *arg)
-{
-    m_frame *f = arg;
-    npf_t *n = f->n;
-    LOCK();
-    f->n->send_queued -= f->len;
-    f->n->send_jobs--;
-    UNLOCK();
-    free(f);
-}
-
-/* Frames from other threads wait for the library's thread with a budget:
- * over NPF_MEDIA_SEND_QUEUE bytes the send is refused (NPF_EBUSY) and the
- * application decides (skip to the next key frame, lower the rate). The
- * number is checked on every thread alike; what goes wrong later (the
- * stream ended meanwhile) only drops the frame. */
-static int media_send(npf_t *n, uint32_t media, int flags, const void *frame, size_t len)
+/* Frames from other threads wait for the instance's thread with a budget:
+ * over NPF_MEDIA_SEND_QUEUE bytes (or 4096 frames) the send is refused
+ * (NPF_EBUSY) and the application decides (skip to the next key frame,
+ * lower the rate). What goes wrong later (the stream ended meanwhile) only
+ * drops the frame. */
+static int media_send(npf_t *n, s_arg *x)
 {
     m_frame *f;
-    npf_med *m;
     int here, rc = NPF_OK;
-    int64_t t = npf_mono_ms();
-    if (!n || !frame || !len)
-        return NPF_EINVAL;
-    if (len > NPF_MEDIA_FRAME_MAX)
-        return NPF_ETOOBIG;
     LOCK();
     here = !n->running || n->loop_tid == self_tid();
     if (n->ended)
         rc = NPF_ESTATE;
-    else if (!(m = npf_media_find(n, media)))
+    else if (!npf_media_find(n, x->id))
         rc = NPF_ENOENT;
-    else if (len > m->frame_max)
-        rc = NPF_ETOOBIG;
-    else if (!here && (n->send_queued + len > NPF_MEDIA_SEND_QUEUE || n->send_jobs >= 4096))
+    else if (!here && (n->send_queued + x->len > NPF_MEDIA_SEND_QUEUE || n->send_jobs >= 4096))
         rc = NPF_EBUSY;
     else if (!here) {
-        n->send_queued += len;
+        n->send_queued += x->len;
         n->send_jobs++;
     }
     UNLOCK();
     if (rc != NPF_OK)
         return rc;
-    if (here) {                             /* a callback (or not running): at once, no copy */
-        rc = exec_mode(n);
-        if (rc == EXEC_POST)                /* it started meanwhile */
-            return NPF_EBUSY;
-        {
-            npf_log_ctx *prev = npf_log_ctx_swap(&n->logctx);
-            int r = frame_send(n, media, flags, frame, len, t);
-            npf_log_ctx_swap(prev);
-            if (rc == EXEC_TURN)
-                turn_end(n);
-            return r;
-        }
-    }
-    if (!(f = malloc(sizeof *f + len))) {
+    if (here)                               /* a callback (or not running): at once, no copy */
+        return sync_call(n, frame_run, x);
+    if (!(f = malloc(sizeof *f + x->len))) {
         LOCK();
-        n->send_queued -= len;
+        n->send_queued -= x->len;
         n->send_jobs--;
         UNLOCK();
         return NPF_ENOMEM;
     }
     f->n = n;
-    f->media = media;
-    f->flags = flags;
-    f->t = t;
-    f->len = len;
-    memcpy(f->data, frame, len);
-    if (npf_loop_post_drop(n->loop, frame_run, frame_drop, f) < 0) {
-        frame_drop(f);
+    f->x = *x;
+    f->x.buf = f->data;
+    memcpy(f->data, x->buf, x->len);
+    if (npf_loop_post_drop(n->loop, frame_posted, frame_done, f) < 0) {
+        frame_done(f);
         return NPF_ENOMEM;
     }
     return NPF_OK;
 }
 
-/* out (x->st, x->len bytes of it) is written whenever this runs */
+int npf_media_send(npf_t *n, uint32_t media, int flags, const void *frame, size_t len)
+{
+    s_arg x = {.id = media, .flags = flags, .buf = frame, .len = len, .t = npf_mono_ms()};
+    int r;
+    if (!frame || !len)
+        return NPF_EINVAL;
+    if (len > NPF_MEDIA_FRAME_MAX)
+        return NPF_ETOOBIG;
+    if (!api_enter(n))
+        return n ? NPF_ESTATE : NPF_EINVAL;
+    r = media_send(n, &x);
+    api_leave(n);
+    return r;
+}
+
 static int stats_run(npf_t *n, void *arg)
 {
-    s_arg *x = arg;
+    op_arg *x = arg;
     npf_med *m = npf_media_find(n, x->id);
     npf_call_media_stats cs;
     npf_media_stats st;
-    int rc = NPF_ENOENT;
-    memset(&st, 0, sizeof st);
-    if (m && (rc = npf_call_media_get_stats(m->call, m->lid, &cs)) >= 0) {
-        st.target_rate = cs.target_rate;
-        st.srtt_ms = cs.srtt_ms;
-        st.min_rtt_ms = cs.min_rtt_ms;
-        st.frames_dropped = cs.frames_dropped;
-        st.frames_skipped = cs.frames_skipped;
-        st.fec_recovered = cs.fec_recovered;
-        st.peer_frame_delay_avg_ms = cs.peer_frame_delay_avg_ms;
-        st.peer_frame_delay_max_ms = cs.peer_frame_delay_max_ms;
-        st.peer_jitter_ms = cs.peer_jitter_ms;
-        st.capacity_short = cs.capacity_short;
-        rc = NPF_OK;
-    }
-    st.size = x->len;
-    memcpy(x->st, &st, x->len);
-    return rc;
+    int rc;
+    if (!m)
+        return NPF_ENOENT;
+    if ((rc = npf_call_media_get_stats(m->call, m->lid, &cs)) < 0)
+        return rc;
+    st.target_rate = cs.target_rate;
+    st.srtt_ms = cs.srtt_ms;
+    st.min_rtt_ms = cs.min_rtt_ms;
+    st.frames_dropped = cs.frames_dropped;
+    st.frames_skipped = cs.frames_skipped;
+    st.fec_recovered = cs.fec_recovered;
+    st.peer_frame_delay_avg_ms = cs.peer_frame_delay_avg_ms;
+    st.peer_frame_delay_max_ms = cs.peer_frame_delay_max_ms;
+    st.peer_jitter_ms = cs.peer_jitter_ms;
+    st.capacity_short = cs.capacity_short;
+    put_out(x->out, x->size, &st, sizeof st);
+    return NPF_OK;
 }
 
-int npf_media_stats_get(npf_t *n, uint32_t media, npf_media_stats *out)
+int npf_media_stats_get_size(npf_t *n, uint32_t media, npf_media_stats *out, size_t size)
 {
-    s_arg x;
-    if (!n || !out || out->size < offsetof(npf_media_stats, capacity_short) + sizeof out->capacity_short)
-        return NPF_EINVAL;                  /* the caller sets out->size */
-    memset(&x, 0, sizeof x);
-    x.id = media;
-    x.st = out;
-    x.len = out->size < sizeof *out ? out->size : sizeof *out;
-    return npf_api_op(n, stats_run, &x);
+    return op_get(n, stats_run, media, out, size);
 }
 
 static int close_run(npf_t *n, void *arg)
 {
-    s_arg *x = arg;
-    npf_med *m = npf_media_find(n, x->id);
+    uint32_t id = *(uint32_t *)arg;
+    npf_med *m = npf_media_find(n, id);
     int rc;
     if (!m)
         return NPF_ENOENT;
-    rc = npf_call_media_close(m->call, m->lid);
-    if (rc == NPF_OK)
-        npf_media_forget(n, x->id);
+    if ((rc = npf_call_media_close(m->call, m->lid)) == NPF_OK)
+        npf_media_forget(n, id);            /* by its number: the close's callbacks may move m */
     return rc;
 }
 
 int npf_media_close(npf_t *n, uint32_t media)
 {
-    s_arg x;
-    memset(&x, 0, sizeof x);
-    x.id = media;
-    return npf_api_op(n, close_run, &x);
-}
-
-int npf_media_send(npf_t *n, uint32_t media, int flags, const void *frame, size_t len)
-{
-    int r;
-    if (!api_enter(n))
-        return n ? NPF_ESTATE : NPF_EINVAL;
-    r = media_send(n, media, flags, frame, len);
-    api_leave(n);
-    return r;
+    return npf_api_op(n, close_run, &media);
 }

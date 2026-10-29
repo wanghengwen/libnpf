@@ -180,7 +180,6 @@ static int ev_count(void)
 static uint32_t session_peer(npf_t *n, uint32_t session)
 {
     npf_session_info si;
-    npf_session_info_init(&si);
     return session && npf_session_get(n, session, &si) == NPF_OK ? si.peer : 0;
 }
 
@@ -189,7 +188,6 @@ static int wait_peer_state(npf_t *n, uint32_t peer, int state, int ms)
 {
     npf_peer_info pi;
     for (; ms > 0; ms -= 20) {
-        npf_peer_info_init(&pi);
         if (npf_peer_get(n, peer, &pi) == NPF_OK && pi.state == state)
             return 1;
         usleep(20000);
@@ -202,7 +200,6 @@ static int wait_refused(npf_t *n, uint32_t fwd, uint32_t want, int ms)
 {
     npf_forward_info fi;
     for (; ms > 0; ms -= 20) {
-        npf_forward_info_init(&fi);
         if (npf_forward_get(n, fwd, &fi) == NPF_OK && fi.refused >= want)
             return 1;
         usleep(20000);
@@ -365,15 +362,28 @@ static void resources(npf_t *a, const char *da, int echo)
         size_t k;
         npf_resource_info e1;
         memcpy(&e1, b + elem, sizeof e1);
-        ok = ok && e1.size == elem && strcmp(e1.name, "back") == 0;
+        ok = ok && strcmp(e1.name, "back") == 0;
         for (k = sizeof(npf_resource_info); k < elem; k++)
             ok = ok && b[k] == 0 && b[elem + k] == 0;
         for (k = 2 * elem; k < elem * 3 + 16; k++)
             ok = ok && b[k] == 0xaa;
     }
     check(ok, "a list of larger elements: the caller's stride, tails zeroed, nothing past the array");
-    check(npf_resource_list_size(a, 0, big, sizeof(npf_resource_info) - 8, 2, &count) == NPF_EINVAL,
-          "elements smaller than the first version: NPF_EINVAL");
+    /* an older application's smaller elements (no path, no description): its stride, its size only */
+    elem = offsetof(npf_resource_info, path);
+    memset(big, 0xaa, elem * 2 + 16);
+    ok = npf_resource_list_size(a, 0, big, elem, 2, &count) == NPF_ETOOBIG;
+    {
+        unsigned char *b = (unsigned char *)big;
+        size_t k;
+        npf_resource_info e1;
+        memset(&e1, 0, sizeof e1);
+        memcpy(&e1, b + elem, elem);
+        ok = ok && strcmp(e1.name, "back") == 0;
+        for (k = 2 * elem; k < elem * 2 + 16; k++)
+            ok = ok && b[k] == 0xaa;
+    }
+    check(ok, "a list of smaller elements: the caller's stride, nothing past its size");
     free(big);
     for (i = 0; i < NPF_RESOURCES_MAX - 3; i++) {
         snprintf(name, sizeof name, "r%d", i);
@@ -437,7 +447,6 @@ int main(void)
           "the same target in another spelling: NPF_EEXIST and its number");
     check(npf_peer_find(b, "aa", &other) == NPF_OK && other == peer && npf_peer_find(b, "LOCALHOST:0", &other) == NPF_ENOENT,
           "peer find by name");
-    npf_peer_info_init(&pi);
     check(npf_peer_get(b, peer, &pi) == NPF_OK && pi.target == NPF_TARGET_DIRECT && strcmp(pi.host, "localhost") == 0
           && pi.port == dport && strcmp(pi.name, "aa") == 0 && pi.connect == NPF_CONNECT_KEEP && pi.flags == 0
           && pi.state == NPF_PEER_WAITING, "peer get: before the start");
@@ -468,19 +477,16 @@ int main(void)
     check(npf_start(b) == NPF_OK, "B started");
     i = wait_ev(0, "session", 1, NULL, 10000);
     check(i >= 0 && evs[i].session && session_peer(b, evs[i].session) == peer, "session up: the peer's");
-    npf_peer_info_init(&pi);
     check(wait_peer_state(b, peer, NPF_PEER_CONNECTED, 5000) && npf_peer_get(b, peer, &pi) == NPF_OK
           && pi.ctx == &ctx_peer && pi.session == evs[i].session, "peer connected, its ctx and session");
     k = wait_ev(0, "forward", 1, "\"-L ", 5000);
     check(k >= 0, "forward event: the local forward up");
-    npf_forward_info_init(&fi);
     ok = npf_forward_get(b, fwd, &fi) == NPF_OK && fi.state == NPF_FWD_UP && fi.listen_port && fi.peer == peer
          && strcmp(fi.listen_host, "127.0.0.1") == 0 && fi.target_port == echo && fi.ctx == &ctx_fwd;
     check(ok, "forward get: up, the port the system picked, its ctx");
     {
         int other_ctx = 0;
         npf_forward_info f2;
-        npf_forward_info_init(&f2);
         check(npf_forward_setopt(b, fwd, NPF_FWD_OPT_CTX, &other_ctx, 0) == NPF_OK && npf_forward_get(b, fwd, &f2) == NPF_OK
               && f2.ctx == &other_ctx && npf_forward_setopt(b, fwd, NPF_FWD_OPT_CTX, &ctx_fwd, sizeof(void *)) == NPF_EINVAL
               && npf_forward_setopt(b, fwd, NPF_FWD_OPT_CTX, &ctx_fwd, 0) == NPF_OK, "forward setopt CTX; a len: NPF_EINVAL");
@@ -488,17 +494,14 @@ int main(void)
     check(ok && echoes(fi.listen_port), "through it to A's echo service");
     {
         npf_session_info si;
-        npf_session_info_init(&si);
         check(npf_session_list(b, ids, 8, &count) == NPF_OK && count == 1 && npf_session_get(b, ids[0], &si) == NPF_OK
               && si.peer == peer && si.outgoing && si.path == NPF_PATH_DIRECT, "session get");
     }
     /* SOCKS: a published target goes, another is refused, the listener stays up */
-    npf_forward_info_init(&fi);
     npf_forward_get(b, socks, &fi);
     k = ev_count();
     check(socks_connect(fi.listen_port, echo) == 0, "SOCKS to the published service");
     check(socks_connect(fi.listen_port, 9) > 0, "SOCKS to a target not published: refused");
-    npf_forward_info_init(&fi);
     check(wait_refused(b, socks, 1, 5000) && npf_forward_get(b, socks, &fi) == NPF_OK && fi.refused == 1
           && fi.state == NPF_FWD_UP && fi.ctx == &ctx_socks && strstr(fi.refused_why, "not published"),
           "a refusal counted, its target; the rule still up");
@@ -514,7 +517,6 @@ int main(void)
         i = wait_ev(from, "session", 0, NULL, 5000);
         j = i >= 0 ? wait_ev(i, "session", 1, NULL, 10000) : -1;
         check(i >= 0 && j > i && session_peer(b, evs[j].session) == peer, "the network changed: the session again");
-        npf_forward_info_init(&fi);
         check(j > i && npf_forward_get(b, fwd, &fi) == NPF_OK && fi.state == NPF_FWD_UP && echoes(fi.listen_port),
               "the network changed: the forward through the new session");
     }
@@ -549,7 +551,6 @@ int main(void)
     check(file_has(db, "\"port\": 0"), "its port as asked: 0");
     chmod(db, 0500);
     if (access(db, W_OK) != 0) {
-        npf_node_info_init(&ni);
         check(sets(b, peer, NPF_PEER_OPT_NAME, "cc") == NPF_ESAVE && npf_node_get(b, &ni) == NPF_OK && ni.unsaved
               && npf_peer_get(b, peer, &pi) == NPF_OK && !pi.saved && strcmp(pi.name, "cc") == 0,
               "a change that cannot be saved: NPF_ESAVE, in effect, unsaved");
@@ -562,7 +563,7 @@ int main(void)
 
     /* removal: the session ends, the forwards go with the peer */
     k = ev_count();
-    check(npf_peer_remove_id(b, peer) == NPF_OK && npf_peer_get(b, peer, &pi) == NPF_ENOENT
+    check(npf_peer_remove(b, peer) == NPF_OK && npf_peer_get(b, peer, &pi) == NPF_ENOENT
           && npf_forward_get(b, fwd, &fi) == NPF_ENOENT && npf_forward_list(b, 0, ids, 8, &count) == NPF_OK && !count,
           "peer removed, its forwards with it");
     i = wait_ev(k, "session", 0, NULL, 5000);
@@ -593,7 +594,6 @@ int main(void)
     pthread_mutex_unlock(&mu);
     b = make(db, NPF_ROLE_DIRECT, "udp_port = 0\n", 1, 0, err, sizeof err);
     ok = b && npf_peer_list(b, ids, 8, &count) == NPF_OK && count == 1;
-    npf_peer_info_init(&pi);
     ok = ok && npf_peer_get(b, ids[0], &pi) == NPF_OK && pi.flags == NPF_PERSIST && pi.connect == NPF_CONNECT_ON_DEMAND
          && pi.port == dport;
     check(ok, "after a restart: the saved peer back, on demand");
@@ -601,7 +601,6 @@ int main(void)
         check(npf_peer_setopt(b, ids[0], NPF_PEER_OPT_CTX, &ctx_peer, 0) == NPF_OK && npf_start(b) == NPF_OK
               && npf_peer_connect_now(b, ids[0]) == NPF_OK, "its ctx set before the start, woken");
         i = wait_ev(0, "session", 1, NULL, 10000);
-        npf_peer_info_init(&pi);
         check(i >= 0 && session_peer(b, evs[i].session) == ids[0] && npf_peer_get(b, ids[0], &pi) == NPF_OK
               && pi.ctx == &ctx_peer, "its session up; its ctx kept");
         k = i;

@@ -117,11 +117,6 @@ void npf_mod_set_state(npf_t *n, const npf_module *m, void *state)
         n->mod_state[i] = state;
 }
 
-void npf_mod_jkey(npf_out *o, int *first, const char *k)
-{
-    npf_out_jkey(o, first, k);
-}
-
 int npf_mod_key_known(npf_t *n, const char *k)
 {
     const npf_module *m;
@@ -183,7 +178,7 @@ void npf_mods_peer_fwd(npf_t *n, npf_peer *p, int i, int up, const char *why) { 
 void npf_mods_peer_removed(npf_t *n) { CALL(peer_removed, n); }
 void npf_mods_nick_set(npf_t *n, const char *target, const char *nick) { CALL(nick_set, n, target, nick); }
 void npf_mods_fwds_saved(npf_t *n, npf_ldev *d) { CALL(fwds_saved, n, d); }
-void npf_mods_status_json(npf_t *n, npf_out *o, int *first) { CALL(status_json, n, o, first); }
+void npf_mods_status_json(npf_t *n, npf_out *o) { CALL(status_json, n, o); }
 
 void npf_mods_peer_opened(npf_t *n, npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from)
 {

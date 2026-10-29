@@ -11,7 +11,7 @@
 #include <unistd.h>
 #endif
 
-#include "engine_internal.h"
+#include "api_internal.h"
 
 /* ---- account certificate (data_dir/account.cert) ---- */
 
@@ -163,27 +163,33 @@ static int mac_universal(const char *mac)
     return (strtol(mac, NULL, 16) & 0x02) == 0;
 }
 
-/* the physical network cards' addresses, sorted, "|"-joined (only the burnt-in
- * ones when there are any: made-up ones change); -1: none */
-static int hw_macs(const npf_host_info *hi, char *out, size_t cap)
+/* the physical network cards' addresses, sorted, into m: only the burnt-in
+ * ones when there are any (made-up ones change); their count */
+static int macs_of(const npf_host_info *hi, const char *m[NPF_HOST_MAX_MACS])
 {
-    const char *m[NPF_HOST_MAX_MACS], *t;
-    size_t o = 0;
+    const char *t;
     int i, j, k = 0, uni = 0;
     for (i = 0; i < hi->nmacs; i++)
         uni |= mac_universal(hi->macs[i]);
     for (i = 0; i < hi->nmacs; i++)
         if (!uni || mac_universal(hi->macs[i]))
             m[k++] = hi->macs[i];
-    if (k <= 0)
-        return -1;
     for (i = 1; i < k; i++)
         for (j = i; j > 0 && strcmp(m[j - 1], m[j]) > 0; j--)
             t = m[j], m[j] = m[j - 1], m[j - 1] = t;
+    return k;
+}
+
+/* the addresses "|"-joined; -1: none */
+static int hw_macs(const npf_host_info *hi, char *out, size_t cap)
+{
+    const char *m[NPF_HOST_MAX_MACS];
+    size_t o = 0;
+    int i, k = macs_of(hi, m);
     out[0] = 0;
     for (i = 0; i < k && o < cap; i++)
         o += (size_t)snprintf(out + o, cap - o, "%s%s", i ? "|" : "", m[i]);
-    return 0;
+    return k > 0 ? 0 : -1;
 }
 
 /* a serial number from the hardware when the vendor gives none: the lowest
@@ -191,16 +197,11 @@ static int hw_macs(const npf_host_info *hi, char *out, size_t cap)
  * reinstalling the system; else a hash of the machine id ("mid-" 24 hex) */
 static int auto_serial(const npf_host_info *hi, char *out, size_t cap)
 {
-    const char *low = NULL;
-    int i, uni = 0;
-    for (i = 0; i < hi->nmacs; i++)
-        uni |= mac_universal(hi->macs[i]);
-    for (i = 0; i < hi->nmacs; i++)
-        if ((!uni || mac_universal(hi->macs[i])) && (!low || strcmp(hi->macs[i], low) < 0))
-            low = hi->macs[i];
-    if (low) {
+    const char *m[NPF_HOST_MAX_MACS], *low;
+    int i;
+    if (macs_of(hi, m) > 0) {
         size_t o = (size_t)snprintf(out, cap, "mac-");
-        for (; *low && o + 1 < cap; low++)
+        for (low = m[0]; *low && o + 1 < cap; low++)
             if (*low != ':')
                 out[o++] = *low;
         out[o] = 0;
@@ -355,8 +356,6 @@ fail:                                       /* the credential and the model's se
     return -1;
 }
 
-/* a number for this identity (one key per model, or node_enroll): node.json,
- * the callee state, and callable from now on; pw_out gets the default password */
 /* the callee taken onto the node, with the configuration's hosted trust */
 void npf_engine_callee_attach(npf_t *n)
 {
@@ -364,6 +363,8 @@ void npf_engine_callee_attach(npf_t *n)
     npf_callee_attach(n->callee, &n->node);
 }
 
+/* a number for this identity (one key per model, or node_enroll): node.json,
+ * the callee state, and callable from now on */
 int npf_become_node(npf_t *n, uint64_t number)
 {
     char pw[10], bak[1100];
@@ -411,65 +412,60 @@ int npf_become_node(npf_t *n, uint64_t number)
  * a model credential); the callee state when there is a number */
 int npf_engine_identity_load(npf_t *n, char *err, size_t errcap)
 {
+    const char *cred = npf_conf_get(&n->conf, "cred", NULL);
     char seed_path[1100];
-    const char *cred;
     uint8_t seed[32];
-
-    /* the identity: a device credential (read-only), or the key in data_dir/identity */
-    cred = npf_conf_get(&n->conf, "cred", NULL);
-    if (cred) {
+    int ln;
+    memset(seed, 0, sizeof seed);
+    if (cred) {                             /* a device credential (read-only) */
         if (parse_cred(cred, &n->number, seed) < 0) {
             snprintf(err, errcap, "config: bad 'cred' (NPFD1 device credential)");
-            return -1;
+            goto fail;
         }
         n->cred = 1;
         n->has_number = 1;
         snprintf(n->default_pw, sizeof n->default_pw, "%s", npf_conf_get(&n->conf, "password", ""));
         if (!n->default_pw[0]) {
             snprintf(err, errcap, "config: 'password' (the device's default password) goes with 'cred'");
-            npf_wipe(seed, sizeof seed);
-            return -1;
+            goto fail;
         }
-    } else {
+    } else {                                /* the key in data_dir/identity */
         snprintf(seed_path, sizeof seed_path, "%s/identity", n->data_dir);
         if (npf_seed_file(seed_path, seed, 1) < 0) {
             snprintf(err, errcap, "cannot read or make %s", seed_path);
-            return -1;
+            goto fail;
         }
-        int ln = load_node(n);
+        ln = load_node(n);
         n->has_number = ln == 0;
         if (ln == -2) {
             /* not taken for "not enrolled": that would enroll again (another
              * number, the owner's binding and the pairings gone with it) */
             snprintf(err, errcap, "%s is damaged (and its copy): repair it, or move it away to enroll again "
                      "(a new number)", n->node_path);
-            npf_wipe(seed, sizeof seed);
-            return -1;
+            goto fail;
         }
         if (!n->has_number && npf_file_unreadable(n->node_path)) {
             /* there but not readable now: not enrolled again over it */
             snprintf(err, errcap, "cannot read %s", n->node_path);
-            npf_wipe(seed, sizeof seed);
-            return -1;
+            goto fail;
         }
-        if (model_setup(n, err, errcap) < 0) {
-            npf_wipe(seed, sizeof seed);
-            return -1;
-        }
+        if (model_setup(n, err, errcap) < 0)
+            goto fail;
     }
     npf_identity_from_seed(&n->id, seed);
     if (n->has_number) {
         if (!(n->callee = calloc(1, sizeof *n->callee))) {
-            npf_wipe(seed, 32);
             snprintf(err, errcap, "no memory");
-            return -1;
+            goto fail;
         }
         if (npf_callee_init(n->callee, n->state_path, n->number, seed, n->default_pw) < 0) {
-            npf_wipe(seed, 32);
             snprintf(err, errcap, "cannot load authorization state %s", n->state_path);
-            return -1;
+            goto fail;
         }
     }
-    npf_wipe(seed, 32);
+    npf_wipe(seed, sizeof seed);
     return 0;
+fail:                                       /* the seed wiped on every way out */
+    npf_wipe(seed, sizeof seed);
+    return -1;
 }

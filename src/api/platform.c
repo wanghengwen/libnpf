@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf_int.h"
+#include "api_internal.h"
 #include "npf/module.h"
 #include "npf/peers.h"
 

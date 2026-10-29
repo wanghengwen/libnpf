@@ -1,18 +1,20 @@
 /* libnpf: a device's pairing (npf_pairing_* and npf_owner_reset): its
- * password, the keys paired, the owner reset. */
+ * password, the keys paired, the owner reset. Without a number (no callee
+ * state yet): NPF_ESTATE. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
-#include <stddef.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#include "npf_int.h"
-#include "npf/module.h"
-#include "ops_internal.h"
-/* ---- a device's pairing ---- */
+#include "api_internal.h"
+
+/* the callee state, once there is a number (npf_become_node makes the state first) */
+static npf_callee *callee_of(npf_t *n)
+{
+    return n->has_number ? n->callee : NULL;
+}
 
 static int callee_rc(int r)
 {
@@ -21,19 +23,20 @@ static int callee_rc(int r)
 
 static int pw_get_run(npf_t *n, void *arg)
 {
-    pid_arg *x = arg;
-    if (!n->callee || !n->has_number)
+    op_arg *x = arg;
+    npf_callee *c = callee_of(n);
+    if (!c)
         return NPF_ESTATE;
-    if (strlen(n->callee->password) >= (size_t)x->flags)
+    if (strlen(c->password) >= x->size)
         return NPF_ETOOBIG;
-    snprintf(x->out, (size_t)x->flags, "%s", n->callee->password);
+    snprintf(x->out, x->size, "%s", c->password);
     return NPF_OK;
 }
 
 int npf_pairing_password_get(npf_t *n, char *out, size_t cap)
 {
-    pid_arg x = {.flags = (int)cap, .out = out};
-    if (!out || !cap || cap > 1 << 20)
+    op_arg x = {.out = out, .size = cap};
+    if (!out || !cap)
         return NPF_EINVAL;
     out[0] = 0;
     return npf_api_op(n, pw_get_run, &x);
@@ -41,86 +44,68 @@ int npf_pairing_password_get(npf_t *n, char *out, size_t cap)
 
 static int pw_set_run(npf_t *n, void *arg)
 {
-    pid_arg *x = arg;
+    op_arg *x = arg;
+    npf_callee *c = callee_of(n);
     int r;
-    if (!n->callee || !n->has_number)
+    if (!c)
         return NPF_ESTATE;
-    r = npf_callee_password_set(n->callee, x->a);
-    if (r == -1)
-        err_set(x->err, x->errcap, "%s", "the password needs 8 to 127 bytes");
-    else if (r == -2)
-        err_set(x->err, x->errcap, "%s", "in effect, but the device's state could not be written");
+    if ((r = npf_callee_password_set(c, x->in)) == -1)
+        return op_fail(x, NPF_EINVAL, "the password needs 8 to 127 bytes");
+    if (r == -2)
+        return op_fail(x, NPF_ESAVE, "in effect, but the device's state could not be written");
     return callee_rc(r);
 }
 
 int npf_pairing_password_set(npf_t *n, const char *password, char *err, size_t errcap)
 {
-    pid_arg x = {.a = password, .err = err, .errcap = errcap};
-    if (err && errcap)
-        err[0] = 0;
+    op_arg x = {.in = password, .err = err, .errcap = errcap};
+    err_clear(err, errcap);
     if (!password)
         return NPF_EINVAL;
     return npf_api_op(n, pw_set_run, &x);
 }
 
-typedef struct pl_arg {
-    npf_pairing *out;
-    size_t       elem, cap, *count;
-} pl_arg;
-
 static int pairing_list_run(npf_t *n, void *arg)
 {
-    pl_arg *x = arg;
+    npf_callee *c = callee_of(n);
     npf_pairing pr;
     int k;
-    if (!n->callee || !n->has_number)
+    if (!c)
         return NPF_ESTATE;
-    for (k = 0; k < n->callee->npaired; k++) {
-        if (*x->count < x->cap) {
-            memset(&pr, 0, sizeof pr);
-            pr.size = sizeof pr;
-            memcpy(pr.key, n->callee->paired[k].pub, 32);
-            pr.since = n->callee->paired[k].added;
-            put_elem(x->out, x->elem, *x->count, &pr, sizeof pr);
-        }
-        (*x->count)++;
+    for (k = 0; k < c->npaired; k++) {
+        memset(&pr, 0, sizeof pr);
+        memcpy(pr.key, c->paired[k].pub, 32);
+        pr.since = c->paired[k].added;
+        list_put(arg, &pr, sizeof pr);
     }
-    return list_rc(*x->count, x->cap);
+    return NPF_OK;
 }
 
-int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t elem_size, size_t cap, size_t *count)
+int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t size, size_t cap, size_t *count)
 {
-    pl_arg x = {.out = out, .elem = elem_size, .cap = cap, .count = count};
-    /* any size from the last field known when the list came (a later
-     * version's longer structure, an older caller's shorter one) */
-    if (!count || (cap && !out) || elem_size < offsetof(npf_pairing, since) + sizeof out->since)
-        return NPF_EINVAL;
-    *count = 0;
-    return npf_api_op(n, pairing_list_run, &x);
+    return op_list(n, pairing_list_run, 0, out, size, cap, count);
 }
 
 static int unpair_run(npf_t *n, void *arg)
 {
-    pid_arg *x = arg;
+    npf_callee *c = callee_of(n);
     int r;
-    if (!n->callee || !n->has_number)
+    if (!c)
         return NPF_ESTATE;
-    r = npf_callee_unpair_key(n->callee, x->out);
+    r = npf_callee_unpair_key(c, arg);
     return r == -1 ? NPF_ENOENT : callee_rc(r);
 }
 
 int npf_pairing_remove(npf_t *n, const uint8_t key[32])
 {
-    pid_arg x = {.out = (void *)key};
-    return npf_api_op(n, unpair_run, &x);
+    return npf_api_op(n, unpair_run, (void *)key);
 }
 
 static int owner_reset_run(npf_t *n, void *arg)
 {
+    npf_callee *c = callee_of(n);
     (void)arg;
-    if (!n->callee || !n->has_number)
-        return NPF_ESTATE;
-    return callee_rc(npf_callee_owner_reset(n->callee));
+    return c ? callee_rc(npf_callee_owner_reset(c)) : NPF_ESTATE;
 }
 
 int npf_owner_reset(npf_t *n)
