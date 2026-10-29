@@ -33,6 +33,9 @@ int  npf_aead_open(const uint8_t key[32], const uint8_t nonce[12], const void *a
 /* BLAKE2b-512(a | b), allowing output to alias either input. */
 void npf_hash2(uint8_t out[64], const void *a, size_t alen, const void *b, size_t blen);
 
+/* SHA-1, for WebSocket's Sec-WebSocket-Accept only (not a security use) */
+void npf_sha1(uint8_t out[20], const void *data, size_t len);
+
 /* HMAC-BLAKE2b (block 128, output 64), the Noise HASH = BLAKE2b instance */
 void npf_hmac_blake2b(uint8_t out[64], const uint8_t *key, size_t key_len,
                       const uint8_t *data, size_t data_len);
