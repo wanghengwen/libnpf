@@ -1,6 +1,7 @@
 #include "npf/sys.h"
 #include <string.h>
 
+#include "npf/crypto.h"
 #include "npf/candidates.h"
 
 static int is_global_v6(const struct in6_addr *a)
@@ -38,8 +39,7 @@ int npf_gather_host4(struct in_addr *out, int max)
          * its host alias 10.255.255.254 on lo, where it is not even usable */
         if (ifs[i].family != AF_INET || ifs[i].loopback)
             continue;
-        h = ((uint32_t)ifs[i].addr[0] << 24) | ((uint32_t)ifs[i].addr[1] << 16) | ((uint32_t)ifs[i].addr[2] << 8)
-            | ifs[i].addr[3];
+        h = npf_rdbe32(ifs[i].addr);
         if ((h >> 24) == 127)               /* 127.0.0.0/8 loopback */
             continue;
         if ((h & 0xffff0000u) == 0xa9fe0000u)  /* 169.254/16 link-local */

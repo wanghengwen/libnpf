@@ -465,7 +465,7 @@ static void ack_in(struct npf_home *h, const uint8_t *plain, size_t pl)
 /* a RELAY_PING: answered at once (that is the keepalive) */
 static void ping_in(struct npf_home *h, const uint8_t *plain, size_t pl)
 {
-    size_t blen = (size_t)plain[2] | (size_t)plain[3] << 8;
+    size_t blen = npf_rd16(plain + 2);
     relay_ping p;
     int64_t now = npf_mono_ms(), d;
     int flags = RELAY_F_PONG;

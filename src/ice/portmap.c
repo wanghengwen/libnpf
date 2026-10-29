@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/crypto.h"
 #include "npf/platform.h"
 #include "npf/portmap.h"
 
@@ -14,11 +15,6 @@
 #define RETRY_MS_0    250           /* RFC 6886/6887: 250 ms, double, a few tries */
 #define RETRIES       4             /* ~250/500/1000/2000 ms, give up < 4 s */
 
-static void wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
-static void wr32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
-static uint16_t rd16(const uint8_t *p) { return (uint16_t)((p[0] << 8) | p[1]); }
-static uint32_t rd32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
-
 /* ---- PCP ---- */
 
 int npf_pcp_build_map(uint8_t out[60], const uint8_t nonce[12], const struct in_addr *client,
@@ -27,7 +23,7 @@ int npf_pcp_build_map(uint8_t out[60], const uint8_t nonce[12], const struct in_
     memset(out, 0, 60);
     out[0] = PCP_VERSION;
     out[1] = PCP_OP_MAP;                 /* R=0 (request), opcode=1 */
-    wr32(out + 4, lifetime);
+    npf_be32(out + 4, lifetime);
     /* client IP as IPv4-mapped IPv6 ::ffff:a.b.c.d */
     out[18] = 0xff;
     out[19] = 0xff;
@@ -35,8 +31,8 @@ int npf_pcp_build_map(uint8_t out[60], const uint8_t nonce[12], const struct in_
     /* MAP opcode data at offset 24 */
     memcpy(out + 24, nonce, 12);
     out[36] = PCP_PROTO_UDP;
-    wr16(out + 40, internal_port);
-    wr16(out + 42, suggest_ext);
+    npf_be16(out + 40, internal_port);
+    npf_be16(out + 42, suggest_ext);
     /* suggested external IP (out+44..59) left zero = "no preference" */
     return 60;
 }
@@ -51,10 +47,10 @@ int npf_pcp_parse_map(const uint8_t *in, size_t len, const uint8_t nonce[12], np
         return -1;
     memset(res, 0, sizeof(*res));
     res->method = NPF_PORTMAP_PCP;
-    res->lifetime = rd32(in + 4);
-    res->epoch = rd32(in + 8);
-    res->internal_port = rd16(in + 40);
-    res->external_port = rd16(in + 42);
+    res->lifetime = npf_rdbe32(in + 4);
+    res->epoch = npf_rdbe32(in + 8);
+    res->internal_port = npf_rdbe16(in + 40);
+    res->external_port = npf_rdbe16(in + 42);
     /* assigned external IP at in+44..59; v4-mapped -> IPv4, else IPv6 */
     if (memcmp(in + 44, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12) == 0) {
         res->ext_family = 4;
@@ -73,9 +69,9 @@ int npf_natpmp_build_map(uint8_t out[12], uint16_t internal_port, uint16_t sugge
     memset(out, 0, 12);
     out[0] = 0;                          /* version */
     out[1] = 1;                          /* opcode 1 = map UDP */
-    wr16(out + 4, internal_port);
-    wr16(out + 6, suggest_ext);
-    wr32(out + 8, lifetime);
+    npf_be16(out + 4, internal_port);
+    npf_be16(out + 6, suggest_ext);
+    npf_be32(out + 8, lifetime);
     return 12;
 }
 
@@ -83,14 +79,14 @@ int npf_natpmp_parse_map(const uint8_t *in, size_t len, npf_portmap *res)
 {
     if (len < 16 || in[0] != 0 || in[1] != (128 + 1))
         return -1;
-    if (rd16(in + 2) != 0)               /* result code */
+    if (npf_rdbe16(in + 2) != 0)               /* result code */
         return -1;
     memset(res, 0, sizeof(*res));
     res->method = NPF_PORTMAP_NATPMP;
-    res->epoch = rd32(in + 4);
-    res->internal_port = rd16(in + 8);
-    res->external_port = rd16(in + 10);
-    res->lifetime = rd32(in + 12);
+    res->epoch = npf_rdbe32(in + 4);
+    res->internal_port = npf_rdbe16(in + 8);
+    res->external_port = npf_rdbe16(in + 10);
+    res->lifetime = npf_rdbe32(in + 12);
     res->ext_family = 4;                 /* filled by the get-external-address step */
     return 0;
 }
@@ -107,7 +103,7 @@ static int natpmp_external_ip(int fd, uint8_t ip[4])
         if (poll(&pfd, 1, RETRY_MS_0 << i) <= 0)
             continue;
         r = recv(fd, buf, sizeof(buf), 0);
-        if (r >= 12 && buf[0] == 0 && buf[1] == 128 && rd16(buf + 2) == 0) {
+        if (r >= 12 && buf[0] == 0 && buf[1] == 128 && npf_rdbe16(buf + 2) == 0) {
             memcpy(ip, buf + 8, 4);
             return 0;
         }

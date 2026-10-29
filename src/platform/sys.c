@@ -9,6 +9,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "npf/crypto.h"
 #include "npf/log.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
@@ -765,8 +766,7 @@ static int on_local_subnet(const struct sockaddr *to)
         uint32_t b, m;
         if (ifs[i].family != AF_INET || ifs[i].loopback || ifs[i].prefix <= 0 || ifs[i].prefix > 32)
             continue;
-        b = (uint32_t)ifs[i].addr[0] << 24 | (uint32_t)ifs[i].addr[1] << 16 | (uint32_t)ifs[i].addr[2] << 8
-            | ifs[i].addr[3];
+        b = npf_rdbe32(ifs[i].addr);
         m = ifs[i].prefix == 32 ? 0xffffffffu : ~(0xffffffffu >> ifs[i].prefix);
         if ((a & m) == (b & m))
             return 1;

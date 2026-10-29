@@ -18,7 +18,7 @@ static const uint8_t *addr_parse(const uint8_t *b, size_t len, struct sockaddr_s
     if (len < 7 || b[0] != 4)
         return NULL;
     a->sin_family = AF_INET;
-    a->sin_port = htons((uint16_t)(b[1] | b[2] << 8));
+    a->sin_port = htons(npf_rd16(b + 1));
     memcpy(&a->sin_addr, b + 3, 4);
     return b + 7;
 }
@@ -33,7 +33,7 @@ static int relay_ack_parse(const uint8_t *b, size_t len, relay_ack *a)
     a->state = p[8];
     memcpy(a->cookie, p + 9, 8);
     a->kseq = npf_rd64(p + 17);
-    a->t_s = p[26] | p[27] << 8;
+    a->t_s = npf_rd16(p + 26);
     a->learn = p[28];
     return 0;
 }
@@ -46,7 +46,7 @@ int relay_ping_parse(const uint8_t *b, size_t len, relay_ping *q)
         return -1;
     q->srv_ms = (int64_t)npf_rd64(p);
     q->ping_id = npf_rd32(p + 8);
-    q->t_s = p[12] | p[13] << 8;
+    q->t_s = npf_rd16(p + 12);
     q->learn = p[14];
     return 0;
 }
@@ -188,7 +188,7 @@ int relay_bind_ack(relay_c *r, npf_node *n, const uint8_t *plain, size_t pl, rel
     int i;
     if (pl < NPF_PKT_HDR_SIZE)
         return 0;
-    blen = (size_t)plain[2] | (size_t)plain[3] << 8;
+    blen = npf_rd16(plain + 2);
     if (NPF_PKT_HDR_SIZE + blen > pl || relay_ack_parse(plain + NPF_PKT_HDR_SIZE, blen, a) < 0)
         return 0;
     ts = npf_rd32(plain + 4 + NPF_TXID_SIZE);

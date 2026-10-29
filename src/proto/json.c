@@ -166,33 +166,38 @@ static int parse_number(parser *p)
 
 static int parse_value(parser *p);
 
-/* two string tokens equal after unescaping? */
+/* a string token as it reads unescaped: its length and *s its text (the
+ * input's, else x); -1 escaped and longer than x, or a NUL in it */
+static int str_view(const npf_json *j, int t, char x[256], const char **s)
+{
+    const npf_jtok *k = &j->tok[t];
+    if (!k->escaped) {
+        *s = j->s + k->start;
+        return (int)(k->end - k->start);
+    }
+    *s = x;
+    return npf_json_str(j, t, x, 256);
+}
+
+/* two string tokens equal after unescaping? (one str_view refuses: a
+ * clash, the message is rejected) */
 static int key_equal(const npf_json *j, int a, int b)
 {
     char x[256], y[256];
-    const npf_jtok *ta = &j->tok[a], *tb = &j->tok[b];
-    if (!ta->escaped && !tb->escaped)
-        return ta->end - ta->start == tb->end - tb->start
-            && memcmp(j->s + ta->start, j->s + tb->start, ta->end - ta->start) == 0;
-    if (npf_json_str(j, a, x, sizeof x) < 0 || npf_json_str(j, b, y, sizeof y) < 0)
-        return 1;   /* oversized or NUL keys: treat as a clash, the message is rejected */
-    return strcmp(x, y) == 0;
+    const char *s, *u;
+    int n = str_view(j, a, x, &s), m = str_view(j, b, y, &u);
+    return n < 0 || m < 0 || (n == m && memcmp(s, u, (size_t)n) == 0);
 }
 
-/* FNV-1a of a key as it reads unescaped; -1: one key_equal would refuse
- * (oversized, or a NUL in it) */
+/* FNV-1a of a key as it reads unescaped; -1: str_view refuses it */
 static int key_hash(const npf_json *j, int k, uint32_t *out)
 {
-    const npf_jtok *t = &j->tok[k];
-    const char *s = j->s + t->start;
+    const char *s;
     char x[256];
-    int n = (int)(t->end - t->start), i;
+    int n = str_view(j, k, x, &s), i;
     uint32_t h = 2166136261u;
-    if (t->escaped) {
-        if ((n = npf_json_str(j, k, x, sizeof x)) < 0)
-            return -1;
-        s = x;
-    }
+    if (n < 0)
+        return -1;
     for (i = 0; i < n; i++)
         h = (h ^ (unsigned char)s[i]) * 16777619u;
     *out = h;
@@ -335,16 +340,11 @@ int npf_json_get(const npf_json *j, int obj, const char *key)
         return -1;
     t = obj + 1;
     for (i = 0; i < j->tok[obj].size; i++) {
-        const npf_jtok *k = &j->tok[t];
-        int v = t + 1;
-        if (!k->escaped) {
-            if (k->end - k->start == kl && memcmp(j->s + k->start, key, kl) == 0)
-                return v;
-        } else {
-            char buf[256];
-            if (npf_json_str(j, t, buf, sizeof buf) >= 0 && strcmp(buf, key) == 0)
-                return v;
-        }
+        char x[256];
+        const char *s;
+        int v = t + 1, n = str_view(j, t, x, &s);
+        if (n >= 0 && (size_t)n == kl && memcmp(s, key, kl) == 0)
+            return v;
         t = j->tok[v].next;
     }
     return -1;

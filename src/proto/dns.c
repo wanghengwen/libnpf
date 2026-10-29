@@ -2,17 +2,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/crypto.h"
 #include "npf/dns.h"
 
 int npf_dns_txt_query(const char *name, uint16_t id, uint8_t *out, size_t cap)
 {
     size_t o = 12;
     const char *p = name;
-    if (cap < 12 + strlen(name) + 2 + 4)
+    if (strlen(name) > 253 || cap < 12 + strlen(name) + 2 + 4)    /* a name: 253 bytes at most */
         return -1;
     memset(out, 0, 12);
-    out[0] = (uint8_t)(id >> 8);
-    out[1] = (uint8_t)id;
+    npf_be16(out, id);
     out[2] = 0x01;                  /* RD */
     out[5] = 1;                     /* QDCOUNT */
     while (*p) {
@@ -57,8 +57,8 @@ int npf_dns_txt_answers(const uint8_t *m, size_t len, npf_dns_txt_fn fn, void *a
     int found = 0;
     if (len < 12 || !(m[2] & 0x80) || (m[3] & 0x0f) != 0)   /* a response without an error code */
         return -1;
-    qd = (unsigned)(m[4] << 8 | m[5]);
-    an = (unsigned)(m[6] << 8 | m[7]);
+    qd = npf_rdbe16(m + 4);
+    an = npf_rdbe16(m + 6);
     for (i = 0; i < qd; i++) {
         if ((off = skip_name(m, len, (size_t)off)) < 0 || (size_t)off + 4 > len)
             return -1;
@@ -68,8 +68,8 @@ int npf_dns_txt_answers(const uint8_t *m, size_t len, npf_dns_txt_fn fn, void *a
         unsigned type, rdlen;
         if ((off = skip_name(m, len, (size_t)off)) < 0 || (size_t)off + 10 > len)
             return -1;
-        type = (unsigned)(m[off] << 8 | m[off + 1]);
-        rdlen = (unsigned)(m[off + 8] << 8 | m[off + 9]);
+        type = npf_rdbe16(m + off);
+        rdlen = npf_rdbe16(m + off + 8);
         off += 10;
         if ((size_t)off + rdlen > len)
             return -1;
