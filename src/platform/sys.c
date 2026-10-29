@@ -585,6 +585,42 @@ int npf_mkdir_p(const char *path)
     return npf_mkdir(buf);
 }
 
+/* ---- socket addresses (sys.h) ---- */
+
+socklen_t npf_sa_len(const void *sa)
+{
+    return ((const struct sockaddr *)sa)->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6)
+                                                                : sizeof(struct sockaddr_in);
+}
+
+uint16_t npf_sa_port(const void *sa)
+{
+    const struct sockaddr *a = sa;
+    return ntohs(a->sa_family == AF_INET6 ? ((const struct sockaddr_in6 *)sa)->sin6_port
+                                          : ((const struct sockaddr_in *)sa)->sin_port);
+}
+
+int npf_sa_eq(const void *a, const void *b)
+{
+    int f = ((const struct sockaddr *)a)->sa_family;
+    if (f != ((const struct sockaddr *)b)->sa_family || npf_sa_port(a) != npf_sa_port(b))
+        return 0;
+    if (f == AF_INET6)
+        return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0;
+    return f == AF_INET
+           && ((const struct sockaddr_in *)a)->sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
+}
+
+const char *npf_sa_str(const void *sa, char *buf, size_t cap)
+{
+    char ip[INET6_ADDRSTRLEN] = "?";
+    int v6 = ((const struct sockaddr *)sa)->sa_family == AF_INET6;
+    inet_ntop(v6 ? AF_INET6 : AF_INET, v6 ? (const void *)&((const struct sockaddr_in6 *)sa)->sin6_addr
+                                          : (const void *)&((const struct sockaddr_in *)sa)->sin_addr, ip, sizeof ip);
+    snprintf(buf, cap, "%s:%u", ip, npf_sa_port(sa));
+    return buf;
+}
+
 /* ---- scratch buffers (sys.h) ---- */
 
 #define SCRATCH_KEEP 4
@@ -665,24 +701,6 @@ typedef struct {
 
 static NPF_THREAD_LOCAL send_err t_send_err;
 
-static int dst_len(const struct sockaddr *to)
-{
-    return to->sa_family == AF_INET6 ? (int)sizeof(struct sockaddr_in6) : (int)sizeof(struct sockaddr_in);
-}
-
-static void dst_txt(const struct sockaddr *to, char *out, size_t cap)
-{
-    char ip[INET6_ADDRSTRLEN] = "?";
-    unsigned port;
-    if (to->sa_family == AF_INET6) {
-        inet_ntop(AF_INET6, &((const struct sockaddr_in6 *)to)->sin6_addr, ip, sizeof ip);
-        port = ntohs(((const struct sockaddr_in6 *)to)->sin6_port);
-    } else {
-        inet_ntop(AF_INET, &((const struct sockaddr_in *)to)->sin_addr, ip, sizeof ip);
-        port = ntohs(((const struct sockaddr_in *)to)->sin_port);
-    }
-    snprintf(out, cap, "%s:%u", ip, port);
-}
 
 /* 1 when this one is only counted */
 static int quiet(send_err *e, int err, int64_t now)
@@ -697,7 +715,7 @@ static int quiet(send_err *e, int err, int64_t now)
 static void report(send_err *e, int level, int err, int64_t now, const struct sockaddr *to, const char *hint)
 {
     char d[80];
-    dst_txt(to, d, sizeof d);
+    npf_sa_str(to, d, sizeof d);
     if (e->more)
         npf_log_at(level, __FILE__, __LINE__,
                    "udp: sending to %s failed: %s%s (and %u more failures of this kind in the last minute)", d,
@@ -803,8 +821,8 @@ static int sendto_loopback(int fd, const void *buf, size_t len, const struct soc
     DWORD cur = 0, none = 0;
     if (getsockopt((SOCKET)fd, lvl, opt, (char *)&cur, &cl) != 0 || cur == 0
         || setsockopt((SOCKET)fd, lvl, opt, (const char *)&none, sizeof none) != 0)
-        return sendto(fd, buf, len, MSG_DONTWAIT, sa, dst_len(sa));
-    r = sendto(fd, buf, len, MSG_DONTWAIT, sa, dst_len(sa));
+        return sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_sa_len(sa));
+    r = sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_sa_len(sa));
     err = WSAGetLastError();
     setsockopt((SOCKET)fd, lvl, opt, (const char *)&cur, sizeof cur);
     WSASetLastError(err);
@@ -863,7 +881,7 @@ int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
             return 0;
     } else
 #endif
-    if (sendto(fd, buf, len, MSG_DONTWAIT, sa, dst_len(sa)) >= 0)
+    if (sendto(fd, buf, len, MSG_DONTWAIT, sa, npf_sa_len(sa)) >= 0)
         return 0;
 #ifdef _WIN32
     err = WSAGetLastError();

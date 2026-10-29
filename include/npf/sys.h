@@ -122,6 +122,15 @@ int  npf_sock_broken_code(int err);             /* an SO_ERROR value */
 const char *npf_sock_strerror(void);
 const char *npf_sock_strerror_code(int err);         /* an SO_ERROR value */
 
+/* An IPv4 or IPv6 socket address (sockaddr_in, sockaddr_in6, or a
+ * sockaddr_storage holding one; the family says which): its length, its
+ * port (host order), whether two are the same address and port (0 for
+ * any other family), and "IP:port" ("::1:5": log lines only) */
+socklen_t   npf_sa_len(const void *sa);
+uint16_t    npf_sa_port(const void *sa);
+int         npf_sa_eq(const void *a, const void *b);
+const char *npf_sa_str(const void *sa, char *buf, size_t cap);
+
 /* addresses of the interfaces that are up (loopback included) */
 typedef struct npf_ifaddr {
     int     family;                             /* AF_INET / AF_INET6 */
