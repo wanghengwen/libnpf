@@ -376,6 +376,17 @@ struct npf_natprobe {
 
 static void ev_pump(npf_natprobe *p);
 
+/* the allocation sockets (phase 2) closed, all but keep */
+static void drop_alloc(npf_natprobe *p, int keep)
+{
+    int i;
+    for (i = 0; i < p->ntx; i++)
+        if (p->txs[i].fd != keep) {
+            npf_loop_del(p->loop, p->txs[i].fd);
+            npf_sock_close(p->txs[i].fd);
+        }
+}
+
 static void ev_finish(npf_natprobe *p, int ok)
 {
     npf_natprobe_fn fn = p->fn;
@@ -456,11 +467,7 @@ static void ev_pump(npf_natprobe *p)
             p->ffd = p->txs[f].fd;
             mf = p->txs[f].mapped;
         }
-        for (i = 0; i < p->ntx; i++)
-            if (p->txs[i].fd != p->ffd) {
-                npf_loop_del(p->loop, p->txs[i].fd);
-                npf_sock_close(p->txs[i].fd);
-            }
+        drop_alloc(p, p->ffd);
         p->phase = 3;
         p->ntx = filter_txs(&p->cfg, p->txs, p->cfg.main_fd, p->ffd, &mf, p->n_ep, npf_mono_ms());
         if (p->ntx > 0) {
@@ -521,15 +528,11 @@ int npf_natprobe_input(npf_natprobe *p, int fd, const uint8_t *buf, size_t len, 
 
 void npf_natprobe_cancel(npf_natprobe *p)
 {
-    int i;
     if (!p)
         return;
     npf_timer_cancel(p->loop, p->t);
     if (p->phase == 2)
-        for (i = 0; i < p->ntx; i++) {
-            npf_loop_del(p->loop, p->txs[i].fd);
-            npf_sock_close(p->txs[i].fd);
-        }
+        drop_alloc(p, -1);
     if (p->phase == 3 && p->ffd >= 0) {
         npf_loop_del(p->loop, p->ffd);
         npf_sock_close(p->ffd);

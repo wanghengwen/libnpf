@@ -351,10 +351,10 @@ static int parse_frames_at(npf_ws *ws, size_t *off)
                     return -1;
                 if (fin) {
                     ws->cbs.on_message(ws, ws->frag.p, ws->frag.len, ws->frag_binary, ws->arg);
-                    if (ws->state == ST_DEAD)
-                        return -2;
-                    buf_consume(&ws->frag, ws->frag.len);
-                    ws->frag_active = 0;
+                    if (ws->state != ST_DEAD) {
+                        buf_consume(&ws->frag, ws->frag.len);
+                        ws->frag_active = 0;
+                    }
                 }
             }
             if (ws->state == ST_DEAD)

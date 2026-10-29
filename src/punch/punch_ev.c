@@ -86,8 +86,9 @@ struct npf_punch {
     void           *arg;
 };
 
-/* the bodies: session_id(8) [ | sock(2) (PROBE) | sock(2) family(1) port(2)
- * addr(4 or 16) (PROBE_ACK: where its PROBE came from) ] */
+/* the bodies: session_id(8), then PROBE: sock(2); PROBE_ACK: its PROBE's
+ * sock(2) | family(1) | port(2) | addr(4 or 16), where that came from;
+ * NOMINATE, NOMINATE_ACK: nothing more */
 static size_t sid_body(uint8_t *b, uint64_t sid)
 {
     npf_le64(b, sid);
