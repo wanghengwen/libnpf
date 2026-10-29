@@ -1206,12 +1206,15 @@ void node_sig_connect(npf_node *n)
         return;
     }
     {   /* and a second access point at the same time: the server's next URL
-         * (a domain and an IP), else another server of the same priority */
+         * (a domain and an IP), else another server of the same priority,
+         * but not while a call is up: the server rebinds a call to the
+         * identity's new connection only on itself (as the UDP attempt's
+         * race, this server's own; another one once fails says it is gone) */
         int r = -1, u = 0;
         if (e->nws > 1) {
             r = n->cur_server;
             u = (i + 1) % e->nws;
-        } else if ((r = node_server_pick(n, node_eff_prio(e), n->cur_server)) >= 0)
+        } else if (!node_calls_up(n) && (r = node_server_pick(n, node_eff_prio(e), n->cur_server)) >= 0)
             u = n->servers[r].fails % n->servers[r].nws;
         if (r >= 0) {
             npf_server_entry *f = &n->servers[r];

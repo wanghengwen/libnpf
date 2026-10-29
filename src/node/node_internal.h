@@ -39,6 +39,8 @@ void node_sig_connect(npf_node *n);
 void node_sig_probe(npf_node *n);
 /* a call is being set up (needs the signaling connection as it is) */
 int  node_calls_setting_up(const npf_node *n);
+/* a call is up: the signaling reconnects to the same server (its calls are rebound there) */
+int  node_calls_up(const npf_node *n);
 /* a datagram on a main socket from the UDP signaling server: taken (1), else 0 */
 int  node_sig_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);
 

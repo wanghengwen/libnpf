@@ -483,14 +483,18 @@ void node_sig_lost(npf_node *n)
     }
 }
 
-int node_calls_setting_up(const npf_node *n)
+/* a call (not over) that is up, or (up 0) still being set up */
+static int calls_in(const npf_node *n, int up)
 {
     const npf_call *c;
     for (c = n->calls; c; c = c->next)
-        if (!call_up(c) && !call_over(c))
+        if (!call_over(c) && !call_up(c) == !up)
             return 1;
     return 0;
 }
+
+int node_calls_setting_up(const npf_node *n) { return calls_in(n, 0); }
+int node_calls_up(const npf_node *n) { return calls_in(n, 1); }
 
 int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
