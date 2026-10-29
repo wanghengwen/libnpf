@@ -46,6 +46,16 @@ typedef ULONG nfds_t;
 #define sendto(s, b, n, f, a, al)   sendto((SOCKET)(s), (const char *)(b), (int)(n), (f), (a), (int)(al))
 #define recvfrom(s, b, n, f, a, al) recvfrom((SOCKET)(s), (char *)(b), (int)(n), (f), (a), (al))
 
+#ifndef IP_UNICAST_IF
+#define IP_UNICAST_IF 31        /* (older MinGW headers) */
+#endif
+#ifndef IPV6_UNICAST_IF
+#define IPV6_UNICAST_IF 31
+#endif
+/* GetAdaptersAddresses(AF_UNSPEC, flags) into a buffer grown as it asks:
+ * an IP_ADAPTER_ADDRESSES list to free(), or NULL */
+void *npf_win_adapters(unsigned long flags);
+
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -111,6 +121,15 @@ int  npf_sock_broken(void);
 int  npf_sock_broken_code(int err);             /* an SO_ERROR value */
 const char *npf_sock_strerror(void);
 const char *npf_sock_strerror_code(int err);         /* an SO_ERROR value */
+
+/* An IPv4 or IPv6 socket address (sockaddr_in, sockaddr_in6, or a
+ * sockaddr_storage holding one; the family says which): its length, its
+ * port (host order), whether two are the same address and port (0 for
+ * any other family), and "IP:port" ("::1:5": log lines only) */
+socklen_t   npf_sa_len(const void *sa);
+uint16_t    npf_sa_port(const void *sa);
+int         npf_sa_eq(const void *a, const void *b);
+const char *npf_sa_str(const void *sa, char *buf, size_t cap);
 
 /* addresses of the interfaces that are up (loopback included) */
 typedef struct npf_ifaddr {

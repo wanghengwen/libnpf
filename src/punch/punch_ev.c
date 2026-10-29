@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "npf/bind.h"
+#include "npf/crypto.h"
 #include "npf/platform.h"
 #include "npf/punch.h"
 
@@ -85,56 +86,26 @@ struct npf_punch {
     void           *arg;
 };
 
-static void st16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
-static uint16_t ld16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
-
-static socklen_t ss_len(const struct sockaddr_storage *a)
-{
-    return a->ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
-}
-
-static uint16_t ss_port(const struct sockaddr_storage *a)
-{
-    return ntohs(a->ss_family == AF_INET6 ? ((const struct sockaddr_in6 *)a)->sin6_port
-                                          : ((const struct sockaddr_in *)a)->sin_port);
-}
-
+/* the bodies: session_id(8), then PROBE: sock(2); PROBE_ACK: its PROBE's
+ * sock(2) | family(1) | port(2) | addr(4 or 16), where that came from;
+ * NOMINATE, NOMINATE_ACK: nothing more */
 static size_t sid_body(uint8_t *b, uint64_t sid)
 {
-    int i;
-    for (i = 0; i < 8; i++)
-        b[i] = (uint8_t)(sid >> (8 * i));
+    npf_le64(b, sid);
     return 8;
-}
-
-static uint64_t body_sid(const uint8_t *b)
-{
-    uint64_t s = 0;
-    int i;
-    for (i = 7; i >= 0; i--)
-        s = (s << 8) | b[i];
-    return s;
 }
 
 static size_t ack_body(uint8_t *b, uint64_t sid, uint16_t idx, const struct sockaddr_storage *seen)
 {
-    size_t n = sid_body(b, sid);
-    st16(b + n, idx);
-    n += 2;
-    if (seen->ss_family == AF_INET6) {
-        b[n++] = 6;
-        st16(b + n, ss_port(seen));
-        n += 2;
-        memcpy(b + n, &((const struct sockaddr_in6 *)seen)->sin6_addr, 16);
-        n += 16;
-    } else {
-        b[n++] = 4;
-        st16(b + n, ss_port(seen));
-        n += 2;
-        memcpy(b + n, &((const struct sockaddr_in *)seen)->sin_addr, 4);
-        n += 4;
-    }
-    return n;
+    int v6 = seen->ss_family == AF_INET6;
+    size_t alen = v6 ? 16 : 4;
+    sid_body(b, sid);
+    npf_le16(b + 8, idx);
+    b[10] = v6 ? 6 : 4;
+    npf_le16(b + 11, npf_sa_port(seen));
+    memcpy(b + 13, v6 ? (const void *)&((const struct sockaddr_in6 *)seen)->sin6_addr
+                      : (const void *)&((const struct sockaddr_in *)seen)->sin_addr, alen);
+    return 13 + alen;
 }
 
 static void send_pkt(int fd, const npf_siv_keys *keys, int dir, int type,
@@ -147,17 +118,6 @@ static void send_pkt(int fd, const npf_siv_keys *keys, int dir, int type,
     n = npf_pkt_seal(keys, dir, type, txid, (uint32_t)npf_mono_ms(), body, blen, len, wire);
     if (n > 0)
         (void)npf_udp_send(fd, wire, (size_t)n, to);
-}
-
-/* trace: "ADDR:PORT" for the punch lines */
-static const char *ss_txt(const struct sockaddr_storage *a, char *buf, size_t cap)
-{
-    char ip[INET6_ADDRSTRLEN] = "?";
-    inet_ntop(a->ss_family, a->ss_family == AF_INET6 ? (const void *)&((const struct sockaddr_in6 *)a)->sin6_addr
-                                                     : (const void *)&((const struct sockaddr_in *)a)->sin_addr,
-              ip, sizeof ip);
-    snprintf(buf, cap, "%s:%u", ip, ss_port(a));
-    return buf;
 }
 
 /* a random port of [lo, hi] (lo > hi: the range wraps past 65535), not below 1024 */
@@ -183,29 +143,17 @@ static void probe(npf_punch *p, int sock, const struct sockaddr_storage *to)
             return;
         fd = p->cfg.fd6;
     }
-    st16(b + n, (uint16_t)sock);
+    npf_le16(b + n, (uint16_t)sock);
     send_pkt(fd, &p->kp, p->cfg.plan.role, NPF_PKT_PROBE, b, n + 2, to);
     if (to->ss_family == AF_INET && p->sent_to) {
-        uint16_t port = ss_port(to);
+        uint16_t port = npf_sa_port(to);
         p->sent_to[port >> 3] |= (uint8_t)(1u << (port & 7));
     }
     if (sock == 0 && p->res.probes_sent < p->cfg.npeers && npf_log_on(NPF_LOG_TRACE)) {
         char a[64];     /* the first round, in candidate order */
-        npf_logt("punch: PROBE -> %s", ss_txt(to, a, sizeof a));
+        npf_logt("punch: PROBE -> %s", npf_sa_str(to, a, sizeof a));
     }
     p->res.probes_sent++;
-}
-
-static int trig_same(const trig_addr *a, const struct sockaddr_storage *b)
-{
-    if (a->sa.sa_family != b->ss_family || a->sa.sa_family == AF_UNSPEC)
-        return 0;
-    if (a->sa.sa_family == AF_INET6) {
-        const struct sockaddr_in6 *y = (const struct sockaddr_in6 *)b;
-        return a->in6.sin6_port == y->sin6_port && memcmp(&a->in6.sin6_addr, &y->sin6_addr, 16) == 0;
-    }
-    return a->in4.sin_port == ((const struct sockaddr_in *)b)->sin_port
-           && a->in4.sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
 }
 
 /* the spray (S3 easy) sent to the peer's IPv4 port in this round */
@@ -229,7 +177,7 @@ static void triggered(npf_punch *p, int sock, const struct sockaddr_storage *fro
     if (p->have_valid || p->finished)
         return;
     for (i = 0; i < p->ntrig; i++)
-        if (p->trig[i].sock == sock && trig_same(&p->trig[i].a, from)) {
+        if (p->trig[i].sock == sock && npf_sa_eq(&p->trig[i].a, from)) {
             if (now - p->trig[i].at < TRIG_GAP_MS)
                 return;
             p->trig[i].at = now;
@@ -238,13 +186,13 @@ static void triggered(npf_punch *p, int sock, const struct sockaddr_storage *fro
         }
     if (p->ntrig == TRIG_MAX)
         return;
-    memcpy(&p->trig[p->ntrig].a, from, ss_len(from));
+    memcpy(&p->trig[p->ntrig].a, from, npf_sa_len(from));
     p->trig[p->ntrig].sock = sock;
     p->trig[p->ntrig].at = now;
     p->ntrig++;
     if (npf_log_on(NPF_LOG_TRACE)) {
         char a[64];
-        npf_logt("punch: triggered PROBE -> %s (sock %d)", ss_txt(from, a, sizeof a), sock);
+        npf_logt("punch: triggered PROBE -> %s (sock %d)", npf_sa_str(from, a, sizeof a), sock);
     }
     probe(p, sock, from);
 }
@@ -263,32 +211,33 @@ static void finish(npf_punch *p, int ok)
         socklen_t ll = sizeof la;
         fd = p->win_fd;
         p->res.peer = p->winner;
-        p->res.peer_len = ss_len(&p->winner);
+        p->res.peer_len = npf_sa_len(&p->winner);
         p->res.sock_idx = p->win_sock;
         if (getsockname(fd, (struct sockaddr *)&la, &ll) == 0)
-            p->res.local_port = ss_port(&la);
+            p->res.local_port = npf_sa_port(&la);
     }
-    /* close the S3 sockets that lost; the winner goes to the owner */
+    /* the sockets of our own that lost are closed; the winner goes to the
+     * owner, which registers it again */
     for (i = 0; i < p->nsock; i++) {
-        if (p->socks[i].owned && !(ok && i == p->win_sock)) {
-            npf_loop_del(p->loop, p->socks[i].fd);
-            npf_sock_close(p->socks[i].fd);
-            p->socks[i].fd = -1;
-        }
-        if (ok && i == p->win_sock && p->socks[i].owned) {
-            npf_loop_del(p->loop, p->socks[i].fd);  /* the owner registers it again */
-            p->socks[i].owned = 0;
+        psock *s = &p->socks[i];
+        if (!s->owned)
+            continue;
+        npf_loop_del(p->loop, s->fd);
+        if (ok && i == p->win_sock) {
+            s->owned = 0;
+        } else {
+            npf_sock_close(s->fd);
+            s->fd = -1;
         }
     }
-    if (ok && p->win_sock != 0) {
-        /* keep answering on the primary only */
+    /* late PROBE / NOMINATE are answered on the winning path only (its
+     * socket, or fd6) */
+    if (ok) {
         p->socks[0] = p->socks[p->win_sock];
-    }
-    if (ok && p->win_fd != p->socks[0].fd)
-        p->socks[0].fd = p->win_fd;     /* fd6: late PROBE / NOMINATE arrive there */
-    p->nsock = ok ? 1 : 0;
-    if (ok)
+        p->socks[0].fd = p->win_fd;
         p->win_sock = 0;
+    }
+    p->nsock = ok;
     p->done(p, &p->res, fd, p->arg);
 }
 
@@ -306,21 +255,23 @@ static const struct sockaddr_storage *peer_at(npf_punch *p, uint16_t port, struc
     return to;
 }
 
+/* S2B's passes; S3 easy's interval between two sprayed probes */
+static int s2b_passes(const npf_punch_plan *pl)
+{
+    return pl->passes > 0 ? pl->passes : 4;
+}
+
+static int64_t spray_ivl(const npf_punch_plan *pl)
+{
+    return pl->pps > 1000 ? 1 : pl->pps > 0 ? 1000 / pl->pps : 5;
+}
+
 /* S2B: a BIND_REQ from the fresh socket to a probe server (E1: its mapping;
  * E2: the caller's spacer, one more mapping) */
 static void s2b_bind_to(npf_punch *p, const struct sockaddr_in *to, const uint8_t txid[NPF_TXID_SIZE])
 {
-    uint8_t wire[NPF_PKT_MAX];
-    size_t len = npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
-    int n = npf_pkt_seal(&p->kprobe, NPF_DIR_REQ, NPF_PKT_BIND_REQ, txid,
-                         (uint32_t)(npf_unix_ms() + p->cfg.clock_offset_ms), p->cfg.ticket, NPF_TICKET_SIZE, len, wire);
-    if (n > 0)
-        (void)npf_udp_send(p->socks[1].fd, wire, (size_t)n, to);
-}
-
-static void s2b_bind(npf_punch *p, int ep, const uint8_t txid[NPF_TXID_SIZE])
-{
-    s2b_bind_to(p, &p->cfg.probe_ep[ep], txid);
+    npf_bind_req_send(p->socks[1].fd, to, &p->kprobe, NPF_PKT_BIND_REQ, txid, p->cfg.clock_offset_ms, p->cfg.ticket,
+                      NPF_TICKET_SIZE);
 }
 
 /* S2B: the caller's spacer before pass r: one more mapping of the fresh
@@ -381,7 +332,7 @@ static void bind_retry(npf_punch *p, int64_t now)
 {
     static const int next_ms[] = {200, 400, 800, 1600};
     if (bind_pending(p) && now >= p->bnext) {
-        s2b_bind(p, 0, p->btx);
+        s2b_bind_to(p, &p->cfg.probe_ep[0], p->btx);
         p->bnext = now + next_ms[p->bsent++];
     }
 }
@@ -393,7 +344,7 @@ static void s2b_tick(npf_punch *p, int64_t now)
     int i;
     if (!p->own_port || !p->peer_port || !pl->peer_ip4.s_addr)
         return;                     /* no public IP of the peer's to send to: nothing (H-1) */
-    if (p->pass < (pl->passes > 0 ? pl->passes : 4) && now >= p->pass_next) {
+    if (p->pass < s2b_passes(pl) && now >= p->pass_next) {
         s2b_pass(p);
         p->pass++;
         p->last_pass = now;
@@ -481,24 +432,13 @@ void npf_punch_peer_port(npf_punch *p, uint16_t port)
     schedule(p);
 }
 
-static int same_ss(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
-{
-    if (a->ss_family != b->ss_family)
-        return 0;
-    if (a->ss_family == AF_INET6)
-        return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0
-               && ss_port(a) == ss_port(b);
-    return ((const struct sockaddr_in *)a)->sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr
-           && ss_port(a) == ss_port(b);
-}
-
 /* the priority of the pair to a (10.1): a peer candidate's, else (a
  * mapping the spray found, a triggered check's source) the lowest */
 static int peer_prio(const npf_punch *p, const struct sockaddr_storage *a)
 {
     int i;
     for (i = 0; i < p->cfg.npeers; i++)
-        if (same_ss(a, &p->cfg.peers[i]))
+        if (npf_sa_eq(a, &p->cfg.peers[i]))
             return p->cfg.prio[i] ? p->cfg.prio[i] : 1;
     return 1;
 }
@@ -520,14 +460,14 @@ int npf_punch_add_peer(npf_punch *p, const struct sockaddr_storage *a, int srflx
     if (!p || p->finished || (a->ss_family != AF_INET && a->ss_family != AF_INET6))
         return 0;
     if (srflx && a->ss_family == AF_INET && p->cfg.plan.strategy == NPF_PUNCH_S3 && p->cfg.plan.side == NPF_PUNCH_HARD
-        && !same_ss(a, &p->cfg.plan.peer_srflx)) {
+        && !npf_sa_eq(a, &p->cfg.plan.peer_srflx)) {
         p->cfg.plan.peer_srflx = *a;    /* the hard side's sockets: at the easy side's new mapping */
         p->cfg.plan.peer_srflx_len = sizeof(struct sockaddr_in);
         for (i = 1; i < p->nsock; i++)
             p->socks[i].next_send = npf_mono_ms() + (i - 1) % 50;  /* spread, as the first burst */
         added = 1;
     }
-    for (i = 0; i < p->cfg.npeers && !same_ss(a, &p->cfg.peers[i]); i++)
+    for (i = 0; i < p->cfg.npeers && !npf_sa_eq(a, &p->cfg.peers[i]); i++)
         ;
     if (i == p->cfg.npeers && p->cfg.npeers < NPF_PUNCH_MAX_PEERS) {
         p->cfg.prio[p->cfg.npeers] = srflx ? 1 : a->ss_family == AF_INET6 ? 4 : 1;
@@ -538,7 +478,7 @@ int npf_punch_add_peer(npf_punch *p, const struct sockaddr_storage *a, int srflx
         added = 1;
     }
     if (added) {
-        npf_log("punch: the peer's new candidate %s joins the round", ss_txt(a, t, sizeof t));
+        npf_log("punch: the peer's new candidate %s joins the round", npf_sa_str(a, t, sizeof t));
         schedule(p);
     }
     return added;
@@ -558,7 +498,7 @@ static int64_t quiet_end(const npf_punch *p)
         t = p->start + S1_QUIET_MS;
         return p->cand_at + CAND_QUIET_MS > t ? p->cand_at + CAND_QUIET_MS : t;
     }
-    if (pl->strategy == NPF_PUNCH_S2B && p->last_pass && p->pass >= (pl->passes > 0 ? pl->passes : 4))
+    if (pl->strategy == NPF_PUNCH_S2B && p->last_pass && p->pass >= s2b_passes(pl))
         return p->last_pass + S2B_QUIET_MS;
     return INT64_MAX;
 }
@@ -634,11 +574,9 @@ static void tick_cb(npf_loop *loop, void *arg)
         }
     }
     if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY) {
-        int64_t ivl = pl->pps > 0 ? 1000 / pl->pps : 5;
+        int64_t ivl = spray_ivl(pl);
         uint16_t lo = pl->range_lo ? pl->range_lo : 1024;
         uint16_t hi = pl->range_hi ? pl->range_hi : 65535;
-        if (ivl < 1)
-            ivl = 1;
         if (p->spray_next < now - SPRAY_LAG_MS)
             p->spray_next = now - SPRAY_LAG_MS;     /* after a stall: not everything that came due at once */
         for (burst = 0; burst < SPRAY_BURST && p->sprayed < pl->m_total && pl->peer_ip4.s_addr && now >= p->spray_next;
@@ -693,12 +631,10 @@ static int64_t next_due(const npf_punch *p, int64_t now)
     if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_HARD)
         for (i = 1; i < p->nsock; i++)
             DUE(p->socks[i].next_send);
-    if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY && p->sprayed < pl->m_total && pl->peer_ip4.s_addr) {
-        int64_t ivl = pl->pps > 0 ? 1000 / pl->pps : 5;
-        DUE(spray_due(p->spray_next, ivl < 1 ? 1 : ivl, now));
-    }
+    if (pl->strategy == NPF_PUNCH_S3 && pl->side == NPF_PUNCH_EASY && p->sprayed < pl->m_total && pl->peer_ip4.s_addr)
+        DUE(spray_due(p->spray_next, spray_ivl(pl), now));
     if (pl->strategy == NPF_PUNCH_S2B && p->nsock > 1 && p->own_port && p->peer_port && pl->peer_ip4.s_addr) {
-        if (p->pass < (pl->passes > 0 ? pl->passes : 4))
+        if (p->pass < s2b_passes(pl))
             DUE(p->pass_next);
         if (p->resend_next)
             DUE(p->resend_next);
@@ -745,22 +681,29 @@ static int replayed(npf_punch *p, const uint8_t txid[NPF_TXID_SIZE])
     return 0;
 }
 
+static void set_winner(npf_punch *p, int sock, int fd, const struct sockaddr_storage *from)
+{
+    p->winner = *from;
+    p->win_sock = sock;
+    p->win_fd = fd;
+}
+
 static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
     const npf_punch_plan *pl = &p->cfg.plan;
     int peer_dir = 1 - pl->role;
     uint8_t plain[NPF_PKT_MAX];
     npf_pkt pkt;
-    if (len > NPF_PKT_MAX || len < 64 || len > 256)
+    if (len < 64 || len > 256)          /* send_pkt's sizes (within NPF_PKT_MAX, plain's) */
         return 0;
     if (npf_pkt_open(&p->kp, peer_dir, buf, len, plain, &pkt) == 0
         && (pkt.type == NPF_PKT_PROBE || pkt.type == NPF_PKT_PROBE_ACK)
-        && pkt.body_len >= 10 && body_sid(pkt.body) == pl->session_id) {
+        && pkt.body_len >= 10 && npf_rd64(pkt.body) == pl->session_id) {
         if (p->cfg.test_deaf || replayed(p, pkt.txid))
             return 1;
         p->got_any = 1;
         if (from->ss_family == AF_INET) {      /* 7.8: what the peer's NAT showed */
-            uint16_t port = ss_port(from);
+            uint16_t port = npf_sa_port(from);
             int i;
             for (i = 0; i < p->res.nseen && p->res.seen[i] != port; i++)
                 ;
@@ -772,19 +715,17 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
             p->res.probes_recv++;
             if (p->res.probes_recv <= 3 && npf_log_on(NPF_LOG_TRACE)) {
                 char a[64];
-                npf_logt("punch: PROBE from %s (sock %d, %d ms) -> PROBE_ACK", ss_txt(from, a, sizeof a), sock,
+                npf_logt("punch: PROBE from %s (sock %d, %d ms) -> PROBE_ACK", npf_sa_str(from, a, sizeof a), sock,
                          (int)(npf_mono_ms() - p->start));
             }
             send_pkt(fd, &p->kp, pl->role, NPF_PKT_PROBE_ACK,
-                     b, ack_body(b, pl->session_id, ld16(pkt.body + 8), from), from);
+                     b, ack_body(b, pl->session_id, npf_rd16(pkt.body + 8), from), from);
             triggered(p, sock, from);
         } else {
             p->res.acks_recv++;
             if (p->have_valid && !p->finished && !p->nom_sent && peer_prio(p, from) > p->win_prio) {
                 /* a pair of a higher priority came up in the grace: it is the one */
-                p->winner = *from;
-                p->win_sock = sock;
-                p->win_fd = fd;
+                set_winner(p, sock, fd, from);
                 p->win_prio = peer_prio(p, from);
                 if (!higher_pending(p, p->win_prio))
                     p->nom_at = npf_mono_ms();
@@ -792,9 +733,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
             }
             if (!p->have_valid && !p->finished) {
                 p->have_valid = 1;
-                p->winner = *from;
-                p->win_sock = sock;
-                p->win_fd = fd;
+                set_winner(p, sock, fd, from);
                 p->validated_at = npf_mono_ms();
                 /* NOMINATE at once (10.1), unless a pair of a higher priority
                  * (an IPv6, a mapped, a LAN one) is still probed: up to 200 ms for it */
@@ -803,7 +742,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
                 schedule(p);                /* the NOMINATE's time */
                 if (npf_log_on(NPF_LOG_TRACE)) {
                     char a[64];
-                    npf_logt("punch: path validated via %s (sock %d, %d ms)", ss_txt(from, a, sizeof a), sock,
+                    npf_logt("punch: path validated via %s (sock %d, %d ms)", npf_sa_str(from, a, sizeof a), sock,
                              (int)(npf_mono_ms() - p->start));
                 }
             }
@@ -811,7 +750,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
         return 1;
     }
     if (npf_pkt_open(&p->kn, peer_dir, buf, len, plain, &pkt) == 0
-        && pkt.body_len >= 8 && body_sid(pkt.body) == pl->session_id) {
+        && pkt.body_len >= 8 && npf_rd64(pkt.body) == pl->session_id) {
         if (replayed(p, pkt.txid))
             return 1;
         p->got_any = 1;
@@ -820,9 +759,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
             send_pkt(fd, &p->kn, pl->role, NPF_PKT_NOMINATE_ACK,
                      b, sid_body(b, pl->session_id), from);
             if (!p->finished) {
-                p->winner = *from;
-                p->win_sock = sock;
-                p->win_fd = fd;
+                set_winner(p, sock, fd, from);
                 finish(p, 1);
             }
         } else if (pkt.type == NPF_PKT_NOMINATE_ACK && pl->role == NPF_PUNCH_CONTROLLING && p->nom_sent) {
@@ -862,6 +799,27 @@ static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         if (p->finished)
             break;  /* the socket table changed */
     }
+}
+
+/* a fresh UDP socket of the round's own (S2B's, S3 hard's), on any port and
+ * read by sock_cb; 0, or -1 when there is none */
+static int own_socket(npf_punch *p, int64_t first_send)
+{
+    struct sockaddr_in a;
+    int fd = npf_udp_socket(AF_INET, 0);
+    if (fd < 0)
+        return -1;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || npf_loop_add(p->loop, fd, NPF_EV_READ, sock_cb, p) < 0) {
+        npf_sock_close(fd);
+        return -1;
+    }
+    p->socks[p->nsock].fd = fd;
+    p->socks[p->nsock].owned = 1;
+    p->socks[p->nsock].next_send = first_send;
+    p->nsock++;
+    return 0;
 }
 
 npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_fd,
@@ -905,46 +863,15 @@ npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_f
     if (cfg->plan.strategy == NPF_PUNCH_S3 && cfg->plan.side == NPF_PUNCH_EASY)
         p->spray_next = p->start + S3_EASY_LEAD;
     if (cfg->plan.strategy == NPF_PUNCH_S2B) {
-        /* one fresh socket: its mappings are the round's own */
-        struct sockaddr_in a;
-        int fd = npf_udp_socket(AF_INET, 0);
-        memset(&a, 0, sizeof a);
-        a.sin_family = AF_INET;
-        if (fd >= 0 && (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || npf_loop_add(loop, fd, NPF_EV_READ, sock_cb, p) < 0)) {
-            npf_sock_close(fd);
-            fd = -1;
-        }
-        if (fd >= 0) {
-            p->socks[1].fd = fd;
-            p->socks[1].owned = 1;
-            p->nsock = 2;
-        }
+        own_socket(p, 0);               /* one fresh socket: its mappings are the round's own */
         npf_siv_derive(&p->kprobe, cfg->probe_key, NPF_SIV_LABEL_PROBE);
         npf_random(p->btx, sizeof p->btx);
         p->bnext = p->start;
         p->spray_next = p->start;
     }
-    if (cfg->plan.strategy == NPF_PUNCH_S3 && cfg->plan.side == NPF_PUNCH_HARD) {
-        int n = cfg->plan.n_sockets;
-        if (n > p->capsock - 1)
-            n = p->capsock - 1;
-        for (i = 0; i < n; i++) {
-            struct sockaddr_in a;
-            int fd = npf_udp_socket(AF_INET, 0);
-            if (fd < 0)
-                break;
-            memset(&a, 0, sizeof a);
-            a.sin_family = AF_INET;
-            if (bind(fd, (struct sockaddr *)&a, sizeof a) < 0 || npf_loop_add(loop, fd, NPF_EV_READ, sock_cb, p) < 0) {
-                npf_sock_close(fd);
-                break;
-            }
-            p->socks[p->nsock].fd = fd;
-            p->socks[p->nsock].owned = 1;
-            p->socks[p->nsock].next_send = p->start + (i % 50);   /* spread the first burst */
-            p->nsock++;
-        }
-    }
+    if (hard)       /* S3 hard's own sockets, the first burst spread */
+        for (i = 0; i < p->capsock - 1 && i < cfg->plan.n_sockets && own_socket(p, p->start + i % 50) == 0; i++)
+            ;
     schedule(p);
     return p;
 }

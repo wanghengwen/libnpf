@@ -72,6 +72,8 @@ void npf_wipe(void *p, size_t n);
 size_t npf_b64url_encode(const uint8_t *in, size_t n, char *out);
 int    npf_b64url_decode(const char *in, size_t n, uint8_t *out, size_t cap);
 #define NPF_B64_LEN(n) ((((n) + 2) / 3) * 4 + 1)
+/* standard base64 with padding (WebSocket's keys); out needs NPF_B64_LEN(n) */
+size_t npf_b64std_encode(const uint8_t *in, size_t n, char *out);
 
 /* little-endian helpers */
 static inline void npf_le16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }

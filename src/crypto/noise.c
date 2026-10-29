@@ -54,24 +54,17 @@ static void hkdf(const uint8_t ck[64], const uint8_t *ikm, size_t ikm_len, int n
     npf_wipe(buf, sizeof buf);
 }
 
-static void mix_key(npf_noise_hs *hs, const uint8_t *ikm, size_t len)
-{
-    uint8_t ck[64], k[64];
-    hkdf(hs->ck, ikm, len, 2, ck, k, NULL);
-    memcpy(hs->ck, ck, 64);
-    memcpy(hs->cs.k, k, 32);
-    hs->cs.n = 0;
-    hs->cs.has_key = 1;
-    npf_wipe(ck, 64);
-    npf_wipe(k, 64);
-}
-
-static void mix_key_and_hash(npf_noise_hs *hs, const uint8_t *ikm, size_t len)
+/* MixKey, or (with_hash) MixKeyAndHash: ck, k (and h) from HKDF(ck, ikm) */
+static void mix_key(npf_noise_hs *hs, const uint8_t *ikm, size_t len, int with_hash)
 {
     uint8_t ck[64], th[64], k[64];
-    hkdf(hs->ck, ikm, len, 3, ck, th, k);
+    if (with_hash) {
+        hkdf(hs->ck, ikm, len, 3, ck, th, k);
+        mix_hash(hs, th, 64);
+    } else {
+        hkdf(hs->ck, ikm, len, 2, ck, k, NULL);
+    }
     memcpy(hs->ck, ck, 64);
-    mix_hash(hs, th, 64);
     memcpy(hs->cs.k, k, 32);
     hs->cs.n = 0;
     hs->cs.has_key = 1;
@@ -224,7 +217,7 @@ static int token_dh(npf_noise_hs *hs, int t)
     }
     r = npf_x25519(shared, sk, pk);
     if (r == 0)
-        mix_key(hs, shared, 32);
+        mix_key(hs, shared, 32, 0);
     npf_wipe(shared, 32);
     return r;
 }
@@ -250,7 +243,7 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
             memcpy(out + o, hs->e_pub, 32);
             mix_hash(hs, hs->e_pub, 32);
             if (p->psk)
-                mix_key(hs, hs->e_pub, 32);
+                mix_key(hs, hs->e_pub, 32, 0);
             o += 32;
             break;
         case T_S:
@@ -264,7 +257,7 @@ int npf_noise_write(npf_noise_hs *hs, const uint8_t *payload, size_t plen, uint8
         case T_PSK:
             if (!hs->has_psk)
                 return -1;
-            mix_key_and_hash(hs, hs->psk, 32);
+            mix_key(hs, hs->psk, 32, 1);
             break;
         default:
             if (token_dh(hs, tok[i]))
@@ -301,7 +294,7 @@ int npf_noise_read(npf_noise_hs *hs, const uint8_t *msg, size_t len, uint8_t *pa
             hs->has_re = 1;
             mix_hash(hs, hs->re, 32);
             if (p->psk)
-                mix_key(hs, hs->re, 32);
+                mix_key(hs, hs->re, 32, 0);
             o += 32;
             break;
         case T_S:
@@ -316,7 +309,7 @@ int npf_noise_read(npf_noise_hs *hs, const uint8_t *msg, size_t len, uint8_t *pa
         case T_PSK:
             if (!hs->has_psk)
                 return -1;
-            mix_key_and_hash(hs, hs->psk, 32);
+            mix_key(hs, hs->psk, 32, 1);
             break;
         default:
             if (token_dh(hs, tok[i]))

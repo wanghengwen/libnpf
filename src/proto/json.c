@@ -3,6 +3,7 @@
 #include "npf/crypto.h"
 #include "npf/json.h"
 #include "npf/out.h"
+#include "npf/text.h"
 
 typedef struct parser {
     npf_json *j;
@@ -32,12 +33,25 @@ static int new_tok(parser *p, int type, size_t start)
     return p->j->ntok++;
 }
 
-static int hexv(char c)
+/* the token t ends here: its end and the token after its subtree */
+static int tok_done(parser *p, int t)
 {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
+    p->j->tok[t].end = (uint32_t)p->pos;
+    p->j->tok[t].next = p->j->ntok;
+    return t;
+}
+
+/* the four hex digits at s (all in the buffer), -1 if they are not */
+static int hex4(const unsigned char *s)
+{
+    int k, v = 0;
+    for (k = 0; k < 4; k++) {
+        int h = npf_hexval(s[k]);
+        if (h < 0)
+            return -1;
+        v = v << 4 | h;
+    }
+    return v;
 }
 
 /* one UTF-8 sequence at s[i]; returns its length or -1 */
@@ -72,9 +86,8 @@ static int parse_string(parser *p)
     while (p->pos < n) {
         unsigned c = s[p->pos];
         if (c == '"') {
-            p->j->tok[t].end = (uint32_t)p->pos;
+            tok_done(p, t);
             p->pos++;
-            p->j->tok[t].next = p->j->ntok;
             return t;
         }
         if (c < 0x20)
@@ -85,28 +98,13 @@ static int parse_string(parser *p)
                 return -1;
             c = s[p->pos];
             if (c == 'u') {
-                unsigned v = 0;
-                int k;
-                if (p->pos + 4 >= n)
+                int v, lo;
+                if (p->pos + 4 >= n || (v = hex4(s + p->pos + 1)) < 0)
                     return -1;
-                for (k = 1; k <= 4; k++) {
-                    int h = hexv((char)s[p->pos + k]);
-                    if (h < 0)
-                        return -1;
-                    v = (v << 4) | (unsigned)h;
-                }
                 p->pos += 5;
                 if (v >= 0xd800 && v <= 0xdbff) {       /* must be followed by a low surrogate */
-                    unsigned lo = 0;
-                    if (p->pos + 5 >= n || s[p->pos] != '\\' || s[p->pos + 1] != 'u')
-                        return -1;
-                    for (k = 2; k <= 5; k++) {
-                        int h = hexv((char)s[p->pos + k]);
-                        if (h < 0)
-                            return -1;
-                        lo = (lo << 4) | (unsigned)h;
-                    }
-                    if (lo < 0xdc00 || lo > 0xdfff)
+                    if (p->pos + 5 >= n || s[p->pos] != '\\' || s[p->pos + 1] != 'u'
+                        || (lo = hex4(s + p->pos + 2)) < 0xdc00 || lo > 0xdfff)
                         return -1;
                     p->pos += 6;
                 } else if (v >= 0xdc00 && v <= 0xdfff) {
@@ -129,36 +127,42 @@ static int parse_string(parser *p)
     return -1;
 }
 
+/* the digits from pos on; how many */
+static size_t digits(parser *p)
+{
+    size_t st = p->pos;
+    while (p->pos < p->j->len && p->j->s[p->pos] >= '0' && p->j->s[p->pos] <= '9')
+        p->pos++;
+    return p->pos - st;
+}
+
+/* -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)? */
 static int parse_number(parser *p)
 {
     const char *s = p->j->s;
-    size_t n = p->j->len, st = p->pos;
-    int t = new_tok(p, NPF_JT_NUMBER, st);
+    size_t n = p->j->len;
+    int t = new_tok(p, NPF_JT_NUMBER, p->pos);
     if (t < 0)
         return -1;
-    if (p->pos < n && s[p->pos] == '-') p->pos++;
-    if (p->pos >= n) return -1;
-    if (s[p->pos] == '0') {
+    if (p->pos < n && s[p->pos] == '-')
         p->pos++;
-    } else if (s[p->pos] >= '1' && s[p->pos] <= '9') {
-        while (p->pos < n && s[p->pos] >= '0' && s[p->pos] <= '9') p->pos++;
-    } else {
+    if (p->pos < n && s[p->pos] == '0')
+        p->pos++;
+    else if (!digits(p))
         return -1;
-    }
     if (p->pos < n && s[p->pos] == '.') {
         p->pos++;
-        if (p->pos >= n || s[p->pos] < '0' || s[p->pos] > '9') return -1;
-        while (p->pos < n && s[p->pos] >= '0' && s[p->pos] <= '9') p->pos++;
+        if (!digits(p))
+            return -1;
     }
     if (p->pos < n && (s[p->pos] == 'e' || s[p->pos] == 'E')) {
         p->pos++;
-        if (p->pos < n && (s[p->pos] == '+' || s[p->pos] == '-')) p->pos++;
-        if (p->pos >= n || s[p->pos] < '0' || s[p->pos] > '9') return -1;
-        while (p->pos < n && s[p->pos] >= '0' && s[p->pos] <= '9') p->pos++;
+        if (p->pos < n && (s[p->pos] == '+' || s[p->pos] == '-'))
+            p->pos++;
+        if (!digits(p))
+            return -1;
     }
-    p->j->tok[t].end = (uint32_t)p->pos;
-    p->j->tok[t].next = p->j->ntok;
-    return t;
+    return tok_done(p, t);
 }
 
 static int parse_value(parser *p);
@@ -252,9 +256,7 @@ static int parse_container(parser *p, int is_obj)
 done:
     p->depth--;
     j->tok[t].size = (uint16_t)count;
-    j->tok[t].end = (uint32_t)p->pos;
-    j->tok[t].next = j->ntok;
-    return t;
+    return tok_done(p, t);
 }
 
 static int parse_lit(parser *p, const char *lit, int type)
@@ -267,9 +269,7 @@ static int parse_lit(parser *p, const char *lit, int type)
     if (t < 0)
         return -1;
     p->pos += l;
-    p->j->tok[t].end = (uint32_t)p->pos;
-    p->j->tok[t].next = p->j->ntok;
-    return t;
+    return tok_done(p, t);
 }
 
 static int parse_value(parser *p)
@@ -322,11 +322,17 @@ int npf_json_parse_file(npf_json *j, const char *s, size_t len, npf_jtok *tok, i
     return parse_max(j, s, len, tok, cap, NPF_JSON_MAX_FILE);
 }
 
+/* token t, if there is one of that type (0: any) */
+static const npf_jtok *tok_of(const npf_json *j, int t, int type)
+{
+    return t >= 0 && t < j->ntok && (!type || j->tok[t].type == type) ? &j->tok[t] : NULL;
+}
+
 int npf_json_get(const npf_json *j, int obj, const char *key)
 {
     int i, t;
     size_t kl = strlen(key);
-    if (obj < 0 || obj >= j->ntok || j->tok[obj].type != NPF_JT_OBJECT)
+    if (!tok_of(j, obj, NPF_JT_OBJECT))
         return -1;
     t = obj + 1;
     for (i = 0; i < j->tok[obj].size; i++) {
@@ -348,7 +354,7 @@ int npf_json_get(const npf_json *j, int obj, const char *key)
 int npf_json_item(const npf_json *j, int arr, int i)
 {
     int t, k;
-    if (arr < 0 || arr >= j->ntok || j->tok[arr].type != NPF_JT_ARRAY || i < 0 || i >= j->tok[arr].size)
+    if (!tok_of(j, arr, NPF_JT_ARRAY) || i < 0 || i >= j->tok[arr].size)
         return -1;
     t = arr + 1;
     for (k = 0; k < i; k++)
@@ -370,11 +376,10 @@ static size_t put_utf8(char *o, unsigned cp)
 
 int npf_json_str(const npf_json *j, int t, char *buf, size_t cap)
 {
-    const npf_jtok *k;
+    const npf_jtok *k = tok_of(j, t, NPF_JT_STRING);
     size_t i, o = 0;
-    if (t < 0 || t >= j->ntok || j->tok[t].type != NPF_JT_STRING || cap == 0)
+    if (!k || cap == 0)
         return -1;
-    k = &j->tok[t];
     for (i = k->start; i < k->end;) {
         char tmp[4];
         size_t l = 1;
@@ -391,14 +396,11 @@ int npf_json_str(const npf_json *j, int t, char *buf, size_t cap)
             case 'n': tmp[0] = '\n'; break;
             case 'r': tmp[0] = '\r'; break;
             case 't': tmp[0] = '\t'; break;
-            case 'u': {
-                unsigned v = 0;
-                int q;
-                for (q = 0; q < 4; q++) v = (v << 4) | (unsigned)hexv(j->s[i + q]);
+            case 'u': {                 /* checked by the parser */
+                unsigned v = (unsigned)hex4((const unsigned char *)j->s + i);
                 i += 4;
                 if (v >= 0xd800 && v <= 0xdbff) {
-                    unsigned lo = 0;
-                    for (q = 0; q < 4; q++) lo = (lo << 4) | (unsigned)hexv(j->s[i + 2 + q]);
+                    unsigned lo = (unsigned)hex4((const unsigned char *)j->s + i + 2);
                     i += 6;
                     v = 0x10000 + ((v - 0xd800) << 10) + (lo - 0xdc00);
                 }
@@ -422,22 +424,20 @@ int npf_json_str(const npf_json *j, int t, char *buf, size_t cap)
 int npf_json_eq(const npf_json *j, int t, const char *lit)
 {
     size_t l = strlen(lit);
-    const npf_jtok *k;
-    if (t < 0 || t >= j->ntok || j->tok[t].type != NPF_JT_STRING || j->tok[t].escaped)
+    const npf_jtok *k = tok_of(j, t, NPF_JT_STRING);
+    if (!k || k->escaped)
         return 0;
-    k = &j->tok[t];
     return k->end - k->start == l && memcmp(j->s + k->start, lit, l) == 0;
 }
 
 int npf_json_int(const npf_json *j, int t, int64_t min, int64_t max, int64_t *out)
 {
-    const npf_jtok *k;
+    const npf_jtok *k = tok_of(j, t, NPF_JT_NUMBER);
     size_t i;
     int neg = 0;
     uint64_t v = 0;
-    if (t < 0 || t >= j->ntok || j->tok[t].type != NPF_JT_NUMBER)
+    if (!k)
         return -1;
-    k = &j->tok[t];
     i = k->start;
     if (j->s[i] == '-') { neg = 1; i++; }
     for (; i < k->end; i++) {
@@ -463,18 +463,19 @@ int npf_json_int(const npf_json *j, int t, int64_t min, int64_t max, int64_t *ou
 
 int npf_json_bool(const npf_json *j, int t, int *out)
 {
-    if (t < 0 || t >= j->ntok)
+    const npf_jtok *k = tok_of(j, t, 0);
+    if (!k || (k->type != NPF_JT_TRUE && k->type != NPF_JT_FALSE))
         return -1;
-    if (j->tok[t].type == NPF_JT_TRUE) { *out = 1; return 0; }
-    if (j->tok[t].type == NPF_JT_FALSE) { *out = 0; return 0; }
-    return -1;
+    *out = k->type == NPF_JT_TRUE;
+    return 0;
 }
 
 int npf_json_b64(const npf_json *j, int t, uint8_t *out, size_t cap)
 {
-    if (t < 0 || t >= j->ntok || j->tok[t].type != NPF_JT_STRING || j->tok[t].escaped)
+    const npf_jtok *k = tok_of(j, t, NPF_JT_STRING);
+    if (!k || k->escaped)
         return -1;
-    return npf_b64url_decode(j->s + j->tok[t].start, j->tok[t].end - j->tok[t].start, out, cap);
+    return npf_b64url_decode(j->s + k->start, k->end - k->start, out, cap);
 }
 
 int npf_json_get_str(const npf_json *j, int obj, const char *key, char *buf, size_t cap)

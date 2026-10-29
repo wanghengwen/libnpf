@@ -152,13 +152,9 @@ npf_wsr *npf_wsr_open(npf_loop *loop, const char *url, const uint8_t server_pub[
     r->cbs = *cbs;
     r->arg = arg;
     memcpy(r->relay_id, relay_id, 8);
-    if (npf_noise_init(&r->hs, NPF_NOISE_XK, 1, "npf-relay-v1", 12, id->dh_sk, server_pub, NULL) < 0) {
-        free(r);
-        return NULL;
-    }
-    r->ws = npf_ws_connect(loop, url, &wcb, r, 0);
-    if (!r->ws) {
-        free(r);
+    if (npf_noise_init(&r->hs, NPF_NOISE_XK, 1, "npf-relay-v1", 12, id->dh_sk, server_pub, NULL) < 0
+        || !(r->ws = npf_ws_connect(loop, url, &wcb, r, 0))) {
+        npf_wsr_close(r);               /* the handshake state holds our key */
         return NULL;
     }
     return r;
@@ -196,10 +192,8 @@ void npf_wsr_close(npf_wsr *r)
 {
     if (!r)
         return;
-    if (r->t_ping)
-        npf_timer_cancel(r->loop, r->t_ping);
-    if (r->ws)
-        npf_ws_free(r->ws);
+    npf_timer_cancel(r->loop, r->t_ping);
+    npf_ws_free(r->ws);
     npf_wipe(r, sizeof *r);
     free(r);
 }

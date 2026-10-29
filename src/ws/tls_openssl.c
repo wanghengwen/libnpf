@@ -1,11 +1,10 @@
-/* OpenSSL TLS backend. SSL objects belong to a single instance's thread;
- * OpenSSL 3 handles its shared state without a libnpf-wide serialization lock. */
+/* OpenSSL TLS backend (NPF_USE_OPENSSL with NPF_WITH_TLS; otherwise tls.c).
+ * SSL objects belong to a single instance's thread; OpenSSL 3 handles its
+ * shared state without a libnpf-wide serialization lock. */
 #include "npf/sys.h"
 #include "npf/tls.h"
 #include <stdlib.h>
-#include <limits.h>
 
-#ifdef NPF_WITH_TLS
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
@@ -139,12 +138,3 @@ ssize_t npf_tls_write(npf_tls *t, const void *buf, size_t n)
     t->retry_len = r == NPF_TLS_WANT_READ || r == NPF_TLS_WANT_WRITE ? n : 0;
     return r;
 }
-
-#else
-int npf_tls_available(void) { return 0; }
-npf_tls *npf_tls_new(int fd, const char *sni) { (void)fd; (void)sni; return NULL; }
-void npf_tls_free(npf_tls *t) { (void)t; }
-int npf_tls_handshake(npf_tls *t) { (void)t; return -1; }
-ssize_t npf_tls_read(npf_tls *t, void *b, size_t n) { (void)t; (void)b; (void)n; return -1; }
-ssize_t npf_tls_write(npf_tls *t, const void *b, size_t n) { (void)t; (void)b; (void)n; return -1; }
-#endif

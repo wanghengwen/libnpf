@@ -14,7 +14,6 @@
 #include "npf/http.h"
 #include "npf/platform.h"
 #include "npf/tcp.h"
-#include "npf/ws.h"                 /* npf_url_parse */
 
 enum { H_CONNECTING, H_SEND, H_READ };     /* H_CONNECTING: npf_tcp (TLS too) */
 
@@ -38,8 +37,7 @@ struct npf_http {
 
 static void h_free(npf_http *h)
 {
-    if (h->t)
-        npf_timer_cancel(h->loop, h->t);
+    npf_timer_cancel(h->loop, h->t);
     npf_tcp_close(&h->tcp);
     free(h->in);
     free(h);
@@ -75,12 +73,10 @@ static long chunk_body(uint8_t *b, size_t n, int decode)
         if (!crlf)
             return -1;
         for (i = r; b + i < crlf; i++) {
-            unsigned ch = b[i], v;
-            if (ch >= '0' && ch <= '9') v = ch - '0';
-            else if (ch >= 'a' && ch <= 'f') v = ch - 'a' + 10;
-            else if (ch >= 'A' && ch <= 'F') v = ch - 'A' + 10;
-            else break;
-            if (sz > (SIZE_MAX - v) / 16)
+            int v = npf_hexval(b[i]);
+            if (v < 0)
+                break;
+            if (sz > (SIZE_MAX - (size_t)v) / 16)
                 return -1;
             sz = sz * 16 + v;
             digits++;
@@ -220,13 +216,9 @@ static void h_io(npf_loop *loop, int fd, unsigned ev, void *arg)
     }
     for (;;) {
         ssize_t r;
-        if (h->in_len + 4096 + 1 > h->in_cap) {
+        if (h->in_len + 4096 + 1 > h->in_cap) {     /* in_len is within max + 16 KB (below) */
             size_t cap = h->in_cap ? h->in_cap * 2 : 16384;
             uint8_t *p;
-            if (h->in_len > h->max + 16384) {
-                h_fail(h, "response too large");
-                return;
-            }
             if (!(p = realloc(h->in, cap))) {
                 h_fail(h, "no memory");
                 return;

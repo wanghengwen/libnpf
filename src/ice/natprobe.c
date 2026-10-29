@@ -1,3 +1,6 @@
+/* NAT detection (npf/natprobe.h): transactions with the probe servers,
+ * driven on the event loop; the tools' synchronous run drives the same on
+ * a loop of its own. */
 #define _DEFAULT_SOURCE
 #include "npf/log.h"
 #include "npf/sys.h"
@@ -41,30 +44,19 @@ static uint32_t wire_ts(int64_t offset)
     return (uint32_t)(npf_unix_ms() + offset);
 }
 
-static const char *fmt_addr(const struct sockaddr_in *a, char *buf, size_t n)
-{
-    char ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &a->sin_addr, ip, sizeof(ip));
-    snprintf(buf, n, "%s:%u", ip, ntohs(a->sin_port));
-    return buf;
-}
-
 static void tx_send(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t)
 {
-    uint8_t wire[NPF_PKT_MAX], body[NPF_TICKET_SIZE + sizeof t->extra];
-    size_t len = npf_rand_range(NPF_BIND_REQ_MIN, NPF_BIND_REQ_MAX);
+    uint8_t body[NPF_TICKET_SIZE + sizeof t->extra];
     int n;
     memcpy(body, cfg->ticket, NPF_TICKET_SIZE);
     memcpy(body + NPF_TICKET_SIZE, t->extra, t->extra_len);
-    n = npf_pkt_seal(keys, NPF_DIR_REQ, t->type, t->txid, wire_ts(cfg->clock_offset_ms),
-                     body, NPF_TICKET_SIZE + t->extra_len, len, wire);
-    if (n > 0)
-        (void)npf_udp_send(t->fd, wire, (size_t)n, &t->dst);
+    n = npf_bind_req_send(t->fd, &t->dst, keys, t->type, t->txid, cfg->clock_offset_ms, body,
+                          NPF_TICKET_SIZE + t->extra_len);
     t->sent++;
     if (npf_log_on(NPF_LOG_TRACE)) {
         char a[64];
-        npf_logt("natprobe: fd %d -> %s %s #%d (%zu bytes)", t->fd, fmt_addr(&t->dst, a, sizeof(a)),
-                 t->type == NPF_PKT_BOUNCE_REQ ? "BOUNCE_REQ" : "BIND_REQ", t->sent, len);
+        npf_logt("natprobe: fd %d -> %s %s #%d (%d bytes)", t->fd, npf_sa_str(&t->dst, a, sizeof(a)),
+                 t->type == NPF_PKT_BOUNCE_REQ ? "BOUNCE_REQ" : "BIND_REQ", t->sent, n);
     }
 }
 
@@ -79,18 +71,15 @@ static int tx_input(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t
 
     if (npf_pkt_open(keys, NPF_DIR_RESP, buf, len, plain, &pkt) < 0 || npf_bind_resp_parse(&pkt, &resp) < 0) {
         if (npf_log_on(NPF_LOG_TRACE))
-            npf_logt("natprobe: fd %d <- %s %zu bytes: not a valid BIND_RESP", fd, fmt_addr(from, a, sizeof(a)), len);
+            npf_logt("natprobe: fd %d <- %s %zu bytes: not a valid BIND_RESP", fd, npf_sa_str(from, a, sizeof(a)), len);
         return 0;
     }
     for (i = 0; i < n; i++) {
         tx *t = &txs[i];
         if (t->done || t->fd != fd || memcmp(t->txid, pkt.txid, NPF_TXID_SIZE) != 0)
             continue;
-        /* the server answers from the endpoint we asked */
-        if (from->sin_addr.s_addr != t->dst.sin_addr.s_addr || from->sin_port != t->dst.sin_port)
-            continue;
-        if (resp.family != 4)
-            continue;
+        if (!npf_sa_eq(from, &t->dst) || resp.family != 4)
+            continue;                   /* the server answers from the endpoint we asked */
         t->done = 1;
         t->acked_at = npf_mono_ms();
         memset(&t->mapped, 0, sizeof(t->mapped));
@@ -103,12 +92,12 @@ static int tx_input(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *t
         if (npf_log_on(NPF_LOG_TRACE)) {
             char m[64];
             npf_logt("natprobe: fd %d <- %s BIND_RESP mapped %s rtt %d ms", fd,
-                    fmt_addr(from, a, sizeof(a)), fmt_addr(&t->mapped, m, sizeof(m)), t->rtt_ms);
+                    npf_sa_str(from, a, sizeof(a)), npf_sa_str(&t->mapped, m, sizeof(m)), t->rtt_ms);
         }
         return 1;
     }
     if (npf_log_on(NPF_LOG_TRACE))
-        npf_logt("natprobe: fd %d <- %s stray BIND_RESP", fd, fmt_addr(from, a, sizeof(a)));
+        npf_logt("natprobe: fd %d <- %s stray BIND_RESP", fd, npf_sa_str(from, a, sizeof(a)));
     return 1;
 }
 
@@ -142,50 +131,12 @@ static int tx_step(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *tx
     return pending;
 }
 
-#ifdef NPF_TOOLS_API
-/* drive a set of transactions until all are answered or have given up */
-static void tx_run(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *txs, int n)
-{
-    struct pollfd pfd[1 + NPF_NATPROBE_MAX_ALLOC];
-    int nfd = 0, i, j;
-
-    for (i = 0; i < n; i++) {
-        for (j = 0; j < nfd && (int)pfd[j].fd != txs[i].fd; j++)
-            ;
-        if (j == nfd) {
-            pfd[nfd].fd = txs[i].fd;
-            pfd[nfd].events = POLLIN;
-            nfd++;
-        }
-    }
-    for (;;) {
-        int64_t now = npf_mono_ms(), wake;
-        if (!tx_step(cfg, keys, txs, n, now, &wake))
-            return;
-        if (poll(pfd, (nfds_t)nfd, (int)(wake > now ? wake - now : 0)) <= 0)
-            continue;
-        for (j = 0; j < nfd; j++) {
-            uint8_t buf[NPF_PKT_MAX];
-            struct sockaddr_in from;
-            socklen_t flen = sizeof(from);
-            ssize_t r;
-            if (!(pfd[j].revents & POLLIN))
-                continue;
-            r = recvfrom(pfd[j].fd, buf, sizeof(buf), 0, (struct sockaddr *)&from, &flen);
-            if (r > 0 && from.sin_family == AF_INET)
-                tx_input(cfg, keys, txs, n, pfd[j].fd, buf, (size_t)r, &from);
-        }
-    }
-}
-#endif
-
-/* blocking for the probe run with poll(); not for the event loop's: there
- * ev_alloc_cb reads until nothing is left, and MSG_DONTWAIT is 0 on Windows */
-static int udp_socket(uint16_t *local_port, int blocking)
+/* a fresh non-blocking UDP socket on any port: its port in *local_port */
+static int udp_socket(uint16_t *local_port)
 {
     struct sockaddr_in a;
     socklen_t alen = sizeof(a);
-    int fd = npf_udp_socket(AF_INET, blocking);
+    int fd = npf_udp_socket(AF_INET, 0);
     if (fd < 0)
         return -1;
     memset(&a, 0, sizeof(a));
@@ -267,11 +218,6 @@ static int is_local_ipv4(const struct in_addr *ip)
         if (ifs[i].family == AF_INET && memcmp(ifs[i].addr, &ip->s_addr, 4) == 0)
             return 1;
     return 0;
-}
-
-static int same_ep(const struct sockaddr_in *a, const struct sockaddr_in *b)
-{
-    return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
 }
 
 /* port allocation from K (local, mapped) samples, 4.2 */
@@ -358,13 +304,13 @@ static int decide_mapping(npf_natprobe_result *res, const tx *txs, int n_ep)
     res->srv_offset_ms = txs[0].srv_offset_ms;
     res->profile.open = is_local_ipv4(&res->mapped[0].sin_addr)
                         && ntohs(res->mapped[0].sin_port) == res->local_port;
-    if (n_ep >= 2 && res->got[1] && !same_ep(&res->mapped[0], &res->mapped[1]))
+    if (n_ep >= 2 && res->got[1] && !npf_sa_eq(&res->mapped[0], &res->mapped[1]))
         res->profile.mapping = NPF_MAP_APDM;
     else if (n_ep >= 3 && res->got[1] && res->got[2]) {
         if (res->mapped[2].sin_addr.s_addr != res->mapped[0].sin_addr.s_addr) {
             res->profile.ip_varies = 1;
             res->profile.mapping = NPF_MAP_ADM;
-        } else if (same_ep(&res->mapped[0], &res->mapped[2]))
+        } else if (npf_sa_eq(&res->mapped[0], &res->mapped[2]))
             res->profile.mapping = NPF_MAP_EIM;
         else
             res->profile.mapping = NPF_MAP_ADM;
@@ -406,82 +352,6 @@ void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg)
     cfg->main_fd = -1;
 }
 
-#ifdef NPF_TOOLS_API   /* the tools' (CMake NPF_TOOLS_API): a node uses npf_natprobe_start */
-int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res)
-{
-    npf_siv_keys keys;
-    tx txs[NPF_NATPROBE_MAX_ALLOC];
-    int fd, i, k, f, ffd = -1, n_ep = cfg->n_ep < 3 ? cfg->n_ep : 3;
-    struct sockaddr_in mf;
-    int64_t now;
-
-    memset(res, 0, sizeof(*res));
-    memset(&mf, 0, sizeof mf);
-    if (n_ep < 1)
-        return -1;
-    npf_siv_derive(&keys, cfg->probe_key, NPF_SIV_LABEL_PROBE);
-
-    /* 1. mapping behaviour: one socket, E1/E2/E3 in parallel */
-    if (cfg->main_fd >= 0) {
-        struct sockaddr_in a;
-        socklen_t alen = sizeof(a);
-        fd = cfg->main_fd;
-        if (getsockname(fd, (struct sockaddr *)&a, &alen) < 0)
-            return -1;
-        res->local_port = ntohs(a.sin_port);
-    } else {
-        fd = udp_socket(&res->local_port, 1);
-        if (fd < 0)
-            return -1;
-    }
-    now = npf_mono_ms();
-    for (i = 0; i < n_ep; i++)
-        tx_init(&txs[i], fd, &cfg->ep[i], now);
-    tx_run(cfg, &keys, txs, n_ep);
-    if (decide_mapping(res, txs, n_ep) < 0) {
-        if (fd != cfg->main_fd)
-            npf_sock_close(fd);
-        return -1;
-    }
-
-    /* 2. port allocation: K fresh sockets to E1, spread over 200 ms */
-    k = cfg->alloc_sockets < NPF_NATPROBE_MAX_ALLOC ? cfg->alloc_sockets : NPF_NATPROBE_MAX_ALLOC;
-    if (k > 0) {
-        int n = 0;
-        now = npf_mono_ms();
-        for (i = 0; i < k; i++) {
-            uint16_t lp;
-            int s = udp_socket(&lp, 1);
-            if (s < 0)
-                break;
-            res->alloc_local[n] = lp;
-            tx_init(&txs[n], s, &cfg->ep[0], now + (int64_t)i * ALLOC_SPREAD_MS / k);
-            n++;
-        }
-        tx_run(cfg, &keys, txs, n);
-        f = collect_alloc(res, txs, n);
-        if (f >= 0) {
-            ffd = txs[f].fd;
-            mf = txs[f].mapped;
-        }
-        for (i = 0; i < n; i++)
-            if (txs[i].fd != ffd)
-                npf_sock_close(txs[i].fd);
-    }
-    /* 3. filtering: E2 and E3 answer F's mapping */
-    if ((k = filter_txs(cfg, txs, fd, ffd, &mf, n_ep, npf_mono_ms())) > 0) {
-        tx_run(cfg, &keys, txs, k);
-        decide_filter(res, txs, k);
-    }
-    if (ffd >= 0)
-        npf_sock_close(ffd);
-    if (fd != cfg->main_fd)
-        npf_sock_close(fd);
-    finish_profile(res);
-    return 0;
-}
-#endif
-
 /* ---- event-driven (roadmap 1.1, review R8) ----
  * The same two phases on the event loop: the transactions are pumped by a
  * timer, the main socket's datagrams come in through npf_natprobe_input
@@ -505,6 +375,17 @@ struct npf_natprobe {
 };
 
 static void ev_pump(npf_natprobe *p);
+
+/* the allocation sockets (phase 2) closed, all but keep */
+static void drop_alloc(npf_natprobe *p, int keep)
+{
+    int i;
+    for (i = 0; i < p->ntx; i++)
+        if (p->txs[i].fd != keep) {
+            npf_loop_del(p->loop, p->txs[i].fd);
+            npf_sock_close(p->txs[i].fd);
+        }
+}
 
 static void ev_finish(npf_natprobe *p, int ok)
 {
@@ -563,7 +444,7 @@ static void ev_pump(npf_natprobe *p)
         now = npf_mono_ms();
         for (i = 0; i < k; i++) {
             uint16_t lp;
-            int s = udp_socket(&lp, 0);
+            int s = udp_socket(&lp);
             if (s < 0)
                 break;
             if (npf_loop_add(p->loop, s, NPF_EV_READ, ev_alloc_cb, p) < 0) {
@@ -586,11 +467,7 @@ static void ev_pump(npf_natprobe *p)
             p->ffd = p->txs[f].fd;
             mf = p->txs[f].mapped;
         }
-        for (i = 0; i < p->ntx; i++)
-            if (p->txs[i].fd != p->ffd) {
-                npf_loop_del(p->loop, p->txs[i].fd);
-                npf_sock_close(p->txs[i].fd);
-            }
+        drop_alloc(p, p->ffd);
         p->phase = 3;
         p->ntx = filter_txs(&p->cfg, p->txs, p->cfg.main_fd, p->ffd, &mf, p->n_ep, npf_mono_ms());
         if (p->ntx > 0) {
@@ -640,7 +517,7 @@ int npf_natprobe_input(npf_natprobe *p, int fd, const uint8_t *buf, size_t len, 
     if (len > NPF_PKT_MAX)
         return 0;                   /* never a probe server's: and tx_input opens into NPF_PKT_MAX bytes */
     for (i = 0; i < p->n_ep && !ours; i++)
-        ours = same_ep(f, &p->cfg.ep[i]);
+        ours = npf_sa_eq(f, &p->cfg.ep[i]);
     if (!ours)
         return 0;                   /* not from a probe server: the node's */
     tx_input(&p->cfg, &p->keys, p->txs, p->ntx, fd, buf, len, f);
@@ -651,21 +528,73 @@ int npf_natprobe_input(npf_natprobe *p, int fd, const uint8_t *buf, size_t len, 
 
 void npf_natprobe_cancel(npf_natprobe *p)
 {
-    int i;
     if (!p)
         return;
     npf_timer_cancel(p->loop, p->t);
     if (p->phase == 2)
-        for (i = 0; i < p->ntx; i++) {
-            npf_loop_del(p->loop, p->txs[i].fd);
-            npf_sock_close(p->txs[i].fd);
-        }
+        drop_alloc(p, -1);
     if (p->phase == 3 && p->ffd >= 0) {
         npf_loop_del(p->loop, p->ffd);
         npf_sock_close(p->ffd);
     }
     free(p);
 }
+
+#ifdef NPF_TOOLS_API   /* the tools' (CMake NPF_TOOLS_API): a node uses npf_natprobe_start */
+typedef struct run {
+    npf_natprobe        *p;
+    npf_natprobe_result *res;
+    int                  done, ok;
+} run;
+
+static void run_done(int ok, const npf_natprobe_result *res, void *arg)
+{
+    run *r = arg;
+    *r->res = *res;
+    r->ok = ok;
+    r->done = 1;
+}
+
+/* the main socket's datagrams: one each time (it may be the caller's
+ * blocking socket) */
+static void run_input(npf_loop *loop, int fd, unsigned ev, void *arg)
+{
+    run *r = arg;
+    uint8_t buf[NPF_PKT_MAX];
+    struct sockaddr_storage from;
+    socklen_t flen = sizeof from;
+    ssize_t n = recvfrom(fd, buf, sizeof buf, 0, (struct sockaddr *)&from, &flen);
+    (void)loop;
+    (void)ev;
+    if (n > 0 && !r->done)
+        npf_natprobe_input(r->p, fd, buf, (size_t)n, &from);
+}
+
+int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res)
+{
+    npf_natprobe_cfg c = *cfg;
+    npf_loop *loop = npf_loop_new();
+    run r;
+    int own = -1;
+    uint16_t lp;
+    memset(res, 0, sizeof(*res));
+    memset(&r, 0, sizeof r);
+    r.res = res;
+    if (!loop)
+        return -1;
+    if (c.main_fd < 0)
+        c.main_fd = own = udp_socket(&lp);
+    if (c.main_fd >= 0 && npf_loop_add(loop, c.main_fd, NPF_EV_READ, run_input, &r) == 0) {
+        if ((r.p = npf_natprobe_start(loop, &c, run_done, &r)) != NULL)
+            while (!r.done)
+                npf_loop_once(loop, 100);
+        npf_loop_del(loop, c.main_fd);
+    }
+    npf_sock_close(own);
+    npf_loop_free(loop);
+    return r.ok ? 0 : -1;
+}
+#endif
 
 const char *npf_nat_mapping_str(int mapping)
 {

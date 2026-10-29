@@ -12,6 +12,11 @@ int npf_text_word(const char **p, char *out, size_t cap);
 int npf_text_int(const char **p, int *out);
 int npf_text_hex(const char **p, unsigned long *out);
 int npf_text_mac(const char *s, unsigned char out[6]);
+/* a hex digit's value, -1 for anything else */
+static inline int npf_hexval(int c)
+{
+    return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+}
 
 /* HTTP/1.x response status (three digits), or -1. s is NUL-terminated. */
 int npf_http_status(const char *s);

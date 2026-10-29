@@ -115,15 +115,6 @@ static int natpmp_external_ip(int fd, uint8_t ip[4])
     return -1;
 }
 
-int npf_portmap_gateway_v4(struct in_addr *gw)
-{
-    uint32_t a;
-    if (npf_default_gw4(&a) < 0)
-        return -1;
-    gw->s_addr = a;
-    return 0;
-}
-
 static int udp_connect(const struct sockaddr_in *gw, struct in_addr *local)
 {
     struct sockaddr_in la;
@@ -154,56 +145,38 @@ static int wait_left(int64_t until)
     return d > 0 ? (int)d : 0;
 }
 
-static int try_pcp(const struct sockaddr_in *gw, uint16_t internal_port, uint32_t lifetime,
+/* a MAP of internal_port (lifetime 0: its removal) with method, tries
+ * times, each waiting twice as long as the one before */
+static int try_map(int method, const struct sockaddr_in *gw, uint16_t internal_port, uint32_t lifetime,
                    npf_portmap *res, int tries)
 {
     struct in_addr local;
     uint8_t nonce[12], req[60], buf[128];
-    int fd = udp_connect(gw, &local), i, ok = -1;
+    int fd = udp_connect(gw, &local), i, ok = -1, pcp = method == NPF_PORTMAP_PCP;
+    size_t rl;
     struct pollfd pfd;
     if (fd < 0)
         return -1;
     pfd.fd = fd;
     pfd.events = POLLIN;
     npf_random(nonce, sizeof(nonce));
-    npf_pcp_build_map(req, nonce, &local, internal_port, internal_port, lifetime);
+    rl = (size_t)(pcp ? npf_pcp_build_map(req, nonce, &local, internal_port, internal_port, lifetime)
+                      : npf_natpmp_build_map(req, internal_port, internal_port, lifetime));
     for (i = 0; i < tries && ok < 0; i++) {
         int64_t until = npf_mono_ms() + (RETRY_MS_0 << i);
-        (void)!send(fd, req, sizeof(req), 0);
+        (void)!send(fd, req, rl, 0);
         while (ok < 0 && poll(&pfd, 1, wait_left(until)) > 0) {    /* a stray reply does not hide ours */
             ssize_t r = recv(fd, buf, sizeof(buf), 0);
-            if (r > 0 && npf_pcp_parse_map(buf, (size_t)r, nonce, res) == 0 && reply_ok(res, internal_port, lifetime))
+            if (r <= 0)
+                continue;
+            if ((pcp ? npf_pcp_parse_map(buf, (size_t)r, nonce, res) : npf_natpmp_parse_map(buf, (size_t)r, res)) == 0
+                && reply_ok(res, internal_port, lifetime))
                 ok = 0;
-            else if (r > 0)
+            else if (pcp)
                 npf_logd("portmap: PCP reply not a success MAP for us (%zd bytes, result %d)", r, r >= 4 ? buf[3] : -1);
         }
     }
-    npf_sock_close(fd);
-    return ok;
-}
-
-static int try_natpmp(const struct sockaddr_in *gw, uint16_t internal_port, uint32_t lifetime,
-                      npf_portmap *res, int tries)
-{
-    struct in_addr local;
-    uint8_t req[12], buf[64];
-    int fd = udp_connect(gw, &local), i, ok = -1;
-    struct pollfd pfd;
-    if (fd < 0)
-        return -1;
-    pfd.fd = fd;
-    pfd.events = POLLIN;
-    npf_natpmp_build_map(req, internal_port, internal_port, lifetime);
-    for (i = 0; i < tries && ok < 0; i++) {
-        int64_t until = npf_mono_ms() + (RETRY_MS_0 << i);
-        (void)!send(fd, req, sizeof(req), 0);
-        while (ok < 0 && poll(&pfd, 1, wait_left(until)) > 0) {
-            ssize_t r = recv(fd, buf, sizeof(buf), 0);
-            if (r > 0 && npf_natpmp_parse_map(buf, (size_t)r, res) == 0 && reply_ok(res, internal_port, lifetime))
-                ok = 0;
-        }
-    }
-    if (ok == 0 && lifetime && natpmp_external_ip(fd, res->external_ip) != 0)
+    if (ok == 0 && !pcp && lifetime && natpmp_external_ip(fd, res->external_ip) != 0)
         npf_logd("portmap: NAT-PMP mapped but external address query failed");
     npf_sock_close(fd);
     return ok;
@@ -212,6 +185,7 @@ static int try_natpmp(const struct sockaddr_in *gw, uint16_t internal_port, uint
 static int gateway(struct sockaddr_in *gw)
 {
     char gs[INET_ADDRSTRLEN];
+    uint32_t a;
     memset(gw, 0, sizeof(*gw));
     gw->sin_family = AF_INET;
     gw->sin_port = htons(NPF_PORTMAP_PORT);
@@ -224,7 +198,9 @@ static int gateway(struct sockaddr_in *gw)
         }
         if (inet_pton(AF_INET, ip, &gw->sin_addr) != 1)
             return -1;
-    } else if (npf_portmap_gateway_v4(&gw->sin_addr) < 0) {
+    } else if (npf_default_gw4(&a) == 0) {
+        gw->sin_addr.s_addr = a;
+    } else {
         npf_logd("portmap: no default IPv4 gateway");
         return -1;
     }
@@ -238,10 +214,10 @@ int npf_portmap_request(uint16_t internal_port, uint32_t lifetime, npf_portmap *
     struct sockaddr_in gw;
     if (gateway(&gw) < 0)
         return -2;
-    if (try_pcp(&gw, internal_port, lifetime, res, RETRIES) == 0)
+    if (try_map(NPF_PORTMAP_PCP, &gw, internal_port, lifetime, res, RETRIES) == 0)
         return 0;
     npf_logd("portmap: no PCP, trying NAT-PMP");
-    return try_natpmp(&gw, internal_port, lifetime, res, RETRIES);
+    return try_map(NPF_PORTMAP_NATPMP, &gw, internal_port, lifetime, res, RETRIES);
 }
 
 int npf_portmap_remove(uint16_t internal_port, int method)
@@ -250,8 +226,7 @@ int npf_portmap_remove(uint16_t internal_port, int method)
     npf_portmap res;
     if (gateway(&gw) < 0)
         return -1;
-    return method == NPF_PORTMAP_NATPMP ? try_natpmp(&gw, internal_port, 0, &res, 1)
-                                         : try_pcp(&gw, internal_port, 0, &res, 1);
+    return try_map(method == NPF_PORTMAP_NATPMP ? NPF_PORTMAP_NATPMP : NPF_PORTMAP_PCP, &gw, internal_port, 0, &res, 1);
 }
 
 uint64_t npf_portmap_net(void)

@@ -1,18 +1,16 @@
-#define _GNU_SOURCE
+/* WebSocket client (npf/ws.h) on npf_tcp (tcp.c). */
+#ifndef _WIN32
+#define _GNU_SOURCE         /* struct addrinfo (resolve.h) */
+#endif
 #include <ctype.h>
-#include <errno.h>
-#include "npf/sys.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <fcntl.h>
 
+#include "npf/crypto.h"
 #include "npf/platform.h"
 #include "npf/tcp.h"
-#include "npf/tls.h"
 #include "npf/ws.h"
-#include "npf/resolve.h"
 
 enum { ST_CONNECTING, ST_UPGRADE, ST_OPEN, ST_DEAD };     /* ST_CONNECTING: npf_tcp (TLS too) */
 
@@ -95,23 +93,6 @@ static void buf_free(buf *b)
     memset(b, 0, sizeof *b);
 }
 
-static size_t b64std(const uint8_t *in, size_t n, char *out)
-{
-    static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t i, o = 0;
-    for (i = 0; i < n; i += 3) {
-        uint32_t v = (uint32_t)in[i] << 16;
-        if (i + 1 < n) v |= (uint32_t)in[i + 1] << 8;
-        if (i + 2 < n) v |= in[i + 2];
-        out[o++] = t[v >> 18];
-        out[o++] = t[(v >> 12) & 63];
-        out[o++] = i + 1 < n ? t[(v >> 6) & 63] : '=';
-        out[o++] = i + 2 < n ? t[v & 63] : '=';
-    }
-    out[o] = 0;
-    return o;
-}
-
 /* SHA-1, only for Sec-WebSocket-Accept */
 static uint32_t rol(uint32_t x, int n) { return (x << n) | (x >> (32 - n)); }
 
@@ -152,237 +133,6 @@ static void sha1(const uint8_t *msg, size_t len, uint8_t out[20])
     }
 }
 
-int npf_url_parse(const char *url, int *tls, char *host, size_t hcap, int *port, char *path, size_t pcap)
-{
-    const char *p, *h, *he, *ps;
-    size_t hl;
-    /* These components are copied into HTTP request lines and headers. */
-    for (p = url; *p; p++)
-        if ((unsigned char)*p <= 0x20 || (unsigned char)*p == 0x7f)
-            return -1;
-    if (strncmp(url, "wss://", 6) == 0) { *tls = 1; p = url + 6; *port = 443; }
-    else if (strncmp(url, "ws://", 5) == 0) { *tls = 0; p = url + 5; *port = 80; }
-    else if (strncmp(url, "https://", 8) == 0) { *tls = 1; p = url + 8; *port = 443; }   /* npf_http */
-    else if (strncmp(url, "http://", 7) == 0) { *tls = 0; p = url + 7; *port = 80; }
-    else return -1;
-    ps = strchr(p, '/');
-    if (!ps)
-        ps = p + strlen(p);
-    if (*p == '[') {
-        h = p + 1;
-        he = memchr(h, ']', (size_t)(ps - h));
-        if (!he)
-            return -1;
-        p = he + 1;
-    } else {
-        h = p;
-        he = memchr(p, ':', (size_t)(ps - p));
-        if (!he)
-            he = ps;
-        p = he;
-    }
-    if (p < ps && *p == ':') {
-        char *end;
-        long v = strtol(p + 1, &end, 10);
-        if (end != ps || v <= 0 || v > 65535)
-            return -1;
-        *port = (int)v;
-    } else if (p != ps) {
-        return -1;
-    }
-    hl = (size_t)(he - h);
-    if (hl == 0 || hl >= hcap)
-        return -1;
-    memcpy(host, h, hl);
-    host[hl] = 0;
-    if (strlen(*ps ? ps : "/") >= pcap)
-        return -1;
-    strcpy(path, *ps ? ps : "/");
-    return 0;
-}
-
-/* ---- the TCP connection (ws.h): here and in http.c ---- */
-
-enum { TCP_RESOLVING, TCP_CONNECTING, TCP_TLS, TCP_READY };
-
-/* the socket (and TLS) of the address tried */
-static void tcp_drop(npf_tcp *c)
-{
-    if (c->tls)
-        npf_tls_free(c->tls);
-    c->tls = NULL;
-    if (c->fd >= 0) {
-        npf_loop_del(c->loop, c->fd);
-        npf_sock_close(c->fd);
-    }
-    c->fd = -1;
-}
-
-static int tcp_next(npf_tcp *c);
-
-/* Try every address, including after asynchronous errors. A blackholed
- * address gets one second before the next; the final address gets five. */
-static void tcp_timeout(npf_loop *loop, void *arg)
-{
-    npf_tcp *c = arg;
-    (void)loop;
-    c->t = NULL;
-    if (tcp_next(c) < 0)
-        c->fail(c->arg, "connect timeout");
-}
-
-static int tcp_next(npf_tcp *c)
-{
-    int fd = -1, one = 1;
-    if (c->t)
-        npf_timer_cancel(c->loop, c->t);
-    c->t = NULL;
-    tcp_drop(c);
-    while (c->icand < c->ncand) {
-        int i = c->icand++;
-        fd = npf_socket(c->cand[i].ss_family, SOCK_STREAM, 0, 0);
-        if (fd < 0)
-            continue;
-        if (c->outside_vpn)
-            npf_net_bypass(fd, c->cand[i].ss_family);    /* it could not: the default route */
-        if (connect(fd, (const struct sockaddr *)&c->cand[i], c->cand_len[i]) == 0 || npf_sock_inprogress())
-            break;
-        npf_sock_close(fd);
-        fd = -1;
-    }
-    if (fd < 0)
-        return -1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-    c->fd = fd;
-    if (c->use_tls && !(c->tls = npf_tls_new(fd, c->host)))
-        return -1;
-    c->state = TCP_CONNECTING;
-    if (npf_loop_add(c->loop, fd, NPF_EV_READ | NPF_EV_WRITE, c->io, c->arg) < 0)
-        return -1;
-    c->t = npf_timer_add(c->loop, c->icand < c->ncand ? 1000 : 5000, tcp_timeout, c);
-    return c->t ? 0 : -1;
-}
-
-/* the host's name looked up off the loop thread: a reconnect of the
- * signaling no longer stalls the sessions while DNS is slow (review R8) */
-static void tcp_resolved(npf_resolve *r, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n,
-                         void *arg)
-{
-    npf_tcp *c = arg;
-    (void)r;
-    c->resolve = NULL;
-    if (err || n < 1 || n > NPF_RESOLVE_MAX) {
-        c->fail(c->arg, "cannot resolve the server name");
-        return;
-    }
-    memcpy(c->cand, addrs, (size_t)n * sizeof *addrs);
-    memcpy(c->cand_len, lens, (size_t)n * sizeof *lens);
-    c->ncand = n;
-    if (tcp_next(c) < 0)
-        c->fail(c->arg, "cannot connect");
-}
-
-void npf_tcp_init(npf_tcp *c, npf_loop *loop, const char *host, npf_io_fn io,
-                  void (*fail)(void *arg, const char *why), void *arg)
-{
-    memset(c, 0, sizeof *c);
-    c->loop = loop;
-    c->host = host;
-    c->io = io;
-    c->fail = fail;
-    c->arg = arg;
-    c->fd = -1;
-}
-
-int npf_tcp_start(npf_tcp *c, const struct sockaddr_storage *addr)
-{
-    struct sockaddr_storage *a = &c->cand[0];
-    memset(a, 0, sizeof *a);
-    if (addr) {
-        *a = *addr;
-    } else if (inet_pton(AF_INET, c->host, &((struct sockaddr_in *)a)->sin_addr) == 1) {
-        a->ss_family = AF_INET;
-        ((struct sockaddr_in *)a)->sin_port = htons((uint16_t)c->port);
-    } else if (inet_pton(AF_INET6, c->host, &((struct sockaddr_in6 *)a)->sin6_addr) == 1) {
-        a->ss_family = AF_INET6;
-        ((struct sockaddr_in6 *)a)->sin6_port = htons((uint16_t)c->port);
-    } else {
-        c->state = TCP_RESOLVING;
-        c->resolve = npf_resolve_start(c->loop, c->host, (uint16_t)c->port, SOCK_STREAM, tcp_resolved, c);
-        return c->resolve ? 0 : -1;
-    }
-    c->cand_len[0] = a->ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
-    c->ncand = 1;
-    return tcp_next(c);
-}
-
-int npf_tcp_step(npf_tcp *c, unsigned events)
-{
-    if (c->state == TCP_CONNECTING) {
-        int err = 0;
-        socklen_t el = sizeof err;
-        getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &el);
-        if (err) {
-            if (tcp_next(c) == 0)
-                return 0;
-            c->fail(c->arg, "cannot connect to any server address");
-            return -1;
-        }
-        /* a refused connect is POLLHUP alone on macOS (no POLLERR): any event
-         * checks SO_ERROR above; without an error the socket must be writable */
-        if (!(events & NPF_EV_WRITE))
-            return 0;
-        npf_timer_cancel(c->loop, c->t);
-        c->t = NULL;
-        c->state = c->tls ? TCP_TLS : TCP_READY;
-    }
-    if (c->state == TCP_TLS) {
-        int r = npf_tls_handshake(c->tls);
-        if (r == NPF_TLS_WANT_READ || r == NPF_TLS_WANT_WRITE) {
-            npf_loop_mod(c->loop, c->fd, NPF_EV_READ | (r == NPF_TLS_WANT_WRITE ? NPF_EV_WRITE : 0));
-            return 0;
-        }
-        if (r < 0) {
-            c->fail(c->arg, "tls handshake failed");
-            return -1;
-        }
-        c->state = TCP_READY;
-    }
-    return c->state == TCP_READY;
-}
-
-ssize_t npf_tcp_read(npf_tcp *c, void *p, size_t n)
-{
-    ssize_t r;
-    if (c->tls)
-        return npf_tls_read(c->tls, p, n);
-    r = recv(c->fd, p, n, 0);
-    if (r < 0)
-        return npf_sock_again() ? NPF_TLS_WANT_READ : -1;
-    return r;
-}
-
-ssize_t npf_tcp_write(npf_tcp *c, const void *p, size_t n)
-{
-    ssize_t r;
-    if (c->tls)
-        return npf_tls_write(c->tls, p, n);
-    r = send(c->fd, p, n, MSG_NOSIGNAL);
-    if (r < 0)
-        return npf_sock_again() ? NPF_TLS_WANT_WRITE : -1;
-    return r;
-}
-
-void npf_tcp_close(npf_tcp *c)
-{
-    if (c->t)
-        npf_timer_cancel(c->loop, c->t);
-    c->t = NULL;
-    npf_resolve_cancel(c->resolve);
-    c->resolve = NULL;
-    tcp_drop(c);
-}
-
 /* ---- I/O ---- */
 
 /* Resolution and connect timers can fail outside on_io too. Hold the
@@ -400,31 +150,27 @@ static void ws_fail(npf_ws *ws, int code, const char *why)
         real_free(ws);
 }
 
-static void update_interest(npf_ws *ws)
-{
-    npf_loop_mod(ws->loop, ws->tcp.fd, NPF_EV_READ | (ws->out.len > 0 ? NPF_EV_WRITE : 0));
-}
-
+/* -1: the write failed; the socket is watched for writing still, so the
+ * loop reports it (not from inside a caller's send) */
 static int flush_out(npf_ws *ws)
 {
+    size_t off = 0;                     /* moved down once, not at each TLS record (16 KB of a 1 MB queue) */
+    int r = 0;
     if (ws->out.len)
-        ws->drained = 1;    /* reported (if still empty) when on_io returns */
-    {
-        size_t off = 0;                 /* moved down once, not at each TLS record (16 KB of a 1 MB queue) */
-        while (off < ws->out.len) {
-            ssize_t r = npf_tcp_write(&ws->tcp, ws->out.p + off, ws->out.len - off);
-            if (r == NPF_TLS_WANT_WRITE || r == NPF_TLS_WANT_READ)
-                break;
-            if (r <= 0) {
-                buf_consume(&ws->out, off);
-                return -1;
-            }
-            off += (size_t)r;
+        ws->drained = 1;                /* reported (if still empty) when on_io returns */
+    while (off < ws->out.len) {
+        ssize_t w = npf_tcp_write(&ws->tcp, ws->out.p + off, ws->out.len - off);
+        if (w == NPF_TLS_WANT_WRITE || w == NPF_TLS_WANT_READ)
+            break;
+        if (w <= 0) {
+            r = -1;
+            break;
         }
-        buf_consume(&ws->out, off);
+        off += (size_t)w;
     }
-    update_interest(ws);
-    return 0;
+    buf_consume(&ws->out, off);
+    npf_loop_mod(ws->loop, ws->tcp.fd, NPF_EV_READ | (ws->out.len > 0 ? NPF_EV_WRITE : 0));
+    return r;
 }
 
 /* one frame of head (hlen bytes) and then data: put together here, masked
@@ -480,7 +226,7 @@ static int start_upgrade(npf_ws *ws)
     const char *fmt = strchr(ws->host, ':') ? "[%s]" : "%s";
     char hostfield[300];
     npf_random(k, 16);
-    b64std(k, 16, ws->key);
+    npf_b64std_encode(k, 16, ws->key);
     snprintf(hostfield, sizeof hostfield, fmt, ws->host);
     n = snprintf(req, sizeof req,
                  "GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -499,7 +245,6 @@ static int start_upgrade(npf_ws *ws)
     return 0;
 }
 
-/* parse the HTTP response; returns 1 done, 0 need more, -1 error */
 /* memmem / strcasestr are GNU extensions */
 static char *find_mem(const void *h, size_t hl, const char *n, size_t nl)
 {
@@ -523,6 +268,7 @@ static char *find_nocase(const char *h, const char *n)
     return NULL;
 }
 
+/* the HTTP response to the upgrade: 1 done, 0 need more, -1 refused */
 static int parse_upgrade(npf_ws *ws)
 {
     char *end, *line, expect[64], *acc;
@@ -541,7 +287,7 @@ static int parse_upgrade(npf_ws *ws)
         return -1;
     snprintf(kg, sizeof kg, "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws->key);
     sha1((const uint8_t *)kg, strlen(kg), digest);
-    b64std(digest, 20, expect);
+    npf_b64std_encode(digest, 20, expect);
     acc = find_nocase(line, "\r\nSec-WebSocket-Accept:");
     if (!acc)
         return -1;
@@ -605,10 +351,10 @@ static int parse_frames_at(npf_ws *ws, size_t *off)
                     return -1;
                 if (fin) {
                     ws->cbs.on_message(ws, ws->frag.p, ws->frag.len, ws->frag_binary, ws->arg);
-                    if (ws->state == ST_DEAD)
-                        return -2;
-                    buf_consume(&ws->frag, ws->frag.len);
-                    ws->frag_active = 0;
+                    if (ws->state != ST_DEAD) {
+                        buf_consume(&ws->frag, ws->frag.len);
+                        ws->frag_active = 0;
+                    }
                 }
             }
             if (ws->state == ST_DEAD)
@@ -753,19 +499,7 @@ int64_t npf_ws_last_rx(const npf_ws *ws)
 
 int npf_ws_send(npf_ws *ws, const void *data, size_t len, int binary)
 {
-    return npf_ws_send2(ws, data, len, NULL, 0, binary);
-}
-
-int npf_ws_send2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len, int binary)
-{
-    if (ws->state != ST_OPEN || send_frame2(ws, binary ? 2 : 1, head, hlen, data, len))
-        return -1;
-    if (flush_out(ws) < 0) {
-        /* report the failure from the loop, not from inside the caller */
-        update_interest(ws);
-        return -1;
-    }
-    return 0;
+    return ws->state != ST_OPEN || send_frame(ws, binary ? 2 : 1, data, len) || flush_out(ws) < 0 ? -1 : 0;
 }
 
 int npf_ws_queue2(npf_ws *ws, const void *head, size_t hlen, const void *data, size_t len)
@@ -775,20 +509,12 @@ int npf_ws_queue2(npf_ws *ws, const void *head, size_t hlen, const void *data, s
 
 int npf_ws_flush(npf_ws *ws)
 {
-    if (ws->state != ST_OPEN)
-        return -1;
-    if (flush_out(ws) < 0) {
-        update_interest(ws);        /* the failure reported from the loop */
-        return -1;
-    }
-    return 0;
+    return ws->state != ST_OPEN || flush_out(ws) < 0 ? -1 : 0;
 }
 
 int npf_ws_ping(npf_ws *ws)
 {
-    if (ws->state != ST_OPEN || send_frame(ws, 9, NULL, 0))
-        return -1;
-    return flush_out(ws);
+    return ws->state != ST_OPEN || send_frame(ws, 9, NULL, 0) || flush_out(ws) < 0 ? -1 : 0;
 }
 
 size_t npf_ws_pending(const npf_ws *ws)

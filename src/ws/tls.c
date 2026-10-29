@@ -1,4 +1,5 @@
-#include <errno.h>
+/* TLS over mbedTLS (npf/tls.h); without NPF_WITH_TLS, stubs that say there
+ * is none (an OpenSSL build with TLS uses tls_openssl.c). */
 #include <stdlib.h>
 #include <string.h>
 #include "npf/sys.h"
@@ -64,7 +65,12 @@ int npf_tls_available(void)
     return 1;
 }
 
-static void tls_free_locked(npf_tls *t);
+static void tls_free_locked(npf_tls *t)
+{
+    mbedtls_ssl_free(&t->ssl);
+    mbedtls_ssl_config_free(&t->conf);
+    free(t);
+}
 
 static npf_tls *tls_new_locked(int fd, const char *sni)
 {
@@ -104,13 +110,6 @@ npf_tls *npf_tls_new(int fd, const char *sni)
     t = tls_new_locked(fd, sni);
     TLS_UNLOCK();
     return t;
-}
-
-static void tls_free_locked(npf_tls *t)
-{
-    mbedtls_ssl_free(&t->ssl);
-    mbedtls_ssl_config_free(&t->conf);
-    free(t);
 }
 
 void npf_tls_free(npf_tls *t)
