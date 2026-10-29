@@ -44,7 +44,6 @@ static void add_local(npf_policy *p, int fam, const uint8_t *addr, int prefix)
     r->family = fam;
     memcpy(r->addr, addr, fam == AF_INET ? 4 : 16);
     r->prefix = prefix;
-    r->port_lo = 0;
     r->port_hi = 65535;
 }
 
@@ -128,7 +127,6 @@ static int parse_rule(const char *spec, npf_policy_rule *out)
         return -1;
     memset(&r, 0, sizeof r);
     strcpy(buf, spec);
-    r.port_lo = 0;
     r.port_hi = 65535;
     /* "addr[/prefix][:lo[-hi]]"; an IPv6 address goes in brackets when a
      * prefix or a port follows: "[2001:db8::]/32", "[2001:db8::5]:443",
@@ -178,31 +176,31 @@ static int parse_rule(const char *spec, npf_policy_rule *out)
     return 0;
 }
 
+/* one rule more into rules[*n] (cap of them); 0, -1 bad or full */
+static int add_rule(npf_policy_rule *rules, int *n, int cap, const char *spec)
+{
+    if (*n >= cap || parse_rule(spec, &rules[*n]) < 0)
+        return -1;
+    (*n)++;
+    return 0;
+}
+
 int npf_policy_add(npf_policy *p, const char *spec)
 {
-    if (strcmp(spec, "*") == 0) {
+    if (strcmp(spec, "*") == 0)
         p->any = 1;
-        return 0;
-    }
-    if (strcmp(spec, "lan") == 0) {
+    else if (strcmp(spec, "lan") == 0)
         p->lan = 1;
-        return 0;
-    }
-    if (p->nrules >= (int)(sizeof p->rules / sizeof p->rules[0]) || parse_rule(spec, &p->rules[p->nrules]) < 0)
-        return -1;
-    p->nrules++;
+    else
+        return add_rule(p->rules, &p->nrules, (int)(sizeof p->rules / sizeof p->rules[0]), spec);
     return 0;
 }
 
 int npf_policy_add_udp(npf_policy *p, const char *spec)
 {
-    if (strcmp(spec, "*") == 0) {
-        p->udp_any = 1;
-        return 0;
-    }
-    if (p->nudp >= (int)(sizeof p->udp / sizeof p->udp[0]) || parse_rule(spec, &p->udp[p->nudp]) < 0)
-        return -1;
-    p->nudp++;
+    if (strcmp(spec, "*") != 0)
+        return add_rule(p->udp, &p->nudp, (int)(sizeof p->udp / sizeof p->udp[0]), spec);
+    p->udp_any = 1;
     return 0;
 }
 
@@ -214,31 +212,22 @@ void npf_policy_clear(npf_policy *p)
     p->nrev = 0;
 }
 
+/* the ports as the other rules write them (ports(): digits only), at least 1024 */
 int npf_policy_add_reverse(npf_policy *p, const char *spec)
 {
-    long lo = 1024, hi = 65535;
-    char *e;
+    npf_policy_rule r = {0};
+    char buf[16];
     int lan = strncmp(spec, "lan:", 4) == 0;
     if (lan)
         spec += 4;
-    if (strcmp(spec, "*") != 0) {
-        lo = strtol(spec, &e, 10);
-        hi = lo;
-        if (e == spec)
-            return -1;
-        if (*e == '-') {
-            const char *s2 = e + 1;
-            hi = strtol(s2, &e, 10);
-            if (e == s2)
-                return -1;
-        }
-        if (*e || lo < 1024 || hi > 65535 || lo > hi)
-            return -1;
-    }
-    if (p->nrev >= (int)(sizeof p->rev / sizeof p->rev[0]))
+    r.port_lo = 1024;
+    r.port_hi = 65535;
+    if (p->nrev >= (int)(sizeof p->rev / sizeof p->rev[0])
+        || (strcmp(spec, "*") != 0
+            && (strlen(spec) >= sizeof buf || ports(strcpy(buf, spec), &r) < 0 || r.port_lo < 1024)))
         return -1;
-    p->rev[p->nrev].lo = (uint16_t)lo;
-    p->rev[p->nrev].hi = (uint16_t)hi;
+    p->rev[p->nrev].lo = r.port_lo;
+    p->rev[p->nrev].hi = r.port_hi;
     p->rev[p->nrev].lan = (uint8_t)lan;
     p->nrev++;
     return 0;
@@ -256,10 +245,16 @@ int npf_policy_reverse_ok(const npf_policy *p, int port, int lan)
     return 0;
 }
 
-int npf_policy_lan_peer(npf_policy *p, const struct sockaddr *a)
+/* the "lan" rules, computed again when older than REFRESH_MS */
+static void lan_fresh(npf_policy *p)
 {
     if (!p->refreshed_ms || npf_mono_ms() - p->refreshed_ms > REFRESH_MS)
         npf_policy_refresh(p);
+}
+
+int npf_policy_lan_peer(npf_policy *p, const struct sockaddr *a)
+{
+    lan_fresh(p);
     return npf_policy_rules_match(p->local, p->nlocal, a);
 }
 
@@ -341,8 +336,7 @@ int npf_policy_allowed(npf_policy *p, const struct sockaddr *dst)
         return 1;
     if (!p->lan)
         return 0;                               /* nothing published covers it */
-    if (npf_mono_ms() - p->refreshed_ms > REFRESH_MS)
-        npf_policy_refresh(p);
+    lan_fresh(p);
     return match(p->local, p->nlocal, fam, a, port);
 }
 

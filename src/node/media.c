@@ -30,16 +30,15 @@ typedef struct mst {
 } mst;
 
 struct npf_media {
-    npf_loop    *loop;
     anl_t       *anl;
     int          odd;
     npf_media_io io;
     void        *arg;
-    mst         *st[NPF_MEDIA_MAX];
-    int          nst;
+    /* each stream is ours (nout) or the peer's (nin), each side at most
+     * NPF_MEDIA_OUT_MAX: nst = nout + nin always fits */
+    mst         *st[2 * NPF_MEDIA_OUT_MAX];
+    int          nst, nout, nin;
     uint32_t     next_id;
-    int          nout;              /* streams opened here */
-    int          nin;               /* streams the peer opened */
     int          warned;            /* a peer's stream was refused (logged once) */
 };
 
@@ -69,7 +68,7 @@ static void drop_stream(npf_media *m, int i)
     mst *s = m->st[i];
     if (s->out)
         m->nout--;
-    else if (m->nin > 0)
+    else
         m->nin--;
     free(s);
     m->st[i] = m->st[--m->nst];
@@ -82,14 +81,30 @@ static uint32_t new_id(npf_media *m)
     return m->next_id << 1 | (uint32_t)m->odd;
 }
 
+/* -1 when a callback ended the session: stop delivering */
+static int ended(const npf_media *m)
+{
+    return m->io.ended && m->io.ended(m->arg) ? -1 : 0;
+}
+
+/* stream i on s is over from the other side (closed or refused there, or a
+ * frame over the limit): closed here too, the application told */
+static int gone(npf_media *m, int i, anl_stream_t *s)
+{
+    uint32_t id = m->st[i]->id;
+    anl_stream_close(s);
+    drop_stream(m, i);
+    m->io.on_closed(m->arg, id);
+    return ended(m);
+}
+
 /* ---- life ---- */
 
-npf_media *npf_media_new(npf_loop *loop, anl_t *anl, int odd, const npf_media_io *io, void *arg)
+npf_media *npf_media_new(anl_t *anl, int odd, const npf_media_io *io, void *arg)
 {
     npf_media *m = calloc(1, sizeof *m);
     if (!m)
         return NULL;
-    m->loop = loop;
     m->anl = anl;
     m->odd = odd ? 1 : 0;
     m->io = *io;
@@ -120,8 +135,7 @@ int npf_media_accept(npf_media *m, anl_stream_t *s, anl_stream_opt *opt)
 {
     int tag = anl_stream_tag(s) & ~NPF_MEDIA_TAG_RDK;
     mst *x;
-    if (opt->mode != ANL_SEMI || tag < NPF_TAG_MEDIA || tag >= NPF_TAG_MEDIA + NPF_MEDIA_TAGS
-        || m->nst == NPF_MEDIA_MAX)
+    if (opt->mode != ANL_SEMI || tag < NPF_TAG_MEDIA || tag >= NPF_TAG_MEDIA + NPF_MEDIA_TAGS)
         return -1;
     /* what the peer may make this end hold: as many streams as one side
      * opens, each with the window both use (media.h) */
@@ -158,7 +172,7 @@ int npf_media_poll(npf_media *m)
     for (i = 0; m && i < m->nst; i++) {
         mst *x = m->st[i];
         uint32_t id = x->id;
-        if (x->out || x->asked || !x->s)
+        if (x->out || x->asked)
             continue;
         x->asked = 1;
         if (!m->io.on_open(m->arg, id, x->tag)) {
@@ -168,7 +182,7 @@ int npf_media_poll(npf_media *m)
             }
             i = -1;                         /* the table changed: from the start */
         }
-        if (m->io.ended && m->io.ended(m->arg))
+        if (ended(m) < 0)
             return -1;
     }
     return 0;
@@ -181,36 +195,26 @@ int npf_media_drain(npf_media *m, anl_stream_t *s)
         anl_frame_info fi;
         char small[2048], *buf = small;
         int i = find_s(m, s), sz, r;
-        uint32_t id;
         if (i < 0)
             return 0;
-        id = m->st[i]->id;
         sz = anl_stream_peeksize(s);
-        if (sz == ANL_ECLOSED) {            /* closed (or refused) by the peer */
-            anl_stream_close(s);
-            drop_stream(m, i);
-            m->io.on_closed(m->arg, id);
-            return m->io.ended && m->io.ended(m->arg) ? -1 : 0;
-        }
+        if (sz == ANL_ECLOSED)              /* closed (or refused) by the peer */
+            return gone(m, i, s);
         if (sz < 0 || m->st[i]->out || !m->st[i]->asked)
             return 0;                       /* ours sends only; not taken yet: it waits in AnLiu */
-        if (sz > NPF_MEDIA_FRAME_MAX) {
-            anl_stream_close(s);
-            drop_stream(m, i);
-            m->io.on_closed(m->arg, id);
-            return m->io.ended && m->io.ended(m->arg) ? -1 : 0;
-        }
+        if ((unsigned)sz > NPF_MEDIA_FRAME_MAX)
+            return gone(m, i, s);           /* a frame no application takes: the stream ends */
         if (sz > (int)sizeof small && !(buf = malloc((size_t)sz)))
             return 0;
         r = anl_stream_recv_frame(s, buf, sz > (int)sizeof small ? sz : (int)sizeof small, &fi);
         if (r >= 0)
-            m->io.on_frame(m->arg, id, (const uint8_t *)buf, (size_t)r, fi.frame_no,
-                           (fi.flags & ANL_FRAME_KEY) ? NPF_FRAME_KEY_FLAG : 0, fi.lost_before);
+            m->io.on_frame(m->arg, m->st[i]->id, (const uint8_t *)buf, (size_t)r, fi.frame_no,
+                           (fi.flags & ANL_FRAME_KEY) ? NPF_FRAME_KEY : 0, fi.lost_before);
         if (buf != small)
             free(buf);
         if (r < 0)
             return 0;
-        if (m->io.ended && m->io.ended(m->arg))
+        if (ended(m) < 0)
             return -1;
     }
 }
@@ -222,7 +226,7 @@ uint32_t npf_media_open_stream(npf_media *m, const npf_call_media_opt *o, int *e
     anl_stream_opt opt;
     int e = 0;
     mst *s;
-    if (m->nst == NPF_MEDIA_MAX || m->nout >= NPF_MEDIA_OUT_MAX) {
+    if (m->nout >= NPF_MEDIA_OUT_MAX) {
         *err = NPF_CALL_EBUSY;
         return 0;
     }
@@ -276,13 +280,13 @@ int npf_media_send_frame(npf_media *m, uint32_t id, int flags, const void *buf, 
         return 0;
     }
     if (s->need_key) {                      /* the rest until a key frame goes too */
-        if (!(flags & NPF_FRAME_KEY_FLAG)) {
+        if (!(flags & NPF_FRAME_KEY)) {
             s->dropped++;
             return 0;
         }
         s->need_key = 0;
     }
-    r = anl_stream_send_frame(s->s, flags & NPF_FRAME_KEY_FLAG ? ANL_FRAME_KEY : 0, buf, (int)len, NULL);
+    r = anl_stream_send_frame(s->s, flags & NPF_FRAME_KEY ? ANL_FRAME_KEY : 0, buf, (int)len, NULL);
     m->io.kick(m->arg);
     if (r < 0 && r != ANL_EDROPPED)
         return r == ANL_ECLOSED ? NPF_CALL_ESTATE : NPF_CALL_ETOOBIG;

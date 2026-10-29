@@ -201,7 +201,7 @@ static void test_rcv_wnd(void)
     CHECK(loop && c && s, "setup");
     if (!loop || !c || !s)
         return;
-    g_media = npf_media_new(loop, s, 1, &mio, NULL);
+    g_media = npf_media_new(s, 1, &mio, NULL);
     anl_set_accept(s, accept_media);
     /* AnLiu's largest window: refused, the opener sees the stream over */
     CHECK(open_media(c, s, ANL_MAX_WND, &st) == 0, "a media stream with rcv_wnd %d was taken", ANL_MAX_WND);
@@ -285,7 +285,7 @@ static void test_held(void)
     CHECK(loop && c && s, "setup");
     if (!loop || !c || !s)
         return;
-    g_media = npf_media_new(loop, s, 1, &mio, NULL);
+    g_media = npf_media_new(s, 1, &mio, NULL);
     g_udp = npf_udpf_new(loop, s, 0, NULL, &uio, NULL);
     anl_set_accept(s, accept_npf);
     anl_set_accept(c, accept_client);

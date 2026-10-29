@@ -21,15 +21,20 @@
 static void socks_reply(sublink *s, uint8_t rep)
 {
     uint8_t r[10] = {5, rep, 0, 1, 0, 0, 0, 0, 0, 0};    /* BND = 0.0.0.0:0 */
-    tunnel_send_frame(s->t, s->id, FR_DATA, r, sizeof r);
-    s->tx_credit -= sizeof r;
+    tunnel_sub_send(s, r, sizeof r);
+}
+
+/* after a refusal: FIN, and the sublink goes */
+static void socks_close(sublink *s)
+{
+    tunnel_send_fin(s->t, s->id);
+    tunnel_sub_free(s, 0);
 }
 
 static void socks_fail(sublink *s, uint8_t rep)
 {
     socks_reply(s, rep);
-    tunnel_send_frame(s->t, s->id, FR_FIN, NULL, 0);
-    tunnel_sub_free(s, 0);
+    socks_close(s);
 }
 
 static void connect_timeout(npf_loop *loop, void *arg)
@@ -54,7 +59,6 @@ static int map_errno(int e)
     }
 }
 
-int npf_tunnel_he_ms = HE_DELAY_MS;
 int npf_tunnel_greet_ms = GREET_MS;
 int (*npf_tunnel_test_resolve)(const char *host, uint16_t port, struct sockaddr_storage *out, socklen_t *lens,
                                int max);
@@ -123,7 +127,7 @@ static int connect_next(sublink *s)
         s->hs->cfd[s->ncfd++] = fd;
         npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s);
         if (s->icand < s->ncand && !s->t_he)
-            s->t_he = npf_timer_add(s->t->loop, npf_tunnel_he_ms, he_timer, s);
+            s->t_he = npf_timer_add(s->t->loop, HE_DELAY_MS, he_timer, s);
         return 0;
     }
     if (s->ncfd)
@@ -134,27 +138,19 @@ static int connect_next(sublink *s)
 
 /* an attempt answered: connected (the others closed, the sublink open) or
  * failed (the next address at once, or the end when none is left) */
-static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s);
-
 static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 {
     sublink *s = arg;
     npf_tunnel *t = s->t;
-    t->depth++;
-    conn_cb_in(loop, fd, ev, s);
-    tunnel_leave(t);
-}
-
-static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
-{
     int err = 0, i, k;
     socklen_t el = sizeof err;
     (void)ev;
+    t->depth++;                         /* sublink_done may free the tunnel (tunnel_leave) */
     getsockopt(fd, SOL_SOCKET, SO_ERROR, (void *)&err, &el);
     for (k = 0; k < s->ncfd && s->hs->cfd[k] != fd; k++)
         ;
     if (k == s->ncfd)
-        return;
+        goto out;
     npf_loop_del(loop, fd);
     s->hs->cfd[k] = s->hs->cfd[--s->ncfd];
     if (err) {
@@ -163,7 +159,7 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
         /* its turn is now */
         npf_timer_stop(loop, &s->t_he);
         connect_next(s);
-        return;
+        goto out;
     }
     for (i = 0; i < s->ncfd; i++) {     /* the winner: the slower ones go */
         npf_loop_del(loop, s->hs->cfd[i]);
@@ -180,11 +176,12 @@ static void conn_cb_in(npf_loop *loop, int fd, unsigned ev, sublink *s)
     tunnel_hs_done(s);                  /* connected: no more SOCKS bytes or attempts */
     socks_reply(s, 0);
     s->state = SL_OPEN;
-    if (tunnel_flush_local(s) < 0) {
+    if (tunnel_flush_local(s) < 0)
         tunnel_sub_reset(s, NPF_RST_LOCAL);
-        return;
-    }
-    tunnel_update_ev(s);
+    else
+        tunnel_update_ev(s);
+out:
+    tunnel_leave(t);
 }
 
 /* check the policy for every address, then connect to them (Happy Eyeballs).
@@ -233,8 +230,6 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
 }
 
 /* the worker thread's answer for a domain-name target */
-static void resolved_in(sublink *s, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n);
-
 static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n,
                      void *arg)
 {
@@ -242,18 +237,12 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     npf_tunnel *t = s->t;
     (void)r;
     t->depth++;
-    resolved_in(s, err, addrs, lens, n);
-    tunnel_leave(t);
-}
-
-static void resolved_in(sublink *s, int err, const struct sockaddr_storage *addrs, const socklen_t *lens, int n)
-{
     s->resolve = NULL;
-    if (err != 0) {
+    if (err != 0)
         socks_fail(s, 4);           /* host unreachable: the name did not resolve */
-        return;
-    }
-    socks_connect_addrs(s, addrs, lens, n);
+    else
+        socks_connect_addrs(s, addrs, lens, n);
+    tunnel_leave(t);
 }
 
 /* a CONNECT's address (ATYP 1 IPv4, 4 IPv6, 3 a name of alen bytes) as text */
@@ -359,66 +348,64 @@ void tunnel_greet_done(sublink *s)
     npf_timer_stop(s->t->loop, &s->t_greet);
 }
 
+int tunnel_socks_greeting(const uint8_t *b, size_t n, int *noauth)
+{
+    if (n < 2)
+        return 0;
+    if (b[0] != 5)
+        return -1;
+    if (n < 2 + (size_t)b[1])
+        return 0;
+    *noauth = memchr(b + 2, 0, b[1]) != NULL;
+    return 2 + b[1];
+}
+
 /* parse what the client sent so far; returns -1 if the sublink was freed */
 int tunnel_socks_parse(sublink *s)
 {
+    uint8_t *b = s->hs->sb;
     if (s->state == SL_SOCKS_GREETING) {
-        size_t n;
-        int ok = 0;
-        if (s->sl < 2)
-            return 0;
-        if (s->hs->sb[0] != 5) {
-            tunnel_sub_reset(s, NPF_RST_PROTOCOL);
+        int noauth, n = tunnel_socks_greeting(b, s->sl, &noauth);
+        static const uint8_t ok[2] = {5, 0}, none[2] = {5, 0xff};
+        if (n <= 0) {
+            if (n < 0)
+                tunnel_sub_reset(s, NPF_RST_PROTOCOL);
+            return n;
+        }
+        if (!noauth) {
+            tunnel_sub_send(s, none, sizeof none);
+            socks_close(s);
             return -1;
         }
-        n = 2 + (size_t)s->hs->sb[1];
-        if (s->sl < n)
-            return 0;
-        {
-            size_t i;
-            for (i = 2; i < n; i++)
-                if (s->hs->sb[i] == 0)
-                    ok = 1;
-        }
-        if (!ok) {
-            uint8_t r[2] = {5, 0xff};
-            tunnel_send_frame(s->t, s->id, FR_DATA, r, 2);
-            tunnel_send_frame(s->t, s->id, FR_FIN, NULL, 0);
-            tunnel_sub_free(s, 0);
-            return -1;
-        }
-        {
-            uint8_t r[2] = {5, 0};
-            tunnel_send_frame(s->t, s->id, FR_DATA, r, 2);
-            s->tx_credit -= 2;
-        }
-        tunnel_credit_back(s, n);
-        memmove(s->hs->sb, s->hs->sb + n, s->sl - n);
-        s->sl -= n;
+        tunnel_sub_send(s, ok, sizeof ok);
+        tunnel_credit_back(s, (size_t)n);
+        memmove(b, b + n, s->sl - (size_t)n);
+        s->sl -= (size_t)n;
         s->state = SL_SOCKS_REQUEST;
     }
     if (s->state == SL_SOCKS_REQUEST) {
         size_t need, alen;
         int atyp;
         uint16_t port;
+        const uint8_t *addr = b + 4;
         if (s->sl < 5)
             return 0;
-        if (s->hs->sb[0] != 5 || s->hs->sb[2] != 0) {
+        if (b[0] != 5 || b[2] != 0) {
             tunnel_sub_reset(s, NPF_RST_PROTOCOL);
             return -1;
         }
-        atyp = s->hs->sb[3];
+        atyp = b[3];
         if (atyp == 1) alen = 4;
         else if (atyp == 4) alen = 16;
-        else if (atyp == 3) alen = s->hs->sb[4];
+        else if (atyp == 3) alen = b[4], addr++;
         else {
             socks_fail(s, 8);
             return -1;
         }
-        need = 4 + (atyp == 3 ? 1 : 0) + alen + 2;
+        need = (size_t)(addr - b) + alen + 2;
         if (s->sl < need)
             return 0;
-        if (s->hs->sb[1] != 1) {        /* only CONNECT (C5) */
+        if (b[1] != 1) {                /* only CONNECT (C5) */
             socks_fail(s, 7);
             return -1;
         }
@@ -426,35 +413,60 @@ int tunnel_socks_parse(sublink *s)
             socks_fail(s, 4);
             return -1;
         }
-        port = (uint16_t)((s->hs->sb[need - 2] << 8) | s->hs->sb[need - 1]);
-        {
-            uint8_t addr[256];
-            memcpy(addr, s->hs->sb + 4 + (atyp == 3 ? 1 : 0), alen);
-            /* pipelined data after the request waits in wq until connected */
-            if (s->sl > need && tunnel_wb_put(&s->wq, s->hs->sb + need, s->sl - need) < 0) {
-                tunnel_sub_reset(s, NPF_RST_LIMIT);
+        port = (uint16_t)((b[need - 2] << 8) | b[need - 1]);
+        /* pipelined data after the request waits in wq until connected */
+        if (s->sl > need && tunnel_wb_put(&s->wq, b + need, s->sl - need) < 0) {
+            tunnel_sub_reset(s, NPF_RST_LIMIT);
+            return -1;
+        }
+        s->sl = 0;
+        tunnel_credit_back(s, need);
+        tunnel_greet_done(s);
+        if (s->t->caller) {
+            /* reverse sublink: only a target this caller registered (7.1) */
+            char host[256];
+            int i, ok = 0;
+            atyp_host(atyp, addr, alen, host);
+            for (i = 0; i < s->t->nrev && !ok; i++)
+                ok = s->t->rev[i]->port == port && strcmp(s->t->rev[i]->host, host) == 0;
+            if (!ok) {
+                socks_fail(s, 2);
                 return -1;
             }
-            s->sl = 0;
-            tunnel_credit_back(s, need);
-            tunnel_greet_done(s);
-            if (s->t->caller) {
-                /* reverse sublink: only a target this caller registered (7.1) */
-                char host[256];
-                int i, ok = 0;
-                atyp_host(atyp, addr, alen, host);
-                for (i = 0; i < s->t->nrev; i++)
-                    if (s->t->rev[i]->port == port && strcmp(s->t->rev[i]->host, host) == 0)
-                        ok = 1;
-                if (!ok) {
-                    socks_fail(s, 2);
-                    return -1;
-                }
-                s->reverse = 1;
-            }
-            return socks_connect(s, atyp, addr, alen, port);
+            s->reverse = 1;
         }
+        /* addr stays in hs->sb (nothing writes there now) while socks_connect reads it */
+        return socks_connect(s, atyp, addr, alen, port);
     }
+    return 0;
+}
+
+int tunnel_socks_request(const char *host, uint16_t port, uint8_t req[300], size_t *len)
+{
+    size_t hl = strlen(host), n = 0;
+    struct in_addr a4;
+    struct in6_addr a6;
+    req[n++] = 5; req[n++] = 1; req[n++] = 0;          /* greeting: no authentication */
+    req[n++] = 5; req[n++] = 1; req[n++] = 0;          /* CONNECT, pipelined */
+    if (inet_pton(AF_INET, host, &a4) == 1) {
+        req[n++] = 1;
+        memcpy(req + n, &a4, 4);
+        n += 4;
+    } else if (inet_pton(AF_INET6, host, &a6) == 1) {
+        req[n++] = 4;
+        memcpy(req + n, &a6, 16);
+        n += 16;
+    } else {
+        if (hl == 0 || hl > 255)
+            return -1;
+        req[n++] = 3;
+        req[n++] = (uint8_t)hl;
+        memcpy(req + n, host, hl);
+        n += hl;
+    }
+    req[n++] = (uint8_t)(port >> 8);
+    req[n++] = (uint8_t)port;
+    *len = n;
     return 0;
 }
 

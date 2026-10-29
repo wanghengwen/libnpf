@@ -6,11 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/conf.h"
-#include "npf/out.h"
-#include "npf/crypto.h"
-#include "npf/peers.h"
-#include "npf/tunnel.h"
 #include "npf.h"
 #include "npf/platform.h"
 #include "udpfwd.h"
@@ -359,8 +354,7 @@ static void fwd_retry(pfwd *f, const char *why)
     int d;
     if (f->t_retry || !f->used)
         return;
-    f->backoff = f->backoff ? (f->backoff * 2 > FWD_BACKOFF_MAX_MS ? FWD_BACKOFF_MAX_MS : f->backoff * 2) : 1000;
-    d = peers_retry_delay(f->backoff);
+    d = peers_backoff(&f->backoff, FWD_BACKOFF_MAX_MS);
     snprintf(f->why, sizeof f->why, "%s", why);
     f->retry_at = npf_mono_ms() + d;
     {
@@ -417,7 +411,6 @@ static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *e
     }
     f->up = 1;
     f->rev_id = listen_id;
-    f->rport = port;
     f->lport = port;
     f->backoff = 0;
     npf_log("%s: reverse mapping: callee %s:%d -> %s:%d here", f->p->name, f->bind, port, f->host, f->hostport);
@@ -426,34 +419,26 @@ static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *e
 
 npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
 {
-    npf_peer *p;
     int i;
-    for (p = ps->list; p; p = p->next)
-        for (i = 0; i < p->nfwd; i++)
-            if (p->fwds[i]->used && p->fwds[i]->kind && p->fwds[i]->id == id) {
-                if (npf_call_ready(p->call)) {
-                    p->idle_since = 0;
-                    return p->call;
-                }
-                if (!p->call && !p->waiting && !p->finished) {
-                    npf_log("%s: a connection through -%c %s: starting the session", p->name,
-                            p->fwds[i]->kind->k->opt, p->fwds[i]->spec);
-                    peers_kick(p);
-                    if (p->idle_ms)
-                        peers_demand_timer(p);
-                }
-                return NULL;
-            }
+    npf_peer *p = npf_peers_fwd_find(ps, id, &i);
+    if (!p || !p->fwds[i]->kind)
+        return NULL;
+    if (npf_call_ready(p->call)) {
+        p->idle_since = 0;
+        return p->call;
+    }
+    if (!p->call && !p->waiting && !p->finished) {
+        npf_log("%s: a connection through -%c %s: starting the session", p->name, p->fwds[i]->kind->k->opt,
+                p->fwds[i]->spec);
+        if (peers_kick(p) == 0 && p->idle_ms)
+            peers_demand_timer(p);
+    }
     return NULL;
 }
 
-
-/* start one mapping: a -L / -D listener stays across sessions (it refuses
- * while none is up); a -R mapping is asked of each new session */
-/* a TCP listener on bind:port ("::": IPv6 and IPv4 on one socket); the
- * socket, or -1 with why */
-/* a listening socket, -1 with why; *in_use: the port is taken (as opposed
- * to the address family missing) */
+/* a socket on bind:port, listening (SOCK_STREAM) or bound (SOCK_DGRAM);
+ * "::" is IPv6 and IPv4 on one socket. -1 with why; *in_use: the port is
+ * taken (as opposed to the address family missing) */
 static int listen_on(const char *bind_host, int port, int type, char *why, size_t whycap, int *in_use)
 {
     struct addrinfo hints, *res;
@@ -487,6 +472,8 @@ static int listen_on(const char *bind_host, int port, int type, char *why, size_
     return fd;
 }
 
+/* start one mapping: a -L / -D listener stays across sessions (it refuses
+ * while none is up); a -R mapping is asked of each new session */
 static void fwd_start(pfwd *f)
 {
     npf_peer *p = f->p;
@@ -578,13 +565,10 @@ void peers_forwards_session_gone(npf_peer *p)
     }
 }
 
-/* two listeners on one port: the same address, or one of them on every address */
+/* two listeners on one port: the same address, or one of them on every
+ * address (fwd_fill wrote localhost as 127.0.0.1) */
 static int binds_meet(const char *a, const char *b)
 {
-    if (strcmp(a, "localhost") == 0)
-        a = "127.0.0.1";
-    if (strcmp(b, "localhost") == 0)
-        b = "127.0.0.1";
     return strcmp(a, b) == 0 || strcmp(a, "0.0.0.0") == 0 || strcmp(b, "0.0.0.0") == 0
         || strcmp(a, "::") == 0 || strcmp(b, "::") == 0;
 }
@@ -721,19 +705,24 @@ npf_peer *npf_peers_fwd_find(const npf_peers *ps, int id, int *idx)
     return NULL;
 }
 
+/* forward i of p, NULL for a free slot or none */
+static pfwd *fwd_at(const npf_peer *p, int i)
+{
+    return i >= 0 && i < p->nfwd && p->fwds[i]->used ? p->fwds[i] : NULL;
+}
+
 int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
 {
-    const pfwd *f;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
+    const pfwd *f = fwd_at(p, i);
+    if (!f)
         return -1;
-    f = p->fwds[i];
     memset(st, 0, sizeof *st);
     st->opt = f->opt;
     st->udp = f->udp;
     st->perm = f->perm;
     snprintf(st->bind, sizeof st->bind, "%s", f->bind);
     st->port = f->port;
-    st->lport = f->up ? (f->reverse ? f->rport : f->lport) : 0;
+    st->lport = f->up ? f->lport : 0;
     snprintf(st->host, sizeof st->host, "%s", f->host);
     st->hostport = f->hostport;
     st->state = fwd_state_of(f);
@@ -750,21 +739,35 @@ int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
 
 void npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx)
 {
-    if (i >= 0 && i < p->nfwd && p->fwds[i]->used)
-        p->fwds[i]->ctx = ctx;
+    pfwd *f = fwd_at(p, i);
+    if (f)
+        f->ctx = ctx;
 }
 
 int npf_peer_forward_id(const npf_peer *p, int i)
 {
-    return i >= 0 && i < p->nfwd && p->fwds[i]->used ? p->fwds[i]->id : 0;
+    const pfwd *f = fwd_at(p, i);
+    return f ? f->id : 0;
+}
+
+uint64_t npf_peer_forward_ext(const npf_peer *p, int i)
+{
+    const pfwd *f = fwd_at(p, i);
+    return f ? f->ext : 0;
+}
+
+void npf_peer_forward_perm_set(npf_peer *p, int i, int perm)
+{
+    pfwd *f = fwd_at(p, i);
+    if (f)
+        f->perm = perm;
 }
 
 int npf_peer_forward_del_at(npf_peer *p, int i)
 {
-    pfwd *f;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
+    pfwd *f = fwd_at(p, i);
+    if (!f)
         return -1;
-    f = p->fwds[i];
     if (f->reverse && f->up && p->call)
         npf_call_reverse_close(p->call, f->rev_id);
     /* a public mapping taken off (turned off, expired, deleted): its open
@@ -787,16 +790,11 @@ int npf_peer_forward_del_at(npf_peer *p, int i)
 
 int npf_peer_forward_drain(npf_peer *p, int i, int on)
 {
-    pfwd *f;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
+    pfwd *f = fwd_at(p, i);
+    if (!f)
         return -1;
-    f = p->fwds[i];
-    if (on) {
-        f->draining = 1;
-        return 0;
-    }
-    f->draining = 0;
-    if (f->suspended) {
+    f->draining = on;
+    if (!on && f->suspended) {
         f->suspended = 0;
         fwd_start(f);                       /* listening again */
     }
@@ -805,10 +803,9 @@ int npf_peer_forward_drain(npf_peer *p, int i, int on)
 
 int npf_peer_forward_drained(npf_peer *p, int i)
 {
-    pfwd *f;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
+    pfwd *f = fwd_at(p, i);
+    if (!f)
         return 0;
-    f = p->fwds[i];
     if (f->draining && !f->suspended && (!p->call || npf_call_group_count(p->call, (uint32_t)f->id) == 0)) {
         peers_fwd_stop(f);                  /* its connections have ended: the port closes */
         f->suspended = 1;
@@ -820,12 +817,10 @@ int npf_peer_forward_drained(npf_peer *p, int i)
 int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, int nallow, uint32_t rate)
 {
     npf_policy tmp;
-    pfwd *f;
+    pfwd *f = fwd_at(p, i);
     int k;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used || p->fwds[i]->udp || nallow < 0
-        || nallow > (int)(sizeof tmp.rules / sizeof tmp.rules[0]))
+    if (!f || f->udp || nallow < 0 || nallow > (int)(sizeof tmp.rules / sizeof tmp.rules[0]))
         return -1;                          /* public mappings are TCP (data-channel.md 15) */
-    f = p->fwds[i];
     memset(&tmp, 0, sizeof tmp);
     for (k = 0; k < nallow; k++)            /* addresses only ("lan" and "*" are not sources) */
         if (npf_policy_add(&tmp, allow[k]) < 0 || tmp.nrules != k + 1)
@@ -846,11 +841,6 @@ int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, in
     return 0;
 }
 
-uint64_t npf_peer_forward_ext(const npf_peer *p, int i)
-{
-    return i >= 0 && i < p->nfwd && p->fwds[i]->used ? p->fwds[i]->ext : 0;
-}
-
 int npf_peer_forward_used(const npf_peer *p)
 {
     int i, n = 0;
@@ -859,24 +849,17 @@ int npf_peer_forward_used(const npf_peer *p)
     return n;
 }
 
-void npf_peer_forward_perm_set(npf_peer *p, int i, int perm)
-{
-    if (i >= 0 && i < p->nfwd && p->fwds[i]->used)
-        p->fwds[i]->perm = perm;
-}
-
 const char *npf_peer_forward_info(const npf_peer *p, int i, char *opt, const char **spec, int *perm, char *state,
                                   size_t cap)
 {
-    const pfwd *f;
-    if (i < 0 || i >= p->nfwd || !p->fwds[i]->used)
+    const pfwd *f = fwd_at(p, i);
+    if (!f)
         return NULL;
-    f = p->fwds[i];
     *opt = f->opt;
     *spec = f->spec;
     *perm = f->perm;
     if (f->up && f->reverse)
-        snprintf(state, cap, "up (callee port %d)", f->rport);
+        snprintf(state, cap, "up (callee port %d)", f->lport);
     else if (f->up && f->kind)
         snprintf(state, cap, "up (%s)", f->kind->k->name ? f->kind->k->name(f->kind->arg) : "");
     else if (f->up)
@@ -900,7 +883,7 @@ void npf_peers_net_changed(npf_peers *ps)
         p->backoff = 0;
         for (i = 0; i < p->nfwd; i++) {
             pfwd *f = p->fwds[i];
-            if (f && f->used && f->t_retry) {
+            if (f->used && f->t_retry) {
                 npf_timer_cancel(ps->n->loop, f->t_retry);
                 f->backoff = 0;
                 fwd_retry_cb(ps->n->loop, f);

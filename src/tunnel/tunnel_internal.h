@@ -8,8 +8,6 @@
 
 #define SOCKS_BUF      600
 
-enum { FR_DATA = 1, FR_FIN = 2, FR_RESET = 3, FR_WINDOW = 4 };   /* what handle_frame acts on */
-
 enum {
     SL_SOCKS_GREETING,      /* server: waiting for the greeting */
     SL_SOCKS_REQUEST,       /* server: waiting for the request */
@@ -133,7 +131,11 @@ int  tunnel_wb_put(wbuf *b, const void *p, size_t n);
 sublink *tunnel_find(npf_tunnel *t, uint32_t id);
 /* a local socket's event (also what virt_poll feeds a virtual end) */
 void tunnel_io_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
-int  tunnel_send_frame(npf_tunnel *t, uint32_t id, int type, const void *payload, size_t len);
+/* the frames to the peer: DATA (a copy of p), FIN; DATA of the sublink's
+ * own (the SOCKS bytes), charged to its credit; 0, or -1 */
+int  tunnel_send_data(npf_tunnel *t, uint32_t id, const void *p, size_t n);
+int  tunnel_send_fin(npf_tunnel *t, uint32_t id);
+int  tunnel_sub_send(sublink *s, const void *p, size_t n);
 void tunnel_update_ev(sublink *s);
 void tunnel_sub_free(sublink *s, int rst);
 void tunnel_sub_reset(sublink *s, int reason);
@@ -148,12 +150,19 @@ void tunnel_credit_back(sublink *s, size_t n);
 /* bytes the sublink may move now (up: local -> tunnel), at most want; 0: wait for the next tick */
 size_t tunnel_rate_allow(sublink *s, int up, size_t want);
 void tunnel_rate_take(sublink *s, int up, size_t n);
+rgroup *tunnel_rate_group(npf_tunnel *t, uint32_t group, uint32_t rate);
 
 /* tunnel_virt.c: the virtual local ends */
 /* a poll of the virtual ends soon (one at a time, not from inside one) */
 void tunnel_virt_arm(npf_tunnel *t);
 
 /* tunnel_socks.c */
+/* a SOCKS5 greeting in b[0..n): its length once complete (*noauth: it
+ * offers "no authentication"), 0 not yet, -1 not SOCKS5 */
+int  tunnel_socks_greeting(const uint8_t *b, size_t n, int *noauth);
+/* a port mapping's greeting and CONNECT host:port, pipelined; -1 for a
+ * host that cannot be one */
+int  tunnel_socks_request(const char *host, uint16_t port, uint8_t req[300], size_t *len);
 /* parse what the client sent so far; -1 if the sublink was freed */
 int  tunnel_socks_parse(sublink *s);
 /* client side: the server's method and CONNECT replies, as they come (tunnel_socks.c) */

@@ -181,13 +181,25 @@ int test_policy(void)
                                               "net 10.0.0.0/33 x", "socks nowhere x", "tcp/http ::1:80 x",
                                               "http 127.0.0.1:80 x", "tcp/rdp 127.0.0.1:3389/a x", "tcp/RDP 127.0.0.1:3389 x",
                                               "tcp/ 127.0.0.1:3389 x", "tcp/abcdefghijklmnop 127.0.0.1:1 x", "net/rdp lan x",
-                                              "tcp/r_p 127.0.0.1:3389 x",
+                                              "tcp/r_p 127.0.0.1:3389 x", "tcp 127.0.0.1:+80 x", "tcp [::1]:080 x",
                                               "reverse 80 x", "reverse 9000-8000 x", "reverse 70000 x", "reverse lan: x", "reverse wan:8000 x",
                                               "reverse lan x", NULL};
             int i;
             npf_res b;
             for (i = 0; bad[i]; i++)
                 CHECK(npf_res_from_line(&b, bad[i], e, sizeof e) < 0, "bad resource %s refused", bad[i]);
+        }
+        {   /* -R ports: digits only, as the other rules' ports */
+            static const char *const bad[] = {"+2000", " 2000", "2000x", "2000-", "-2000", "1023", "2000-0x8000",
+                                              "lan:+2000", "", NULL};
+            npf_policy p;
+            int i;
+            memset(&p, 0, sizeof p);
+            for (i = 0; bad[i]; i++)
+                CHECK(npf_policy_add_reverse(&p, bad[i]) < 0, "reverse ports \"%s\" refused", bad[i]);
+            CHECK(p.nrev == 0 && npf_policy_add_reverse(&p, "lan:2000-2001") == 0 && npf_policy_add_reverse(&p, "1024") == 0
+                      && p.nrev == 2 && p.rev[0].lo == 2000 && p.rev[0].hi == 2001 && p.rev[0].lan && p.rev[1].lo == 1024,
+                  "reverse ports taken: lan:2000-2001, 1024");
         }
         {   /* JSON there and back; names unique */
             npf_out o = {0};

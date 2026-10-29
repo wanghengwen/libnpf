@@ -78,7 +78,9 @@ typedef struct npf_fwd_new {
     int         hostport;
 } npf_fwd_new;
 /* its index (>= 0), or -1 bad (err), -2 at the limit, -3 other (port taken ...);
- * ext: the application's id (a platform mapping), 0 none */
+ * ext: the application's id (a platform mapping), 0 none. One that cannot
+ * start (port in use, refused by the callee) retries with backoff, the
+ * session goes on */
 int npf_peer_forward_add_parts(npf_peer *p, const npf_fwd_new *fn, int perm, uint64_t ext, char *err, size_t errcap);
 /* SPEC of a module's kind as it keeps it (its parse), else SPEC itself */
 const char *npf_peers_kind_norm(npf_peers *ps, char opt, const char *spec, char *buf, size_t cap);
@@ -139,7 +141,6 @@ npf_peer *npf_peers_first(const npf_peers *ps);
 npf_peer *npf_peer_next(const npf_peer *p);
 void      npf_peer_set_tag(npf_peer *p, int tag);
 int       npf_peer_tag(const npf_peer *p);
-/* "connected", "connecting", "retry in N s (why)", "ended (why)", "waiting for the server" */
 /* its name ("" none), and what to show people: the name, else number / HOST:PORT */
 const char *npf_peer_label(const npf_peer *p);
 const char *npf_peer_shown(const npf_peer *p);
@@ -151,30 +152,25 @@ const char *npf_peer_resources(const npf_peer *p);
 int npf_peer_resources_set(npf_peer *p, const char *json);
 /* 1 when its session told json already (the same list again: nothing new) */
 int npf_peer_resources_same(const npf_peer *p, const char *json);
+/* npf_peer_state for people: "connected", "connecting", "on demand", "retry
+ * in N s (why)", "ended (why)", "waiting for the server" */
 const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap);
-/* the last attempt found it not paired (no pinned key, no password, no
- * grant through the account): the user gives its password */
-int         npf_peer_needs_password(const npf_peer *p);
-/* the account let it in, and there is no account session now (it expired or
- * was revoked): the user logs in again (no password asked) */
-int         npf_peer_needs_account(const npf_peer *p);
-/* ... because the device refused the last password given */
-int         npf_peer_password_wrong(const npf_peer *p);
-/* ... because the device refused the pairing it had (reset, reinstalled, the
- * pairing revoked): paired by password, it pairs anew (security.md 9.6) */
-int         npf_peer_pairing_lost(const npf_peer *p);
+/* what the last attempt left the user to do (NPF_NEED_*, npf.h): its
+ * password (not paired; the device refused the last one given, or the
+ * pairing it had: reset, reinstalled, revoked: security.md 9.6), or a login
+ * again (the account let it in, and there is no account session now); 0
+ * with a session or a password given */
+int         npf_peer_needs(const npf_peer *p);
 /* the pairing password for a peer not connected: tried at once (also one
  * that gave up); -1 a bad password */
 int         npf_peer_password_try(npf_peer *p, const char *password);
 
-/* on demand (a hosted client's public mappings): the listeners are up
- * without a session; the first connection starts one (connections wait for
- * it, at most 30 s), and it ends idle_ms after its last connection closed;
- * no reconnecting in between (npf_peer_connect_put's on demand). 0: nothing changes */
-void        npf_peer_set_on_demand(npf_peer *p, int idle_ms);
 /* NPF_CONNECT_*: KEEP connects now when it has no session (running: the
- * instance started), ON_DEMAND's idle time runs from now (idle_ms 0: the
- * default), ONCE ends it when its session ends, at once without one */
+ * instance started); ONCE ends it when its session ends, at once without
+ * one; ON_DEMAND (a hosted client's public mappings): the listeners are up
+ * without a session, the first connection starts one (connections wait for
+ * it, at most 30 s), which ends idle_ms (0: the default) after its last
+ * connection closed, no reconnecting in between; the idle time runs from now */
 void        npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running);
 /* a direct peer's pre-shared key (32 bytes), NULL for a numbered one */
 const uint8_t *npf_peer_psk(const npf_peer *p);
@@ -214,10 +210,7 @@ void        npf_peers_no_cache(npf_peers *ps);
  * kept peer waiting to reconnect: at once; a finished one: one more try, as
  * it was made): 1 there is one already, 0 started */
 int         npf_peer_wake_now(npf_peer *p);
-/* port mappings at run time (npf_peer_forward_add_parts): a mapping that
- * cannot start (port in use, refused by the callee) retries with backoff,
- * the session goes on */
-/* by index (what npf_peer_forward_add_parts returned): 0 or -1 */
+/* forward i (what npf_peer_forward_add_parts returned) goes: 0 or -1 */
 int         npf_peer_forward_del_at(npf_peer *p, int i);
 /* a public mapping (npf-hosted): connections from the allow list only (CIDRs
  * or addresses; none: anyone), at most rate bytes per second each way (0:

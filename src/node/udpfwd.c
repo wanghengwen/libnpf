@@ -80,7 +80,7 @@ struct npf_udpf {
     int          nresolving;        /* flows whose names are being resolved (UDP_RESOLVING_MAX) */
     uint32_t     next_id;
     uint32_t     closed[CLOSED_RING];
-    int          nclosed;
+    unsigned     nclosed;           /* ever closed: the next goes at nclosed % CLOSED_RING */
     urev        *rev;               /* NPF_MAX_REVERSE, made at the first -R .../udp */
     int          nrev;
     npf_timer   *t_tick;
@@ -132,7 +132,7 @@ static uflow *find_src(const npf_udpf *u, int fd, const struct sockaddr_storage 
 {
     uflow *f;
     for (f = u->by_src[src_hash(fd, (const struct sockaddr *)src)]; f; f = f->nsrc)
-        if (f->fd == fd && !f->vkey && same_src(&f->src.sa, (const struct sockaddr *)src))
+        if (f->fd == fd && same_src(&f->src.sa, (const struct sockaddr *)src))   /* (a virtual flow's fd: VFD) */
             return f;
     return NULL;
 }
@@ -196,6 +196,16 @@ static int unit(npf_udpf *u, int op, uint32_t id, int reason)
     return u->io.unit(u->arg, b, op == NPF_UDP_CLOSE ? 6 : 5);
 }
 
+/* a warning at most every WARN_EVERY_MS: a peer's flows do not flood the log */
+static int warn_due(npf_udpf *u)
+{
+    int64_t now = npf_mono_ms();
+    if (now - u->warned_at <= WARN_EVERY_MS)
+        return 0;
+    u->warned_at = now;
+    return 1;
+}
+
 static void free_flow(npf_udpf *u, uflow *f)
 {
     int i;
@@ -220,12 +230,8 @@ static void free_flow(npf_udpf *u, uflow *f)
 static void drop_flow(npf_udpf *u, uflow *f, int send, int reason)
 {
     unlink_flow(u, f);
-    if (!f->out) {
-        u->closed[u->nclosed % CLOSED_RING] = f->id;
-        /* Keep the ring full after its first wrap, without signed overflow. */
-        if (++u->nclosed == 2 * CLOSED_RING)
-            u->nclosed = CLOSED_RING;
-    }
+    if (!f->out)
+        u->closed[u->nclosed++ % CLOSED_RING] = f->id;
     if (send)
         unit(u, NPF_UDP_CLOSE, f->id, reason);
     free_flow(u, f);
@@ -332,13 +338,8 @@ void npf_udpf_get_stats(const npf_udpf *u, npf_udpf_stats *out)
  * 2 s and most datagrams expire. Tests: NPF_TEST_UDP_MAX_AGE_MS */
 static void stream_opts(npf_udpf *u, anl_stream_opt *opt, int srtt)
 {
-    int age = NPF_UDP_MAX_AGE_MS;
-    if (srtt > 0)
-        age = srtt * 2 + 100;
-    if (age > NPF_UDP_MAX_AGE_HI)
-        age = NPF_UDP_MAX_AGE_HI;
-    if (age < NPF_UDP_MAX_AGE_MS)
-        age = NPF_UDP_MAX_AGE_MS;
+    int age = srtt * 2 + 100;               /* srtt 0 (unknown): 100, the floor below */
+    age = age < NPF_UDP_MAX_AGE_MS ? NPF_UDP_MAX_AGE_MS : age > NPF_UDP_MAX_AGE_HI ? NPF_UDP_MAX_AGE_HI : age;
     opt->prio = 1;                          /* ahead of the forwards' data (2), behind control (0) */
     opt->max_age_ms = u->max_age_ms ? u->max_age_ms : age;
     opt->fec = 0;
@@ -452,11 +453,8 @@ static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *t
     char a[64];
     int fd, i;
     if (!u->caller && !npf_policy_udp_allowed(u->policy, (const struct sockaddr *)to)) {
-        int64_t now = npf_mono_ms();
-        if (now - u->warned_at > WARN_EVERY_MS) {
-            u->warned_at = now;
+        if (warn_due(u))
             npf_logw("udp: %s is not a published udp resource: refused", npf_addr_str(to, a, sizeof a));
-        }
         u->st.refused++;
         drop_flow(u, f, 1, NPF_UDP_R_REFUSED);
         return;
@@ -537,7 +535,7 @@ static int literal(const char *host, uint16_t port, struct sockaddr_storage *ss,
 
 static int closed_lately(const npf_udpf *u, uint32_t id)
 {
-    int i, n = u->nclosed < CLOSED_RING ? u->nclosed : CLOSED_RING;
+    unsigned i, n = u->nclosed < CLOSED_RING ? u->nclosed : CLOSED_RING;
     for (i = 0; i < n; i++)
         if (u->closed[i] == id)
             return 1;
@@ -554,14 +552,16 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
 {
     struct sockaddr_storage ss;
     socklen_t sl;
+    size_t hl = strlen(host);
+    int name = literal(host, port, &ss, &sl) < 0;
     uflow *f;
     if (!u->caller && (!u->policy || (u->io.allowed && !u->io.allowed(u->arg)))) {
         u->st.refused++;
         unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_REFUSED);
         return NULL;
     }
-    if (u->nflows >= NPF_UDP_FLOWS || (u->nresolving >= UDP_RESOLVING_MAX && literal(host, port, &ss, &sl) < 0)
-        || !(f = calloc(1, sizeof *f + strlen(host) + 1))) {
+    if (u->nflows >= NPF_UDP_FLOWS || (name && u->nresolving >= UDP_RESOLVING_MAX)
+        || !(f = calloc(1, sizeof *f + hl + 1))) {
         unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_LIMIT);
         return NULL;
     }
@@ -570,11 +570,11 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     f->fd = -1;
     f->lid = lid;
     f->last = npf_mono_ms();
-    memcpy(f->host, host, strlen(host) + 1);
+    memcpy(f->host, host, hl + 1);
     f->port = port;
     link_flow(u, f);
     tick_arm(u);
-    if (literal(host, port, &ss, &sl) == 0) {
+    if (!name) {
         flow_connect(u, f, &ss, sl);
     } else if (!(f->res = npf_resolve_start_peer(u->loop, host, port, SOCK_DGRAM, resolved, f))) {
         drop_flow(u, f, 1, NPF_UDP_R_FAILED);
@@ -733,10 +733,8 @@ void npf_udpf_unit_input(npf_udpf *u, const uint8_t *b, size_t len)
     } else if (b[0] == NPF_UDP_CLOSE) {
         int reason = len >= 6 ? b[5] : NPF_UDP_R_CLOSED;
         if (f->out && reason != NPF_UDP_R_CLOSED) {
-            int64_t now = npf_mono_ms();
             u->st.refused++;
-            if (now - u->warned_at > WARN_EVERY_MS) {
-                u->warned_at = now;
+            if (warn_due(u)) {
                 if (u->caller)
                     npf_logw("udp: %s:%u: %s on the other side", f->host, f->port,
                              reason == NPF_UDP_R_REFUSED ? "not a published udp resource, refused"
@@ -775,13 +773,20 @@ static int send_out(npf_udpf *u, int lfd, const struct sockaddr_storage *src, so
 {
     uflow *f = vkey ? find_key(u, vkey) : find_src(u, lfd, src);
     if (!f) {
-        int n;
+        size_t hl = strlen(host);
         uflow *old;
+        int n;
+        /* the caller's target goes in its frames until OK, with a 1-byte
+         * length; the callee's -R flows have none */
+        if (u->caller && (hl > 255 || !port)) {
+            u->st.dropped++;
+            return -1;
+        }
         if (u->nflows >= NPF_UDP_FLOWS_FWD && (old = least_recent(u, lfd, &n)) && n >= NPF_UDP_FLOWS_FWD)
             drop_flow(u, old, 1, NPF_UDP_R_CLOSED);     /* the forward's oldest gives way */
         if (u->nflows >= NPF_UDP_FLOWS && (old = least_recent(u, -1, &n)))
             drop_flow(u, old, 1, NPF_UDP_R_CLOSED);
-        if (strlen(host) > 255 || !(f = calloc(1, sizeof *f + strlen(host) + 1))) {   /* (a frame's 1-byte length) */
+        if (!(f = calloc(1, sizeof *f + hl + 1))) {
             u->st.dropped++;
             return -1;
         }
@@ -797,7 +802,7 @@ static int send_out(npf_udpf *u, int lfd, const struct sockaddr_storage *src, so
             memcpy(&f->src, src, (size_t)srclen < sizeof f->src ? (size_t)srclen : sizeof f->src);
             f->srclen = srclen;
         }
-        memcpy(f->host, host, strlen(host) + 1);
+        memcpy(f->host, host, hl + 1);
         f->port = port;
         f->lid = lid;
         link_flow(u, f);
@@ -810,7 +815,7 @@ static int send_out(npf_udpf *u, int lfd, const struct sockaddr_storage *src, so
 int npf_udpf_send(npf_udpf *u, int lfd, const struct sockaddr_storage *src, socklen_t srclen, const char *host,
                   uint16_t port, const uint8_t *buf, size_t len)
 {
-    if (!u->caller || strlen(host) > 255 || !port) {
+    if (!u->caller) {
         u->st.dropped++;
         return -1;
     }
@@ -820,7 +825,7 @@ int npf_udpf_send(npf_udpf *u, int lfd, const struct sockaddr_storage *src, sock
 int npf_udpf_send_v(npf_udpf *u, void *key, npf_udpf_deliver deliver, const char *host, uint16_t port,
                     const uint8_t *buf, size_t len)
 {
-    if (!u->caller || !key || !deliver || strlen(host) > 255 || !port) {
+    if (!u->caller || !key || !deliver) {
         u->st.dropped++;
         return -1;
     }

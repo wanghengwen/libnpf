@@ -5,14 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/conf.h"
 #include "npf/out.h"
-#include "npf/crypto.h"
-#include "npf/peers.h"
-#include "npf/tunnel.h"
 #include "npf.h"
 #include "npf/platform.h"
-#include "udpfwd.h"
 
 #include "peers_internal.h"
 
@@ -210,20 +205,26 @@ static void sub_add(npf_peers *ps, npf_call *c, uint32_t sid, int fid)
         f->open++;
 }
 
-/* a forward's connection ended; refused by the peer's policy: counted
- * (npf_forward_get) */
-static void sub_done(npf_peers *ps, npf_call *c, uint32_t sid, const npf_sublink_stats *st)
+/* the forward's connection k is no longer counted: its forward, NULL gone */
+static pfwd *sub_drop(npf_peers *ps, int k)
 {
+    pfwd *f = peers_fwd_by_id(ps, ps->subs[k].fid);
+    ps->subs[k] = ps->subs[--ps->nsubs];
+    if (f && f->open > 0)
+        f->open--;
+    return f;
+}
+
+/* a session's sublink opened here ended: a forward's connection (refused by
+ * the peer's policy: counted, npf_forward_get), a public one's */
+static void conn_sublink_done(npf_call *c, uint32_t sid, const npf_sublink_stats *st, void *arg)
+{
+    npf_peers *ps = arg;
     int k;
     for (k = 0; k < ps->nsubs; k++)
         if (ps->subs[k].call == c && ps->subs[k].sid == sid) {
-            pfwd *f = peers_fwd_by_id(ps, ps->subs[k].fid);
-            ps->subs[k] = ps->subs[--ps->nsubs];
-            if (!f)
-                return;
-            if (f->open > 0)
-                f->open--;
-            if (st && st->end && strcmp(st->end, "target_refused") == 0) {
+            pfwd *f = sub_drop(ps, k);
+            if (f && st && st->end && strcmp(st->end, "target_refused") == 0) {
                 f->nrefused++;
                 if (f->socks)
                     snprintf(f->refused_why, sizeof f->refused_why, "a target not published by the peer");
@@ -231,16 +232,8 @@ static void sub_done(npf_peers *ps, npf_call *c, uint32_t sid, const npf_sublink
                     snprintf(f->refused_why, sizeof f->refused_why, "%.24s:%d not published by the peer", f->host,
                              f->hostport);
             }
-            return;
+            break;
         }
-}
-
-/* a session's sublink opened here ended: a public connection's, a forward's */
-static void conn_sublink_done(npf_call *c, uint32_t sid, const npf_sublink_stats *st, void *arg)
-{
-    npf_peers *ps = arg;
-    int k;
-    sub_done(ps, c, sid, st);
     for (k = 0; k < ps->nconns; k++)
         if (ps->conns[k].call == c && ps->conns[k].sid == sid) {
             conn_end(ps, k, st, NULL);
@@ -252,16 +245,11 @@ static void conn_sublink_done(npf_call *c, uint32_t sid, const npf_sublink_stats
 void peers_subs_call_gone(npf_peers *ps, npf_call *c)
 {
     int k;
-    for (k = 0; k < ps->nsubs;) {
-        if (ps->subs[k].call == c) {
-            pfwd *f = peers_fwd_by_id(ps, ps->subs[k].fid);
-            if (f && f->open > 0)
-                f->open--;
-            ps->subs[k] = ps->subs[--ps->nsubs];
-        } else {
+    for (k = 0; k < ps->nsubs;)
+        if (ps->subs[k].call == c)
+            sub_drop(ps, k);
+        else
             k++;
-        }
-    }
 }
 
 /* the open public connections whose bytes did not move for PUBLIC_IDLE_MS
@@ -321,8 +309,7 @@ void peers_conn_open(pfwd *f, int fd, uint64_t cid)
         peers_conn_gone(p->ps, cid, full ? "session_full" : "no_session");
         return;
     }
-    if (!f->udp && !f->kind)
-        sub_add(p->ps, p->call, (uint32_t)sid, f->id);
+    sub_add(p->ps, p->call, (uint32_t)sid, f->id);   /* (a TCP listener's: not UDP, not a module's kind) */
     npf_call_on_sublink_done(p->call, conn_sublink_done, p->ps);
     for (k = 0; cid && k < p->ps->nconns; k++)
         if (p->ps->conns[k].id == cid) {

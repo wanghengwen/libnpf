@@ -173,6 +173,7 @@ static void peers_out(npf_t *c, npf_out *o)
     static const char *const modes[] = {"keep", "once", "on_demand"};
     npf_peer *p;
     char b[400];
+    int need;
     npf_out_jopen(o, '[');
     for (p = npf_peers_first(c->peers); p; p = npf_peer_next(p)) {
         npf_out_jopen(o, '{');
@@ -184,14 +185,15 @@ static void peers_out(npf_t *c, npf_out *o)
         npf_out_kstr(o, "connect", modes[npf_peer_connect_mode(p)]);
         npf_out_kstr(o, "source", npf_source_name(npf_peer_tag(p)));
         npf_out_kstr(o, "status", npf_peer_status(p, b, sizeof b));
-        if (npf_peer_needs_password(p)) {   /* not paired: the console asks for its password */
+        need = npf_peer_needs(p);
+        if (need & NPF_NEED_PASSWORD) {     /* not paired: the console asks for its password */
             npf_out_kbool(o, "need_password", 1);
-            if (npf_peer_password_wrong(p))
+            if (need & NPF_NEED_PASSWORD_WRONG)
                 npf_out_kbool(o, "password_wrong", 1);
-            if (npf_peer_pairing_lost(p))
+            if (need & NPF_NEED_PAIRING_LOST)
                 npf_out_kbool(o, "pairing_lost", 1);
         }
-        if (npf_peer_needs_account(p))      /* the account let it in: log in again */
+        if (need & NPF_NEED_ACCOUNT)        /* the account let it in: log in again */
             npf_out_kbool(o, "need_account", 1);
         npf_out_kstr(o, "path", npf_peer_call(p) ? npf_call_path(npf_peer_call(p)) : NULL);
         npf_out_jkey(o, "mappings");

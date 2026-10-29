@@ -59,7 +59,7 @@ typedef struct npf_ldev {
     uint8_t key[32];
     char   *resources;              /* its resources as last heard: a JSON array (npf_res_normalize), or NULL */
     int     next;                   /* the modules' keys and their values (JSON text): npf_local_ext */
-    char  **ext_key, **ext_val;
+    struct npf_lext { char *key, *val; } *ext;
 } npf_ldev;
 
 typedef struct npf_local {

@@ -44,8 +44,8 @@ static int split_target(const char *t, char *host, size_t cap, int *port)
         if (strcmp(host, "localhost") != 0 && inet_pton(AF_INET, host, a) != 1)
             return -1;
     }
-    if (!colon[1] || colon[1] == '0')
-        return -1;
+    if (colon[1] < '1' || colon[1] > '9')
+        return -1;                          /* digits only: not "+80", " 80" or "080" */
     p = strtol(colon + 1, &e, 10);
     if (*e || p < 1 || p > 65535)
         return -1;
@@ -69,45 +69,51 @@ int npf_res_is_web(const npf_res *r)
     return strcmp(r->type, "tcp") == 0 && (strcmp(r->svc, "http") == 0 || strcmp(r->svc, "https") == 0);
 }
 
-/* the types of rules of their own (npf_res_rules): their targets' forms */
+/* the types: the policy rules their targets become (npf_res_rules), the
+ * targets' forms (a service's, tcp or udp HOST:PORT: split_target's) */
 static const struct {
     const char *type, *form;
     int (*add)(npf_policy *p, const char *spec);
-} k_rules[] = {
+} k_types[] = {
+    {"tcp", NULL, npf_policy_add},
     {"udp", "HOST:PORT, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add_udp},
     {"net", "lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add},
     {"socks", "lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add},
     {"reverse", "[lan:]* or [lan:]PORT[-PORT] (1024 to 65535)", npf_policy_add_reverse},
 };
+#define NTYPES ((int)(sizeof k_types / sizeof k_types[0]))
+
+static int type_of(const npf_res *r)
+{
+    int k;
+    for (k = 0; k < NTYPES && strcmp(r->type, k_types[k].type) != 0; k++)
+        ;
+    return k < NTYPES ? k : -1;
+}
 
 int npf_res_check(const npf_res *r, char *err, size_t errcap)
 {
     char host[64];
-    int port;
-    size_t i;
+    int port, k = type_of(r);
+    npf_policy t;
     if (!r->name[0] || !text_ok(r->name)) {
         snprintf(err, errcap, "a name of 1 to %d bytes without control characters", NPF_RES_NAME_MAX);
         return -1;
     }
+    if (k < 0) {
+        snprintf(err, errcap, "%s: the type is tcp, udp, net, socks or reverse (a web page: tcp/http)", r->name);
+        return -1;
+    }
+    memset(&t, 0, sizeof t);
     if (npf_res_is_service(r)) {
         if (split_target(r->target, host, sizeof host, &port) < 0) {
             snprintf(err, errcap, "%s: a %s target is HOST:PORT, HOST an IP address ([v6]) or localhost", r->name,
                      r->type);
             return -1;
         }
-    } else {
-        npf_policy t;
-        for (i = 0; i < sizeof k_rules / sizeof k_rules[0] && strcmp(r->type, k_rules[i].type) != 0; i++)
-            ;
-        if (i == sizeof k_rules / sizeof k_rules[0]) {
-            snprintf(err, errcap, "%s: the type is tcp, udp, net, socks or reverse (a web page: tcp/http)", r->name);
-            return -1;
-        }
-        memset(&t, 0, sizeof t);
-        if (k_rules[i].add(&t, r->target) < 0) {
-            snprintf(err, errcap, "%s: a %s target is %s", r->name, r->type, k_rules[i].form);
-            return -1;
-        }
+    } else if (k_types[k].add(&t, r->target) < 0) {
+        snprintf(err, errcap, "%s: a %s target is %s", r->name, r->type, k_types[k].form);
+        return -1;
     }
     if (!text_ok(r->desc)) {
         snprintf(err, errcap, "%s: a description of up to %d bytes without control characters", r->name,
@@ -267,34 +273,23 @@ void npf_res_json(npf_out *o, const npf_res *r, int n)
 int npf_res_rules(npf_policy *p, const npf_res *r, int n)
 {
     char host[64], spec[96];
-    int i, port, udp;
+    int i, k, port;
     npf_policy_clear(p);
     for (i = 0; i < n; i++) {
-        if (strcmp(r[i].type, "reverse") == 0) {
-            if (npf_policy_add_reverse(p, r[i].target) < 0)
-                return -1;
-            continue;
-        }
-        if (!npf_res_is_service(&r[i])) {
-            /* net, socks; udp of "*" or networks: rules of their own */
-            if ((strcmp(r[i].type, "udp") == 0 ? npf_policy_add_udp(p, r[i].target) : npf_policy_add(p, r[i].target)) < 0)
-                return -1;
-            continue;
-        }
-        if (split_target(r[i].target, host, sizeof host, &port) < 0)
+        const char *t = r[i].target;
+        if ((k = type_of(&r[i])) < 0)
             return -1;
-        udp = strcmp(r[i].type, "udp") == 0;    /* UDP rules of their own (data-channel.md 15) */
-        if (strcmp(host, "localhost") == 0) {
+        /* a service's target (IPv4:PORT, [IPv6]:PORT) is a rule as it is;
+         * localhost stands for both loopback addresses */
+        if (npf_res_is_service(&r[i]) && split_target(t, host, sizeof host, &port) == 0
+            && strcmp(host, "localhost") == 0) {
             snprintf(spec, sizeof spec, "127.0.0.1:%d", port);
-            if ((udp ? npf_policy_add_udp(p, spec) : npf_policy_add(p, spec)) < 0)
+            if (k_types[k].add(p, spec) < 0)
                 return -1;
             snprintf(spec, sizeof spec, "[::1]:%d", port);
-        } else if (strchr(host, ':')) {
-            snprintf(spec, sizeof spec, "[%s]:%d", host, port);
-        } else {
-            snprintf(spec, sizeof spec, "%s:%d", host, port);
+            t = spec;
         }
-        if ((udp ? npf_policy_add_udp(p, spec) : npf_policy_add(p, spec)) < 0)
+        if (k_types[k].add(p, t) < 0)
             return -1;
     }
     return 0;

@@ -5,14 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/conf.h"
-#include "npf/out.h"
-#include "npf/crypto.h"
-#include "npf/peers.h"
-#include "npf/tunnel.h"
 #include "npf.h"
 #include "npf/platform.h"
-#include "udpfwd.h"
 
 #include "peers_internal.h"
 
@@ -22,16 +16,6 @@ static void demand_tick(npf_loop *loop, void *arg);
 #define DEMAND_TICK_MS     5000
 #define READY_POLL_MS      100      /* an established session whose transport is not ready: asked this often */
 #define UDP_PENDING_BYTES  (256 * 1024)
-
-/* someone waits for the session (a connection, a datagram, a module's
- * forward): it starts now, no backoff; -1 when the start removed the peer
- * (in the done callback of a start that failed: its fds went) */
-int peers_kick(npf_peer *p)
-{
-    npf_timer_stop(p->ps->n->loop, &p->t_retry);
-    peers_start_call(p);
-    return p->removed ? -1 : 0;
-}
 
 void peers_demand_timer(npf_peer *p)
 {
@@ -52,11 +36,19 @@ static void queues_trim(npf_peer *p)
     }
 }
 
-/* the peer goes: its queues' room (emptied by peers_demand_drop before) */
-void peers_demand_queues_free(npf_peer *p)
+#define ALL INT64_MAX                    /* (conns_drop, dgrams_drop: any time) */
+
+/* someone waits (what: for the log): the session starts unless one is
+ * coming; what waits goes in once it is ready, or after DEMAND_WAIT_MS */
+static void wait_start(npf_peer *p, const char *what, const pfwd *f)
 {
-    p->npend = p->nuq = 0;
-    queues_trim(p);
+    if (!p->call && !p->waiting) {
+        npf_log("%s: %s to %s:%d: starting the session", p->name, what, f->bind, f->port);
+        if (peers_kick(p) < 0)
+            return;
+    }
+    peers_demand_timer(p);
+    peers_ready_wait(p);
 }
 
 /* on demand: a connection before the session: it waits, and the session starts */
@@ -76,13 +68,26 @@ void peers_demand_wait(pfwd *f, int fd, uint64_t cid)
     p->pend[p->npend].at = npf_mono_ms();
     p->pend[p->npend].conn = cid;
     p->npend++;
-    if (!p->call && !p->waiting) {
-        npf_log("%s: a connection to %s:%d: starting the session", p->name, f->bind, f->port);
-        if (peers_kick(p) < 0)
-            return;
-    }
-    peers_demand_timer(p);
-    peers_ready_wait(p);
+    wait_start(p, "a connection", f);
+}
+
+/* a UDP datagram before the session (on demand, or between two): it waits, and the session starts */
+void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, const uint8_t *buf, size_t len)
+{
+    npf_peer *p = f->p;
+    if (p->nuq == UDP_PENDING || p->uq_bytes + len > UDP_PENDING_BYTES
+        || (!p->uq && !(p->uq = calloc(UDP_PENDING, sizeof *p->uq)))
+        || !(p->uq[p->nuq].d = malloc(len ? len : 1)))
+        return;                             /* UDP: dropped */
+    memcpy(p->uq[p->nuq].d, buf, len);
+    p->uq[p->nuq].len = len;
+    p->uq[p->nuq].slot = f->idx;
+    memcpy(&p->uq[p->nuq].src, src, sizeof *src);
+    p->uq[p->nuq].sl = sl;
+    p->uq[p->nuq].at = npf_mono_ms();
+    p->nuq++;
+    p->uq_bytes += len;
+    wait_start(p, "a UDP datagram", f);
 }
 
 static void ready_poll(npf_loop *loop, void *arg)
@@ -108,6 +113,38 @@ void peers_ready_wait(npf_peer *p)
         p->t_ready = npf_timer_add(p->ps->n->loop, READY_POLL_MS, ready_poll, p);
 }
 
+/* the waiting connections of the forward in slot (-1: any) that came
+ * before `before` are closed (why: their record's end); how many */
+static int conns_drop(npf_peer *p, int slot, int64_t before, const char *why)
+{
+    int k, n = 0, was = p->npend;
+    for (k = 0; k < p->npend; k++)
+        if ((slot < 0 || p->pend[k].slot == slot) && p->pend[k].at < before) {
+            npf_sock_close(p->pend[k].fd);
+            peers_conn_gone(p->ps, p->pend[k].conn, why);
+        } else {
+            p->pend[n++] = p->pend[k];
+        }
+    p->npend = n;
+    queues_trim(p);
+    return was - n;
+}
+
+/* the same for the waiting UDP datagrams: dropped */
+static void dgrams_drop(npf_peer *p, int slot, int64_t before)
+{
+    int k, n = 0;
+    for (k = 0; k < p->nuq; k++)
+        if ((slot < 0 || p->uq[k].slot == slot) && p->uq[k].at < before) {
+            p->uq_bytes -= p->uq[k].len;
+            free(p->uq[k].d);
+        } else {
+            p->uq[n++] = p->uq[k];
+        }
+    p->nuq = n;
+    queues_trim(p);
+}
+
 /* the session is up: the waiting connections go into it */
 void peers_demand_flush(npf_peer *p)
 {
@@ -126,22 +163,6 @@ void peers_demand_flush(npf_peer *p)
     queues_trim(p);
 }
 
-/* UDP datagrams that waited for the session: dropped (slot -1: all) */
-void peers_udp_queue_drop(npf_peer *p, int slot)
-{
-    int k, n = 0;
-    for (k = 0; k < p->nuq; k++) {
-        if (slot < 0 || p->uq[k].slot == slot) {
-            p->uq_bytes -= p->uq[k].len;
-            free(p->uq[k].d);
-        } else {
-            p->uq[n++] = p->uq[k];
-        }
-    }
-    p->nuq = n;
-    queues_trim(p);
-}
-
 /* the session is up: the datagrams that waited go into it */
 void peers_udp_queue_flush(npf_peer *p)
 {
@@ -152,61 +173,27 @@ void peers_udp_queue_flush(npf_peer *p)
             npf_call_udp_send(p->call, f->fd, &p->uq[k].src, p->uq[k].sl, f->host, (uint16_t)f->hostport, p->uq[k].d,
                               p->uq[k].len);
     }
-    peers_udp_queue_drop(p, -1);
+    dgrams_drop(p, -1, ALL);
+}
+
+void peers_udp_queue_drop(npf_peer *p, int slot)
+{
+    dgrams_drop(p, slot, ALL);
 }
 
 void peers_demand_drop_slot(npf_peer *p, int slot)
 {
-    int k, n = 0;
-    for (k = 0; k < p->npend; k++)
-        if (p->pend[k].slot == slot) {
-            npf_sock_close(p->pend[k].fd);
-            peers_conn_gone(p->ps, p->pend[k].conn, "mapping_closed");
-        } else {
-            p->pend[n++] = p->pend[k];
-        }
-    p->npend = n;
-    queues_trim(p);
+    conns_drop(p, slot, ALL, "mapping_closed");
 }
 
 void peers_demand_drop(npf_peer *p, const char *why)
 {
-    int k;
     if (p->npend)
         npf_logw("%s: %d waiting connection(s) closed (%s)", p->name, p->npend, why);
-    for (k = 0; k < p->npend; k++) {
-        npf_sock_close(p->pend[k].fd);
-        peers_conn_gone(p->ps, p->pend[k].conn, "no_session");
-    }
-    p->npend = 0;
     if (p->nuq)
         npf_logw("%s: %d waiting UDP datagram(s) dropped (%s)", p->name, p->nuq, why);
-    peers_udp_queue_drop(p, -1);
-}
-
-/* a UDP datagram before the session (on demand, or between two): it waits, and the session starts */
-void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, const uint8_t *buf, size_t len)
-{
-    npf_peer *p = f->p;
-    if (p->nuq == UDP_PENDING || p->uq_bytes + len > UDP_PENDING_BYTES
-        || (!p->uq && !(p->uq = calloc(UDP_PENDING, sizeof *p->uq)))
-        || !(p->uq[p->nuq].d = malloc(len ? len : 1)))
-        return;                             /* UDP: dropped */
-    memcpy(p->uq[p->nuq].d, buf, len);
-    p->uq[p->nuq].len = len;
-    p->uq[p->nuq].slot = f->idx;
-    memcpy(&p->uq[p->nuq].src, src, sizeof *src);
-    p->uq[p->nuq].sl = sl;
-    p->uq[p->nuq].at = npf_mono_ms();
-    p->nuq++;
-    p->uq_bytes += len;
-    if (!p->call && !p->waiting) {
-        npf_log("%s: a UDP datagram to %s:%d: starting the session", p->name, f->bind, f->port);
-        if (peers_kick(p) < 0)
-            return;
-    }
-    peers_demand_timer(p);
-    peers_ready_wait(p);
+    conns_drop(p, -1, ALL, "no_session");
+    dgrams_drop(p, -1, ALL);
 }
 
 /* waiting connections past their time; a session without connections ends */
@@ -214,30 +201,12 @@ static void demand_tick(npf_loop *loop, void *arg)
 {
     npf_peer *p = arg;
     int64_t now = npf_mono_ms();
-    int k, n = 0;
+    int n;
     (void)loop;
     p->t_demand = NULL;
-    for (k = 0; k < p->npend; k++) {
-        if (now - p->pend[k].at > DEMAND_WAIT_MS) {
-            npf_sock_close(p->pend[k].fd);
-            peers_conn_gone(p->ps, p->pend[k].conn, "no_session");
-        } else {
-            p->pend[n++] = p->pend[k];
-        }
-    }
-    if (n < p->npend)
-        npf_logw("%s: %d connection(s) waited too long for the session, closed", p->name, p->npend - n);
-    p->npend = n;
-    for (k = n = 0; k < p->nuq; k++) {
-        if (now - p->uq[k].at > DEMAND_WAIT_MS) {
-            p->uq_bytes -= p->uq[k].len;
-            free(p->uq[k].d);
-        } else {
-            p->uq[n++] = p->uq[k];
-        }
-    }
-    p->nuq = n;
-    queues_trim(p);
+    if ((n = conns_drop(p, -1, now - DEMAND_WAIT_MS, "no_session")))
+        npf_logw("%s: %d connection(s) waited too long for the session, closed", p->name, n);
+    dgrams_drop(p, -1, now - DEMAND_WAIT_MS);
     if (p->idle_ms && p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED) {
         npf_call_info i;
         npf_call_info_get(p->call, &i);

@@ -10,7 +10,7 @@
 #include <stdint.h>
 
 #include "anliu.h"
-#include "npf/loop.h"
+#include "npf.h"                    /* NPF_MEDIA_FRAME_MAX, NPF_FRAME_KEY */
 #include "npf/node.h"
 
 #define NPF_TAG_MEDIA      16       /* AnLiu tag: NPF_TAG_MEDIA + the application's tag (0..999) */
@@ -18,7 +18,6 @@
 #define NPF_MEDIA_TAG_RDK  0x8000   /* tag bit: the receiver drops non-key frames after a loss */
 #define NPF_MEDIA_OUT_MAX  30       /* AnLiu streams one side opens: 2 x 30 + sid 0 + the data
                                        stream = 62 of AnLiu's 64 (closing ones count until confirmed) */
-#define NPF_MEDIA_MAX      256      /* logical streams per session at once */
 /* AnLiu receive windows (segments). A stream's rcv_wnd is the opener's
  * choice, up to ANL_MAX_WND (32768), and the receiver may have to hold
  * that many out-of-order segments of it whether the application reads or
@@ -28,8 +27,6 @@
 #define NPF_ANL_CTRL_WND   4096     /* sid 0: control (our cfg.default_rcv_wnd) */
 #define NPF_ANL_DATA_WND   4096     /* the data stream (5 MB: 10 MB/s up to 500 ms RTT) */
 #define NPF_ANL_MEDIA_WND  512      /* each media stream */
-#define NPF_MEDIA_FRAME_MAX (4 << 20)
-#define NPF_FRAME_KEY_FLAG 1             /* = NPF_FRAME_KEY of npf.h */
 
 typedef struct npf_media npf_media;
 
@@ -47,7 +44,7 @@ typedef struct npf_media_io {
 } npf_media_io;
 
 /* odd: this side's ids are odd (the callee) */
-npf_media *npf_media_new(npf_loop *loop, anl_t *anl, int odd, const npf_media_io *io, void *arg);
+npf_media *npf_media_new(anl_t *anl, int odd, const npf_media_io *io, void *arg);
 /* the session ended: everything goes without callbacks */
 void npf_media_free(npf_media *m);
 
