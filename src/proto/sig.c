@@ -1,4 +1,5 @@
 /* The signaling connection (npf/sig.h) */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -144,6 +145,14 @@ int npf_sig_ping(npf_sig *s)
 int64_t npf_sig_last_rx(const npf_sig *s)
 {
     return s->ws ? npf_ws_last_rx(s->ws) : 0;
+}
+
+const char *npf_sig_diag(const npf_sig *s, char *buf, size_t cap)
+{
+    if (s && s->ws)
+        return npf_ws_diag(s->ws, buf, cap);
+    snprintf(buf, cap, "no connection");
+    return buf;
 }
 
 const uint8_t *npf_sig_hash(const npf_sig *s)
