@@ -59,16 +59,6 @@ static void acme_status(npf_t *n, npf_out *o)
     npf_out_printf(o, "{\"calls\":%d}", a->calls);
 }
 
-static int acme_check(npf_t *n, const char *k, const char *v, npf_out *o)
-{
-    (void)n;
-    if (strcmp(v, "on") != 0 && strcmp(v, "off") != 0) {
-        npf_out_printf(o, "%s: on or off\n", k);
-        return 2;
-    }
-    return 0;
-}
-
 static char acme_set[64];           /* the last live key set: "key=value" */
 static void acme_conf_set(npf_t *n, const char *k, const char *v)
 {
@@ -77,14 +67,15 @@ static void acme_conf_set(npf_t *n, const char *k, const char *v)
 }
 
 static const npf_mod_cmd acme_cmds[] = {{"hello", acme_hello}, {NULL, NULL}};
-static const char *const acme_keys[] = {"acme_mode", NULL};
+static const npf_key acme_keys[] = {NPF_KEY_E("acme_mode", 0, "off", "on|off"), NPF_KEY_E("acme_live", NPF_K_LIVE, "a", "a|b"),
+                                     NPF_KEY_S("acme_file", NPF_K_FILE), NPF_KEY_END};
 const npf_module acme_module = {.name = "acme", .create = acme_create, .destroy = acme_destroy,
                                 .cmds = acme_cmds, .status_json = acme_status, .keys = acme_keys,
-                                .check = acme_check, .conf_set = acme_conf_set};
+                                .conf_set = acme_conf_set};
 
 /* clashes: each refused */
 static const npf_mod_cmd set_cmds[] = {{"set", acme_hello}, {NULL, NULL}};
-static const char *const builtin_keys[] = {"udp_port", NULL};
+static const npf_key builtin_keys[] = {NPF_KEY_S("udp_port", 0), NPF_KEY_END};
 static const npf_module clash_name = {.name = "acme"};
 static const npf_module clash_builtin_cmd = {.name = "b1", .cmds = set_cmds};
 static const npf_module clash_builtin_key = {.name = "b2", .keys = builtin_keys};
@@ -202,11 +193,17 @@ int main(void)
     check(s && strstr(s, "\"acme\":{\"calls\":1}") != NULL, "the module's key in the status");
     npf_free(s);
     check(npf_config_set(n, "acme_mode", "maybe", 0, err, sizeof err) < 0 && strstr(err, "on or off"),
-          "the module checks its configuration key");
+          "its key checked by its table");
     rc = npf_config_set(n, "acme_mode", "on", 0, err, sizeof err);
     check(rc >= 0 && npf_config_get(n, "acme_mode", val, sizeof val) == NPF_OK, "the module's key is known");
     check(!acme_set[0] && npf_config_set(n, "peer_idle", "7", 0, err, sizeof err) >= 0 && strcmp(acme_set, "peer_idle=7") == 0,
           "a live key set: the module hears it (conf_set), not its own key (not live)");
+    check(npf_config_set(n, "acme_live", "b", 0, err, sizeof err) == 0 && strcmp(acme_set, "acme_live=b") == 0
+          && npf_config_set(n, "acme_file", "x", 0, err, sizeof err) == NPF_EINVAL && strstr(err, "only in npf.conf"),
+          "its live key in effect at once, its file key refused");
+    s = npf_config_json(n);
+    check(s && strstr(s, "\"acme_live\":\"b\"") && !strstr(s, "acme_mode"), "its live key listed");
+    npf_free(s);
     check(npf_key_is("password", NPF_K_SECRET) && npf_key_is("cred", NPF_K_SECRET) && npf_key_is("model_cred", NPF_K_SECRET)
           && npf_key_is("direct_psk", NPF_K_SECRET) && !npf_key_is("log_level", NPF_K_SECRET),
           "the credentials and the password are hidden in get");
@@ -215,7 +212,6 @@ int main(void)
 
     if (before) {
         check(command(before, "hello") != 0, "the earlier instance: no module's command");
-        check(npf_config_get(before, "acme_mode", val, sizeof val) == NPF_ENOENT, "nor its key");
         npf_destroy(before);
     }
     check(destroyed == 1, "the earlier instance never called the module");

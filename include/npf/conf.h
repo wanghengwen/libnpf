@@ -28,10 +28,10 @@ void npf_conf_free(npf_conf *c);
 int  npf_conf_copy(npf_conf *dst, const npf_conf *src);
 
 /* Lines "key = value"; '#' starts a comment. Returns 0 or -1 (unreadable).
- * Relative paths in the path-valued keys (dir, state, serverlist,
- * serverlist_saved, direct_psk_file, log, pidfile) are taken relative to the
- * directory of the configuration file, so a daemon or service finds them
- * whatever its working directory. */
+ * Relative paths in the path-valued keys (NPF_K_PATH, a module's too: the
+ * modules are registered first) are taken relative to the directory of the
+ * configuration file, so a daemon or service finds them whatever its working
+ * directory. */
 int npf_conf_load(npf_conf *c, const char *path);
 const char *npf_conf_get(const npf_conf *c, const char *key, const char *def);
 /* repeatable keys ("peer"): the i-th value, NULL past the last */
@@ -43,9 +43,9 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val);
 /* set, a relative value of a path-valued key taken next to the file conf_path */
 void npf_conf_set_rel(npf_conf *c, const char *conf_path, const char *key, const char *val);
 
-/* libnpf's keys, one table (conf.c, architecture.md 7.1): each key's type,
- * range, default and where it may come from; a module's keys are its own
- * (npf_module.keys and check) */
+/* The configuration keys, a table each (architecture.md 7.1): libnpf's
+ * (conf.c) and every registered module's own (npf_module.keys): each key's
+ * type, range, default and where it may come from */
 enum { NPF_K_STR, NPF_K_INT, NPF_K_ENUM };      /* a flag is an NPF_K_INT of 0..1 */
 enum {
     NPF_K_FILE = 1,         /* npf.conf (or npf_setup) only: where to connect, what to trust or run, the files written */
@@ -63,12 +63,19 @@ typedef struct npf_key {
     const char *def;                /* when unset ("": none) */
     const char *vals;               /* NPF_K_ENUM: "a|b|c" */
 } npf_key;
-const npf_key *npf_key_find(const char *name);         /* NULL: not libnpf's */
-const npf_key *npf_key_next(const npf_key *k);          /* the first after k (NULL: the first; NULL at the end) */
-int  npf_key_is(const char *name, int flag);            /* libnpf's, with the NPF_K_* flag */
+#define NPF_KEY_S(name, fl)              {name, NPF_K_STR, fl, 0, 0, "", NULL}
+#define NPF_KEY_I(name, fl, lo, hi, def) {name, NPF_K_INT, fl, lo, hi, def, NULL}
+#define NPF_KEY_B(name, fl, def)         {name, NPF_K_INT, fl, 0, 1, def, NULL}
+#define NPF_KEY_E(name, fl, def, vals)   {name, NPF_K_ENUM, fl, 0, 0, def, vals}
+#define NPF_KEY_END                      {NULL, 0, 0, 0, 0, NULL, NULL}
+extern const npf_key npf_keys[];                        /* libnpf's, NPF_KEY_END at the end */
+const npf_key *npf_key_in(const npf_key *t, const char *name);     /* in table t (NULL: none) */
+const npf_key *npf_key_find(const char *name);          /* libnpf's or a registered module's; NULL: neither */
+const npf_key *npf_mods_key(const char *name);          /* a registered module's (module.c) */
+int  npf_key_is(const char *name, int flag);            /* a key with the NPF_K_* flag */
 /* a value of k: 0, or -1 with "key: what it takes" in err */
 int  npf_key_check(const npf_key *k, const char *v, char *err, size_t cap);
-/* every value of a key of libnpf's in c: 0, or -1 (err as above) */
+/* every value of a known key in c: 0, or -1 (err as above) */
 int  npf_conf_check(const npf_conf *c, char *err, size_t cap);
 /* an NPF_K_INT's value (its default when unset or bad), an NPF_K_ENUM's index in its values */
 int64_t npf_conf_int(const npf_conf *c, const char *key);

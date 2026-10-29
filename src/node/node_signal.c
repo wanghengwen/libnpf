@@ -99,12 +99,12 @@ int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_r
 /* ---- call_end reports ---- */
 
 
-static void end_reply(npf_node *n, const npf_json *j, int ok, void *arg)
+static void end_reply(npf_node *n, const npf_env *env, int ok, void *arg)
 {
     npf_end_report *e = arg;
     (void)ok;
-    e->state = j ? 0 : 1;               /* answered: done; connection lost: again after the next login */
-    if (j)
+    e->state = env ? 0 : 1;             /* answered: done; connection lost: again after the next login */
+    if (env)
         ends_flush(n);                  /* a request slot is free again */
 }
 
@@ -510,21 +510,20 @@ static int enroll_got(npf_node *n, const m_enrolled *m)
     return 0;
 }
 
-static void enroll_reply(npf_node *n, const npf_json *j, int ok, void *arg)
+static void enroll_reply(npf_node *n, const npf_env *e, int ok, void *arg)
 {
-    m_env e;
     m_enrolled m;
     (void)arg;
-    if (!j || node_env(j, &e) < 0)
+    if (!e)
         return;                             /* the connection went: enrol again on the next one */
-    if (!ok || npf_msg_parse(&m_enrolled_d, j, e.data, &m, NULL, 0) < 0 || enroll_got(n, &m) < 0) {
-        const char *err = !ok ? (e.error[0] ? e.error : "no reply") : "bad_reply";
-        npf_loge("enrol: refused (%s%s%s): %s", err, e.message[0] ? ", " : "", e.message, enroll_why(err, e.message));
+    if (!ok || npf_msg_parse(&m_enrolled_d, e->j, e->data, &m, NULL, 0) < 0 || enroll_got(n, &m) < 0) {
+        const char *err = !ok ? (e->error[0] ? e->error : "no reply") : "bad_reply";
+        npf_loge("enrol: refused (%s%s%s): %s", err, e->message[0] ? ", " : "", e->message, enroll_why(err, e->message));
         if (n->backoff_ms < 10000)
             n->backoff_ms = 10000;          /* enrol again later, not every second */
         n->enroll_state = NPF_ENROLL_REFUSED;
         snprintf(n->enroll_error, sizeof n->enroll_error, "%s", err);
-        snprintf(n->enroll_reason, sizeof n->enroll_reason, "%.23s", e.message);
+        snprintf(n->enroll_reason, sizeof n->enroll_reason, "%.23s", e->message);
         n->enroll_at_unix_ms = npf_unix_ms();
         if (n->hooks.on_enroll_failed)
             n->hooks.on_enroll_failed(n, err, n->enroll_reason, n->backoff_ms / 1000, n->hook_arg);
@@ -828,7 +827,7 @@ int node_sig_reply(npf_node *n, const m_env *e)
         snprintf(expected, sizeof expected, "r%d", n->pending[i].id);
         if (strcmp(e->reply_to, expected) == 0) {
             n->pending[i].fn = NULL;
-            fn(n, e->j, strcmp(e->status, "ok") == 0, n->pending[i].arg);
+            fn(n, e, strcmp(e->status, "ok") == 0, n->pending[i].arg);
             return 1;
         }
     }

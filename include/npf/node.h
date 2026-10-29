@@ -52,8 +52,19 @@ typedef struct npf_server_entry {
     int64_t  degraded_until;    /* monotonic ms: deprioritised after 3 failures for an hour (security.md 7.5) */
 } npf_server_entry;
 
+/* a message's envelope as parsed (signaling.md "公共消息格式", data-channel.md
+ * the control messages): data, its data object's token in j */
+typedef struct npf_env {
+    int64_t         v;
+    char            type[32], id[24], reply_to[24], status[16], error[32], message[64];
+    int             data;
+    const npf_json *j;
+} npf_env;
+
 typedef struct npf_node npf_node;
-typedef void (*npf_reply_fn)(npf_node *n, const npf_json *j, int ok, void *arg);
+/* a request's reply: e NULL when none came (the connection or session
+ * ended), ok its status "ok" */
+typedef void (*npf_reply_fn)(npf_node *n, const npf_env *e, int ok, void *arg);
 
 #define NPF_PENDING_MAX 16             /* signaling requests awaiting replies at once */
 
@@ -79,7 +90,7 @@ struct npf_policy;
 /* call states reported through on_call_state */
 enum { NPF_CALL_CALLING = 1, NPF_CALL_CONNECTING, NPF_CALL_ESTABLISHED, NPF_CALL_CLOSED };
 
-typedef void (*npf_ctl_fn)(npf_call *c, const npf_json *j, int ok, void *arg);
+typedef void (*npf_ctl_fn)(npf_call *c, const npf_env *e, int ok, void *arg);     /* as npf_reply_fn */
 
 /* What the callee side needs from the program (device or console node). */
 typedef struct npf_callee_ops {

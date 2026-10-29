@@ -39,11 +39,14 @@ static void apply_setting(npf_t *c, const char *k, const char *v)
     } else if (strcmp(k, "peer_idle") == 0) {
         npf_peers_set_idle(c->peers, (atoi(v) > 0 ? atoi(v) : 300) * 1000);     /* 0: the default, as at a start */
     } else if (npf_key_is(k, NPF_K_UNLISTED)) {
-        /* a hosted client's limits on its public mappings (npf-hosted sets them from the platform) */
-#define LIMIT(key) (strcmp(k, key) == 0 ? atoi(v) : (int)npf_conf_int(&c->conf, key))
-        npf_peers_set_limits(c->peers, LIMIT("hosted_max_conns"), LIMIT("hosted_ip_conns"), LIMIT("hosted_ip_rate"));
-#undef LIMIT
+        npf_hosted_limits(c);
     }
+}
+
+void npf_hosted_limits(npf_t *n)
+{
+    npf_peers_set_limits(n->peers, (int)npf_conf_int(&n->conf, "hosted_max_conns"),
+                         (int)npf_conf_int(&n->conf, "hosted_ip_conns"), (int)npf_conf_int(&n->conf, "hosted_ip_rate"));
 }
 
 const char *npf_cmd_get(npf_t *c, const char *k, char *buf, size_t cap)
@@ -68,63 +71,49 @@ const char *npf_cmd_get(npf_t *c, const char *k, char *buf, size_t cap)
     return buf;
 }
 
-/* 0, or the exit code with the reason in o */
-static int check_value(npf_t *n, const char *k, const char *v, npf_out *o)
-{
-    const npf_key *key = npf_key_find(k);
-    char why[96];
-    int r;
-    if (!npf_conf_value_ok(v)) {
-        npf_out_printf(o, "%s: the value must be one line without '#' (and under 1000 bytes)\n", k);
-        return 2;
-    }
-    if ((r = npf_mods_check(n, k, v, o)) >= 0)
-        return r;                           /* a module's key */
-    if (key && npf_key_check(key, v, why, sizeof why) < 0) {
-        npf_out_printf(o, "%s\n", why);
-        return 2;
-    }
-    return 0;
-}
-
 /* set KEY VALUE: at once when the key can change at run time, and in the
  * configuration file unless save is 0 */
 int npf_cmd_set(npf_t *c, const char *k, const char *v, int save, npf_out *o)
 {
-    int live = npf_key_is(k, NPF_K_LIVE), r;
-    const char *shown = npf_key_is(k, NPF_K_SECRET) ? "(hidden)" : v;
-    /* where to connect, what to trust, the files written (dir and state
-     * also say where local.json is); the peers (node) and the resources
-     * have their own calls */
-    if (npf_key_is(k, NPF_K_FILE)) {
-        npf_out_printf(o, "%s: only in npf.conf%s\n", k, strcmp(k, "resource") == 0 ? " (or the resource command)" : "");
-        return 2;
-    }
-    if (!npf_key_find(k) && !npf_mod_key_known(c, k)) {   /* libnpf's or a module's */
+    const npf_key *key = npf_key_find(k);   /* libnpf's or a module's */
+    int live = key && (key->flags & NPF_K_LIVE);
+    const char *shown = key && (key->flags & NPF_K_SECRET) ? "(hidden)" : v;
+    char why[96];
+    if (!key) {
         npf_out_printf(o, "%s: not a configuration key\n", k);
         return 2;
     }
-    if ((r = check_value(c, k, v, o)) != 0)
-        return r;
-    if (live)
+    /* where to connect, what to trust, the files written (dir and state
+     * also say where local.json is); the peers (node) and the resources
+     * have their own calls */
+    if (key->flags & NPF_K_FILE) {
+        npf_out_printf(o, "%s: only in npf.conf%s\n", k, strcmp(k, "resource") == 0 ? " (or the resource command)" : "");
+        return 2;
+    }
+    if (!npf_conf_value_ok(v)) {
+        npf_out_printf(o, "%s: the value must be one line without '#' (and under 1000 bytes)\n", k);
+        return 2;
+    }
+    if (npf_key_check(key, v, why, sizeof why) < 0) {
+        npf_out_printf(o, "%s\n", why);
+        return 2;
+    }
+    npf_conf_set(&c->conf, k, v);
+    if (live) {
         apply_setting(c, k, v);
+        npf_mods_conf_set(c, k, v);
+    }
     if (save) {
         npf_conf_set(&c->lc.settings, k, v);
         if (npf_local_save(&c->lc) < 0) {   /* written with the next change saved */
-            npf_conf_set(&c->conf, k, v);   /* as get says */
             npf_out_printf(o, "%s = %s%s, but cannot write %s yet\n", k, shown,
                            live ? ": in effect now" : " (takes effect after a restart)", c->lc.path);
-            if (live)
-                npf_mods_conf_set(c, k, v);
             return NPF_CMD_UNSAVED;
         }
     }
-    npf_conf_set(&c->conf, k, v);
     npf_out_printf(o, "%s = %s%s%s\n", k, shown, live ? "" : " (takes effect after a restart)",
                    save ? "" : " (not saved)");
     npf_log("%s = %s%s", k, shown, save ? " (saved)" : "");
-    if (live)
-        npf_mods_conf_set(c, k, v);
     return 0;
 }
 
@@ -174,10 +163,12 @@ int npf_cmd_run(npf_t *c, int argc, char **argv, npf_out *o, npf_text_cb cb, voi
 void npf_cmd_config_json(npf_t *c, npf_out *o)
 {
     char b[NPF_CONF_VAL_MAX];
-    const npf_key *k = NULL;
+    const npf_key *k;
+    int i;
     npf_out_jobj(o);
-    while ((k = npf_key_next(k)))
-        if ((k->flags & (NPF_K_LIVE | NPF_K_UNLISTED)) == NPF_K_LIVE)
-            npf_out_kstr(o, k->name, npf_cmd_get(c, k->name, b, sizeof b));
+    for (i = -1; i < 0 || c->mods[i]; i++)       /* libnpf's, then each module's */
+        for (k = i < 0 ? npf_keys : c->mods[i]->keys; k && k->name; k++)
+            if ((k->flags & (NPF_K_LIVE | NPF_K_UNLISTED)) == NPF_K_LIVE)
+                npf_out_kstr(o, k->name, npf_cmd_get(c, k->name, b, sizeof b));
     npf_out_jend(o);
 }

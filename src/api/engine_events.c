@@ -200,7 +200,7 @@ static int sig_busy(npf_node *node, void *arg)
 static void on_login(npf_node *node, void *arg)
 {
     npf_t *n = arg;
-    if (n->cfg.callable && n->callee)
+    if (n->node.cfg.callable && n->callee)
         npf_callee_on_login(n->callee);
     npf_peers_on_login(n->peers);
     npf_mods_login(n);
@@ -420,14 +420,13 @@ static void peer_up(npf_peer *p, npf_call *call, void *arg)
 static void peer_fwd(npf_peer *p, int i, int up, const char *why, void *arg)
 {
     npf_t *n = arg;
-    char opt, st[160], sp[320];
-    const char *spec;
-    int perm;
+    npf_fwd_state st;
+    char sp[320];
     npf_out o = {0};
     npf_mods_peer_fwd(n, p, i, up, why);
-    if (!npf_peer_forward_info(p, i, &opt, &spec, &perm, st, sizeof st))
+    if (npf_peer_forward_state(p, i, &st) < 0)
         return;
-    snprintf(sp, sizeof sp, "-%c %s", opt, spec);
+    snprintf(sp, sizeof sp, "-%c %s", st.opt, st.spec);
     npf_out_jobj(&o);
     npf_out_kstr(&o, "peer", npf_peer_name(p));
     npf_out_kstr(&o, "spec", sp);
@@ -470,12 +469,12 @@ static void peer_refused(npf_peer *p, uint64_t mapping, int port, const struct s
 }
 
 /* the node with its callbacks here (create() in engine.c owns it) */
-int npf_engine_node_init(npf_t *n)
+int npf_engine_node_init(npf_t *n, const npf_node_cfg *cfg)
 {
     npf_node_hooks hooks = {on_login, on_call_state, on_paired, on_event, on_enrolled, on_app_data, on_media_open,
                             on_media_frame, on_media_closed, sig_busy, on_resources, on_net_change,
                             on_enroll_failed, on_offline};
-    int r = npf_node_init(&n->node, n->loop, &n->cfg, &n->id, &hooks, n);
+    int r = npf_node_init(&n->node, n->loop, cfg, &n->id, &hooks, n);
     if (r < 0)
         return r;
     n->node.on_account_lost = on_account_lost;

@@ -70,11 +70,11 @@ typedef struct move_rec {
     int fails, sub_done, sub_closed;
 } move_rec;
 
-static void move_ctl(npf_call *c, const npf_json *j, int ok, void *arg)
+static void move_ctl(npf_call *c, const npf_env *e, int ok, void *arg)
 {
     move_rec *r = arg;
     (void)c;
-    (void)j;
+    (void)e;
     r->fails += !ok;
 }
 

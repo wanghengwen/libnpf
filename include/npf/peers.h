@@ -258,18 +258,14 @@ typedef struct npf_fwd_state {
     char     refused_why[64];
     void    *ctx;
     uint64_t ext;                   /* the application's id (a platform mapping), 0 none */
-    char     spec[300];             /* a module's kind: in its form; else what it is, for people */
+    char     spec[300];             /* a module's kind: in its form; else what it is, for people
+                                       ("local 127.0.0.1:8080 -> 127.0.0.1:80") */
+    char     text[112];             /* its state for people: "up", "retry in N s (why)", ... */
 } npf_fwd_state;
 int         npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st);
 void        npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx);
 /* the peer of forward number id and its index there; NULL none */
 npf_peer   *npf_peers_fwd_find(const npf_peers *ps, int id, int *idx);
-/* mapping i (0 .. npf_peer_nfwd - 1): NULL for a free slot, else its state
- * ("up", "retry in N s (why)", ...) in state; *spec: what it is, for people
- * ("local 127.0.0.1:8080 -> 127.0.0.1:80"; a module's kind: its form) */
-const char *npf_peer_forward_info(const npf_peer *p, int i, char *opt, const char **spec, int *perm, char *state,
-                                  size_t cap);
-
 npf_call   *npf_peer_call(const npf_peer *p);
 uint64_t    npf_peer_number(const npf_peer *p);        /* 0 for a direct peer */
 const char *npf_peer_name(const npf_peer *p);          /* the number or HOST:PORT, for logs */

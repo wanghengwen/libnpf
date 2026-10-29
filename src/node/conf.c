@@ -34,20 +34,20 @@ static char *trim(char *s)
  * set through the control interface or taken from local.json (a Windows
  * service's control token is every local user's) */
 
-#define S(name, fl)                {name, NPF_K_STR, fl, 0, 0, "", NULL}
-#define I(name, fl, lo, hi, def)   {name, NPF_K_INT, fl, lo, hi, def, NULL}
-#define B(name, fl, def)           {name, NPF_K_INT, fl, 0, 1, def, NULL}
-#define E(name, fl, def, vals)     {name, NPF_K_ENUM, fl, 0, 0, def, vals}
+#define S NPF_KEY_S
+#define I NPF_KEY_I
+#define B NPF_KEY_B
+#define E NPF_KEY_E
 enum { F = NPF_K_FILE, L = NPF_K_LIVE, X = NPF_K_SECRET, U = NPF_K_SETUP, P = NPF_K_PATH, M = NPF_K_MULTI,
        H = NPF_K_UNLISTED };
-static const npf_key keys[] = {
+const npf_key npf_keys[] = {
     /* the platform, the identity: npf.conf (or npf_setup) only, except the password and the serial */
     S("root", F | U), S("server", F | U), S("server_pub", F | U), S("serverlist", F | U | P),
     S("serverlist_saved", F | U | P), S("doh_servers", F | U), B("report_host", F | U, "1"), S("cred", F | X | U),
     S("model_cred", F | X | U), S("model", F | U), S("password", X | U), S("serial", U), S("serial_file", F | U),
     S("hw_info", U), S("direct", F | U), S("direct_psk", F | X | U), S("direct_psk_file", F | U | P),
     /* the files */
-    S("dir", F | P), S("state", F | P), S("log", F | P), S("pidfile", F | P),
+    S("dir", F | P), S("state", F | P),
     /* the network */
     I("udp_port", U, 0, 65535, "0"), B("portmap", U, "1"), E("connect_mode", L | U, "p2p", "p2p|secure"),
     I("max_calls", L | U, 0, 4096, "0"), I("punch_lead_ms", L | U, -1, 5000, "-1"), I("punch_sockets", L | U, 0, 4096, "0"),
@@ -56,37 +56,34 @@ static const npf_key keys[] = {
     B("hosted_trust", L | U, "1"), I("peer_idle", L | U, 0, 86400, "0"),
     E("log_level", L, "info", "trace|debug|info|warn|error"), S("node", F | M), S("resource", F | M),
     /* npf-hosted (security.md 8.4) */
-    B("hosted_service", F, "0"), S("hosted_exec", F), S("hosted_ports", F),
+    B("hosted_service", F, "0"), S("hosted_exec", F),
     I("hosted_max_conns", L | H, 0, 100000, "128"), I("hosted_ip_conns", L | H, 0, 100000, "32"),
     I("hosted_ip_rate", L | H, 0, 100000, "120"), I("sig_idle_s", 0, 0, 86400, "0"), I("sig_wake_s", 0, 0, 86400, "600"),
-    B("udp_on_demand", 0, "0"), B("udp_public", 0, "0"),
-    /* npf's own (architecture.md 7: its module's, later) */
-    S("control", F), S("control_token", F), S("web_dir", F), E("keep_awake", L, "busy", "busy|ac|always|off"),
-    {NULL, 0, 0, 0, 0, NULL, NULL},
+    B("udp_on_demand", 0, "0"), B("udp_public", 0, "0"), NPF_KEY_END,
 };
 #undef S
 #undef I
 #undef B
 #undef E
 
+const npf_key *npf_key_in(const npf_key *t, const char *name)
+{
+    for (; t && t->name; t++)
+        if (strcmp(t->name, name) == 0)
+            return t;
+    return NULL;
+}
+
 const npf_key *npf_key_find(const char *name)
 {
-    const npf_key *k;
-    for (k = keys; k->name && strcmp(k->name, name) != 0; k++)
-        ;
-    return k->name ? k : NULL;
+    const npf_key *k = npf_key_in(npf_keys, name);
+    return k ? k : npf_mods_key(name);
 }
 
 int npf_key_is(const char *name, int flag)
 {
     const npf_key *k = npf_key_find(name);
     return k && (k->flags & flag);
-}
-
-const npf_key *npf_key_next(const npf_key *k)
-{
-    k = k ? k + 1 : keys;
-    return k->name ? k : NULL;
 }
 
 /* an NPF_K_ENUM value's index in vals ("a|b"), -1 none */

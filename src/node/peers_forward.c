@@ -722,6 +722,21 @@ int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
     st->ctx = f->ctx;
     st->ext = f->ext;
     snprintf(st->spec, sizeof st->spec, "%s", f->spec);
+    if (f->up && f->reverse)
+        snprintf(st->text, sizeof st->text, "up (callee port %d)", f->lport);
+    else if (f->up && f->kind)
+        snprintf(st->text, sizeof st->text, "up (%s)", f->kind->k->name ? f->kind->k->name(f->kind->arg) : "");
+    else if (f->up)
+        snprintf(st->text, sizeof st->text, "up");
+    else if (f->t_retry)
+        snprintf(st->text, sizeof st->text, "retry in %lld s (%s)", (long long)((f->retry_at - npf_mono_ms() + 999) / 1000),
+                 f->why);
+    else if (f->refused)
+        snprintf(st->text, sizeof st->text, "%s", f->why);
+    else if (f->reverse)
+        snprintf(st->text, sizeof st->text, f->asked ? "asked" : "waiting for the session");
+    else
+        snprintf(st->text, sizeof st->text, "waiting");
     return 0;
 }
 
@@ -835,32 +850,6 @@ int npf_peer_forward_used(const npf_peer *p)
     for (i = 0; i < p->nfwd; i++)
         n += p->fwds[i]->used;
     return n;
-}
-
-const char *npf_peer_forward_info(const npf_peer *p, int i, char *opt, const char **spec, int *perm, char *state,
-                                  size_t cap)
-{
-    const pfwd *f = fwd_at(p, i);
-    if (!f)
-        return NULL;
-    *opt = f->opt;
-    *spec = f->spec;
-    *perm = f->perm;
-    if (f->up && f->reverse)
-        snprintf(state, cap, "up (callee port %d)", f->lport);
-    else if (f->up && f->kind)
-        snprintf(state, cap, "up (%s)", f->kind->k->name ? f->kind->k->name(f->kind->arg) : "");
-    else if (f->up)
-        snprintf(state, cap, "up");
-    else if (f->t_retry)
-        snprintf(state, cap, "retry in %lld s (%s)", (long long)((f->retry_at - npf_mono_ms() + 999) / 1000), f->why);
-    else if (f->refused)
-        snprintf(state, cap, "%s", f->why);
-    else if (f->reverse)
-        snprintf(state, cap, f->asked ? "asked" : "waiting for the session");
-    else
-        snprintf(state, cap, "waiting");
-    return state;
 }
 
 void npf_peers_net_changed(npf_peers *ps)

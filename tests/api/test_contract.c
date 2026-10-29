@@ -182,7 +182,7 @@ static void file_only(void)
         check(0, "local.json written");
         return;
     }
-    fprintf(f, "{\"settings\":{\"root\":\"AAAA\",\"log\":\"%s/planted.log\",\"peer_idle\":\"7\",\"max_calls\":\"9999\"}}\n",
+    fprintf(f, "{\"settings\":{\"root\":\"AAAA\",\"state\":\"%s/planted.json\",\"peer_idle\":\"7\",\"max_calls\":\"9999\"}}\n",
             dir);
     fclose(f);
     npf_options_init(&o);
@@ -197,7 +197,7 @@ static void file_only(void)
           "local.json: an ordinary setting taken");
     check(npf_config_get(n, "root", val, sizeof val) == NPF_OK && strcmp(val, "AAAA") != 0,
           "local.json: root ignored");
-    check(npf_config_get(n, "log", val, sizeof val) == NPF_OK && !strstr(val, "planted"), "local.json: log ignored");
+    check(npf_config_get(n, "state", val, sizeof val) == NPF_OK && !strstr(val, "planted"), "local.json: state ignored");
     check(npf_config_get(n, "max_calls", val, sizeof val) == NPF_OK && strcmp(val, "32") == 0,
           "local.json: a value out of the key's range taken");
     check(npf_config_set(n, "max_calls", "4097", 0, err, sizeof err) == NPF_EINVAL && strstr(err, "0 to 4096"),
