@@ -1,3 +1,5 @@
+/* The signaling connection (npf/sig.h), and the Noise_XK initiator over a
+ * WebSocket that the WS relay's connection uses too. */
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,23 +23,11 @@ struct npf_sig {
  * there), then the handle is freed */
 static void sig_down(npf_sig *s, const char *why)
 {
-    if (s->ws)
-        npf_ws_free(s->ws);
+    npf_ws_free(s->ws);
     s->ws = NULL;
     if (s->cbs.on_down)
         s->cbs.on_down(s, why, s->arg);
-    npf_wipe(s, sizeof *s);
-    free(s);
-}
-
-/* A WebSocket message is a binary message: the Noise handshake message or
- * transport ciphertext as it is (signaling.md); a text message ends the
- * connection. */
-static int send_msg(npf_ws *ws, const uint8_t *m, size_t n)
-{
-    if (n > NPF_JSON_MAX_SIZE + 64)
-        return -1;
-    return npf_ws_send(ws, m, n, 1);
+    npf_sig_close(s);
 }
 
 int npf_sig_xk_first(npf_ws *ws, npf_noise_hs *hs)
@@ -67,6 +57,9 @@ static void ws_open(npf_ws *ws, void *arg)
         sig_down(s, "noise write failed");
 }
 
+/* Every WebSocket message is a binary one: the Noise handshake message or
+ * a transport ciphertext as it is (signaling.md); a text message ends the
+ * connection */
 static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void *arg)
 {
     npf_sig *s = arg;
@@ -75,7 +68,7 @@ static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         sig_down(s, "text frame");
         return;
     }
-    if (len > NPF_JSON_MAX_SIZE + 64) {
+    if (len > NPF_JSON_MAX_SIZE + NPF_AEAD_TAG_SIZE) {     /* the handshake's are smaller still */
         sig_down(s, "message too large");
         return;
     }
@@ -100,8 +93,6 @@ static void ws_msg(npf_ws *ws, const uint8_t *data, size_t len, int binary, void
         const char *bad = NULL;
         if (!plain || !tok)
             bad = "no memory";
-        else if (len > NPF_JSON_MAX_SIZE + NPF_AEAD_TAG_SIZE)
-            bad = "message too large";
         else if ((n = npf_noise_decrypt(&s->rx, NULL, 0, data, len, plain)) < 0)
             bad = "decrypt failed";
         else if (npf_json_parse(&j, (const char *)plain, (size_t)n, tok, (int)ntok) < 0
@@ -138,14 +129,9 @@ npf_sig *npf_sig_open(npf_loop *loop, const char *url, const uint8_t server_pub[
     s->loop = loop;
     s->cbs = *cbs;
     s->arg = arg;
-    if (npf_noise_init(&s->hs, NPF_NOISE_XK, 1, prologue, strlen(prologue), id->dh_sk, server_pub, NULL) < 0) {
-        free(s);
-        return NULL;
-    }
-    s->ws = npf_ws_connect(loop, url, &wcb, s, outside_vpn);
-    if (!s->ws) {
-        npf_wipe(s, sizeof *s);
-        free(s);
+    if (npf_noise_init(&s->hs, NPF_NOISE_XK, 1, prologue, strlen(prologue), id->dh_sk, server_pub, NULL) < 0
+        || !(s->ws = npf_ws_connect(loop, url, &wcb, s, outside_vpn))) {
+        npf_sig_close(s);               /* the handshake state holds our key */
         return NULL;
     }
     return s;
@@ -159,7 +145,7 @@ int npf_sig_send(npf_sig *s, const char *json, size_t len)
         return -1;
     n = npf_noise_encrypt(&s->tx, NULL, 0, (const uint8_t *)json, len, out);
     if (n >= 0)
-        r = send_msg(s->ws, out, (size_t)n);
+        r = npf_ws_send(s->ws, out, (size_t)n, 1);
     free(out);
     return r;
 }
@@ -183,8 +169,7 @@ void npf_sig_close(npf_sig *s)
 {
     if (!s)
         return;
-    if (s->ws)
-        npf_ws_free(s->ws);
+    npf_ws_free(s->ws);
     npf_wipe(s, sizeof *s);
     free(s);
 }
