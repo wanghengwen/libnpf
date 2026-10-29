@@ -69,12 +69,9 @@ static int res_put_run(npf_t *n, void *arg)
 int npf_resource_put(npf_t *n, const npf_resource *r, char *err, size_t errcap)
 {
     npf_resource res;
-    op_arg x = {.in = &res, .err = err, .errcap = errcap};
-    err_clear(err, errcap);
+    op_arg x = {.err = err, .errcap = errcap};
     npf_resource_init(&res);
-    if (take_in(&res, sizeof res, r, SIZE_TO(npf_resource, flags)) < 0)
-        return op_fail(&x, NPF_EINVAL, "not initialised (npf_resource_init)");
-    return npf_api_op(n, res_put_run, &x);
+    return op_take(n, res_put_run, &x, &res, sizeof res, r, SIZE_TO(npf_resource, flags), "npf_resource_init");
 }
 
 static int res_remove_run(npf_t *n, void *arg)

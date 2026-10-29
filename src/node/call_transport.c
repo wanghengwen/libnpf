@@ -738,7 +738,6 @@ int call_start_transport(npf_call *c)
         npf_kdf(pk, c->k12, 64, "npf path v1", 11);
         npf_siv_derive(&c->pd.keys, pk, LABEL_PATH);
         npf_wipe(pk, sizeof pk);
-        c->pd.keys_ready = 1;
     }
     c->conv = npf_rd32(cv);
     npf_wipe(cv, sizeof cv);

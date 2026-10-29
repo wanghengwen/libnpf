@@ -64,8 +64,7 @@ typedef struct path_direct {
     int      fd;                    /* the main socket, or an S3 one the punch handed over (owned); -1 none */
     int      owned;
     struct sockaddr_storage addr;   /* the peer */
-    npf_siv_keys keys;              /* PATH_CHECK / PATH_ECHO, from the E2E keys */
-    int      keys_ready;
+    npf_siv_keys keys;              /* PATH_CHECK / PATH_ECHO, from the E2E keys (the call's keys_ready) */
     uint64_t nonce;                 /* of the checks in flight (a new one each time it is in doubt) */
 } path_direct;
 

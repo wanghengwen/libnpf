@@ -4,6 +4,7 @@
 #define _DEFAULT_SOURCE                     /* mkdtemp */
 #include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -280,10 +281,69 @@ static void node_json(void)
     rmdir(dir);
 }
 
+/* a structure not initialised (no _init: its size 0) or NULL: NPF_EINVAL
+ * naming the _init, the number out 0, nothing made */
+static void not_initialised(void)
+{
+    char dir[] = "/tmp/npf-contract-XXXXXX", err[300], path[400];
+    const char *files[] = {"identity", "seed", "local.json"};
+    npf_options o, zo;
+    npf_peer_opt po;
+    npf_forward_opt fo;
+    npf_resource r;
+    npf_media_opt mo;
+    npf_resource_info ri[1];
+    npf_t *n = NULL;
+    uint32_t id = 7;
+    size_t i, count = 9;
+    memset(&zo, 0, sizeof zo);
+    check(npf_create(&zo, &n, err, sizeof err) == NPF_EINVAL && !n && strstr(err, "(npf_options_init)"),
+          "npf_create: options not initialised");
+    check(npf_create(NULL, &n, err, sizeof err) == NPF_EINVAL && !n, "npf_create: no options");
+    if (!mkdtemp(dir)) {
+        check(0, "a directory");
+        return;
+    }
+    npf_options_init(&o);
+    o.conf_dir = dir;
+    o.role = NPF_ROLE_DIRECT;
+    o.overrides = "udp_port = 0\n";
+    if (npf_create(&o, &n, err, sizeof err) != NPF_OK) {
+        check(0, "an instance");
+        return;
+    }
+    memset(&po, 0, sizeof po);
+    memset(&fo, 0, sizeof fo);
+    memset(&r, 0, sizeof r);
+    memset(&mo, 0, sizeof mo);
+    check(npf_peer_create(n, &po, &id, err, sizeof err) == NPF_EINVAL && id == 0 && strstr(err, "(npf_peer_opt_init)"),
+          "npf_peer_create: options not initialised");
+    id = 7;
+    check(npf_peer_create(n, NULL, &id, err, sizeof err) == NPF_EINVAL && id == 0, "npf_peer_create: no options");
+    id = 7;
+    check(npf_forward_create(n, 1, &fo, &id, err, sizeof err) == NPF_EINVAL && id == 0
+          && strstr(err, "(npf_forward_opt_init)"), "npf_forward_create: options not initialised");
+    check(npf_resource_put(n, &r, err, sizeof err) == NPF_EINVAL && strstr(err, "(npf_resource_init)"),
+          "npf_resource_put: not initialised");
+    id = 7;
+    check(npf_media_open(n, 1, &mo, &id) == NPF_EINVAL && id == 0, "npf_media_open: options not initialised");
+    id = 7;
+    check(npf_media_open(n, 1, NULL, &id) == NPF_EINVAL && id == 0, "npf_media_open: no options");
+    check(npf_peer_list(n, NULL, 0, &count) == NPF_OK && count == 0
+          && npf_resource_list(n, 0, ri, 1, &count) == NPF_OK && count == 0, "nothing made");
+    npf_destroy(n);
+    for (i = 0; i < sizeof files / sizeof files[0]; i++) {
+        snprintf(path, sizeof path, "%s/%s", dir, files[i]);
+        unlink(path);
+    }
+    rmdir(dir);
+}
+
 int main(void)
 {
     alarm(30);
     inits();
+    not_initialised();
     unsaved();
     file_only();
     node_json();

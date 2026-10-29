@@ -171,21 +171,6 @@ void npf_api_unlock(npf_t *n);
  * structure has (fields only come at the end) */
 #define SIZE_TO(T, f) (offsetof(T, f) + sizeof(((T *)0)->f))
 
-/* the application's structure (src, its size first) into ours (dst, with
- * the defaults): what both builds know. -1: NULL, or smaller than min */
-static inline int take_in(void *dst, size_t dsize, const void *src, size_t min)
-{
-    size_t size;
-    if (!src)
-        return -1;
-    memcpy(&size, src, sizeof size);
-    if (size < min)
-        return -1;
-    memcpy(dst, src, size < dsize ? size : dsize);
-    memcpy(dst, &dsize, sizeof dsize);
-    return 0;
-}
-
 /* ours (src, ssize bytes) into the application's out of size bytes (its
  * sizeof): what both builds know, zeros past ours */
 static inline void put_out(void *out, size_t size, const void *src, size_t ssize)
@@ -213,6 +198,14 @@ int  op_fail(op_arg *x, int rc, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)))
 #endif
     ;
+/* the application's structure (src, its size first) into ours (dst, with
+ * the defaults): what both builds know. NPF_EINVAL, "not initialised
+ * (init)" in x->err: src NULL, or smaller than min */
+int  take_in(op_arg *x, void *dst, size_t dsize, const void *src, size_t min, const char *init);
+/* a call with the application's structure: err cleared, src into in
+ * (take_in; x->in), then fn. x->out, when not NULL: 0, or the number fn gave */
+int  op_take(npf_t *n, int (*fn)(npf_t *n, void *arg), op_arg *x, void *in, size_t size, const void *src, size_t min,
+             const char *init);
 /* fn for the object id: its info into out (put_out, size bytes) */
 int  op_get(npf_t *n, int (*fn)(npf_t *n, void *arg), uint32_t id, void *out, size_t size);
 /* fn lists those of id (0: all) with list_put; NPF_ETOOBIG when cap was too small */

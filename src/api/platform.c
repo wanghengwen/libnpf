@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include "api_internal.h"
-#include "npf/module.h"
 #include "npf/peers.h"
 
 

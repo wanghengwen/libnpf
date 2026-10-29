@@ -9,9 +9,7 @@
 #include <string.h>
 
 #include "npf/natprobe.h"
-#include "npf/platform.h"
 #include "api_internal.h"
-#include "npf/module.h"
 
 /* the other side of a session: the callee's (or a calling node's) number,
  * or the caller's key fingerprint; "-" before the handshake */

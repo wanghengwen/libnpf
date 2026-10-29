@@ -9,7 +9,6 @@
 #include <string.h>
 
 #include "api_internal.h"
-#include "npf/module.h"
 
 /* name is free for target: a valid name, not another peer's here or in
  * local.json (x NULL: no reason wanted) */
@@ -136,18 +135,9 @@ static int peer_create_run(npf_t *n, void *arg)
 int npf_peer_create(npf_t *n, const npf_peer_opt *o, uint32_t *peer, char *err, size_t errcap)
 {
     npf_peer_opt opt;
-    uint32_t id = 0;
-    op_arg x = {.in = &opt, .out = &id, .err = err, .errcap = errcap};
-    int rc;
-    err_clear(err, errcap);
+    op_arg x = {.out = peer, .err = err, .errcap = errcap};
     npf_peer_opt_init(&opt);
-    if (take_in(&opt, sizeof opt, o, SIZE_TO(npf_peer_opt, ctx)) < 0)
-        rc = op_fail(&x, NPF_EINVAL, "options not initialised (npf_peer_opt_init)");
-    else
-        rc = npf_api_op(n, peer_create_run, &x);
-    if (peer)
-        *peer = id;
-    return rc;
+    return op_take(n, peer_create_run, &x, &opt, sizeof opt, o, SIZE_TO(npf_peer_opt, ctx), "npf_peer_opt_init");
 }
 
 static int peer_remove_run(npf_t *n, void *arg)
