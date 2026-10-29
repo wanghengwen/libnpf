@@ -6,11 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "npf/conf.h"
-#include "npf/out.h"
-#include "npf/crypto.h"
-#include "npf/peers.h"
-#include "npf/tunnel.h"
 #include "npf.h"
 #include "npf/platform.h"
 #include "udpfwd.h"
