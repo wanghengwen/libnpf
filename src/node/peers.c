@@ -60,30 +60,13 @@ static void known_put(npf_peers *ps, uint64_t number, const uint8_t pub[32])
         npf_loge("cannot write %s", ps->lc->path);
 }
 
-/* what a peer holds besides itself: its forwards, the resources heard */
-static void fwds_free(npf_peer *p)
+int peers_backoff(int *backoff, int max)
 {
-    int i;
-    peers_demand_queues_free(p);
-    free(p->resources);
-    p->resources = NULL;
-    for (i = 0; i < NPF_PEER_MAX_FWD && p->fwds[i]; i++) {
-        npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_accept);
-        free(p->fwds[i]->acl);
-        npf_wipe(p->fwds[i], sizeof *p->fwds[i]);
-        free(p->fwds[i]);
-        p->fwds[i] = NULL;
-    }
-    p->nfwd = 0;
-}
-
-int peers_retry_delay(int ms)
-{
+    int ms = *backoff = *backoff ? (*backoff * 2 > max ? max : *backoff * 2) : 1000;
     return ms * 3 / 4 + (int)npf_rand_range(0, (size_t)ms / 2 + 1);
 }
 
 /* ---- sessions ---- */
-
 
 /* the peer gives up (it stays, finished, until removed or tried again) */
 static void finish(npf_peer *p, const char *why)
@@ -119,6 +102,13 @@ static void retry_cb(npf_loop *loop, void *arg)
     peers_start_call(p);
 }
 
+int peers_kick(npf_peer *p)
+{
+    npf_timer_stop(p->ps->n->loop, &p->t_retry);
+    peers_start_call(p);
+    return p->removed ? -1 : 0;
+}
+
 void npf_peers_retry_now(npf_peers *ps)
 {
     npf_peer *p;
@@ -130,9 +120,8 @@ void npf_peers_retry_now(npf_peers *ps)
             unfinish(p);
             peers_start_call(p);
         } else if (p->t_retry && !p->idle_ms && !p->finished) {
-            npf_timer_stop(ps->n->loop, &p->t_retry);
             npf_log("%s: retrying now", p->name);
-            peers_start_call(p);
+            peers_kick(p);
         }
     }
 }
@@ -140,6 +129,7 @@ void npf_peers_retry_now(npf_peers *ps)
 /* reconnect later, or report the peer finished */
 static void again(npf_peer *p, const char *why)
 {
+    int d;
     if (p->idle_ms) {                       /* on demand: the next connection tries again */
         peers_demand_drop(p, why);
         snprintf(p->last_why, sizeof p->last_why, "%s", why);
@@ -151,15 +141,11 @@ static void again(npf_peer *p, const char *why)
     }
     if (p->t_retry)
         return;
-    {
-        int d;
-        p->backoff = p->backoff ? (p->backoff * 2 > BACKOFF_MAX_MS ? BACKOFF_MAX_MS : p->backoff * 2) : 1000;
-        d = peers_retry_delay(p->backoff);
-        snprintf(p->last_why, sizeof p->last_why, "%s", why);
-        p->retry_at = npf_mono_ms() + d;
-        npf_log("%s: reconnecting in %d s", p->name, (d + 999) / 1000);
-        p->t_retry = npf_timer_add(p->ps->n->loop, d, retry_cb, p);
-    }
+    d = peers_backoff(&p->backoff, BACKOFF_MAX_MS);
+    snprintf(p->last_why, sizeof p->last_why, "%s", why);
+    p->retry_at = npf_mono_ms() + d;
+    npf_log("%s: reconnecting in %d s", p->name, (d + 999) / 1000);
+    p->t_retry = npf_timer_add(p->ps->n->loop, d, retry_cb, p);
 }
 
 /* why it cannot connect without a password: a refused one stays the reason
@@ -463,9 +449,16 @@ static void peer_drop(npf_peer *p)
  * the removal goes too */
 static void peer_free_now(npf_peer *p)
 {
+    int i;
     npf_timer_stop(p->ps->n->loop, &p->t_free);
-    peer_drop(p);
-    fwds_free(p);
+    peer_drop(p);                           /* its waiting queues emptied and freed too */
+    for (i = 0; i < p->nfwd; i++) {
+        npf_timer_cancel(p->ps->n->loop, p->fwds[i]->t_accept);
+        free(p->fwds[i]->acl);
+        npf_wipe(p->fwds[i], sizeof *p->fwds[i]);
+        free(p->fwds[i]);
+    }
+    free(p->resources);
     npf_wipe(p, sizeof *p);
     free(p);
 }
@@ -698,8 +691,8 @@ void npf_peers_start(npf_peers *ps)
 {
     npf_peer *p;
     for (p = ps ? ps->list : NULL; p; p = p->next)
-        if (p->direct && !p->t_retry)
-            peers_start_call(p);
+        if (p->direct)
+            npf_peer_start(p);
 }
 
 void npf_peer_start(npf_peer *p)
@@ -990,9 +983,7 @@ int npf_peer_wake_now(npf_peer *p)
     if (p->finished) {
         npf_log("%s: trying again", p->name);
         unfinish(p);
-        npf_timer_stop(p->ps->n->loop, &p->t_retry);
-        peers_start_call(p);
-        if (p->removed)
+        if (peers_kick(p) < 0)
             return 0;                       /* the done callback removed it (it gave up at once) */
         if (p->idle_ms && (p->call || p->waiting))
             peers_demand_timer(p);
@@ -1006,9 +997,8 @@ int npf_peer_wake_now(npf_peer *p)
         return 0;
     }
     if (p->t_retry) {                       /* a direct one too (it was left to wait out its backoff) */
-        npf_timer_stop(p->ps->n->loop, &p->t_retry);
         npf_log("%s: retrying now", p->name);
-        peers_start_call(p);
+        peers_kick(p);
     }
     return 0;
 }

@@ -164,7 +164,13 @@ struct npf_peers {
 };
 
 /* peers.c */
-int peers_retry_delay(int ms);
+/* the next of a doubling backoff (1 s first, at most max): its delay, with
+ * +-25 % jitter (ms) */
+int  peers_backoff(int *backoff, int max);
+/* someone waits for the session (a connection, a datagram, a module's
+ * forward, a wake): it starts now, no backoff; -1 when the start removed the
+ * peer (in the done callback of a start that failed: its fds went) */
+int  peers_kick(npf_peer *p);
 void peers_start_call(npf_peer *p);
 
 /* peers_forward.c */
@@ -175,7 +181,6 @@ void peers_forwards_session_gone(npf_peer *p);
 pfwd *peers_fwd_by_id(const npf_peers *ps, int id);
 
 /* peers_demand.c */
-int  peers_kick(npf_peer *p);
 void peers_demand_timer(npf_peer *p);
 void peers_demand_wait(pfwd *f, int fd, uint64_t cid);
 void peers_ready_wait(npf_peer *p);
@@ -183,7 +188,6 @@ void peers_demand_flush(npf_peer *p);
 void peers_udp_queue_drop(npf_peer *p, int slot);
 void peers_udp_queue_flush(npf_peer *p);
 void peers_demand_drop(npf_peer *p, const char *why);
-void peers_demand_queues_free(npf_peer *p);
 /* the connections waiting for a forward that goes (its slot may be reused): closed, mapping_closed */
 void peers_demand_drop_slot(npf_peer *p, int slot);
 void peers_udp_wait(pfwd *f, const struct sockaddr_storage *src, socklen_t sl, const uint8_t *buf, size_t len);

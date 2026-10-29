@@ -23,16 +23,6 @@ static void demand_tick(npf_loop *loop, void *arg);
 #define READY_POLL_MS      100      /* an established session whose transport is not ready: asked this often */
 #define UDP_PENDING_BYTES  (256 * 1024)
 
-/* someone waits for the session (a connection, a datagram, a module's
- * forward): it starts now, no backoff; -1 when the start removed the peer
- * (in the done callback of a start that failed: its fds went) */
-int peers_kick(npf_peer *p)
-{
-    npf_timer_stop(p->ps->n->loop, &p->t_retry);
-    peers_start_call(p);
-    return p->removed ? -1 : 0;
-}
-
 void peers_demand_timer(npf_peer *p)
 {
     if (!p->t_demand)
@@ -50,13 +40,6 @@ static void queues_trim(npf_peer *p)
         free(p->uq);
         p->uq = NULL;
     }
-}
-
-/* the peer goes: its queues' room (emptied by peers_demand_drop before) */
-void peers_demand_queues_free(npf_peer *p)
-{
-    p->npend = p->nuq = 0;
-    queues_trim(p);
 }
 
 /* on demand: a connection before the session: it waits, and the session starts */

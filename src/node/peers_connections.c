@@ -321,8 +321,7 @@ void peers_conn_open(pfwd *f, int fd, uint64_t cid)
         peers_conn_gone(p->ps, cid, full ? "session_full" : "no_session");
         return;
     }
-    if (!f->udp && !f->kind)
-        sub_add(p->ps, p->call, (uint32_t)sid, f->id);
+    sub_add(p->ps, p->call, (uint32_t)sid, f->id);   /* (a TCP listener's: not UDP, not a module's kind) */
     npf_call_on_sublink_done(p->call, conn_sublink_done, p->ps);
     for (k = 0; cid && k < p->ps->nconns; k++)
         if (p->ps->conns[k].id == cid) {
