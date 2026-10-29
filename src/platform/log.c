@@ -11,21 +11,14 @@
 #include <string.h>
 #include <time.h>
 
+#include "npf/lock.h"
 #include "npf/log.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
 
-#ifdef _WIN32
-#include <windows.h>
-static SRWLOCK g_lock = SRWLOCK_INIT;
-void npf_log_lock(void) { AcquireSRWLockExclusive(&g_lock); }
-void npf_log_unlock(void) { ReleaseSRWLockExclusive(&g_lock); }
-#else
-#include <pthread.h>
-static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-void npf_log_lock(void) { pthread_mutex_lock(&g_lock); }
-void npf_log_unlock(void) { pthread_mutex_unlock(&g_lock); }
-#endif
+static npf_mutex g_lock = NPF_MUTEX_INIT;
+void npf_log_lock(void) { npf_mutex_lock(&g_lock); }
+void npf_log_unlock(void) { npf_mutex_unlock(&g_lock); }
 
 static void (*g_writer)(const char *line, size_t len);     /* NULL: stderr */
 static int   g_level = NPF_LOG_INFO;     /* the process's; atomic */

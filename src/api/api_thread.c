@@ -21,31 +21,22 @@ int npf_api_init(npf_t *n)
     n->sync = calloc(1, sizeof *n->sync);
     if (!n->sync)
         return -1;
-#ifdef _WIN32
-    InitializeCriticalSection(&n->sync->mu);
-    InitializeConditionVariable(&n->sync->cv);
-#else
-    if (pthread_mutex_init(&n->sync->mu, NULL)) {
+    if (npf_mutex_init(&n->sync->mu)) {
         free(n->sync);
         return -1;
     }
-    if (pthread_cond_init(&n->sync->cv, NULL)) {
-        pthread_mutex_destroy(&n->sync->mu);
+    if (npf_cond_init(&n->sync->cv)) {
+        npf_mutex_free(&n->sync->mu);
         free(n->sync);
         return -1;
     }
-#endif
     return 0;
 }
 
 void npf_api_fini(npf_t *n)
 {
-#ifdef _WIN32
-    DeleteCriticalSection(&n->sync->mu);
-#else
-    pthread_cond_destroy(&n->sync->cv);
-    pthread_mutex_destroy(&n->sync->mu);
-#endif
+    npf_cond_free(&n->sync->cv);
+    npf_mutex_free(&n->sync->mu);
     free(n->sync);
 }
 
@@ -291,20 +282,11 @@ typedef struct rt_thread {
 struct npf_runtime {
     int        nthreads;
     rt_thread *t;
-#ifdef _WIN32
-    CRITICAL_SECTION mu;
-#else
-    pthread_mutex_t mu;
-#endif
+    npf_mutex  mu;
 };
 
-#ifdef _WIN32
-#define RT_LOCK(rt)   EnterCriticalSection(&(rt)->mu)
-#define RT_UNLOCK(rt) LeaveCriticalSection(&(rt)->mu)
-#else
-#define RT_LOCK(rt)   pthread_mutex_lock(&(rt)->mu)
-#define RT_UNLOCK(rt) pthread_mutex_unlock(&(rt)->mu)
-#endif
+#define RT_LOCK(rt)   npf_mutex_lock(&(rt)->mu)
+#define RT_UNLOCK(rt) npf_mutex_unlock(&(rt)->mu)
 
 static void rt_main(rt_thread *t)
 {
@@ -353,15 +335,11 @@ npf_runtime *npf_runtime_new(int threads)
         free(rt);
         return NULL;
     }
-#ifdef _WIN32
-    InitializeCriticalSection(&rt->mu);
-#else
-    if (pthread_mutex_init(&rt->mu, NULL)) {
+    if (npf_mutex_init(&rt->mu)) {
         free(rt->t);
         free(rt);
         return NULL;
     }
-#endif
     for (i = 0; i < rt->nthreads; i++) {
         rt_thread *t = &rt->t[i];
         if (!(t->host = npf_loop_new()) || !(t->th = thread_new(1, t))) {
@@ -394,11 +372,7 @@ int npf_runtime_free(npf_runtime *rt)
         thread_join(rt->t[i].th);
         npf_loop_free(rt->t[i].host);
     }
-#ifdef _WIN32
-    DeleteCriticalSection(&rt->mu);
-#else
-    pthread_mutex_destroy(&rt->mu);
-#endif
+    npf_mutex_free(&rt->mu);
     free(rt->t);
     free(rt);
     return NPF_OK;

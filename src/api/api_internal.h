@@ -8,11 +8,8 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <pthread.h>
-#endif
+
+#include "npf/lock.h"
 
 #include "npf/callee.h"
 #include "npf/crypto.h"
@@ -54,29 +51,20 @@ const char *npf_cmd_get(npf_t *n, const char *k, char *buf, size_t cap);
 /* ---- the instance's thread (api_thread.c) ---- */
 
 struct npf_api_sync {
-#ifdef _WIN32
-    CRITICAL_SECTION mu;
-    CONDITION_VARIABLE cv;
-#else
-    pthread_mutex_t mu;
-    pthread_cond_t cv;
-#endif
+    npf_mutex mu;
+    npf_cond  cv;
     unsigned calls;                 /* public calls in progress: npf_destroy waits for them */
     int destroying;
 };
 
 /* the instance's lock and condition (n in scope) */
+#define LOCK()   npf_mutex_lock(&n->sync->mu)
+#define UNLOCK() npf_mutex_unlock(&n->sync->mu)
+#define WAIT()   npf_cond_wait(&n->sync->cv, &n->sync->mu)
+#define WAKE()   npf_cond_broadcast(&n->sync->cv)
 #ifdef _WIN32
-#define LOCK()   EnterCriticalSection(&n->sync->mu)
-#define UNLOCK() LeaveCriticalSection(&n->sync->mu)
-#define WAIT()   SleepConditionVariableCS(&n->sync->cv, &n->sync->mu, INFINITE)
-#define WAKE()   WakeAllConditionVariable(&n->sync->cv)
 static inline unsigned long self_tid(void) { return (unsigned long)GetCurrentThreadId(); }
 #else
-#define LOCK()   pthread_mutex_lock(&n->sync->mu)
-#define UNLOCK() pthread_mutex_unlock(&n->sync->mu)
-#define WAIT()   pthread_cond_wait(&n->sync->cv, &n->sync->mu)
-#define WAKE()   pthread_cond_broadcast(&n->sync->cv)
 static inline unsigned long self_tid(void) { return (unsigned long)pthread_self(); }
 #endif
 

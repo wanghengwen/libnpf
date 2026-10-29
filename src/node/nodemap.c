@@ -6,13 +6,11 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
-#ifndef _WIN32
-#include <pthread.h>
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/lock.h"
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "npf/portmap.h"
@@ -42,15 +40,9 @@ typedef struct pm_job {
     npf_portmap res;
 } pm_job;
 
-#ifdef _WIN32
-static SRWLOCK pm_mu = SRWLOCK_INIT;
-#define PM_LOCK()   AcquireSRWLockExclusive(&pm_mu)
-#define PM_UNLOCK() ReleaseSRWLockExclusive(&pm_mu)
-#else
-static pthread_mutex_t pm_mu = PTHREAD_MUTEX_INITIALIZER;
-#define PM_LOCK()   pthread_mutex_lock(&pm_mu)
-#define PM_UNLOCK() pthread_mutex_unlock(&pm_mu)
-#endif
+static npf_mutex pm_mu = NPF_MUTEX_INIT;
+#define PM_LOCK()   npf_mutex_lock(&pm_mu)
+#define PM_UNLOCK() npf_mutex_unlock(&pm_mu)
 
 static void pm_timer(npf_loop *loop, void *arg);
 

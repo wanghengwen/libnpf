@@ -6,17 +6,9 @@
 
 #include "api_internal.h"
 
-#ifdef _WIN32
-#include <windows.h>
-static SRWLOCK g_mu = SRWLOCK_INIT;
-#define MODS_LOCK()   AcquireSRWLockExclusive(&g_mu)
-#define MODS_UNLOCK() ReleaseSRWLockExclusive(&g_mu)
-#else
-#include <pthread.h>
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-#define MODS_LOCK()   pthread_mutex_lock(&g_mu)
-#define MODS_UNLOCK() pthread_mutex_unlock(&g_mu)
-#endif
+static npf_mutex g_mu = NPF_MUTEX_INIT;
+#define MODS_LOCK()   npf_mutex_lock(&g_mu)
+#define MODS_UNLOCK() npf_mutex_unlock(&g_mu)
 
 /* the modules registered, NULL at the end: an instance takes them at npf_create */
 static const npf_module *g_mods[NPF_MOD_MAX + 1];

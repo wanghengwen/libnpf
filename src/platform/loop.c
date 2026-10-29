@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/lock.h"
 #include "npf/log.h"
 #include "npf/loop.h"
 #include "npf/out.h"
@@ -28,21 +29,6 @@
             npf_logw("loop: a callback held the loop %lld ms (%#lx; npf_loop_new %#lx)", (long long)d_, \
                      (unsigned long)fn_, (unsigned long)(uintptr_t)npf_loop_new);                   \
     } while (0)
-
-#ifdef _WIN32
-typedef CRITICAL_SECTION npf_mutex;
-#define npf_mutex_init(m)   InitializeCriticalSection(m)
-#define npf_mutex_free(m)   DeleteCriticalSection(m)
-#define npf_mutex_lock(m)   EnterCriticalSection(m)
-#define npf_mutex_unlock(m) LeaveCriticalSection(m)
-#else
-#include <pthread.h>
-typedef pthread_mutex_t npf_mutex;
-#define npf_mutex_init(m)   pthread_mutex_init((m), NULL)
-#define npf_mutex_free(m)   pthread_mutex_destroy(m)
-#define npf_mutex_lock(m)   pthread_mutex_lock(m)
-#define npf_mutex_unlock(m) pthread_mutex_unlock(m)
-#endif
 
 /* The sockets: a queue (NPF_EVQ) everywhere but Windows, epoll on Linux
  * (2.6.27 and later: epoll_create1, eventfd flags), kqueue on macOS, iOS and

@@ -4,6 +4,7 @@
 #include <string.h>
 #include "npf/sys.h"
 
+#include "npf/lock.h"
 #include "npf/platform.h"
 #include "npf/tls.h"
 
@@ -22,17 +23,9 @@ struct npf_tls {
 /* mbedTLS is built without MBEDTLS_THREADING_C and its PSA key store is
  * process-wide: libnpf instances on their own threads take turns. TLS here
  * carries only the signaling and the WS relay. */
-#ifdef _WIN32
-#include <windows.h>
-static SRWLOCK g_tls_lock = SRWLOCK_INIT;
-#define TLS_LOCK()   AcquireSRWLockExclusive(&g_tls_lock)
-#define TLS_UNLOCK() ReleaseSRWLockExclusive(&g_tls_lock)
-#else
-#include <pthread.h>
-static pthread_mutex_t g_tls_lock = PTHREAD_MUTEX_INITIALIZER;
-#define TLS_LOCK()   pthread_mutex_lock(&g_tls_lock)
-#define TLS_UNLOCK() pthread_mutex_unlock(&g_tls_lock)
-#endif
+static npf_mutex g_tls_lock = NPF_MUTEX_INIT;
+#define TLS_LOCK()   npf_mutex_lock(&g_tls_lock)
+#define TLS_UNLOCK() npf_mutex_unlock(&g_tls_lock)
 static int g_psa_ready;                 /* under the lock */
 
 static int rng(void *p, unsigned char *out, size_t n)

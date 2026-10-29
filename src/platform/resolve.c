@@ -24,25 +24,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/lock.h"
 #include "npf/resolve.h"
 
-#ifdef _WIN32
-#include <windows.h>
-static SRWLOCK g_mu = SRWLOCK_INIT;
-static CONDITION_VARIABLE g_cv = CONDITION_VARIABLE_INIT;
-#define LOCK()   AcquireSRWLockExclusive(&g_mu)
-#define UNLOCK() ReleaseSRWLockExclusive(&g_mu)
-#define WAIT()   SleepConditionVariableSRW(&g_cv, &g_mu, INFINITE, 0)
-#define SIGNAL() WakeConditionVariable(&g_cv)
-#else
-#include <pthread.h>
-static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
-#define LOCK()   pthread_mutex_lock(&g_mu)
-#define UNLOCK() pthread_mutex_unlock(&g_mu)
-#define WAIT()   pthread_cond_wait(&g_cv, &g_mu)
-#define SIGNAL() pthread_cond_signal(&g_cv)
-#endif
+static npf_mutex g_mu = NPF_MUTEX_INIT;
+static npf_cond g_cv = NPF_COND_INIT;
+#define LOCK()   npf_mutex_lock(&g_mu)
+#define UNLOCK() npf_mutex_unlock(&g_mu)
+#define WAIT()   npf_cond_wait(&g_cv, &g_mu)
+#define SIGNAL() npf_cond_signal(&g_cv)
 
 npf_resolve_gai_fn npf_resolve_gai = getaddrinfo;
 

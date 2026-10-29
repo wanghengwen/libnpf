@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/lock.h"
 #include "npf/log.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
@@ -41,25 +42,15 @@ typedef struct {
     char     vpn_name[64];
 } choice;
 
-/* under g_lock, a spin lock held only for the copies: pick() (interfaces,
- * routes) and the log (an application's hook) run outside it */
+/* under g_lock. The first pick() (interfaces, routes) holds it: the
+ * others wait for that choice. Later ones run outside it, the others using
+ * the last choice meanwhile; the log (an application's hook) always does */
+static npf_mutex g_lock = NPF_MUTEX_INIT;
 static choice g_ch;
-static int64_t g_at = -RECHECK_MS;
-static int g_lock;
+static int64_t g_at;
 static int g_picking;                /* a thread is in pick() */
 static int g_ready;                  /* g_ch picked once */
 static char g_said[160];
-
-static void lock(void)
-{
-    while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE))
-        ;
-}
-
-static void unlock(void)
-{
-    __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE);
-}
 
 int npf_if_tunnel_name(const char *n)
 {
@@ -291,24 +282,20 @@ static int bind_to(int fd, int family, const choice *c)
 
 #endif
 
-/* one thread picks while the others use the last choice */
+/* one thread picks while the others use the last choice (or wait for the first) */
 int npf_vpn_bypass(int fd, int family, void *arg)
 {
     choice c;
     int64_t now = npf_mono_ms();
-    int look;
+    int look, first;
     (void)arg;
-    for (;;) {
-        lock();
-        look = now - g_at >= RECHECK_MS && !g_picking;
-        if (look || g_ready)
-            break;
-        unlock();
-        npf_sleep_ms(1);                /* the first choice is being made: wait for it */
-    }
+    npf_mutex_lock(&g_lock);
+    first = !g_ready;                   /* (no one else is picking: that one would hold the lock) */
+    look = first || (!g_picking && now - g_at >= RECHECK_MS);
     g_picking |= look;
     c = g_ch;
-    unlock();
+    if (!first)
+        npf_mutex_unlock(&g_lock);
     if (look) {
         char said[160];
         int changed, was;
@@ -317,7 +304,8 @@ int npf_vpn_bypass(int fd, int family, void *arg)
             snprintf(said, sizeof said, "-");
         else
             snprintf(said, sizeof said, "%s>%s", c.vpn_name, c.name);
-        lock();
+        if (!first)
+            npf_mutex_lock(&g_lock);
         g_ch = c;
         g_at = now;
         g_picking = 0;
@@ -325,7 +313,7 @@ int npf_vpn_bypass(int fd, int family, void *arg)
         was = g_said[0] && strcmp(g_said, "-") != 0;
         if ((changed = strcmp(said, g_said) != 0))
             snprintf(g_said, sizeof g_said, "%s", said);
-        unlock();
+        npf_mutex_unlock(&g_lock);
         if (changed && c.vpn && c.name[0])
             npf_log("udp: a VPN (%s) has the default route: the UDP sockets and the signaling go out on %s (connect_mode p2p)",
                     c.vpn_name, c.name);
@@ -343,8 +331,8 @@ int npf_vpn_bypass(int fd, int family, void *arg)
 int npf_vpn_in_way(void)
 {
     int r;
-    lock();
+    npf_mutex_lock(&g_lock);
     r = g_ch.vpn && g_ch.name[0];
-    unlock();
+    npf_mutex_unlock(&g_lock);
     return r;
 }
