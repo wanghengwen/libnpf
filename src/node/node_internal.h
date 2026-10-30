@@ -53,6 +53,46 @@ int  node_sig_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, con
 /* connect again now (a new server list arrived) */
 void node_reconnect_now(npf_node *n);
 
+/* sigconn.c: the signaling connections' state machine (npf/node.h npf_sigc).
+ * Each event returns what the node does next (SA_*; SA_UDP_BAD or'ed in:
+ * udp_bad was set just now); r: the role the event's connection has */
+#define SIG_WS_AFTER_MS 1000            /* UDP first, the WebSocket this much later */
+#define SIG_LOGIN_MS    20000           /* connect, TLS, upgrade, Noise and login together */
+#define SIG_OLD_MS      10000           /* the WebSocket a move replaced: the server closes it, else we do */
+enum {
+    SA_NONE,
+    SA_FIRST,           /* ready: MAIN first, RACE dropped: log in (or enrol) */
+    SA_RACE_WON,        /* ready: RACE first: MAIN now, the other dropped: log in */
+    SA_MOVE_LOGIN,      /* ready: MOVE logs in */
+    SA_OLD_CLOSED,      /* down, due: OLD gone */
+    SA_MOVE_FAILED,     /* down, refused: MOVE gone, on the WebSocket still */
+    SA_RACE_FAILED,     /* down: RACE gone, MAIN goes on */
+    SA_WS_NOW,          /* down: UDP failed before its WebSocket's turn: the node opens that as MAIN */
+    SA_TO_RACE,         /* down: MAIN failed, RACE goes on as MAIN */
+    SA_UDP_GOES_ON,     /* down: the WebSocket went while MOVE logs in: MOVE is MAIN, offline */
+    SA_TAKEN,           /* down: the replaced WebSocket went first: MOVE is MAIN, its welcome due */
+    SA_GONE,            /* down: no connection left */
+    SA_WELCOME,         /* login: online */
+    SA_MOVED,           /* login: online on UDP after a move (the WebSocket OLD) */
+    SA_REFUSED,         /* login: refused */
+    SA_OPEN_RACE,       /* due: the node opens RACE (c[SR_RACE]'s server and URL) */
+    SA_LATE,            /* due: no login in time: MAIN is aborted */
+    SA_MOVE_DUE,        /* due: on the WebSocket: MOVE is opened, when idle */
+    SA_UDP_BAD = 0x100
+};
+int  sc_role(const npf_sigc *m, const npf_sig *s);      /* -1 none; NULL: MAIN */
+/* a new attempt as MAIN (on UDP: url is the race's WebSocket) */
+void sc_start(npf_sigc *m, npf_sig *s, int server, int url, int udp, int64_t now);
+void sc_open(npf_sigc *m, int r, npf_sig *s, int server, int url);    /* RACE beside MAIN, MOVE */
+void sc_close(npf_sigc *m);
+int  sc_ready(npf_sigc *m, int r, int heard);
+int  sc_down(npf_sigc *m, int r, int heard, int busy, int64_t now);
+int  sc_abort(npf_sigc *m, int heard, int64_t now);    /* MAIN dropped by the node (RACE with it) */
+int  sc_login(npf_sigc *m, int r, int ok, int64_t now);
+int  sc_replaced(npf_sigc *m, int r);
+int  sc_tick(npf_sigc *m, int64_t now);                 /* one due at a time, SA_NONE: none left */
+int64_t sc_next(const npf_sigc *m);                     /* the next due, 0 none */
+
 /* node_network.c */
 /* the main sockets: IPv4 (-1 when it cannot be opened) and, online, IPv6 */
 int  node_udp_open(npf_node *n);

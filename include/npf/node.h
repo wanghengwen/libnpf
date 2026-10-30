@@ -217,6 +217,34 @@ typedef struct npf_end_report {
     int     peer;                       /* the peer ended it */
 } npf_end_report;
 
+/* The signaling connections (signaling-udp.md 5.3), a state machine in
+ * src/node/sigconn.c, by role: MAIN the one in use (logging in or logged
+ * in), RACE the access point tried beside it, MOVE a UDP session logging in
+ * to take over from a MAIN on the WebSocket, OLD the WebSocket it replaced
+ * until that closes */
+enum { SR_MAIN, SR_RACE, SR_MOVE, SR_OLD, SR_N };
+enum {
+    SS_IDLE,        /* none: the next attempt waits (backoff) */
+    SS_CONNECT,     /* MAIN connects and logs in; RACE beside it, or due (UDP first) */
+    SS_ONLINE,      /* MAIN logged in (OLD, the WebSocket a move replaced, until it closes) */
+    SS_MOVE,        /* on the WebSocket, MOVE logs in over UDP */
+    SS_TAKEN,       /* ... and the server took its login ("replaced" on MAIN) */
+    SS_WELCOME,     /* the replaced WebSocket closed first: MAIN is the UDP session, its welcome due */
+};
+typedef struct npf_sigconn {
+    npf_sig *s;                     /* NULL: none (server, url: the last one's) */
+    int      server;                /* index into the node's servers */
+    int      url;                   /* its WebSocket URL; -1 its UDP */
+} npf_sigconn;
+typedef struct npf_sigc {
+    npf_sigconn c[SR_N];
+    int      state;                 /* SS_* */
+    int      udp_silent;            /* this attempt's UDP: -1 none, 0 tried, 1 never answered */
+    int      udp_bad;               /* WebSocket only, until the network changes or UDP logs in */
+    int64_t  race_at, login_at, move_at, old_at;    /* monotonic ms: due; 0 not */
+    void   (*close)(npf_sig *s);    /* a connection the machine drops (NULL: npf_sig_close; tests) */
+} npf_sigc;
+
 struct npf_node {
     npf_loop     *loop;
     npf_node_cfg  cfg;
@@ -264,22 +292,9 @@ struct npf_node {
     int           cur_server;       /* index into servers, -1 none */
 
     /* signaling */
-    npf_sig      *sig;
-    npf_sig      *race;             /* a second access point tried at the same time (security.md 7.5) */
-    int           race_server;      /* its index into servers */
-    /* UDP signaling (signaling-udp.md 5.3): sig on UDP first, race the
-     * WebSocket a second later (t_race, race_url); on the WebSocket, every
-     * 10 min when idle (t_move) sig_move logs in over UDP and takes over, the
-     * replaced connection kept as sig_old until the server closes it */
-    npf_timer    *t_race, *t_move, *t_old;
-    int           race_url;
-    npf_sig      *sig_move, *sig_old;
+    npf_sigc      sc;               /* the connections (node_sig: the one in use) */
+    npf_timer    *t_sc;             /* at sc's next due */
     npf_sig      *msg_sig;          /* the connection the message being handled came on */
-    int           udp_bad;          /* UDP did not answer and the WebSocket logged in: WebSocket only */
-    int           udp_silent;       /* this attempt's UDP had no answer (or the server was busy) */
-    int           moving;           /* the welcome being handled is sig_move's */
-    int           move_taken;       /* 1: the WebSocket "replaced" by sig_move's login; 2: it went
-                                     * first, sig_move is the connection, its welcome still due */
     int64_t       sig_open_ms;      /* monotonic: the attempt began */
     npf_sig_cookie sig_cookie;      /* the server's, for the next attempts */
     int           online;           /* logged in (welcome received) */
@@ -302,7 +317,6 @@ struct npf_node {
     int64_t       expect_since;     /* ... since then (monotonic ms) */
     int           expect_probed;    /* ... and a ping asked for it already */
     int           sig_via_vpn;      /* signaling goes through a VPN: around it did not log in */
-    npf_timer    *t_login;          /* a connection attempt must reach welcome in time */
     int           dormant;          /* cfg.sig_idle_ms: closed for want of use, until npf_node_wake */
     int64_t       busy_at;          /* monotonic: the last time something needed the connection */
     npf_timer    *t_idle, *t_wake;
@@ -596,6 +610,8 @@ int  npf_node_udp_open(npf_node *n);
  * the main socket's NAT profile is being measured and n->on_udp_ready(n,
  * hook_arg) follows. */
 int  npf_node_udp_ready(npf_node *n);
+/* the signaling connection in use (logging in or logged in), NULL none */
+static inline npf_sig *node_sig(const npf_node *n) { return n->sc.c[SR_MAIN].s; }
 /* Frees the calls and closes everything npf_node_start and npf_node_init
  * opened; pending requests get their callbacks with e NULL. */
 void npf_node_stop(npf_node *n);

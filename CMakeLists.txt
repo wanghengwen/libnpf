@@ -143,6 +143,7 @@ add_library(npf_common STATIC
   src/node/node.c
   src/node/node_servers.c
   src/node/node_signal.c
+  src/node/sigconn.c
   src/node/msgs.c
   src/node/node_network.c
   src/node/nat.c

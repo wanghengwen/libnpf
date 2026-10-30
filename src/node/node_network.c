@@ -305,10 +305,10 @@ static void netcheck_cb(npf_loop *loop, void *arg)
     npf_node *n = arg;
     (void)loop;
     n->t_netcheck = NULL;
-    if (n->sig && n->online && npf_sig_last_rx(n->sig) < n->netcheck_ms) {
+    if (node_sig(n) && n->online && npf_sig_last_rx(node_sig(n)) < n->netcheck_ms) {
         n->backoff_ms = 0;
         if (n->netcheck_path) {
-            n->udp_bad = 1;                 /* the WebSocket at once */
+            n->sc.udp_bad = 1;                 /* the WebSocket at once */
             npf_log("signaling: no answer over udp either, using ws; udp again in 10 min");
         }
         node_sig_abort(n, n->netcheck_path ? "no answer over udp" : "no answer after a network change");
@@ -324,12 +324,12 @@ static void netcheck_cb(npf_loop *loop, void *arg)
  * the WebSocket at once (the calls send again at its login: node_calls_relogin) */
 void node_sig_udp_check(npf_node *n)
 {
-    if (!n->sig || !n->online || npf_sig_via(n->sig)[0] != 'u' || n->t_netcheck)
+    if (!node_sig(n) || !n->online || npf_sig_via(node_sig(n))[0] != 'u' || n->t_netcheck)
         return;
     npf_log("signaling: a call's udp path went silent: pinging the server over udp (%d s)", NETCHECK_UDP_MS / 1000);
     n->netcheck_ms = npf_mono_ms();
     n->netcheck_path = 1;
-    npf_sig_ping(n->sig);
+    npf_sig_ping(node_sig(n));
     n->t_netcheck = npf_timer_add(n->loop, NETCHECK_UDP_MS, netcheck_cb, n);
 }
 
@@ -341,15 +341,15 @@ static void node_net_check(npf_node *n, const char *why)
         udp_failed(n, fd, npf_sock_strerror());
         return;                             /* the reopen checks again */
     }
-    n->udp_bad = 0;                         /* UDP signaling may work here (signaling-udp.md 5.3) */
+    n->sc.udp_bad = 0;                         /* UDP signaling may work here (signaling-udp.md 5.3) */
     if (!n->cfg.offline && !n->dormant) {
-        if (n->sig && n->online) {
+        if (node_sig(n) && n->online) {
             /* UDP: the server learns the new address from the ping; the
              * session is likely gone when it does not answer in 3 s */
-            int udp = npf_sig_via(n->sig)[0] == 'u';
+            int udp = npf_sig_via(node_sig(n))[0] == 'u';
             n->netcheck_ms = npf_mono_ms();
             n->netcheck_path = 0;
-            npf_sig_ping(n->sig);
+            npf_sig_ping(node_sig(n));
             npf_timer_cancel(n->loop, n->t_netcheck);
             n->t_netcheck = npf_timer_add(n->loop, udp ? NETCHECK_UDP_MS : NETCHECK_MS, netcheck_cb, n);
             if (n->udp_fd >= 0) {           /* the mapping (perhaps a new NAT) */
@@ -396,10 +396,10 @@ static void watch_cb(npf_loop *loop, void *arg)
             npf_node_report_nat(n);         /* as a probe's new profile would */
             if (!z) {
                 n->udp_back_ms = npf_mono_ms();
-                n->udp_bad = 0;
+                n->sc.udp_bad = 0;
             }
             npf_node_calls_decide(n);
-            if (z && n->sig && n->online && npf_sig_via(n->sig)[0] == 'u') {
+            if (z && node_sig(n) && n->online && npf_sig_via(node_sig(n))[0] == 'u') {
                 /* signaling on UDP: on the WebSocket within 1-2 s (signaling-udp.md 11.4) */
                 node_sig_abort(n, "test: no UDP");
                 node_reconnect_now(n);
