@@ -42,6 +42,14 @@ int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
             npf_log("config: 'server' needs 'server_pub'");
             return -1;
         }
+        if ((v = npf_conf_get(conf, "server_udp", NULL))) {
+            struct sockaddr_storage a;
+            if (npf_addr_parse(v, &a) < 0 || a.ss_family != AF_INET) {
+                npf_log("config: bad 'server_udp'");
+                return -1;
+            }
+            memcpy(&cfg->server_udp, &a, sizeof cfg->server_udp);
+        }
     }
     /* the values as the key table checked them (conf.c), or its defaults */
     cfg->udp_port = (int)npf_conf_int(conf, "udp_port");

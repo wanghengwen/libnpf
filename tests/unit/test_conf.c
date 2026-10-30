@@ -15,7 +15,7 @@
 /* the key table: where a key may come from, its values, its defaults */
 static void key_table(void)
 {
-    static const char *const file[] = {"root", "server", "cred", "dir", "state", "node", "resource",
+    static const char *const file[] = {"root", "server", "server_udp", "cred", "dir", "state", "node", "resource",
                                        "direct_psk", "hosted_exec", "test_one_host", NULL};
     static const char *const live[] = {"log_level", "max_calls", "punch_lead_ms", "punch_sockets", "hosted_trust",
                                        "connect_mode", "peer_idle", "hosted_max_conns", NULL};
@@ -36,7 +36,7 @@ static void key_table(void)
         n++;
         CHECK(k->def && (k->type == NPF_K_STR || npf_key_check(k, k->def, e2, sizeof e2) == 0), "%s: its default", k->name);
     }
-    CHECK(n == 42, "%d keys", n);
+    CHECK(n == 43, "%d keys", n);
 #ifdef NPF_SIG_UDP
     CHECK(npf_key_check(npf_key_find("sig_udp"), "auto", err, sizeof err) == 0, "sig_udp auto");
 #else

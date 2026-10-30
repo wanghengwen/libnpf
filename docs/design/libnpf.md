@@ -227,7 +227,7 @@ npf_destroy(cli);
 | `roots`、`nroots` | `root` | 平台的根公钥（字节），1–2 个 |
 | `serverlist` + `serverlist_len` / `serverlist_file` | `serverlist` | 签名的服务器列表，字节或文件，二选一；字节每次启动写到 `data_dir/serverlist-builtin.bin`。签名对而内容不合格（没有 `serial`，或没有一台带 `id`、32 字节 `dh_pub` 与 `ws` 地址的服务器）时记一行警告，不用这份列表 |
 | `serverlist_saved` | `serverlist_saved` | 平台下发的新列表保存在哪里，NULL 为 `data_dir/serverlist-saved.bin`，`""` 不保存 |
-| `server_url`、`server_pub` | `server`、`server_pub` | 测试用：直接给一台服务器的地址与公钥 |
+| `server_url`、`server_pub` | `server`、`server_pub` | 测试用：直接给一台服务器的地址与公钥；只在配置文件里的 `server_udp`（`IP:端口`）再给它的 UDP 信令地址，没有时只经 WebSocket |
 | `doh_servers` | `doh_servers` | 测试用：服务器列表的 DoH 备用渠道 |
 | `cred`、`password` | `cred`、`password` | 一机一密的设备凭证 `NPFD1.…` 与默认口令 |
 | `model_cred`、`serial`、`hw_info` | 同名 | 一型一密的型号凭证 `NPFV2.…`、序列号（不给时用最小的物理网卡地址）、硬件信息 |
