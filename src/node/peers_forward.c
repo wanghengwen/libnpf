@@ -635,12 +635,9 @@ int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
     else if (f->st == FS_RETRY)
         snprintf(st->text, sizeof st->text, "retry in %lld s (%s)", (long long)((f->retry_at - npf_mono_ms() + 999) / 1000),
                  f->why);
-    else if (f->st == FS_REFUSED)
-        snprintf(st->text, sizeof st->text, "%s", f->why);
-    else if (f->st == FS_ASKED)
-        snprintf(st->text, sizeof st->text, "asked");
     else
-        snprintf(st->text, sizeof st->text, f->reverse ? "waiting for the session" : "waiting");
+        snprintf(st->text, sizeof st->text, "%s", f->st == FS_REFUSED ? f->why : f->st == FS_ASKED ? "asked"
+                                                  : f->reverse ? "waiting for the session" : "waiting");
     return 0;
 }
 

@@ -50,15 +50,10 @@ static void peer_free_now(npf_peer *p);
 
 static void peer_timer(npf_loop *loop, void *arg)
 {
-    npf_peer *p = arg, **pp;
+    npf_peer *p = arg;
     (void)loop;
     p->t_due = NULL;
     if (p->st == PS_REMOVED) {              /* the turn after npf_peers_remove */
-        for (pp = &p->ps->gone; *pp; pp = &(*pp)->gone_next)
-            if (*pp == p) {
-                *pp = p->gone_next;
-                break;
-            }
         peer_free_now(p);
         return;
     }
@@ -95,10 +90,8 @@ int64_t peer_due(const npf_peer *p)
 /* (a removal on the way leaves nothing due: peer_drop) */
 void peer_tick(npf_peer *p, int64_t now)
 {
-    if (peer_waits(p) && p->retry_at <= now) {
-        p->st = PS_IDLE;
-        peers_start_call(p);
-    }
+    if (peer_waits(p) && p->retry_at <= now)
+        peers_kick(p);
     peers_demand_tick(p, now);
     peers_forwards_tick(p, now);
 }
@@ -121,8 +114,8 @@ static void finish(npf_peer *p, const char *why)
 /* an ended peer tries again, as it was made */
 static void unfinish(npf_peer *p)
 {
-    p->st = PS_IDLE;
-    p->backoff = 0;
+    if (p->st == PS_ENDED)
+        p->st = PS_IDLE, p->backoff = 0;
 }
 
 int peers_kick(npf_peer *p)
@@ -489,8 +482,7 @@ static void peer_drop(npf_peer *p)
     p->st = PS_REMOVED;                     /* no done callback, nothing starts again */
     p->call = NULL;                         /* the state callback does not find it */
     p->renewing = 0;
-    if (p->rs)
-        npf_resolve_cancel(p->rs);
+    npf_resolve_cancel(p->rs);
     p->rs = NULL;
     p->demand_at = 0;
     peers_demand_drop(p, "closed");
@@ -499,11 +491,17 @@ static void peer_drop(npf_peer *p)
     peers_listeners_close(p);
 }
 
-/* what is left of a removed peer: anything a callback started on it after
- * the removal goes too */
+/* what is left of a removed peer (off the gone list): anything a callback
+ * started on it after the removal goes too */
 static void peer_free_now(npf_peer *p)
 {
+    npf_peer **pp;
     int i;
+    for (pp = &p->ps->gone; *pp; pp = &(*pp)->gone_next)
+        if (*pp == p) {
+            *pp = p->gone_next;
+            break;
+        }
     peer_drop(p);                           /* its waiting queues emptied and freed too */
     npf_timer_stop(p->ps->n->loop, &p->t_due);
     for (i = 0; i < p->nfwd; i++) {
@@ -595,10 +593,8 @@ void npf_peers_free(npf_peers *ps)
         ps->list = p->next;
         peer_free_now(p);
     }
-    while ((p = ps->gone) != NULL) {
-        ps->gone = p->gone_next;
-        peer_free_now(p);
-    }
+    while (ps->gone)
+        peer_free_now(ps->gone);
     {   /* the sessions still being freed must not call back into us */
         npf_call *c;
         for (c = npf_node_calls(ps->n); c; c = npf_call_next(c))
@@ -760,6 +756,7 @@ void npf_peers_on_login(npf_peers *ps)
 int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
 {
     npf_peer *p;
+    int k;
     for (p = ps ? ps->list : NULL; p; p = p->next)
         if (p->call == c)
             break;
@@ -772,12 +769,9 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         if (p->st == PS_REMOVED)
             return 1;                   /* in a forward event */
         peers_ready(p);                 /* the connections that waited for it, now or once it can take them */
-        {                               /* and those of the modules' forwards */
-            int k;
-            for (k = 0; k < p->ps->nkinds; k++)
-                if (p->ps->kinds[k].k->kick)
-                    p->ps->kinds[k].k->kick(p->ps->kinds[k].arg);
-        }
+        for (k = 0; k < p->ps->nkinds; k++)     /* and those of the modules' forwards */
+            if (p->ps->kinds[k].k->kick)
+                p->ps->kinds[k].k->kick(p->ps->kinds[k].arg);
         if (p->idle_ms)
             peers_demand_timer(p);
         if (p->ps->cbs.up)
@@ -932,8 +926,7 @@ void npf_peer_connect_put(npf_peer *p, int connect, int idle_ms, int running)
         if (p->call)
             peers_demand_timer(p);
     } else if (connect == NPF_CONNECT_KEEP) {
-        if (p->st == PS_ENDED)
-            unfinish(p);
+        unfinish(p);
         if (running)
             peers_start_call(p);            /* no session: one now (a direct one too), not while waiting to retry */
     } else if (!busy) {                     /* ONCE, no session to end first: ended now (a retry too) */
@@ -980,7 +973,6 @@ void npf_peer_wake_now(npf_peer *p)
     if (p->st != PS_ENDED && !peer_waits(p) && !(p->st == PS_IDLE && p->idle_ms))
         return;
     npf_log("%s: %s", p->name, p->st == PS_ENDED ? "trying again" : p->idle_ms ? "woken: starting the session" : "retrying now");
-    if (p->st == PS_ENDED)
-        unfinish(p);
+    unfinish(p);
     peers_kick(p);
 }
