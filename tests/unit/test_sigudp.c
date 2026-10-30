@@ -1106,12 +1106,12 @@ static void t_node(npf_loop *loop)
     log_clear();
     REQUIRE_V(node_up(n, loop, &v, &w, url, sizeof url) == 0);
     NODE_UNTIL(n->online, 3000);
-    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0, "online over udp (%s)", logged);
-    EXPECT(w.conns == 0 && strcmp(npf_node_udp_sig(n), "ok") == 0 && npf_sig_rtt(n->sig) > 0);
+    CHECK(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "udp") == 0, "online over udp (%s)", logged);
+    EXPECT(w.conns == 0 && strcmp(npf_node_udp_sig(n), "ok") == 0 && npf_sig_rtt(node_sig(n)) > 0);
     EXPECT(count_of(logged, "signaling: connecting to server 0 udp 127.0.0.1:") == 1);
     EXPECT(count_of(logged, "over udp (handshake") == 1);
     NODE_UNTIL(0, 700);                 /* no move from UDP */
-    EXPECT(!n->sig_move && w.conns == 0);
+    EXPECT(!n->sc.c[SR_MOVE].s && w.conns == 0);
     npf_node_stop(n);
     NODE_UNTIL(v.closes, 500);
     EXPECT(v.closes == 1);
@@ -1126,14 +1126,14 @@ static void t_node(npf_loop *loop)
     NODE_UNTIL(n->online, 3000);
     node_sig_udp_check(n);
     NODE_UNTIL(0, 3500);
-    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0 && w.conns == 0 && !n->udp_bad,
+    CHECK(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "udp") == 0 && w.conns == 0 && !n->sc.udp_bad,
           "path silent, udp answers: stays (%s)", logged);
     v.silent = 1;
     {
         int64_t t0 = npf_mono_ms();
         node_sig_udp_check(n);
-        NODE_UNTIL(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0, 5000);
-        CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0 && n->udp_bad
+        NODE_UNTIL(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "ws") == 0, 5000);
+        CHECK(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "ws") == 0 && n->sc.udp_bad
               && npf_mono_ms() - t0 >= 2900 && npf_mono_ms() - t0 < 3800, "path silent, no udp: ws after %lld ms (%s)",
               (long long)(npf_mono_ms() - t0), logged);
     }
@@ -1155,16 +1155,16 @@ static void t_node(npf_loop *loop)
     {
         int64_t t0 = npf_mono_ms();
         NODE_UNTIL(n->online, 4000);
-        CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0 && npf_mono_ms() - t0 >= 900,
+        CHECK(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "ws") == 0 && npf_mono_ms() - t0 >= 900,
               "online over ws after 1 s (%s)", logged);
     }
-    EXPECT(n->udp_bad == 1 && strcmp(npf_node_udp_sig(n), "no_answer") == 0);
+    EXPECT(n->sc.udp_bad == 1 && strcmp(npf_node_udp_sig(n), "no_answer") == 0);
     EXPECT(count_of(logged, "over ws (udp: no answer)") == 1);
     EXPECT(count_of(logged, "udp did not answer, using ws") == 1);
     v.silent = 0;
-    NODE_UNTIL(n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0 && !n->sig_old, 4000);
-    CHECK(n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0, "moved to udp (%s)", logged);
-    EXPECT(!n->sig_old && n->online && n->logins == 1 && n->udp_bad == 0 && n->replaced_ms == 0);
+    NODE_UNTIL(node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "udp") == 0 && !n->sc.c[SR_OLD].s, 4000);
+    CHECK(node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "udp") == 0, "moved to udp (%s)", logged);
+    EXPECT(!n->sc.c[SR_OLD].s && n->online && n->logins == 1 && n->sc.udp_bad == 0 && n->replaced_ms == 0);
     EXPECT(count_of(logged, "signaling: moving to udp") == 1 && count_of(logged, "on udp, ws closed") == 1);
     EXPECT(count_of(logged, "logged in elsewhere") == 0);
     npf_node_stop(n);
@@ -1184,13 +1184,13 @@ static void t_node(npf_loop *loop)
     log_clear();
     REQUIRE_V(node_up(n, loop, &v, &w, url, sizeof url) == 0);
     NODE_UNTIL(n->online, 4000);
-    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0, "late welcome: on ws first (%s)", logged);
+    CHECK(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "ws") == 0, "late welcome: on ws first (%s)", logged);
     v.silent = 0;
     v.late_welcome = 1;
-    NODE_UNTIL(v.logins == 1 && !v.late[0] && n->move_taken == 0 && n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0, 4000);
-    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "udp") == 0 && !n->sig_move && n->move_taken == 0,
+    NODE_UNTIL(v.logins == 1 && !v.late[0] && n->sc.state == SS_ONLINE && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "udp") == 0, 4000);
+    CHECK(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "udp") == 0 && !n->sc.c[SR_MOVE].s && n->sc.state == SS_ONLINE,
           "late welcome: moved to udp (%s)", logged);
-    EXPECT(n->logins == 1 && n->udp_bad == 0 && n->replaced_ms == 0);
+    EXPECT(n->logins == 1 && n->sc.udp_bad == 0 && n->replaced_ms == 0);
     EXPECT(count_of(logged, "ws closed after the move, the udp welcome on its way") == 1);
     EXPECT(count_of(logged, "the udp session goes on") == 0 && count_of(logged, "signaling: disconnected") == 0);
     npf_node_stop(n);
@@ -1204,7 +1204,7 @@ static void t_node(npf_loop *loop)
     log_clear();
     REQUIRE_V(node_up(n, loop, &v, &w, url, sizeof url) == 0);
     NODE_UNTIL(n->online, 4000);
-    CHECK(n->online && n->sig && strcmp(npf_sig_via(n->sig), "ws") == 0 && n->udp_bad == 1, "busy (hellos %d m3s %d early %d): %s", v.hellos, v.m3s, v.early, logged);
+    CHECK(n->online && node_sig(n) && strcmp(npf_sig_via(node_sig(n)), "ws") == 0 && n->sc.udp_bad == 1, "busy (hellos %d m3s %d early %d): %s", v.hellos, v.m3s, v.early, logged);
     EXPECT(count_of(logged, "busy over udp, using ws") == 1 && v.m3s == 1);
     npf_node_stop(n);
     ws_drop(&w);

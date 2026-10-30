@@ -22,9 +22,9 @@ static int add_key_proof(npf_node *n, const char *data, char *out, size_t cap)
     int r;
     while (l && data[l - 1] != '}')
         l--;
-    if (!l || !n->sig)
+    if (!l || !node_sig(n))
         return -1;
-    npf_sign2(sig, n->id.sign_sk, "npf-client-key-v1", 17, npf_sig_hash(n->sig), 64);
+    npf_sign2(sig, n->id.sign_sk, "npf-client-key-v1", 17, npf_sig_hash(node_sig(n)), 64);
     pub64[npf_b64url_encode(n->id.sign_pub, 32, pub64)] = 0;
     sig64[npf_b64url_encode(sig, 64, sig64)] = 0;
     r = snprintf(out, cap, "%.*s%s\"sign_pub\":\"%s\",\"key_sig\":\"%s\"}", (int)(l - 1), data,

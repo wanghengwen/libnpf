@@ -273,9 +273,9 @@ void npf_status_out(npf_t *c, npf_out *o)
     npf_out_kbool(o, "online", n->online);
     npf_out_kint(o, "server", n->online ? n->server_id : 0);
     /* the carrier (signaling-udp.md 10.1): udp / ws, its round trip (UDP), UDP's state */
-    npf_out_kstr(o, "server_via", n->online && n->sig ? npf_sig_via(n->sig) : NULL);
-    if (n->online && n->sig && npf_sig_rtt(n->sig) > 0)
-        npf_out_kint(o, "server_rtt_ms", npf_sig_rtt(n->sig));
+    npf_out_kstr(o, "server_via", n->online && node_sig(n) ? npf_sig_via(node_sig(n)) : NULL);
+    if (n->online && node_sig(n) && npf_sig_rtt(node_sig(n)) > 0)
+        npf_out_kint(o, "server_rtt_ms", npf_sig_rtt(node_sig(n)));
     npf_out_kstr(o, "udp_sig", n->cfg.offline ? NULL : npf_node_udp_sig(n));
     if (n->cfg.offline)
         npf_out_kbool(o, "direct_only", 1);     /* no server configured (NPF_ROLE_DIRECT): never online */

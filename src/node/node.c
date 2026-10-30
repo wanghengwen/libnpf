@@ -75,7 +75,6 @@ void npf_node_stop(npf_node *n)
     npf_timer_stop(n->loop, &n->t_reconnect);
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
-    npf_timer_stop(n->loop, &n->t_login);
     npf_timer_stop(n->loop, &n->t_idle);
     npf_timer_stop(n->loop, &n->t_wake);
     n->dormant = 0;

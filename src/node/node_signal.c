@@ -20,10 +20,13 @@ static void sig_ready(npf_sig *s, void *arg);
 static void sig_msg(npf_sig *s, const npf_json *j, void *arg);
 static void idle_watch(npf_node *n);
 static int  node_waiting(const npf_node *n);
+static void sig_do(npf_node *n, int a, npf_sig *s, const char *why);
+static void sc_arm(npf_node *n);
 
 static const npf_sig_cbs sig_cbs = {sig_ready, sig_msg, sig_down};
 
 static int is_udp(const npf_sig *s) { return s && npf_sig_via(s)[0] == 'u'; }
+static int heard(const npf_sig *s) { return s && npf_sig_last_rx(s) != 0; }
 
 /* ---- signaling ---- */
 
@@ -76,7 +79,7 @@ static int send_on(npf_node *n, npf_sig *s, const char *type, int request, const
 
 int npf_node_send(npf_node *n, const char *type, int request, const char *data_json)
 {
-    return send_on(n, n->sig, type, request, data_json);
+    return send_on(n, node_sig(n), type, request, data_json);
 }
 
 #define SIG_REPLY_MS 10000      /* a request sent: something from the server within, else a ping asks */
@@ -181,7 +184,7 @@ void node_sig_fail_pending(npf_node *n)
 int npf_node_reply(npf_node *n, const char *type, const char *reply_to, const char *status,
                    const char *error, const char *data_json)
 {
-    return send_env(n->sig, type, NULL, 0, reply_to, status, error, data_json);
+    return send_env(node_sig(n), type, NULL, 0, reply_to, status, error, data_json);
 }
 
 /* a new list from an external channel: drop the attempt in progress (to
@@ -192,7 +195,6 @@ void node_reconnect_now(npf_node *n)
         return;
     node_sig_close(n);
     npf_timer_stop(n->loop, &n->t_reconnect);
-    npf_timer_stop(n->loop, &n->t_login);
     n->backoff_ms = 0;
     node_sig_connect(n);
 }
@@ -260,47 +262,31 @@ static void schedule_reconnect(npf_node *n)
     n->t_reconnect = npf_timer_add(n->loop, d, reconnect_cb, n);
 }
 
-#define SIG_LOGIN_MS 20000         /* connect, TLS, upgrade, Noise and login together */
-
-/* the second access point closed */
-static void race_drop(npf_node *n)
-{
-    npf_sig_close(n->race);
-    n->race = NULL;
-}
-
-/* what is bound to the connection in use, which has gone (the caller closes
- * or has closed it): offline, its ping and its watch stopped */
+/* what is bound to the connection in use, which has gone: offline, its
+ * ping and its watch stopped */
 static void sig_drop(npf_node *n)
 {
-    n->sig = NULL;
     n->online = 0;
-    n->move_taken = 0;
     npf_timer_stop(n->loop, &n->t_ping);
     npf_timer_stop(n->loop, &n->t_expect);
 }
 
 void node_sig_close(npf_node *n)
 {
-    npf_sig *s = n->sig;
-    race_drop(n);
-    npf_timer_stop(n->loop, &n->t_race);
-    npf_timer_stop(n->loop, &n->t_move);
-    npf_timer_stop(n->loop, &n->t_old);
-    npf_sig_close(n->sig_move);
-    npf_sig_close(n->sig_old);
-    n->sig_move = n->sig_old = NULL;
+    sc_close(&n->sc);
+    npf_timer_stop(n->loop, &n->t_sc);
     sig_drop(n);
-    npf_sig_close(s);
 }
 
 /* after a connection went: the requests on it learn there is no answer, the
- * calls being set up end, the next attempt is due, the application told */
+ * calls being set up end, the next attempt is due when none is left, the
+ * application told */
 static void sig_gone(npf_node *n, const char *why, int was_online)
 {
     node_sig_fail_pending(n);           /* (the spare stays: home-binding.md 9.3) */
     node_sig_lost(n);
-    schedule_reconnect(n);
+    if (n->sc.state == SS_IDLE)
+        schedule_reconnect(n);
     if (was_online && n->hooks.on_offline)
         n->hooks.on_offline(n, why, n->hook_arg);
 }
@@ -318,31 +304,14 @@ static void sig_refused(npf_node *n, int weight)
     sig_gone(n, "refused", 0);
 }
 
+/* drops the connection in use (and a second access point beside it) */
 void node_sig_abort(npf_node *n, const char *why)
 {
-    npf_sig *s = n->sig;
+    npf_sig *s = node_sig(n);
     char d[300];
-    race_drop(n);
     npf_logw("signaling: %s, reconnecting (%s)", why, npf_sig_diag(s, d, sizeof d));
-    sig_down(s, why, n);            /* n->sig = NULL, reconnect scheduled */
+    sig_do(n, sc_abort(&n->sc, heard(s), npf_mono_ms()), s, why);
     npf_sig_close(s);
-}
-
-/* drop a connection that makes no progress: nothing else would notice (a
- * stalled TCP/TLS/handshake, or a server that went silent behind a NAT),
- * and the node stayed offline for an hour (Mac, 2026-10-06) */
-static void login_deadline(npf_loop *loop, void *arg)
-{
-    npf_node *n = arg;
-    (void)loop;
-    n->t_login = NULL;
-    if (n->sig && !n->online) {
-        if (is_udp(n->sig) && !n->udp_bad) {    /* its handshake came, its login did not: not again */
-            n->udp_bad = 1;
-            npf_log("signaling: no login over udp, using ws; udp again in 10 min");
-        }
-        node_sig_abort(n, "no login within 20 s");
-    }
 }
 
 /* A connection can look up and carry nothing (a VPN's tunnel after the
@@ -354,17 +323,17 @@ static void login_deadline(npf_loop *loop, void *arg)
 static void expect_cb(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
+    npf_sig *s = node_sig(n);
     (void)loop;
     n->t_expect = NULL;
     npf_logt("sig: watch due (%s, since %lld ms ago, heard %lld ms ago)", n->expect_probed ? "probed" : "a request",
-             (long long)(npf_mono_ms() - n->expect_since),
-             n->sig ? (long long)(npf_mono_ms() - npf_sig_last_rx(n->sig)) : -1LL);
-    if (!n->sig || !n->online || npf_sig_last_rx(n->sig) >= n->expect_since)
+             (long long)(npf_mono_ms() - n->expect_since), s ? (long long)(npf_mono_ms() - npf_sig_last_rx(s)) : -1LL);
+    if (!s || !n->online || npf_sig_last_rx(s) >= n->expect_since)
         return;                     /* heard from it */
     if (!n->expect_probed) {
         n->expect_probed = 1;
         n->expect_since = npf_mono_ms();
-        npf_sig_ping(n->sig);
+        npf_sig_ping(s);
         n->t_expect = npf_timer_add(n->loop, SIG_PONG_MS, expect_cb, n);
         return;
     }
@@ -379,10 +348,10 @@ static void expect_cb(npf_loop *loop, void *arg)
  * the freeze went unnoticed for 20 s instead of 10) */
 static void sig_expect(npf_node *n, int ms, int probed)
 {
-    if (!n->sig || !n->online)
+    if (!node_sig(n) || !n->online)
         return;
     if (n->t_expect) {
-        if (npf_sig_last_rx(n->sig) < n->expect_since && (n->expect_probed || !probed)) {
+        if (npf_sig_last_rx(node_sig(n)) < n->expect_since && (n->expect_probed || !probed)) {
             npf_logt("sig: watch kept (%s, since %lld ms ago)", n->expect_probed ? "probed" : "a request",
                      (long long)(npf_mono_ms() - n->expect_since));
             return;
@@ -397,9 +366,9 @@ static void sig_expect(npf_node *n, int ms, int probed)
 
 void node_sig_probe(npf_node *n)
 {
-    if (!n->sig || !n->online || n->t_expect)
+    if (!node_sig(n) || !n->online || n->t_expect)
         return;
-    npf_sig_ping(n->sig);
+    npf_sig_ping(node_sig(n));
     sig_expect(n, SIG_PONG_MS, 1);
 }
 
@@ -412,7 +381,7 @@ static void ping_cb(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
     int64_t ivl = (n->ping_s > 0 ? n->ping_s : 25) * 1000, now = npf_mono_ms();
-    int64_t tx = npf_sig_last_tx(n->sig), rx = npf_sig_last_rx(n->sig);
+    int64_t tx = npf_sig_last_tx(node_sig(n)), rx = npf_sig_last_rx(node_sig(n));
     int64_t due = (tx < rx ? tx : rx) + ivl;
     (void)loop;
     n->t_ping = NULL;
@@ -421,25 +390,22 @@ static void ping_cb(npf_loop *loop, void *arg)
         return;
     }
     npf_logt("sig: ping");
-    npf_sig_ping(n->sig);
+    npf_sig_ping(node_sig(n));
     sig_expect(n, SIG_PONG_MS, 1);      /* its pong in time, else the connection goes */
     n->t_ping = npf_timer_add(n->loop, (int)ivl, ping_cb, n);
 }
 
 /* ---- UDP first, the WebSocket the fallback (signaling-udp.md 5.3) ----
- * One attempt: UDP in n->sig, the server's WebSocket in n->race a second
- * later (at once when UDP fails first); the first handshake done stays.
- * udp_bad (the next attempts are today's two WebSockets, until the network
- * changes or UDP works again): a WebSocket logged in while UDP never
- * answered, the server was too busy for the UDP session, or a UDP session
- * did not log in. On the WebSocket, every 10 min when no call is being set
- * up and no request waits, a UDP session (sig_move) logs in and takes over;
- * the server replaces the WebSocket (its "replaced" here is no reason to
- * back off) and closes it. */
+ * The connections, their roles and states: sigconn.c; here what each of
+ * its transitions asks of the node (sig_do). udp_bad (the next attempts
+ * are today's two WebSockets, until the network changes or UDP works
+ * again): a WebSocket logged in while UDP never answered, the server was
+ * too busy for the UDP session, or a UDP session did not log in. On the
+ * WebSocket, every 10 min when no call is being set up and no request
+ * waits, a UDP session logs in and takes over; the server replaces the
+ * WebSocket (its "replaced" here is no reason to back off) and closes it. */
 
-#define SIG_WS_AFTER_MS  1000       /* UDP first, the WebSocket this much later */
 #define SIG_UDP_AGAIN_MS 600000     /* on the WebSocket: UDP again (+-20 %), when idle */
-#define SIG_OLD_MS       10000      /* the connection taken over: the server closes it, else we do */
 
 /* server e's signaling may go over UDP: it has an address, the main socket
  * is open, sig_udp is not off, and this is no hosted or on-demand program
@@ -452,7 +418,7 @@ static int udp_for(const npf_node *n, const npf_server_entry *e)
 
 const char *npf_node_udp_sig(const npf_node *n)
 {
-    return n->cur_server < 0 || !udp_for(n, &n->servers[n->cur_server]) ? "off" : n->udp_bad ? "no_answer" : "ok";
+    return n->cur_server < 0 || !udp_for(n, &n->servers[n->cur_server]) ? "off" : n->sc.udp_bad ? "no_answer" : "ok";
 }
 
 /* the main socket carries the session (tests without UDP: lost) */
@@ -472,89 +438,28 @@ int node_sig_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, cons
 {
     if (fd != n->udp_fd || n->th.no_udp)
         return 0;
-    return npf_sig_input(n->sig, from, buf, len) || npf_sig_input(n->sig_move, from, buf, len);
+    return npf_sig_input(node_sig(n), from, buf, len) || npf_sig_input(n->sc.c[SR_MOVE].s, from, buf, len);
 }
 
-/* the WebSocket of the server UDP is tried on */
-static void race_ws(npf_node *n)
+/* the WebSocket of connection r's server and URL, as r (how: for the log).
+ * Around a VPN like the UDP sockets (connect_mode p2p: a tunnel that stalls
+ * after the system slept took the signaling with it, 2026-10-20); through
+ * it the next time when going around did not log in */
+static npf_sig *ws_open(npf_node *n, int r, const char *how)
 {
-    npf_server_entry *f = &n->servers[n->race_server];
-    npf_timer_stop(n->loop, &n->t_race);
-    npf_log("signaling: and to server %d %s", f->id, f->ws[n->race_url]);
-    n->race = npf_sig_open(n->loop, f->ws[n->race_url], f->dh_pub, &n->id, &sig_cbs, n, !n->sig_via_vpn);
+    npf_sigconn *c = &n->sc.c[r];
+    npf_server_entry *f = &n->servers[c->server];
+    npf_log("signaling: %s server %d %s", how, f->id, f->ws[c->url]);
+    return c->s = npf_sig_open(n->loop, f->ws[c->url], f->dh_pub, &n->id, &sig_cbs, n, !n->sig_via_vpn);
 }
-
-static void race_cb(npf_loop *loop, void *arg)
-{
-    npf_node *n = arg;
-    (void)loop;
-    n->t_race = NULL;
-    race_ws(n);
-}
-
-/* a UDP attempt over before its login: it never answered (udp_bad once
- * the WebSocket logs in), or the server could not take the session (the
- * next attempt on the WebSocket) */
-static void udp_ended(npf_node *n, npf_sig *s, const char *why)
-{
-    if (!is_udp(s))
-        return;
-    if (!npf_sig_last_rx(s))
-        n->udp_silent = 1;
-    else if (strcmp(why, "closed: busy") == 0 && !n->udp_bad) {
-        n->udp_bad = 1;
-        npf_log("signaling: server %d busy over udp, using ws; udp again in 10 min", cur_id(n));
-    }
-}
-
-static void move_cb(npf_loop *loop, void *arg);
 
 static void move_arm(npf_node *n)
 {
     int ms = n->th.sig_udp_again_ms > 0 ? (int)n->th.sig_udp_again_ms : node_wake_delay(SIG_UDP_AGAIN_MS);
-    npf_timer_stop(n->loop, &n->t_move);
-    if (n->online && n->sig && !is_udp(n->sig) && n->cur_server >= 0 && udp_for(n, &n->servers[n->cur_server]))
-        n->t_move = npf_timer_add(n->loop, ms, move_cb, n);
-}
-
-static void move_cb(npf_loop *loop, void *arg)
-{
-    npf_node *n = arg;
-    (void)loop;
-    n->t_move = NULL;
-    if (!n->online || is_udp(n->sig) || n->sig_move || n->cur_server < 0)
-        return;
-    if (node_calls_setting_up(n) || node_waiting(n)) {
-        n->t_move = npf_timer_add(n->loop, 30000, move_cb, n);     /* when idle */
-        return;
-    }
-    npf_log("signaling: moving to udp");
-    n->move_taken = 0;
-    if (!(n->sig_move = udp_open(n, &n->servers[n->cur_server])))
-        move_arm(n);
-}
-
-static void old_cb(npf_loop *loop, void *arg)
-{
-    npf_node *n = arg;
-    (void)loop;
-    n->t_old = NULL;
-    npf_sig_close(n->sig_old);
-    n->sig_old = NULL;
-    npf_log("signaling: on udp, ws closed");
-}
-
-/* sig_move logged in: the connection from now on; the old one is the
- * server's to close (its messages until then are handled) */
-static void move_done(npf_node *n)
-{
-    npf_timer_stop(n->loop, &n->t_expect);  /* the old one's watch */
-    npf_timer_stop(n->loop, &n->t_old);
-    npf_sig_close(n->sig_old);
-    n->sig_old = n->sig;
-    n->sig = n->sig_move;
-    n->sig_move = NULL;
-    n->t_old = npf_timer_add(n->loop, SIG_OLD_MS, old_cb, n);
+    n->sc.move_at = 0;
+    if (n->sc.state == SS_ONLINE && !is_udp(node_sig(n)) && n->cur_server >= 0
+        && udp_for(n, &n->servers[n->cur_server]))
+        n->sc.move_at = npf_mono_ms() + ms;
 }
 
 /* the leaf of a kept chain "inter | leaf": the platform has its
@@ -717,7 +622,7 @@ static void enroll_reply(npf_node *n, const npf_env *e, int ok, void *arg)
         n->enroll_at_unix_ms = npf_unix_ms();
         if (n->hooks.on_enroll_failed)
             n->hooks.on_enroll_failed(n, err, n->enroll_reason, n->backoff_ms / 1000, n->hook_arg);
-        if (n->sig)                         /* the platform's answer: not the server's fault, nor the network's */
+        if (node_sig(n))                    /* the platform's answer: not the server's fault, nor the network's */
             sig_refused(n, 0);
         return;
     }
@@ -731,7 +636,7 @@ static void enroll_reply(npf_node *n, const npf_env *e, int ok, void *arg)
     npf_log("enrol: number %.3s %.3s %.3s", m.number, m.number + 3, m.number + 6);
     if (n->hooks.on_enrolled)
         n->hooks.on_enrolled(n, n->cfg.number, n->hook_arg);
-    send_login(n, n->sig);                  /* on the same connection */
+    send_login(n, node_sig(n));             /* on the same connection */
 }
 
 static void send_enroll(npf_node *n)
@@ -745,7 +650,7 @@ static void send_enroll(npf_node *n)
         npf_loge("enrol: no serial number (serial / serial_file)");
         return;
     }
-    memcpy(msg, npf_sig_hash(n->sig), 64);
+    memcpy(msg, npf_sig_hash(node_sig(n)), 64);
     msg[64] = (uint8_t)sl;
     memcpy(msg + 65, e->serial, sl);
     memcpy(msg + 65 + sl, e->hw_fp, 32);
@@ -858,8 +763,12 @@ static void server_list_in(npf_node *n, const npf_json *j, int t)
     free(blob);
 }
 
-static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
+/* logged in (a: SA_WELCOME, SA_MOVED: on UDP after a move, no drop) */
+static void welcome(npf_node *n, const npf_json *j, const m_welcome *m, int a)
 {
+    int moved = a == SA_MOVED;
+    if (moved)
+        npf_timer_stop(n->loop, &n->t_expect);  /* the old one's watch */
     if (m->time >= 0) {
         /* welcome.time was read half a round trip ago (punch start_at needs this) */
         int64_t rtt = npf_mono_ms() - n->login_sent_ms;
@@ -890,21 +799,16 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
         cert_in(n, m->account_cert, (size_t)m->account_cert_len, 1);
     server_list_in(n, j, m->server_list);
     n->online = 1;
-    if (!n->moving)
+    if (!moved)
         n->logins++;                    /* a move to UDP is no drop */
-    if (is_udp(n->sig))
-        n->udp_bad = 0;
-    else if (n->udp_silent == 1 && !n->udp_bad) {
-        n->udp_bad = 1;
+    if (a & SA_UDP_BAD)
         npf_log("signaling: udp did not answer, using ws; udp again in 10 min");
-    }
     n->last_login_unix_ms = npf_unix_ms();
     n->unreachable_since = 0;
     n->sig_error[0] = 0;
     n->sig_refused = 0;
     n->src_backoff = 0;
     n->src_next = 0;
-    npf_timer_stop(n->loop, &n->t_login);
     n->backoff_ms = 0;
     if (n->cur_server >= 0)
         n->servers[n->cur_server].fails = 0;
@@ -912,7 +816,7 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
     npf_timer_cancel(n->loop, n->t_ping);
     n->t_ping = npf_timer_add(n->loop, (n->ping_s > 0 ? n->ping_s : 25) * 1000, ping_cb, n);
     ends_flush(n);                      /* call ends from while signaling was down */
-    if (!n->moving)
+    if (!moved)
         node_calls_relogin(n);          /* what the calls sent on the connection that went */
     idle_watch(n);
     move_arm(n);
@@ -923,41 +827,21 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
 /* login's reply: welcome, or a refusal */
 void node_on_login(npf_node *n, const m_env *e, const void *m)
 {
-    int late = n->move_taken == 2 && n->msg_sig == n->sig;
+    int ok = strcmp(e->status, "ok") == 0, a;
     if (!e->reply_to[0])
         return;
-    if ((n->sig_move && n->msg_sig == n->sig_move) || late) {  /* the move to UDP */
-        if (strcmp(e->status, "ok") == 0) {
-            if (late)
-                n->move_taken = 0;      /* the connection already: the WebSocket went first */
-            else
-                move_done(n);
-            n->moving = 1;
-            welcome(n, e->j, m);
-            n->moving = 0;
-            return;
-        }
-        if (strcmp(e->error, "host_required") == 0 && n->cfg.callable && !n->host_full) {
-            n->host_full = 1;
-            send_login(n, n->msg_sig);
-            return;
-        }
-        if (!late) {
-            npf_log("signaling: udp login refused (%s), staying on ws", e->error);
-            npf_sig_close(n->sig_move);
-            n->sig_move = NULL;
-            move_arm(n);
-            return;
-        }
-        n->move_taken = 0;              /* refused after all: as any login */
-    }
-    if (strcmp(e->status, "ok") == 0) {
-        welcome(n, e->j, m);
+    if (!ok && strcmp(e->error, "host_required") == 0 && n->cfg.callable && !n->host_full) {
+        n->host_full = 1;               /* the platform lacks this host digest: the JSON, on this connection */
+        send_login(n, n->msg_sig ? n->msg_sig : node_sig(n));
         return;
     }
-    if (strcmp(e->error, "host_required") == 0 && n->cfg.callable && !n->host_full) {
-        n->host_full = 1;               /* the platform lacks this host digest: the JSON, on this connection */
-        send_login(n, n->sig);
+    a = sc_login(&n->sc, sc_role(&n->sc, n->msg_sig), ok, npf_mono_ms());
+    if (a != SA_REFUSED) {
+        if ((a & ~SA_UDP_BAD) == SA_WELCOME || a == SA_MOVED)
+            welcome(n, e->j, m, a);
+        else if (a == SA_MOVE_FAILED)
+            sig_do(n, a, n->msg_sig, e->error);     /* the UDP login refused: on the WebSocket still */
+        sc_arm(n);
         return;
     }
     npf_logw("login: rejected (%s)", e->error);
@@ -1023,11 +907,8 @@ void node_on_keys(npf_node *n, const m_env *e, const void *m)
 void node_on_replaced(npf_node *n, const m_env *e, const void *m)
 {
     (void)e, (void)m;
-    if (n->sig_move && n->msg_sig == n->sig)
-        n->move_taken = 1;              /* the server took the move's login */
-    if ((n->msg_sig && n->msg_sig != n->sig) || n->sig_move)
-        return;
-    n->replaced_ms = npf_mono_ms();
+    if (sc_replaced(&n->sc, sc_role(&n->sc, n->msg_sig)))
+        n->replaced_ms = npf_mono_ms();
 }
 
 void node_on_redirect(npf_node *n, const m_env *e, const void *msg)
@@ -1067,117 +948,38 @@ int node_sig_reply(npf_node *n, const m_env *e)
     return 0;
 }
 
-/* the first access point to finish the Noise handshake stays, the other one
- * is closed before it logs in (security.md 7.5) */
-static void sig_ready(npf_sig *s, void *arg)
+/* ---- the transitions (sigconn.c) and what they ask of the node ---- */
+
+static void sc_cb(npf_loop *loop, void *arg)
 {
     npf_node *n = arg;
-    if (s == n->sig_move) {
-        send_login(n, s);               /* it takes over once logged in */
-        return;
-    }
-    if (s == n->race) {
-        npf_log("signaling: server %d %s answered first", n->servers[n->race_server].id, "(second access point)");
-        if (is_udp(n->sig) && !npf_sig_last_rx(n->sig))
-            n->udp_silent = 1;
-        npf_sig_close(n->sig);
-        n->sig = s;
-        n->cur_server = n->race_server;
-        n->race = NULL;
-    } else if (s != n->sig) {
-        return;
-    } else {
-        race_drop(n);
-    }
-    npf_timer_stop(n->loop, &n->t_race);
-    if (is_udp(s))
-        npf_log("signaling: server %d over udp (handshake %lld ms)", cur_id(n), (long long)(npf_mono_ms() - n->sig_open_ms));
-    else if (n->udp_silent >= 0)
-        npf_log("signaling: server %d over ws (udp: %s)", cur_id(n), n->udp_silent ? "no answer" : "slower");
-    n->host_full = 0;
-    if (n->cfg.enroll && !n->cfg.number)
-        send_enroll(n);                     /* the first message instead of login (security.md 5.2) */
-    else
-        send_login(n, s);
+    int a;
+    (void)loop;
+    n->t_sc = NULL;
+    while ((a = sc_tick(&n->sc, npf_mono_ms())) != SA_NONE)
+        sig_do(n, a, node_sig(n), NULL);
+    sc_arm(n);
 }
 
-static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
+/* the timer at the machine's next due */
+static void sc_arm(npf_node *n)
 {
-    npf_node *n = arg;
-    n->msg_sig = s;
-    node_msg(n, j);
-    n->msg_sig = NULL;
+    int64_t at = sc_next(&n->sc), now = npf_mono_ms();
+    npf_timer_stop(n->loop, &n->t_sc);
+    if (at)
+        n->t_sc = npf_timer_add(n->loop, at > now ? (int)(at - now) : 0, sc_cb, n);
 }
 
-static void sig_down(npf_sig *s, const char *why, void *arg)
+/* what on_down's why says: the server was too busy for the session; the
+ * server closed it */
+static int down_busy(const char *why) { return strcmp(why, "closed: busy") == 0; }
+static int down_closed(const char *why) { return strncmp(why, "closed: ", 8) == 0; }
+
+/* no connection is left: offline, the next attempt due */
+static void sig_failed(npf_node *n, npf_sig *s, const char *why)
 {
-    npf_node *n = arg;
-    int was_online = n->online && n->sig == s;
-    if (s == n->sig_old) {                  /* replaced by the UDP session, closed by the server */
-        n->sig_old = NULL;
-        npf_timer_stop(n->loop, &n->t_old);
-        npf_log("signaling: on udp, ws closed");
-        return;
-    }
-    if (s == n->sig_move) {
-        npf_log("signaling: udp failed (%s), staying on ws", why);
-        n->sig_move = NULL;
-        move_arm(n);
-        return;
-    }
-    if (s == n->race) {             /* the second access point failed: the first one goes on */
-        npf_log("signaling: second access point server %d failed (%s)", n->servers[n->race_server].id, why);
-        node_server_failed(&n->servers[n->race_server], 1);
-        n->race = NULL;
-        return;
-    }
-    if (n->sig != s)
-        return;
-    if (!n->online)
-        udp_ended(n, s, why);
-    if (n->sig_move && n->move_taken) {
-        /* the server closed the WebSocket it replaced by the UDP login,
-         * whose welcome is late (lost, sent again): the move, no drop */
-        npf_log("signaling: ws closed after the move, the udp welcome on its way");
-        npf_timer_stop(n->loop, &n->t_expect);
-        n->sig = n->sig_move;
-        n->sig_move = NULL;
-        n->move_taken = 2;
-        sig_expect(n, SIG_REPLY_MS, 0);     /* the welcome is due */
-        return;
-    }
-    if (n->sig_move) {              /* the WebSocket went while UDP logs in: UDP goes on */
-        npf_log("signaling: disconnected (%s), the udp session goes on", why);
-        sig_drop(n);
-        n->sig = n->sig_move;
-        n->sig_move = NULL;
-        node_sig_fail_pending(n);
-        node_sig_lost(n);
-        npf_timer_cancel(n->loop, n->t_login);
-        n->t_login = npf_timer_add(n->loop, SIG_LOGIN_MS, login_deadline, n);
-        if (was_online && n->hooks.on_offline)
-            n->hooks.on_offline(n, why, n->hook_arg);
-        return;
-    }
-    if (n->t_race && !n->online) {  /* UDP failed before the WebSocket's turn: it now */
-        npf_log("signaling: server %d udp failed (%s), ws now", cur_id(n), why);
-        race_ws(n);
-        if (n->race) {
-            n->sig = n->race;
-            n->race = NULL;
-            return;
-        }
-    }
-    if (n->race && !n->online) {    /* the first failed while the second still tries */
-        npf_log("signaling: server %d failed (%s), waiting for the second access point", cur_id(n), why);
-        if (n->cur_server >= 0)
-            node_server_failed(&n->servers[n->cur_server], 1);
-        n->sig = n->race;
-        n->cur_server = n->race_server;
-        n->race = NULL;
-        return;
-    }
-    if (!n->online && !is_udp(s) && npf_net_bypass_active()) {
+    int was_online = n->online;
+    if (!was_online && !is_udp(s) && npf_net_bypass_active()) {
         /* no login this time: the next attempt the other way (around a VPN, or
          * on the default route for servers reachable through the VPN only) */
         n->sig_via_vpn = !n->sig_via_vpn;
@@ -1205,18 +1007,136 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         snprintf(n->sig_error, sizeof n->sig_error, "server %d: %s", cur_id(n), why ? why : "?");
         n->sig_refused = 0;
     }
-    if (is_udp(s) && strncmp(why, "closed: ", 8) == 0)
+    if (is_udp(s) && down_closed(why))
         npf_log("signaling: udp session lost (%s)", why);
     else
         npf_log("signaling: disconnected (%s)", why);
     sig_gone(n, why, was_online);
 }
 
+/* what the machine's transition a asks of the node; s, why: the event's
+ * connection and reason (timers: the connection in use, none) */
+static void sig_do(npf_node *n, int a, npf_sig *s, const char *why)
+{
+    npf_sigc *m = &n->sc;
+    int was_online = n->online;
+    if (a & SA_UDP_BAD) {
+        if ((a &= ~SA_UDP_BAD) == SA_LATE)
+            npf_log("signaling: no login over udp, using ws; udp again in 10 min");
+        else
+            npf_log("signaling: server %d busy over udp, using ws; udp again in 10 min", cur_id(n));
+    }
+    switch (a) {
+    case SA_RACE_WON:
+        n->cur_server = m->c[SR_MAIN].server;
+        npf_log("signaling: server %d %s answered first", cur_id(n), "(second access point)");
+        /* fall through */
+    case SA_FIRST:
+        if (is_udp(s))
+            npf_log("signaling: server %d over udp (handshake %lld ms)", cur_id(n),
+                    (long long)(npf_mono_ms() - n->sig_open_ms));
+        else if (m->udp_silent >= 0)
+            npf_log("signaling: server %d over ws (udp: %s)", cur_id(n), m->udp_silent ? "no answer" : "slower");
+        n->host_full = 0;
+        if (n->cfg.enroll && !n->cfg.number)
+            send_enroll(n);                 /* the first message instead of login (security.md 5.2) */
+        else
+            send_login(n, s);
+        break;
+    case SA_MOVE_LOGIN:
+        send_login(n, s);                   /* it takes over once logged in */
+        break;
+    case SA_OLD_CLOSED:                     /* replaced by the UDP session, closed by the server or us */
+        npf_log("signaling: on udp, ws closed");
+        break;
+    case SA_MOVE_FAILED:
+        npf_log("signaling: udp failed (%s), staying on ws", why);
+        move_arm(n);
+        break;
+    case SA_RACE_FAILED:                    /* the second access point failed: the first one goes on */
+        npf_log("signaling: second access point server %d failed (%s)", n->servers[m->c[SR_RACE].server].id, why);
+        node_server_failed(&n->servers[m->c[SR_RACE].server], 1);
+        break;
+    case SA_WS_NOW:
+        npf_log("signaling: server %d udp failed (%s), ws now", cur_id(n), why);
+        if (!ws_open(n, SR_MAIN, "and to"))
+            sig_do(n, sc_down(m, SR_MAIN, 1, 0, npf_mono_ms()), s, why);
+        break;
+    case SA_TO_RACE:                        /* the first failed while the second still tries */
+        npf_log("signaling: server %d failed (%s), waiting for the second access point", cur_id(n), why);
+        if (n->cur_server >= 0)
+            node_server_failed(&n->servers[n->cur_server], 1);
+        n->cur_server = m->c[SR_MAIN].server;
+        break;
+    case SA_TAKEN:
+        /* the server closed the WebSocket it replaced by the UDP login,
+         * whose welcome is late (lost, sent again): the move, no drop */
+        npf_log("signaling: ws closed after the move, the udp welcome on its way");
+        npf_timer_stop(n->loop, &n->t_expect);
+        sig_expect(n, SIG_REPLY_MS, 0);     /* the welcome is due */
+        break;
+    case SA_UDP_GOES_ON:
+        npf_log("signaling: disconnected (%s), the udp session goes on", why);
+        sig_drop(n);
+        sig_gone(n, why, was_online);
+        break;
+    case SA_GONE:
+        sig_failed(n, s, why);
+        break;
+    case SA_OPEN_RACE:                      /* the WebSocket of the server UDP is tried on */
+        ws_open(n, SR_RACE, "and to");
+        break;
+    case SA_LATE:
+        /* drop a connection that makes no progress: nothing else would notice (a
+         * stalled TCP/TLS/handshake, or a server that went silent behind a NAT),
+         * and the node stayed offline for an hour (Mac, 2026-10-06) */
+        node_sig_abort(n, "no login within 20 s");
+        break;
+    case SA_MOVE_DUE:
+        if (n->cur_server < 0)
+            break;
+        if (node_calls_setting_up(n) || node_waiting(n)) {
+            m->move_at = npf_mono_ms() + 30000;     /* when idle */
+            break;
+        }
+        npf_log("signaling: moving to udp");
+        if ((s = udp_open(n, &n->servers[n->cur_server])) != NULL)
+            sc_open(m, SR_MOVE, s, n->cur_server, -1);
+        else
+            move_arm(n);
+        break;
+    }
+    sc_arm(n);
+}
+
+/* the first access point to finish the Noise handshake stays, the other one
+ * is closed before it logs in (security.md 7.5) */
+static void sig_ready(npf_sig *s, void *arg)
+{
+    npf_node *n = arg;
+    sig_do(n, sc_ready(&n->sc, sc_role(&n->sc, s), heard(node_sig(n))), s, NULL);
+}
+
+static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
+{
+    npf_node *n = arg;
+    n->msg_sig = s;
+    node_msg(n, j);
+    n->msg_sig = NULL;
+}
+
+static void sig_down(npf_sig *s, const char *why, void *arg)
+{
+    npf_node *n = arg;
+    sig_do(n, sc_down(&n->sc, sc_role(&n->sc, s), heard(s), down_busy(why), npf_mono_ms()), s, why);
+}
+
 void node_sig_connect(npf_node *n)
 {
     npf_server_entry *e;
-    int i;
-    if (n->sig)
+    npf_sig *s;
+    int i, r = -1, u = 0;
+    if (n->sc.state != SS_IDLE)
         return;
     if (n->cur_server < 0 || n->servers[n->cur_server].fails >= 3)
         n->cur_server = node_server_pick(n, -1, -1);
@@ -1230,27 +1150,19 @@ void node_sig_connect(npf_node *n)
     e = &n->servers[n->cur_server];
     i = e->fails % (e->nws ? e->nws : 1);
     n->sig_open_ms = npf_mono_ms();
-    n->udp_silent = -1;
-    if (udp_for(n, e) && !n->udp_bad) {     /* UDP, and the WebSocket a second later */
+    if (udp_for(n, e) && !n->sc.udp_bad) {  /* UDP, and the WebSocket a second later */
         char a[64];
         npf_log("signaling: connecting to server %d udp %s (ws after 1 s)", e->id,
                 npf_addr_str(&e->udp[e->fails % e->nudp], a, sizeof a));
-        if ((n->sig = udp_open(n, e)) != NULL) {
-            n->udp_silent = 0;
-            n->race_server = n->cur_server;
-            n->race_url = i;
-            n->t_race = npf_timer_add(n->loop, SIG_WS_AFTER_MS, race_cb, n);
-            npf_timer_cancel(n->loop, n->t_login);
-            n->t_login = npf_timer_add(n->loop, SIG_LOGIN_MS, login_deadline, n);
+        if ((s = udp_open(n, e)) != NULL) {
+            sc_start(&n->sc, s, n->cur_server, i, 1, n->sig_open_ms);
+            sc_arm(n);
             return;
         }
     }
-    npf_log("signaling: connecting to server %d %s", e->id, e->ws[i]);
-    /* around a VPN like the UDP sockets (connect_mode p2p: a tunnel that
-     * stalls after the system slept took the signaling with it, 2026-10-20);
-     * through it the next time when going around did not log in */
-    n->sig = npf_sig_open(n->loop, e->ws[i], e->dh_pub, &n->id, &sig_cbs, n, !n->sig_via_vpn);
-    if (!n->sig) {
+    sc_start(&n->sc, NULL, n->cur_server, i, 0, n->sig_open_ms);
+    if (!ws_open(n, SR_MAIN, "connecting to")) {
+        sc_close(&n->sc);
         node_server_failed(e, 1);
         npf_logw("signaling: cannot connect to %s", e->ws[i]);
         /* the URL cut to what sig_error holds (a 256-byte URL in 160) */
@@ -1260,26 +1172,21 @@ void node_sig_connect(npf_node *n)
         schedule_reconnect(n);
         return;
     }
-    {   /* and a second access point at the same time: the server's next URL
-         * (a domain and an IP), else another server of the same priority,
-         * but not while a call is up: the server rebinds a call to the
-         * identity's new connection only on itself (as the UDP attempt's
-         * race, this server's own; another one once fails says it is gone) */
-        int r = -1, u = 0;
-        if (e->nws > 1) {
-            r = n->cur_server;
-            u = (i + 1) % e->nws;
-        } else if (!node_calls_up(n) && (r = node_server_pick(n, node_eff_prio(e), n->cur_server)) >= 0)
-            u = n->servers[r].fails % n->servers[r].nws;
-        if (r >= 0) {
-            npf_server_entry *f = &n->servers[r];
-            npf_log("signaling: and to server %d %s", f->id, f->ws[u]);
-            n->race = npf_sig_open(n->loop, f->ws[u], f->dh_pub, &n->id, &sig_cbs, n, !n->sig_via_vpn);
-            n->race_server = r;
-        }
+    /* and a second access point at the same time: the server's next URL (a
+     * domain and an IP), else another server of the same priority, but not
+     * while a call is up: the server rebinds a call to the identity's new
+     * connection only on itself (as the UDP attempt's race, this server's
+     * own; another one once fails says it is gone) */
+    if (e->nws > 1) {
+        r = n->cur_server;
+        u = (i + 1) % e->nws;
+    } else if (!node_calls_up(n) && (r = node_server_pick(n, node_eff_prio(e), n->cur_server)) >= 0)
+        u = n->servers[r].fails % n->servers[r].nws;
+    if (r >= 0) {
+        sc_open(&n->sc, SR_RACE, NULL, r, u);
+        ws_open(n, SR_RACE, "and to");
     }
-    npf_timer_cancel(n->loop, n->t_login);
-    n->t_login = npf_timer_add(n->loop, SIG_LOGIN_MS, login_deadline, n);
+    sc_arm(n);
 }
 
 /* ---- signaling on demand (cfg.sig_idle_ms: hosted clients) ---- */

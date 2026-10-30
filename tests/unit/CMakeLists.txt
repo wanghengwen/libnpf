@@ -28,6 +28,7 @@ add_executable(npf_unit_tests
   test_path_decide.c
   test_peers.c
   test_sigudp.c
+  test_sigconn.c
 )
 if(NPF_PORTMAP)
   target_sources(npf_unit_tests PRIVATE test_portmap.c)
