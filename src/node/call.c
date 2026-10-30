@@ -1,8 +1,9 @@
-/* Calls: a session's state and end, the signaling messages dispatched to
- * it, the node's sessions as a whole (their datagrams, their ends, what the
- * library asks of them). The handshake in call_handshake.c, the transport
- * in call_transport.c, the paths in path_*.c (path.h), punching in
- * call_punch.c (signaling.md "呼叫与端到端连接", data-channel.md, security.md 9). */
+/* Calls: a session's state, timer and end, the signaling messages
+ * dispatched to it, the node's sessions as a whole (their datagrams, their
+ * ends). The handshake in call_handshake.c, punching in call_punch.c; the
+ * session's transport, and what the library asks of it, in
+ * call_transport.c, its paths in path_*.c (path.h) (signaling.md
+ * "呼叫与端到端连接", data-channel.md, security.md 9). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
 #include <stdio.h>
@@ -15,8 +16,6 @@
 #include "home.h"
 
 #define CALL_LIMIT_MS      25000  /* to be established, from the start and again from the accept */
-
-/* ---- helpers ---- */
 
 int npf_call_auth(const npf_call *c) { return c->auth; }
 
@@ -148,24 +147,6 @@ npf_call *call_new(npf_node *n, int caller)
     return c;
 }
 
-/* the session's data transport goes: its tunnel, UDP forwarding and media
- * (before the AnLiu connection whose streams they use). Each is taken off
- * the call before it is freed: the tunnel's sublinks end with callbacks
- * (sublink_done, a virtual end's closed), which must not find it still
- * there. It sends nothing and fails no control request: its callers do */
-static void call_data_free(npf_call *c)
-{
-    npf_tunnel *t = c->tun;
-    npf_udpf *u = c->udp;
-    npf_media *m = c->media;
-    c->tun = NULL;
-    c->udp = NULL;
-    c->media = NULL;
-    npf_udpf_free(u);
-    npf_media_free(m);
-    npf_tunnel_free(t);
-}
-
 void call_free(npf_call *c)
 {
     npf_node *n = c->n;
@@ -187,14 +168,11 @@ void call_free(npf_call *c)
     call_punch_to(c, PN_IDLE, 0);
     call_rev_close_all(c);
     call_relay_early_free(c);
-    call_data_free(c);
-    if (c->kshare)
-        c->kshare->calls--;                 /* its counts went with the tunnel (or go when it does) */
+    tr_free(c);
     free(c->targets);
     call_hs_free(c);
     npf_wipe_free(c->pcfg, sizeof *c->pcfg);    /* punch_key, nominate_key */
     c->pcfg = NULL;
-    call_anl_drop(c);
     call_p2p_drop(c);
     npf_wipe_free(c, sizeof *c);
     if (!n->calls)
@@ -236,17 +214,8 @@ void call_close(npf_call *c, const char *why, int how)
      * peer's own call_end might come first otherwise) */
     if (!c->direct && how != CALL_END_QUIET)
         npf_node_call_end(c->n, c->call_id_s, reason, how == CALL_END_PEER);
-    if (how != CALL_END_QUIET && c->tun && npf_tunnel_is_ready(c->tun)) {
-        char m[96];
-        int len = snprintf(m, sizeof m, "{\"v\":1,\"type\":\"close\",\"data\":{\"reason\":\"%s\"}}", reason);
-        npf_tunnel_control(c->tun, m, (size_t)len);
-        if (c->anl) {
-            anl_update(c->anl, (uint32_t)npf_mono_ms());
-            anl_flush(c->anl);
-        }
-        if (call_has_ws(c) && c->pw.wsr)
-            npf_wsr_flush(c->pw.wsr);          /* now: the relay connection goes with the call */
-    }
+    if (how != CALL_END_QUIET)
+        tr_close(c, reason);
     if (c->n->hooks.on_call_state)
         c->n->hooks.on_call_state(c->n, c, NPF_CALL_CLOSED, reason, c->n->hook_arg);
     call_ctl_fail_all(c);                   /* after CLOSED: the peers know the session is gone */
@@ -258,7 +227,6 @@ void call_close(npf_call *c, const char *why, int how)
 
 void npf_call_info_get(const npf_call *c, npf_call_info *i)
 {
-    anl_stats st;
     memset(i, 0, sizeof *i);
     snprintf(i->id, sizeof i->id, "%s", c->call_id_s);
     i->caller = c->caller;
@@ -275,23 +243,7 @@ void npf_call_info_get(const npf_call *c, npf_call_info *i)
     i->up_s = c->up_ms ? (npf_mono_ms() - c->up_ms) / 1000 : -1;
     i->app = c->caller ? "" : c->caller_app;
     i->hosted = !c->caller && (c->caller_hosted || c->hosted_grant);
-    i->tx_bytes = c->tx_bytes;
-    i->rx_bytes = c->rx_bytes;
-    i->srtt_ms = -1;
-    if (c->anl && anl_get_stats(c->anl, &st) == 0) {
-        i->srtt_ms = (int)st.srtt;
-        i->retrans = st.retrans;
-    }
-    i->sublinks = c->tun ? npf_tunnel_count(c->tun) : 0;
-    {
-        npf_udpf_stats us;
-        npf_udpf_get_stats(c->udp, &us);
-        i->udp_flows = us.flows;
-        i->udp_out = us.dgrams_out;
-        i->udp_in = us.dgrams_in;
-        i->udp_dropped = us.dropped;
-        i->udp_split = us.split;
-    }
+    tr_info(c, i);
 }
 
 npf_call *npf_node_calls(npf_node *n) { return n->calls; }
@@ -300,51 +252,6 @@ npf_call *npf_call_next(const npf_call *c) { return c->next; }
 /* the path the session sends on (path_mgr.c), named */
 const char *npf_call_path(const npf_call *c) { return pm_name(&c->pm); }
 const char *npf_call_path_label(const npf_call *c) { return pm_label(&c->pm); }
-
-int npf_call_open(npf_call *c, int fd, int passthrough, const char *host, uint16_t port, uint32_t group,
-                  uint32_t rate)
-{
-    if (call_over(c) || !c->tun || !npf_tunnel_is_ready(c->tun))
-        return -1;
-    return npf_tunnel_open_rated(c->tun, fd, passthrough, host, port, group, rate);
-}
-
-void npf_call_on_sublink_done(npf_call *c, npf_sublink_fn fn, void *arg)
-{
-    c->sub_done = fn;
-    c->sub_arg = arg;
-}
-
-int npf_call_group_count(const npf_call *c, uint32_t group)
-{
-    return c->tun ? npf_tunnel_group_count(c->tun, group) : 0;
-}
-
-int npf_call_group_reset(npf_call *c, uint32_t group, const char *why)
-{
-    return c->tun ? npf_tunnel_group_reset(c->tun, group, why) : 0;
-}
-
-int npf_call_sub_bytes(npf_call *c, uint32_t sid, uint64_t *in, uint64_t *out)
-{
-    return c->tun ? npf_tunnel_sub_bytes(c->tun, sid, in, out) : -1;
-}
-
-int npf_call_sub_reset(npf_call *c, uint32_t sid, const char *why)
-{
-    return c->tun ? npf_tunnel_sub_reset(c->tun, sid, why) : -1;
-}
-
-void npf_call_usage_take(npf_call *c, uint64_t *tx, uint64_t *rx)
-{
-    uint64_t in = 0, out = 0;
-    if (c->tun)
-        npf_tunnel_local_bytes(c->tun, &in, &out);
-    *tx = in > c->rep_tx ? in - c->rep_tx : 0;
-    *rx = out > c->rep_rx ? out - c->rep_rx : 0;
-    c->rep_tx = in > c->rep_tx ? in : c->rep_tx;
-    c->rep_rx = out > c->rep_rx ? out : c->rep_rx;
-}
 
 void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *arg), void *arg)
 {
@@ -586,32 +493,6 @@ int node_udp_input(npf_node *n, int fd, const uint8_t *buf, size_t len, const st
     return matched;
 }
 
-void npf_node_dump(npf_node *n)
-{
-    npf_call *c;
-    for (c = n->calls; c; c = c->next) {
-        anl_stats st;
-        fprintf(stderr, "%lld call %s caller=%d state=%d path=%s\n", (long long)npf_mono_ms(), c->call_id_s, c->caller,
-                npf_call_state(c), npf_call_path(c));
-        if (c->anl && anl_get_stats(c->anl, &st) == 0) {
-            anl_stream_stats ss;
-            memset(&ss, 0, sizeof ss);
-            if (c->stream)
-                anl_stream_get_stats(c->stream, &ss);
-            fprintf(stderr, "  anl: waitsnd=%d state=%d srtt=%u rto=%u min_rtt=%u cwnd=%u inflight=%u pace=%u bw=%u cc=%d "
-                    "retrans=%u tx=%llu rx=%llu authfail=%llu stale=%llu rcv_bytes=%u t_due=%p | stream state=%d "
-                    "rmt_wnd=%u backlog=%u\n",
-                    c->stream ? anl_stream_waitsnd(c->stream) : -1, anl_state(c->anl), st.srtt, st.rto, st.min_rtt, st.cwnd,
-                    st.inflight, st.pace_rate, st.bw_estimate, st.cc_state, st.retrans, (unsigned long long)st.tx_datagrams,
-                    (unsigned long long)st.rx_datagrams, (unsigned long long)st.rx_auth_fail,
-                    (unsigned long long)st.rx_stale, st.rcv_bytes, (void *)c->t_due, ss.state, ss.rmt_wnd,
-                    ss.backlog_bytes);
-        }
-        if (c->tun)
-            npf_tunnel_dump(c->tun);
-    }
-}
-
 /* shutting down: every session, accepted or started here, gets an orderly
  * end (close in the tunnel, call_end to the platform) so the other side does
  * not wait for AnLiu's idle timeout; run the loop briefly afterwards to send */
@@ -660,94 +541,4 @@ void node_calls_free(npf_node *n)
 {
     while (n->calls)
         call_free(n->calls);
-}
-
-/* ---- UDP forwards: the caller's side (peers.c) ---- */
-
-int npf_call_udp_send(npf_call *c, int lfd, const struct sockaddr_storage *src, socklen_t srclen, const char *host,
-                      uint16_t port, const uint8_t *buf, size_t len)
-{
-    npf_udpf *u;
-    if (!call_up(c) || !c->caller || !(u = call_udp_of(c)))
-        return -1;
-    return npf_udpf_send(u, lfd, src, srclen, host, port, buf, len);
-}
-
-void npf_call_udp_forget(npf_call *c, int lfd)
-{
-    npf_udpf_forget_fd(c->udp, lfd);
-}
-
-int npf_call_ready(const npf_call *c)
-{
-    return c && call_up(c) && c->tun && npf_tunnel_is_ready(c->tun);
-}
-
-int npf_call_open_v(npf_call *c, const npf_vend_io *v, void *varg, const char *host, uint16_t port,
-                    npf_tunnel **tun)
-{
-    if (!npf_call_ready(c) || !c->caller)
-        return -1;
-    *tun = c->tun;
-    return npf_tunnel_open_v(c->tun, v, varg, host, port);
-}
-
-int npf_call_udp_send_v(npf_call *c, void *key, void (*deliver)(void *key, const uint8_t *buf, size_t len),
-                        const char *host, uint16_t port, const uint8_t *buf, size_t len)
-{
-    npf_udpf *u;
-    if (!call_up(c) || !c->caller || !(u = call_udp_of(c)))
-        return -1;
-    return npf_udpf_send_v(u, key, deliver, host, port, buf, len);
-}
-
-void npf_node_udp_forget_v(npf_node *n, const void *key)
-{
-    npf_call *c;
-    for (c = n->calls; c; c = c->next)
-        npf_udpf_forget_v(c->udp, key);
-}
-
-/* ---- libnpf: application data and media streams ---- */
-
-int npf_call_app_send(npf_call *c, const void *buf, size_t len)
-{
-    if (call_over(c) || !c->tun || len > NPF_CTRL_MAX)
-        return -1;
-    return npf_tunnel_unit_send(c->tun, NPF_CU_APP, buf, len);
-}
-
-uint32_t npf_call_media_open(npf_call *c, const npf_call_media_opt *o, int *err)
-{
-    npf_media *m;
-    if (!call_up(c) || !(m = call_media_of(c))) {
-        *err = NPF_CALL_ESTATE;
-        return 0;
-    }
-    return npf_media_open_stream(m, o, err);
-}
-
-int npf_call_media_send(npf_call *c, uint32_t media, int flags, const void *buf, size_t len, int64_t t_submit)
-{
-    int r;
-    if (call_over(c) || !c->media)
-        return call_over(c) ? NPF_CALL_ESTATE : NPF_CALL_ENOENT;
-    r = npf_media_send_frame(c->media, media, flags, buf, len, t_submit);
-    if (r == 0)
-        c->tx_bytes += len;
-    return r;
-}
-
-int npf_call_media_get_stats(npf_call *c, uint32_t media, npf_call_media_stats *out)
-{
-    if (call_over(c) || !c->media)
-        return call_over(c) ? NPF_CALL_ESTATE : NPF_CALL_ENOENT;
-    return npf_media_stream_stats(c->media, media, out);
-}
-
-int npf_call_media_close(npf_call *c, uint32_t media)
-{
-    if (call_over(c) || !c->media)
-        return call_over(c) ? NPF_CALL_ESTATE : NPF_CALL_ENOENT;
-    return npf_media_close_stream(c->media, media);
 }
