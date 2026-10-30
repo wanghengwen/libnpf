@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "udpfwd.h"
+#include "media.h"                  /* NPF_ANL_MEDIA_WND */
 #include "npf/crypto.h"
 #include "npf/log.h"
 #include "npf/platform.h"
@@ -16,7 +17,6 @@
 #define F_TARGET      1             /* caller: the -L target follows */
 #define F_LID         2             /* callee: the -R listener's id follows */
 #define BUF_MAX       (NPF_UDP_PAYLOAD_MAX + HDR + 1 + 255 + 2 + 4)
-#define UDP_WND       512           /* AnLiu receive window of the stream (segments; media.h's for media) */
 #define TICK_MS       5000
 #define PEND_MAX      4             /* datagrams kept while the target's name is resolved */
 #define CLOSED_RING   32            /* the peer's flows closed lately (a late frame does not open them again) */
@@ -69,7 +69,7 @@ struct npf_udpf {
     uflow       *by_id[256], *by_src[256];
     int          nflows;
     int          nresolving;        /* flows whose names are being resolved (UDP_RESOLVING_MAX) */
-    uint32_t     next_id;
+    uint32_t     next_id;           /* the last flow id of this side's (caller odd, callee even) */
     uint32_t     closed[CLOSED_RING];
     unsigned     nclosed;           /* ever closed: the next goes at nclosed % CLOSED_RING */
     npf_timer   *t_tick;
@@ -258,6 +258,7 @@ npf_udpf *npf_udpf_new(npf_loop *loop, anl_t *anl, int caller, npf_policy *polic
     u->loop = loop;
     u->anl = anl;
     u->caller = caller != 0;               /* (send_out compares it) */
+    u->next_id = u->caller ? UINT32_MAX : 0;    /* the first: 1, 2 */
     u->policy = policy;
     u->io = *io;
     u->arg = arg;
@@ -324,7 +325,7 @@ static anl_stream_t *stream(npf_udpf *u)
         return u->s;
     anl_stream_opt_default(&opt, ANL_SEMI);
     opt.tag = NPF_TAG_UDP;
-    opt.rcv_wnd = UDP_WND;
+    opt.rcv_wnd = NPF_ANL_MEDIA_WND;        /* a semi-reliable stream's, as a media stream's (media.h) */
     stream_opts(&opt, anl_get_stats(u->anl, &st) == 0 ? (int)st.srtt : 0);
     if (!(u->s = anl_stream_open(u->anl, &opt, &e))) {
         npf_logw("udp: no AnLiu stream for the UDP forwards (%d)", e);
@@ -641,7 +642,7 @@ void npf_udpf_frame_in(npf_udpf *u, const uint8_t *p, size_t n)
 
 int npf_udpf_accept(npf_udpf *u, anl_stream_t *s, anl_stream_opt *opt, int srtt)
 {
-    if (u->caller || u->s || opt->mode != ANL_SEMI || opt->rcv_wnd > UDP_WND)
+    if (u->caller || u->s || opt->mode != ANL_SEMI || opt->rcv_wnd > NPF_ANL_MEDIA_WND)
         return -1;
     stream_opts(opt, srtt);                 /* this side's sending: as the caller's */
     u->s = s;
@@ -659,19 +660,16 @@ void npf_udpf_drain(npf_udpf *u, anl_stream_t *s)
         anl_frame_info fi;
         int sz = anl_stream_peeksize(s), r;
         uint8_t *buf;
-        if (sz == ANL_ECLOSED) {            /* the peer closed it: the flows stay, a new frame opens a new stream */
+        /* the peer closed it (the flows stay, a new frame opens a new
+         * stream), or a frame too large: closed before a peer-sized copy */
+        if (sz == ANL_ECLOSED || sz > BUF_MAX) {
+            u->st.dropped += sz > BUF_MAX;
             anl_stream_close(s);
             u->s = NULL;
             return;
         }
         if (sz < 0)
             return;
-        if (sz > BUF_MAX) {                /* reject before allocating a peer-sized reassembly copy */
-            anl_stream_close(s);
-            u->s = NULL;
-            u->st.dropped++;
-            return;
-        }
         if (!(buf = npf_scratch((size_t)sz + 1)))  /* reused, not a malloc per datagram (nested use: its own) */
             return;
         r = anl_stream_recv_frame(s, (char *)buf, sz + 1, &fi);
@@ -760,10 +758,13 @@ static int send_out(npf_udpf *u, int caller, int lfd, const struct sockaddr_stor
             u->st.dropped++;
             return -1;
         }
-        if (!++u->next_id || u->next_id > 0x7fffffffu)
-            u->next_id = 1;
+        /* round the 32 bits: 0 and the ids still in use (at most
+         * NPF_UDP_FLOWS of them) skipped */
+        do
+            u->next_id += 2;
+        while (!u->next_id || find_id(u, u->next_id));
         f->u = u;
-        f->id = u->caller ? u->next_id * 2 - 1 : u->next_id * 2;     /* caller odd, callee even */
+        f->id = u->next_id;
         f->out = 1;
         f->fd = lfd;
         f->vkey = vkey;
