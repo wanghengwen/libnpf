@@ -344,7 +344,7 @@ static int t_before(const npf_timer *a, const npf_timer *b)
 static void heap_set(npf_loop *l, int i, npf_timer *t)
 {
     l->heap[i] = t;
-    t->idx = i;
+    t->pos = i + 1;
 }
 
 static void heap_up(npf_loop *l, int i)
@@ -376,14 +376,14 @@ static void heap_down(npf_loop *l, int i)
 
 static void heap_remove(npf_loop *l, npf_timer *t)
 {
-    int i = t->idx;
+    int i = t->pos - 1;
     npf_timer *last = l->heap[--l->nheap];
-    t->idx = -1;
+    t->pos = 0;
     if (i == l->nheap)
         return;
     heap_set(l, i, last);
     heap_up(l, i);
-    heap_down(l, last->idx);
+    heap_down(l, last->pos - 1);
 }
 
 void loop_fire_timers(npf_loop *l)
@@ -394,11 +394,13 @@ void loop_fire_timers(npf_loop *l)
     uint64_t end = l->tseq;
     while (l->nheap > 0) {
         npf_timer *t = l->heap[0];
+        int owned = t->owned;           /* an embedded one may be gone with its owner after fn */
         if (t->due > npf_mono_ms() || t->seq >= end)
             break;
         heap_remove(l, t);
         TIMED(t->fn, t->fn(l, t->arg));
-        free(t);
+        if (owned)
+            free(t);
     }
 }
 
@@ -475,7 +477,8 @@ void npf_loop_free(npf_loop *l)
         l->free_hook[i].fn(l, l->free_hook[i].arg);
     l->nfree_hook = 0;
     for (i = 0; i < l->nheap; i++)
-        free(l->heap[i]);
+        if (l->heap[i]->owned)
+            free(l->heap[i]);       /* an embedded one is its owner's */
     free(l->heap);
     free_posted(l);
     npf_mutex_free(&l->post_mu);
@@ -785,34 +788,52 @@ void npf_loop_stop(npf_loop *l)
     npf_loop_wake(l);
 }
 
-npf_timer *npf_timer_add(npf_loop *l, int64_t delay_ms, npf_timer_fn fn, void *arg)
+void npf_timer_init(npf_timer *t, npf_timer_fn fn, void *arg)
 {
-    npf_timer *t;
-    int64_t now;
-    if (npf_grow(&l->heap, &l->capheap, (size_t)l->nheap + 1, sizeof *l->heap, 64) < 0)
-        return NULL;
-    t = calloc(1, sizeof *t);
-    if (!t)
-        return NULL;
-    now = npf_mono_ms();
+    memset(t, 0, sizeof *t);
+    t->fn = fn;
+    t->arg = arg;
+}
+
+int npf_timer_set(npf_loop *l, npf_timer *t, int64_t delay_ms)
+{
+    int64_t now = npf_mono_ms();
+    if (!t->pos && npf_grow(&l->heap, &l->capheap, (size_t)l->nheap + 1, sizeof *l->heap, 64) < 0)
+        return -1;
     if (delay_ms < 0)
         delay_ms = 0;
     t->due = delay_ms > INT64_MAX - now ? INT64_MAX : now + delay_ms;
     t->seq = l->tseq++;
-    t->fn = fn;
-    t->arg = arg;
-    heap_set(l, l->nheap++, t);
-    heap_up(l, t->idx);
+    if (!t->pos)
+        heap_set(l, l->nheap++, t);
+    heap_up(l, t->pos - 1);         /* moved: earlier goes up, later (a newer seq too) down */
+    heap_down(l, t->pos - 1);
+    return 0;
+}
+
+npf_timer *npf_timer_add(npf_loop *l, int64_t delay_ms, npf_timer_fn fn, void *arg)
+{
+    npf_timer *t = malloc(sizeof *t);
+    if (!t)
+        return NULL;
+    npf_timer_init(t, fn, arg);
+    t->owned = 1;
+    if (npf_timer_set(l, t, delay_ms) < 0) {
+        free(t);
+        return NULL;
+    }
     return t;
 }
 
-/* t must be pending, or firing (its own callback cancels it: nothing to do) */
+/* t pending, or firing (its own callback cancels it: nothing to do), or an
+ * embedded one not set */
 void npf_timer_cancel(npf_loop *l, npf_timer *t)
 {
-    if (!t || t->idx < 0)
+    if (!t || !t->pos)
         return;
     heap_remove(l, t);
-    free(t);
+    if (t->owned)
+        free(t);
 }
 
 /* a stop requested before run (an early service stop) is kept */

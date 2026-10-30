@@ -115,7 +115,7 @@ struct npf_peer {
     char       last_why[32];        /* why the last session ended */
     /* the peer's one timer (architecture.md 3.9): its deadlines (monotonic
      * ms, 0 none) and its forwards' */
-    npf_timer *t_due;
+    npf_timer  t_due;               /* embedded (npf/loop.h) */
     int64_t    due_at;              /* when t_due fires */
     int64_t    retry_at;            /* PS_START, PS_RETRY: the next attempt */
     int64_t    demand_at;           /* the waiting ones (their deadlines, the transport asked again) and the idle check */

@@ -39,14 +39,6 @@ typedef struct handler {
     ep_reg   *reg;              /* in the host's queue (NPF_EVQ) */
 } handler;
 
-struct npf_timer {
-    int64_t    due;
-    uint64_t   seq;             /* equal due: in the order added */
-    npf_timer_fn fn;
-    void      *arg;
-    int        idx;             /* in the heap; -1 while firing */
-};
-
 #define FREE_HOOKS 4
 
 struct npf_loop {

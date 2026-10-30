@@ -130,7 +130,7 @@ static void call_rows(npf_node *n)
     clear();
     npf_call_end(c, "bye now");
     CHECK(call_over(c) && npf_call_state(c) == NPF_CALL_CLOSED && strcmp(states, "4") == 0 && end_of(n, c)
-          && !end_of(n, c)->peer && strcmp(end_of(n, c)->reason, "byenow") == 0 && c->t_free && !c->t_due,
+          && !end_of(n, c)->peer && strcmp(end_of(n, c)->reason, "byenow") == 0 && c->t_free && !npf_timer_pending(&c->t_due),
           "a local end: CLOSED, call_end (ours), the free next");
     npf_loop_once(n->loop, 0);
     CHECK(freed(n, c), "not freed on the next turn");
@@ -203,7 +203,7 @@ static char pid[16], pkey[48];
 static int pn_ok(const npf_call *c)
 {
     int st = c->punch_st, dl = st == PN_SCHEDULED || st == PN_LINGER;
-    return dl == (c->punch_at != 0) && (!c->punch_at || (c->t_due && c->due_at <= c->punch_at))
+    return dl == (c->punch_at != 0) && (!c->punch_at || (npf_timer_pending(&c->t_due) && c->due_at <= c->punch_at))
            && (st == PN_RUNNING || st == PN_LINGER || !c->punch) && (st != PN_RUNNING || c->punch);
 }
 

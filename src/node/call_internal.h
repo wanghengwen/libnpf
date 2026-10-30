@@ -60,7 +60,7 @@ struct npf_call {
     npf_tunnel *tun;
     /* the call's one timer (architecture.md 4); the deadlines (mono ms, 0
      * none): the time limit (before CS_UP), punching's (punch_st) */
-    npf_timer  *t_due;
+    npf_timer   t_due;              /* embedded (npf/loop.h) */
     int64_t     due_at;             /* when t_due fires */
     int         ticking;            /* in call_tick: what it sets is scheduled after it */
     int64_t     limit_at, punch_at;
@@ -185,7 +185,7 @@ typedef struct npf_key_share {
 void call_arm(npf_call *c, int64_t at);
 static inline void call_at(npf_call *c, int64_t at)
 {
-    if (!c->t_due || at < c->due_at)
+    if (!npf_timer_pending(&c->t_due) || at < c->due_at)
         call_arm(c, at);
 }
 int64_t call_due(const npf_call *c, int64_t now);

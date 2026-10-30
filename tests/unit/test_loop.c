@@ -1,6 +1,7 @@
 /* Event loop timers (binary min-heap): firing order by due time, then by the
  * order added; cancel from anywhere, including a timer cancelling itself or
- * another one from its callback, and adding timers from a callback. */
+ * another one from its callback, and adding timers from a callback; embedded
+ * timers moved within the heap, set again from their own callback. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -118,6 +119,73 @@ static void test_reuse(void)
     npf_loop_once(l, 0);
     CHECK(rearm_n == 2, "and fires then (%d)", rearm_n);
     rearm_n = 1000;
+    npf_loop_free(l);
+}
+
+/* embedded timers (npf_timer_init / npf_timer_set): no allocation, moved
+ * within the heap, set again from their own callback, in the same order as
+ * npf_timer_add's */
+typedef struct emb {
+    npf_timer t;
+    int       fired, again;
+    int       seq;              /* the order it fired in */
+} emb;
+static int emb_n;
+static void emb_cb(npf_loop *l, void *arg)
+{
+    emb *e = arg;
+    e->fired++;
+    e->seq = ++emb_n;
+    CHECK(!npf_timer_pending(&e->t), "not pending while it fires");
+    if (e->again && e->again--)
+        npf_timer_set(l, &e->t, 0);            /* from its own callback: the next turn */
+}
+static void emb_alloc_cb(npf_loop *l, void *arg)
+{
+    (void)l;
+    *(int *)arg = ++emb_n;
+}
+
+static void test_embedded(void)
+{
+    npf_loop *l = npf_loop_new();
+    emb a, b, c, *z = calloc(1, sizeof *z);
+    int i, alloc_seq = 0;
+    npf_timer_init(&a.t, emb_cb, &a);
+    npf_timer_init(&b.t, emb_cb, &b);
+    npf_timer_init(&c.t, emb_cb, &c);
+    a.fired = b.fired = c.fired = 0;
+    a.again = b.again = c.again = 0;
+    CHECK(!npf_timer_pending(&z->t), "a zeroed one is not pending");
+    npf_timer_cancel(l, &z->t);                 /* nothing to do */
+    npf_timer_cancel(l, &a.t);                  /* initialised, never set: nothing to do */
+    CHECK(npf_timer_set(l, &a.t, 100000) == 0 && npf_timer_pending(&a.t), "set: pending");
+    npf_timer_set(l, &b.t, 100000);
+    npf_timer_set(l, &c.t, 100000);
+    for (i = 0; i < 50; i++) {                  /* moved many times: one heap entry each */
+        npf_timer_set(l, &a.t, 100000 + i);
+        npf_timer_set(l, &b.t, 50000 - i);
+    }
+    npf_timer_set(l, &a.t, 0);                  /* moved earlier */
+    npf_timer_add(l, 0, emb_alloc_cb, &alloc_seq);     /* due with a, set after it */
+    npf_timer_set(l, &c.t, 0);                  /* also due with a: set after both */
+    npf_timer_cancel(l, &b.t);
+    CHECK(!npf_timer_pending(&b.t), "cancelled: not pending");
+    npf_loop_once(l, 0);
+    CHECK(a.fired == 1 && c.fired == 1 && b.fired == 0, "moved earlier ones fired, the cancelled one not");
+    CHECK(a.seq == 1 && alloc_seq == 2 && c.seq == 3, "in the order set, with npf_timer_add's (%d %d %d)",
+          a.seq, alloc_seq, c.seq);
+    a.again = 2;
+    npf_timer_set(l, &a.t, 0);
+    npf_loop_once(l, 0);
+    CHECK(a.fired == 2 && npf_timer_pending(&a.t), "set again from its callback: pending");
+    npf_loop_once(l, 0);
+    npf_loop_once(l, 0);
+    CHECK(a.fired == 4 && !npf_timer_pending(&a.t), "one firing per turn, then done (%d)", a.fired);
+    npf_timer_set(l, &b.t, 100000);             /* left pending: the loop does not free it */
+    npf_timer_set(l, &z->t, 100000);
+    npf_timer_cancel(l, &z->t);
+    free(z);                                    /* the owner goes once it is cancelled */
     npf_loop_free(l);
 }
 
@@ -252,6 +320,7 @@ int test_loop(void)
     npf_timer_add(T.loop, 100000, fire, (void *)0L);
     npf_loop_free(T.loop);
     test_reuse();
+    test_embedded();
     test_logctx();
     test_slots();
     return fails;

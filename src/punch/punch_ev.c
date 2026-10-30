@@ -80,7 +80,7 @@ struct npf_punch {
     npf_punch_result res;
     uint8_t         seen_tx[SEEN_MAX][NPF_TXID_SIZE]; /* the last SEEN_MAX authenticated packets' txids */
     int             seen_at;
-    npf_timer      *tick;
+    npf_timer       tick;           /* embedded (npf/loop.h) */
     int64_t         tick_due;
     npf_punch_done_fn done;
     void           *arg;
@@ -207,7 +207,7 @@ static void finish(npf_punch *p, int ok)
     p->finished = 1;
     p->res.ok = ok;
     p->res.elapsed_ms = (int)(npf_mono_ms() - p->start);
-    npf_timer_stop(p->loop, &p->tick);
+    npf_timer_cancel(p->loop, &p->tick);
     if (ok) {
         struct sockaddr_storage la;
         socklen_t ll = sizeof la;
@@ -535,7 +535,7 @@ void npf_punch_stop(npf_punch *p)
 static void punch_destroy(npf_punch *p)
 {
     int i;
-    npf_timer_cancel(p->loop, p->tick);
+    npf_timer_cancel(p->loop, &p->tick);
     for (i = 0; i < p->nsock; i++) {
         if (p->socks[i].owned && p->socks[i].fd >= 0) {
             npf_loop_del(p->loop, p->socks[i].fd);
@@ -562,7 +562,6 @@ static void tick_cb(npf_loop *loop, void *arg)
     int64_t now = npf_mono_ms();
     int i, k;
     (void)loop;
-    p->tick = NULL;
     p->depth++;
     if (now >= p->deadline) {
         finish(p, 0);
@@ -685,13 +684,10 @@ static void schedule(npf_punch *p)
     if (p->finished)
         return;
     due = next_due(p, now);
-    if (p->tick) {
-        if (p->tick_due <= due)
-            return;
-        npf_timer_cancel(p->loop, p->tick);
-    }
+    if (npf_timer_pending(&p->tick) && p->tick_due <= due)
+        return;
     p->tick_due = due;
-    p->tick = npf_timer_add(p->loop, due > now ? due - now : 0, tick_cb, p);
+    npf_timer_set(p->loop, &p->tick, due - now);
 }
 
 /* 1 when this packet (its random txid) was taken before: someone on the
@@ -874,6 +870,7 @@ npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_f
         return NULL;
     }
     p->loop = loop;
+    npf_timer_init(&p->tick, tick_cb, p);
     p->cfg = *cfg;
     p->done = done;
     p->arg = arg;
