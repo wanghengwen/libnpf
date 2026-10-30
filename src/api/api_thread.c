@@ -16,6 +16,11 @@
 #include "npf/platform.h"
 #include "api_internal.h"
 
+/* this thread is a shared runtime's: it never waits for another thread's
+ * loop (two such waits, each for the other's thread, are a deadlock; a
+ * wait stalls every instance of this thread) */
+static NPF_THREAD_LOCAL int on_runtime;
+
 int npf_api_init(npf_t *n)
 {
     n->sync = calloc(1, sizeof *n->sync);
@@ -188,6 +193,10 @@ int sync_call(npf_t *n, int (*fn)(npf_t *n, void *arg), void *arg)
             turn_end(n);
         return r;
     }
+    if (on_runtime) {
+        npf_loge("a call from a shared runtime's thread for an instance on another thread: refused (NPF_ESTATE)");
+        return NPF_ESTATE;
+    }
     if (!(j = calloc(1, sizeof *j)))
         return NPF_ENOMEM;
     j->n = n;
@@ -290,6 +299,7 @@ struct npf_runtime {
 
 static void rt_main(rt_thread *t)
 {
+    on_runtime = 1;
     __atomic_store_n(&t->tid, self_tid(), __ATOMIC_RELEASE);
     npf_loop_run(t->host);
     npf_scratch_trim();                     /* this thread's (sys.h) */
@@ -520,9 +530,9 @@ void npf_destroy(npf_t *n)
     if (!n)
         return;
     LOCK();
-    if ((n->running && n->loop_tid == self_tid()) || (n->exec_busy && n->exec_owner == self_tid())) {
+    if (on_runtime || (n->running && n->loop_tid == self_tid()) || (n->exec_busy && n->exec_owner == self_tid())) {
         UNLOCK();
-        npf_loge("npf_destroy from a callback of the same instance: refused");
+        npf_loge("npf_destroy from a callback (of this instance, or on a shared runtime): refused");
         return;
     }
     n->sync->destroying = 1;

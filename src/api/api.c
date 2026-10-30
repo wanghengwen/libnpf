@@ -90,7 +90,7 @@ char *npf_public_json(npf_t *n, int close) { return query(n, public_run, 0, clos
 
 typedef struct kv_arg {
     const char *key, *value;
-    int         save;
+    int         save, *restart;
     char       *out;
     size_t      cap;
     npf_out     o;                      /* npf_cmd_set's text: why it failed */
@@ -115,7 +115,6 @@ int npf_config_get(npf_t *n, const char *key, char *out, size_t cap)
     return npf_api_op(n, get_run, &x);
 }
 
-/* 1 when it applies at the next start */
 static int set_run(npf_t *n, void *arg)
 {
     kv_arg *x = arg;
@@ -123,13 +122,16 @@ static int set_run(npf_t *n, void *arg)
     if (x->save && (n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS))
         return NPF_EUNAVAIL;                /* the application keeps the settings */
     r = npf_cmd_set(n, x->key, x->value, x->save, &x->o);
-    return r == 0 ? !npf_key_is(x->key, NPF_K_LIVE) : r == 2 ? NPF_EINVAL : r == NPF_CMD_UNSAVED ? NPF_ESAVE : NPF_EFAIL;
+    *x->restart = (r == 0 || r == NPF_CMD_UNSAVED) && !npf_key_is(x->key, NPF_K_LIVE);
+    return r == 0 ? NPF_OK : r == 2 ? NPF_EINVAL : r == NPF_CMD_UNSAVED ? NPF_ESAVE : NPF_EFAIL;
 }
 
-int npf_config_set(npf_t *n, const char *key, const char *value, int save, char *err, size_t errcap)
+int npf_config_set(npf_t *n, const char *key, const char *value, int save, int *restart, char *err, size_t errcap)
 {
-    kv_arg x = {.key = key, .value = value, .save = save};
+    int later = 0;
+    kv_arg x = {.key = key, .value = value, .save = save, .restart = restart ? restart : &later};
     int r;
+    *x.restart = 0;
     err_clear(err, errcap);
     if (!key || !value)
         return NPF_EINVAL;

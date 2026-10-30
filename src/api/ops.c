@@ -266,7 +266,7 @@ static int node_get_run(npf_t *n, void *arg)
     i.started = n->started_unix;
     i.peers = n->peers ? npf_peers_count(n->peers) : 0;
     i.sessions = n->nsess;
-    i.unsaved = n->lc.unsaved;
+    i.unsaved = n->lc.unsaved || (n->callee && n->callee->unsaved);
     put_out(x->out, x->size, &i, sizeof i);
     return NPF_OK;
 }
@@ -360,10 +360,18 @@ int npf_network_changed(npf_t *n)
     return npf_api_op(n, net_changed_run, NULL);
 }
 
+/* local.json, and state.json when its last write failed (a local edit
+ * since is read first, not saved over) */
 static int save_run(npf_t *n, void *arg)
 {
+    int r = saved_rc(n);
     (void)arg;
-    return saved_rc(n);
+    if (n->callee && n->callee->unsaved) {
+        npf_callee_refresh(n->callee);
+        if (npf_callee_save(n->callee) < 0)
+            r = NPF_ESAVE;
+    }
+    return r;
 }
 
 int npf_save(npf_t *n)

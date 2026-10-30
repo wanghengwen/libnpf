@@ -307,7 +307,7 @@ int test_policy(void)
         d.sin_port = htons(24411);
         inet_pton(AF_INET, "127.158.73.84", &d.sin_addr);
         CHECK(!npf_guard_blocked((struct sockaddr *)&d), "nothing guarded yet");
-        npf_guard_control(&g);
+        CHECK(npf_guard_control(&g, 1) == 0 && npf_guard_control(&g, 1) == 0, "guarded (twice: once)");
         CHECK(npf_guard_blocked((struct sockaddr *)&d), "its own address and port");
         inet_pton(AF_INET, "127.0.0.1", &d.sin_addr);
         CHECK(npf_guard_blocked((struct sockaddr *)&d), "another loopback address, the same port");
@@ -316,6 +316,21 @@ int test_policy(void)
         d.sin_port = htons(24411);
         inet_pton(AF_INET, "192.0.2.9", &d.sin_addr);
         CHECK(!npf_guard_blocked((struct sockaddr *)&d), "another host's port");
+        {   /* at most 4 at once: one more fails; one gone, its port free again */
+            struct sockaddr_storage more[4];
+            int i, ok = 1;
+            for (i = 0; i < 4; i++) {
+                more[i] = g;
+                ((struct sockaddr_in *)&more[i])->sin_port = htons((uint16_t)(24420 + i));
+                ok = ok && npf_guard_control(&more[i], 1) == (i < 3 ? 0 : -1);
+            }
+            CHECK(ok, "a fifth address: -1");
+            for (i = 0; i < 3; i++)
+                npf_guard_control(&more[i], 0);
+            inet_pton(AF_INET, "127.0.0.1", &d.sin_addr);
+            CHECK(npf_guard_blocked((struct sockaddr *)&d), "the others removed: the first stays");
+            CHECK(npf_guard_control(&g, 0) == 0 && !npf_guard_blocked((struct sockaddr *)&d), "removed: not blocked");
+        }
         memset(&r, 0, sizeof r);
         strcpy(r.name, "console");
         strcpy(r.type, "tcp");

@@ -13,7 +13,7 @@
 | 平台 | 提供信令、中转和地址探测。信令负责发现对方、协调打洞和分配中转；会话载荷端到端加密，中转不解密载荷。libnpf 用根公钥（`root`）验证平台，用服务器列表（`serverlist`）发现服务器 |
 | 实例 | 一个 `npf_t`，持有独立的身份、配置和运行状态。一个进程可以有多个实例，直连实例不需要登录平台 |
 | 节点（`NPF_ROLE_NODE`） | 长期运行，有编号（9 位数字）时可以被连接，同时也可以主动连接别的节点 |
-| 客户端（`NPF_ROLE_CLIENT`） | 主动连接设备或进行账户操作；生命周期由应用控制，不自动恢复保存的对端 |
+| 客户端（`NPF_ROLE_CLIENT`） | 主动连接设备或进行账户操作；生命周期由应用控制。按设计从不恢复 local.json 里保存的对端：客户端是一次性的任务（一个会话、一次账户请求），它的对端就是它自己建的；保存的对端属于长期运行的节点，由节点保持连接 |
 | 直连（`NPF_ROLE_DIRECT`） | 不用平台：两端用预共享密钥，经 UDP 直接连接 |
 | 编号与配对口令 | 设备编号由平台分配。口令配对后双方保存公钥，后续连接可使用已保存的配对；账户授权是另一条认证路径，不一定需要口令 |
 | 会话 | 两个实例之间端到端加密的连接。平台连接支持 P2P UDP、UDP 中转和 WebSocket 中转；库选择和切换路径，应用通过会话信息读取实际路径。直接地址连接不经过平台中转 |
@@ -300,7 +300,7 @@ npf_destroy(cli);
 
 **配对与所有者**（设备一侧）：`npf_pairing_password_get` / `npf_pairing_password_set`（8–127 字节）读写配对口令；`npf_pairing_list` 列出已配对的一方（公钥与时间），`npf_pairing_remove` 取消一个或全部；`npf_owner_reset` 忘记所有者账户，下次登录时告诉平台。没有编号时这些函数返回 `NPF_ESTATE`。
 
-`npf_pairing_remove(n, NULL)` 删除全部配对；`npf_owner_reset` 不删除配对。这里修改的是设备的 `state.json`：保存失败也可能返回 `NPF_ESAVE`，但 `npf_save` 只重写 local.json，不能修复此类失败。应用需要区分这两种存储结果，并在设备状态未写入时报告失败；不能仅根据 `npf_node_info.unsaved` 判断配对或所有者状态是否保存成功。
+`npf_pairing_remove(n, NULL)` 删除全部配对；`npf_owner_reset` 不删除配对。这里修改的是设备的 `state.json`：写入失败时返回 `NPF_ESAVE`，修改已生效，`npf_node_info.unsaved` 置位；`npf_save` 重写 local.json，并在 state.json 上次写入失败时也重写它（先读入本机命令行在此期间对文件的修改，不覆盖）。来电配对、锁定计数、证书等库自己的写入失败同样置 `unsaved`，由 `npf_save` 或下一次成功的写入补上。
 
 ## 6. 发布资源
 
@@ -339,7 +339,7 @@ npf_destroy(cli);
 - `npf_peer_get` 给出状态（`NPF_PEER_WAITING`、`CONNECTING`、`CONNECTED`、`RETRY`、`IDLE`、`ENDED`）和 `needs`：`NPF_NEED_PASSWORD`（没配对，要口令；口令被拒时加 `NPF_NEED_PASSWORD_WRONG`，配对丢失时加 `NPF_NEED_PAIRING_LOST`）、`NPF_NEED_ACCOUNT`（经账户授权进入的，账户会话没了）。因为这些原因结束的对端，在条件满足时自己再试：给了口令（`NPF_PEER_OPT_PASSWORD`）、账户会话开始；`npf_peer_connect_now` 让按需的对端现在就建立会话，让在退避等待中的马上重试，也让结束了的对端再试一次（`npf_start` 之前 `NPF_ESTATE`，`NPF_PLATFORM` 的对端 `NPF_EREADONLY`）；
 - `npf_peer_remove`（会话结束，转发删除，保存的记录不再恢复）；`npf_peer_get` 的 `ctx` 是应用登记的上下文；
 - 由模块打开的对端（例如为平台保存的公网映射）带 `NPF_PLATFORM`：不能删除、不能加转发、不能 `npf_peer_connect_now`（`NPF_EREADONLY`），可修改的选项见下表；平台映射的转发也带 `NPF_PLATFORM`，不能删除；
-- `npf_peer_list`、`npf_peer_find`；`NPF_ROLE_NODE` 和 `NPF_ROLE_DIRECT` 启动时恢复保存的对端，`NPF_ROLE_CLIENT` 不恢复。恢复的对端在 `npf_start` 之前就能枚举，这时用 `NPF_PEER_OPT_CTX` 登记上下文。
+- `npf_peer_list`、`npf_peer_find`；`NPF_ROLE_NODE` 和 `NPF_ROLE_DIRECT` 启动时恢复保存的对端，`NPF_ROLE_CLIENT` 按设计不恢复（见第 1 节：保存的对端是长期运行的节点的）。恢复的对端在 `npf_start` 之前就能枚举，这时用 `NPF_PEER_OPT_CTX` 登记上下文。
 
 **修改对端选项**：`npf_peer_setopt(n, peer, opt, val, len)` 每次修改一项。整数传变量地址，`len = sizeof(int)`；字符串传 NUL 结尾的内容，`len = 0`；上下文直接传指针本身，`len = 0`，不要传指针变量的地址。
 
@@ -381,7 +381,7 @@ return npf_peer_setopt(n, peer, NPF_PEER_OPT_PERSIST, &persist, sizeof persist);
 
 **保存结果**：`NPF_PERSIST` 表示下次启动是否自动恢复对象，不等于对象是否已经成功写盘。即使对端没有此标志，名字、备注和配对公钥也可能保存在 local.json 中；关闭 `NPF_PERSIST` 不会删除这些信息。
 
-local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以用 `npf_save` 重试。`npf_node_get` 的 `unsaved` 表示整个 local.json 有待保存内容；当前对象 info 的 `saved` 也依据这份全局状态计算，因此某个对象 `saved == 0` 不一定表示只有它的保存失败。成功保存会写入全部待保存内容；成功之前重启，新建的持久对象可能丢失，已删除的可能恢复。设备配对与所有者的保存失败另见第 5 节。
+local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以用 `npf_save` 重试。`npf_node_get` 的 `unsaved` 表示 local.json 或 state.json 有待保存内容；当前对象 info 的 `saved` 也依据这份全局状态计算，因此某个对象 `saved == 0` 不一定表示只有它的保存失败。成功保存会写入全部待保存内容；成功之前重启，新建的持久对象可能丢失，已删除的可能恢复。设备配对与所有者的保存失败另见第 5 节。
 
 库里没有对端和转发的命令语法：命令行、配置界面由应用自己实现，调用这些函数。
 
@@ -394,7 +394,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 - **销毁**：从实例执行线程之外调用 `npf_destroy`，它会停止运行，等待事件循环和已进入的调用结束，再释放实例。应用必须先阻止其他线程发起新的调用，不能与销毁竞争使用同一指针；不要在该实例的回调中销毁它；
 - **回调与内存**：运行期间的业务回调在实例线程串行执行，可以调用本实例允许在当前状态使用的 API，不要阻塞。回调参数只在本次调用期间有效；库函数返回的 JSON 和文本用 `npf_free` 释放。启动前的同步命令回调以及初始化、销毁期间的日志回调可能在调用线程执行，不能假定全部回调都来自后台线程；
 - **多个实例**：默认各自使用后台线程，日志级别、最近日志和 `log` 回调独立；共享运行时可以让多个实例共用线程。任何回调都应避免同步等待另一实例，以防形成循环等待；
-- **共享运行时**：实例很多时（例如服务器上为每个用户开一个），`npf_runtime_new(threads)` 建一组线程，`npf_options.runtime` 指向它，`npf_create` 时选定实例最少的线程，`npf_start` 在那里运行（这样的实例不能 `npf_run`：`NPF_ESTATE`）。回调不能阻塞，也不能同步等待另一个运行时线程上的实例；`npf_runtime_free` 在最后一个实例销毁之后调用；
+- **共享运行时**：实例很多时（例如服务器上为每个用户开一个），`npf_runtime_new(threads)` 建一组线程，`npf_options.runtime` 指向它，`npf_create` 时选定实例最少的线程，`npf_start` 在那里运行（这样的实例不能 `npf_run`：`NPF_ESTATE`）。回调不能阻塞：在运行时的线程上，调用另一线程上的实例返回 `NPF_ESTATE`（返回文字的函数为 NULL），`npf_destroy` 被拒绝，都记一行错误日志，而不是等待（两个线程各自等对方就会永远等下去）；同一线程上的实例和自己照常调用；`npf_runtime_free` 在最后一个实例销毁之后调用；
 - 对端、转发、会话和媒体流都使用实例内的整数 ID，0 表示没有对象。ID 不能跨实例或跨重启使用；对象结束或删除后应丢弃其 ID。查询不存在的对象返回 `NPF_ENOENT`，查询仍需遵守实例运行状态限制。
 
 ## 9. 接口一览
@@ -408,7 +408,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | 资源 | `npf_resource_put`、`npf_resource_remove`、`npf_resource_list` |
 | 配对与所有者 | `npf_pairing_password_get` / `_set`、`npf_pairing_list`、`npf_pairing_remove`、`npf_owner_reset` |
 | 本机与会话 | `npf_node_get`、`npf_node_key`、`npf_session_get`、`npf_session_list`、`npf_network_changed`、`npf_save` |
-| 设置 | `npf_config_get`（未知键 `NPF_ENOENT`；`password`、`cred`、`model_cred`、`direct_psk` 显示 `(hidden)`；缓冲区不足 `NPF_ETOOBIG`）；`npf_config_set`（0：即时设置已应用；1：启动时设置，需保存后重启生效；模块的键看它有没有 `NPF_K_LIVE`） |
+| 设置 | `npf_config_get`（未知键 `NPF_ENOENT`；`password`、`cred`、`model_cred`、`direct_psk` 显示 `(hidden)`；缓冲区不足 `NPF_ETOOBIG`）；`npf_config_set`（`NPF_OK` 或 `NPF_ESAVE` 时值已采用，`*restart` 说明何时生效：0 即时，1 是启动时设置、下次启动生效；模块的键看它有没有 `NPF_K_LIVE`） |
 | 诊断（JSON，调用方 `npf_free`） | `npf_status_json`、`npf_config_json`（可即时修改的设置）、`npf_log_json`、`npf_sessions_json`、`npf_public_json` |
 | 命令 | `npf_command(argv)`：库自己的 `set`、`netcheck` 和程序的模块的命令，结果文本和退出码交给回调 |
 | 平台请求 | `npf_request(type, data, key_proof, cb)`：账户、设备、分享等请求（信令协议的 `account_*`、`device_*`、`share_*` 等），应答 JSON 整个交给回调。库不知道这些名字：任何类型都照原样发出，带信封字段 `app`，平台只处理其中的平台请求，库自己的信令回 `unsupported_type`；账户会话和证书由库按平台的 `account` 事件保存（信令协议 0.66） |
@@ -427,13 +427,13 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | `NPF_ETOOBIG` | 缓冲区、列表容量或消息长度不符合限制 |
 | `NPF_ENOMEM` / `NPF_EFAIL` | 内存不足或其他失败；有 `err` 参数的接口会尽可能提供说明 |
 | `NPF_EBUSY` | 对象数量或发送队列达到上限 |
-| `NPF_ESAVE` | 运行变更已发生，保存失败；local.json 可用 `npf_save` 重试，设备 state.json 的例外见第 5 节 |
+| `NPF_ESAVE` | 运行变更已发生，保存失败（local.json 或设备的 state.json）；用 `npf_save` 重试 |
 | `NPF_EEXIST` | 对端目标或名字冲突 |
 | `NPF_EREADONLY` | 操作受来源限制，例如修改固定资源、删除平台对端 |
 
 创建对端或转发返回 `NPF_OK`、`NPF_ESAVE` 时输出新 ID；同目标对端的 `NPF_EEXIST` 输出已有 ID，名字冲突输出 0。同一对端上的重复转发返回 `NPF_EINVAL`。`npf_media_open` 同样经输出参数给出新流的编号。`npf_config_set` 还可能返回正值 1，见下。
 
-`npf_config_set` 返回 1 表示该配置属于启动时设置，不表示本次已经保存。若传 `save = 0`，应用仍需另行保存或在下次创建实例时提供配置，单纯重启不会保留本次修改。
+`npf_config_set` 成功只有 `NPF_OK`（保存失败为 `NPF_ESAVE`），没有正的返回值；`*restart`（不需要时传 NULL）为 1 表示该配置属于启动时设置，下次启动才生效，不表示本次已经保存。若传 `save = 0`，应用仍需另行保存或在下次创建实例时提供配置，单纯重启不会保留本次修改。
 
 **上限**：`NPF_PEER_FORWARDS_MAX`（16）、`NPF_RESOURCES_MAX`（32）、`NPF_PEERS_SAVED_MAX`（256）、`NPF_PAIRINGS_MAX`（256）、`NPF_PASSWORD_MAX`（127）、`NPF_NAME_MAX` / `NPF_NICK_MAX`（32 / 128 字节）、`NPF_ROOTS_MAX`（2）。`NPF_PEERS_SAVED_MAX` 数的是 local.json 里全部对端记录，包括只有名字或固定公钥的。
 
@@ -456,19 +456,19 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 
 | 事件 | JSON | 说明 |
 |---|---|---|
-| `online` | `{"server", "account_id"}` | 登录了平台（`account_id` 为账户会话，没有为 null） |
+| `online` | `{"server", "account_id"}` | 登录了平台（`server` 为服务器编号，数字；`account_id` 为账户会话，没有为 null） |
 | `offline` | `{"why"}` | 信令断开，库自己重新登录 |
-| `enrolled` | `{"number"}` | 注册成功（第 5 节） |
-| `enroll_failed` | `{"error", "reason", "retry_in"}` | 平台拒绝注册，`retry_in` 秒后库自己重试 |
+| `enrolled` | `{"number"}` | 注册成功（第 5 节；编号为十进制字符串） |
+| `enroll_failed` | `{"error", "reason", "retry_in"}` | 平台拒绝注册，`retry_in`（数字）秒后库自己重试 |
 | `account` | `{"account_id"}` | 账户会话开始或结束（null） |
-| `peer_done` | `{"peer", "why"}` | 对端放弃了：`NPF_CONNECT_ONCE` 的会话结束，或需要应用处理（`npf_peer_get` 的 `state` 为 `NPF_PEER_ENDED`，`needs` 说明缺什么） |
-| `forward` | `{"peer", "spec", "up", "why"}` | 转发的状态或端口变了（`up`：可用；失败时 `why`）；当前状态用 `npf_forward_get` 查 |
-| `resources` | `{"session", "resources"}` | 对端发布的资源（会话建立时和更新时） |
+| `peer_done` | `{"peer", "why"}` | `peer` 为对端的目标文字（`318204776`、`host:9000`）。对端放弃了：`NPF_CONNECT_ONCE` 的会话结束，或需要应用处理（`npf_peer_get` 的 `state` 为 `NPF_PEER_ENDED`，`needs` 说明缺什么） |
+| `forward` | `{"peer", "spec", "up", "why"}` | 转发的状态或端口变了（`spec` 如 `-L ...`、`-D ...`、`-R ...` 或模块的写法；`up`：true 可用；失败时 `why`）；当前状态用 `npf_forward_get` 查 |
+| `resources` | `{"session", "resources"}` | 对端发布的资源（会话建立时和更新时）：`session` 为数字，`resources` 为数组，每项 `{"name", "target", "type"}`，设了才有 `svc`、`desc`、`path`，来自 npf.conf 的有 `"fixed": true` |
 | `network` | `{"why"}` | 进程被挂起过、本机地址变了：库已经在检查并修复连接 |
-| `platform` | `{"type", "data"}` | 平台推送的事件，`data` 原样（[信令协议](../protocol/signaling.md)） |
+| `platform` | `{"type", "data"}` | 平台推送的事件，`data` 原样，没有为 null（[信令协议](../protocol/signaling.md)） |
 | `stopped` | `{}` | 运行结束：最后一个事件 |
 
-模块的事件（第 12 节）也经 `event` 送达。会话建立时 `session` 的 `up` 为 1，`info` 为 `{"session", "peer", "path", "direction", "call_id"}`（`peer` 为对方编号，或 `key:` 加密钥指纹）；结束时 `up` 为 0，`info` 为 `{"why"}`，它的媒体流随之结束。
+模块的事件（第 12 节）也经 `event` 送达。会话建立时 `session` 的 `up` 为 1，`info` 为 `{"session", "peer", "path", "direction", "call_id"}`：`session` 为数字；`peer` 为对方编号，或 `key:` 加密钥指纹，握手前为 `-`；`path` 为 `p2p`、`relay`、`relay (binding)`、`ws relay`、`direct` 或 `none`；`direction` 为 `out` 或 `in`；别人呼入本端的会话另有 `app`（对方程序的 `名字 版本`，知道时才有）和 `"hosted": true`（托管客户端）。`npf_sessions_json` 的每项与它相同；结束时 `up` 为 0，`info` 为 `{"why"}`，它的媒体流随之结束。
 
 **规则**
 

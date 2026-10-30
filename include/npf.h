@@ -31,9 +31,11 @@
  *     several.
  *   - A shared runtime (npf_runtime_new, npf_options.runtime) runs many
  *     instances on a few threads; each instance stays on one thread. Its
- *     callbacks must not block, nor wait for an instance on another runtime
- *     thread. npf_destroy is refused from any callback on that thread.
- *     npf_run is not available (NPF_ESTATE).
+ *     callbacks must not block: on its threads a call for an instance on
+ *     another thread gives NPF_ESTATE (NULL) and npf_destroy is refused,
+ *     an error logged, instead of waiting (two such waits, each for the
+ *     other's thread, would never end). npf_run is not available
+ *     (NPF_ESTATE).
  *
  * Peers, forwards, sessions and media streams are numbers (0 = none), never
  * reused while the npf_t lives: a stale number gives NPF_ENOENT.
@@ -73,14 +75,15 @@ enum {
     NPF_OK = 0,
     NPF_EINVAL = -1,        /* bad argument */
     NPF_ENOENT = -2,        /* no such peer, forward, resource, session or stream */
-    NPF_ESTATE = -3,        /* not now: not started, not online, no number, the session not up, the run ended */
+    NPF_ESTATE = -3,        /* not now: not started, not online, no number, the session not up, the run ended;
+                               or from a shared runtime's callback for an instance on another thread */
     NPF_EUNAVAIL = -4,      /* not available here: this build, role or npf_options.flags */
     NPF_ETOOBIG = -5,       /* the output buffer or the input is too large */
     NPF_ENOMEM = -6,
     NPF_EFAIL = -7,         /* other failure: the message in err */
     NPF_EBUSY = -8,         /* a limit is reached (media streams, forwards, resources, a queue) */
-    NPF_ESAVE = -9,         /* done and in effect, but its file in data_dir could not be written; a
-                               restart before a later write loses it (local.json: npf_save) */
+    NPF_ESAVE = -9,         /* done and in effect, but its file in data_dir (local.json, state.json)
+                               could not be written; npf_save writes it, else a restart loses it */
     NPF_EEXIST = -10,       /* already there: a peer with this target, or the name is taken */
     NPF_EREADONLY = -11     /* set by npf.conf or the platform: not changed at run time */
 };
@@ -128,27 +131,36 @@ typedef struct npf_callbacks {
     /* A log line ("date time level message"), level NPF_LEVEL_*. Without
      * this callback lines go to stderr. */
     void (*log)(void *user, int level, const char *line);
-    /* An event, details in JSON:
-     *   "online" {server, account_id}; "offline" {why};
-     *   "enrolled" {number}; "enroll_failed" {error, reason, retry_in}: the
-     *     platform refused a model credential's enrolment (reason:
-     *     signaling.md, enroll); tried again in about retry_in seconds;
-     *   "account" {account_id or null}: an account session began or ended;
+    /* An event, details in a JSON object, its members strings unless said
+     * (64-bit numbers as decimal strings):
+     *   "online" {server: its id (a number), account_id: the account
+     *     session's, or null}; "offline" {why};
+     *   "enrolled" {number}; "enroll_failed" {error, reason, retry_in: seconds
+     *     (a number)}: the platform refused a model credential's enrolment
+     *     (reason: signaling.md, enroll); tried again in about retry_in s;
+     *   "account" {account_id, or null}: an account session began or ended;
      *   "peer_done" {peer, why}: a peer gave up (npf_peer_info.state
-     *     NPF_PEER_ENDED); "forward" {peer, spec, up, why}; peer is the
-     *     peer's target text;
+     *     NPF_PEER_ENDED); "forward" {peer, spec: "-L ...", "-D ...", "-R ..."
+     *     or a module's, up: true or false, why}; peer is the peer's target
+     *     text ("318204776", "host:9000");
      *   "network" {why}: the process was suspended or the addresses changed;
      *     the library checks and mends its connections itself;
-     *   "platform" {type, data}: an event the platform sent, data as it came;
-     *   "resources" {session, resources}: the peer's published list;
+     *   "platform" {type, data: as the platform sent it, null for none};
+     *   "resources" {session: a number, resources: [{name, target, type, and
+     *     svc, desc, path when set, fixed: true when from npf.conf}]}: the
+     *     peer's published list, at the session's start and when it changes;
      *   "stopped" {}: the run has ended; the last event;
      *   and the events of the program's modules (npf/module.h).
      * Any of them may remove the peer (npf_peer_remove), "peer_done" and
      * "forward" of that peer too: nothing more comes of it. */
     void (*event)(void *user, const char *name, const char *json);
-    /* A session came up (up 1, info {"peer", "path", "direction",
-     * "call_id"}) or ended (up 0, info {"why"}). Its media streams end
-     * first, each with media_closed. */
+    /* A session came up (up 1) or ended (up 0, info {"why"}). Up, info is
+     * {"session": a number, "peer": the other side (its number, "key:" and
+     * its key's fingerprint, or "-"), "path": "p2p", "relay", "relay
+     * (binding)", "ws relay", "direct" or "none", "direction": "out" or
+     * "in", "call_id"}, for a caller here also "app" (its program, "name
+     * ver", when known) and "hosted": true (a hosted client). Its media
+     * streams end first, each with media_closed. */
     void (*session)(void *user, uint32_t session, int up, const char *info);
     /* application data from the session's peer (npf_session_send there) */
     void (*data)(void *user, uint32_t session, const void *buf, size_t len);
@@ -249,9 +261,12 @@ NPF_API void        npf_setup_init_size(npf_setup *s, size_t size);
 #define npf_setup_init(s)      npf_setup_init_size((s), sizeof *(s))
 
 /* Makes an instance: reads the configuration and the identity (making
- * data_dir and an identity when there are none), opens the UDP socket and,
- * except for NPF_ROLE_CLIENT, brings back the peers local.json saved.
- * NPF_OK with *out set; else *out is NULL and the message is in err. */
+ * data_dir and an identity when there are none), opens the UDP socket and
+ * brings back the peers local.json saved. NPF_ROLE_CLIENT never does,
+ * by design: a client is a one-off task (one session, an account
+ * request) whose peers are the ones it makes; the saved ones are the long
+ * running node's, which keeps them connected. NPF_OK with *out set; else
+ * *out is NULL and the message is in err. */
 NPF_API int  npf_create(const npf_options *o, npf_t **out, char *err, size_t errcap);
 /* Runs the instance on a thread of its own (or its runtime's) and returns.
  * NPF_ESTATE: started or stopped before. */
@@ -282,13 +297,16 @@ NPF_API char *npf_log_json(npf_t *n, int max);
 /* A setting in effect, "" when unset; secrets read "(hidden)". NPF_ENOENT:
  * not a configuration key; NPF_ETOOBIG: out is too small. */
 NPF_API int   npf_config_get(npf_t *n, const char *key, char *out, size_t cap);
-/* Sets a setting; save also writes it to local.json. NPF_OK: in effect now.
- * 1: a start-up setting, in effect at the next start if saved. NPF_EINVAL
+/* Sets a setting; save also writes it to local.json. NPF_OK or NPF_ESAVE:
+ * taken, and *restart (NULL: not wanted) says when it applies: 0 now, 1 at
+ * the next start (a start-up setting: lost then unless saved). NPF_EINVAL
  * (unknown key, bad value, or only allowed in npf.conf), NPF_EUNAVAIL (save
- * with NPF_OPT_NO_SAVED_SETTINGS), NPF_ESAVE; the message in err. */
-NPF_API int   npf_config_set(npf_t *n, const char *key, const char *value, int save, char *err, size_t errcap);
+ * with NPF_OPT_NO_SAVED_SETTINGS); the message in err. */
+NPF_API int   npf_config_set(npf_t *n, const char *key, const char *value, int save, int *restart, char *err,
+                             size_t errcap);
 
-/* Writes local.json if a change is waiting (after NPF_ESAVE). NPF_OK, or
+/* Writes what a failed write left waiting (NPF_ESAVE, npf_node_info.unsaved):
+ * local.json, and state.json (a device's pairing and owner). NPF_OK, or
  * NPF_ESAVE again with nothing lost. */
 NPF_API int   npf_save(npf_t *n);
 
@@ -514,9 +532,9 @@ NPF_API int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *o
 #define npf_resource_list(n, peer, out, cap, count) \
     npf_resource_list_size((n), (peer), (out), sizeof *(out), (cap), (count))
 
-/* ---- a device's pairing and owner ----
- * Only for a node with a number: else NPF_ESTATE. NPF_ESAVE: the pairing
- * state in data_dir could not be written. */
+/* ---- a device's pairing and owner (state.json in data_dir) ----
+ * Only for a node with a number: else NPF_ESTATE. NPF_ESAVE: in effect,
+ * state.json not written (npf_save). */
 
 NPF_API int npf_pairing_password_get(npf_t *n, char *out, size_t cap);
 /* 8 .. NPF_PASSWORD_MAX bytes, else NPF_EINVAL */
@@ -550,7 +568,7 @@ typedef struct npf_node_info {
     uint16_t udp_port;
     int64_t  started;                  /* Unix time; 0: not running */
     int      peers, sessions;
-    int      unsaved;                  /* changes waiting for local.json (npf_save) */
+    int      unsaved;                  /* changes waiting for local.json or state.json (npf_save) */
 } npf_node_info;
 
 typedef struct npf_session_info {
@@ -601,7 +619,7 @@ NPF_API int npf_request(npf_t *n, const char *type, const char *data_json, int k
 
 /* ---- sessions: application data ---- */
 
-/* the sessions up now, a JSON array of {"session", "peer", "path", "direction", "call_id"} */
+/* the sessions up now, a JSON array of the session callback's info objects */
 NPF_API char *npf_sessions_json(npf_t *n);
 /* A hosted client's public mappings (npf-hosted): {"open": connections
  * open, "closing", "mappings": [{"mapping_id", "port", "listening",

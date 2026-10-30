@@ -443,8 +443,8 @@ int main(int argc, char **argv)
         char lv[16] = "", *ja, *jb;
         la = a.log_lines;
         lb = b.log_lines;
-        npf_config_set(na, "log_level", "info", 0, err, sizeof err);
-        npf_config_set(na, "max_calls", "31", 0, err, sizeof err);
+        npf_config_set(na, "log_level", "info", 0, NULL, err, sizeof err);
+        npf_config_set(na, "max_calls", "31", 0, NULL, err, sizeof err);
         wait_for(&a, &a.log_lines, la + 1, 5000);
         pthread_mutex_lock(&a.mu);
         pthread_mutex_lock(&b.mu);
@@ -462,7 +462,7 @@ int main(int argc, char **argv)
         pthread_mutex_lock(&a.mu);
         a.reenter = 1;
         pthread_mutex_unlock(&a.mu);
-        npf_config_set(na, "max_calls", "32", 0, err, sizeof err);
+        npf_config_set(na, "max_calls", "32", 0, NULL, err, sizeof err);
         check(wait_for(&a, &a.reentered, 1, 5000), "a log callback that calls the API (no deadlock)");
     }
 
@@ -491,7 +491,7 @@ int main(int argc, char **argv)
         pthread_mutex_lock(&c.mu);
         c.reenter = 1;                      /* not running: the caller's thread executes */
         pthread_mutex_unlock(&c.mu);
-        npf_config_set(nc, "log_level", "info", 0, err, sizeof err);   /* logged at info */
+        npf_config_set(nc, "log_level", "info", 0, NULL, err, sizeof err);   /* logged at info */
         check(c.reentered, "a log callback calling the API before the start (no deadlock)");
         npf_peer_opt_init(&po);
         po.target = NPF_TARGET_DIRECT;
