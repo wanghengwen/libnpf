@@ -345,8 +345,8 @@ void node_on_call(npf_node *n, const m_env *e, const void *msg)
 static void call_why_hint(const char *why)
 {
     if (strcmp(why, "no_path") == 0)
-        npf_log("UDP is unusable here and only callers logged in to an account get a relay: "
-                "log in to an account, or check that UDP is not blocked");
+        npf_log("no direct path (UDP unusable here, or punching gave up) and only callers logged in to an "
+                "account get a relay: log in to an account, or check that UDP is not blocked");
     else if (strcmp(why, "secure_plan") == 0)
         npf_log("connect_mode secure on one side: relays only, which takes a caller's account with a paid plan "
                 "(set connect_mode p2p allows direct paths)");
@@ -378,7 +378,7 @@ void call_on_ended(npf_call *c, const void *msg)
     const char *r = m->reason[0] ? m->reason : "closed";
     npf_log("call %s: ended by the peer or the platform (%s)", c->call_id_s, r);
     if (c->caller)
-        call_why_hint(r);   /* the platform ends a call no path can carry (quota) */
+        call_why_hint(r);   /* the platform ends a call no path can carry (quota, no_path) */
     call_close(c, r, CALL_END_QUIET);
 }
 
