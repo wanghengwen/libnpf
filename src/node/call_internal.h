@@ -48,12 +48,9 @@ struct npf_call {
     int         ticking;            /* in call_tick: what it sets is scheduled after it */
     int64_t     limit_at, punch_at, direct_at;
     npf_timer  *t_free;             /* its free on the next turn of the loop (ended) */
-    int         dtries;             /* direct initiator: message 1 sent this many times */
-    int         direct_tries;       /* direct initiator: message 2 attempts read (64 at most) */
 
     struct call_hs *hs;             /* the handshake's state, until the keys are ready */
     int         keys_ready;
-    uint8_t     k12[64];            /* k1 | k2 */
     uint8_t     peer_pub[32];
     uint8_t     nominate_key[32];   /* the punch's NOMINATE (call_punch.c), from the keys */
     /* the callee's admission of the caller */
@@ -132,11 +129,14 @@ struct npf_call {
 typedef struct call_hs {
     npf_noise_hs noise;
     npf_cpace   cp;
+    uint8_t     k12[64];            /* k1 | k2 (security.md 9.5): the session's keys come from it */
     char        password[128];
     uint8_t     grant[512];         /* caller: hosted-trust grant to present */
     size_t      grant_len;
     uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */
     size_t      dmsg1_len;
+    int         dtries;             /* direct initiator: message 1 sent this many times */
+    int         direct_tries;       /* direct initiator: message 2 attempts read (64 at most) */
 } call_hs;
 
 /* The call's state (architecture.md 3.1), forward only: ANSWERED a callee's

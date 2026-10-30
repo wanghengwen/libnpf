@@ -48,7 +48,7 @@ static void sid_of(const npf_call *c, uint8_t sid[24])
 static int call_finish_handshake(npf_call *c)
 {
     const uint8_t *rs = npf_noise_remote_static(&c->hs->noise);
-    if (!rs || npf_noise_split(&c->hs->noise, NULL, NULL, c->k12, c->k12 + 32, NULL) < 0)
+    if (!rs || npf_noise_split(&c->hs->noise, NULL, NULL, c->hs->k12, c->hs->k12 + 32, NULL) < 0)
         return -1;
     memcpy(c->peer_pub, rs, 32);
     if (c->hs->password[0])

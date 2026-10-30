@@ -774,33 +774,29 @@ npf_tunnel *call_tunnel_new(npf_call *c)
     return t;
 }
 
-/* keys from k1 | k2 (security.md 9.5) and the AnLiu connection */
+/* the session's keys from k1 | k2 (security.md 9.5), the handshake freed, the AnLiu connection */
 int call_start_transport(npf_call *c)
 {
+    const uint8_t *k12 = c->hs->k12;
     anl_config cfg;
-    uint8_t psk[32], cv[32];
-    npf_kdf(cv, c->k12, 64, "npf anliu conv v1", 17);
-    npf_kdf(c->nominate_key, c->k12, 64, "npf nominate v1", 15);
-    {
-        uint8_t pk[32];
-        npf_kdf(pk, c->k12, 64, "npf path v1", 11);
-        npf_siv_derive(&c->pd.keys, pk, LABEL_PATH);
-        npf_wipe(pk, sizeof pk);
-    }
+    uint8_t cv[32], pk[32];
+    anl_config_default(&cfg, c->caller ? ANL_ROLE_CLIENT : ANL_ROLE_SERVER);
+    npf_kdf(cfg.psk, k12, 64, "npf anliu psk v1", 16);
+    npf_kdf(cv, k12, 64, "npf anliu conv v1", 17);
+    npf_kdf(c->nominate_key, k12, 64, "npf nominate v1", 15);
+    npf_kdf(pk, k12, 64, "npf path v1", 11);
+    npf_siv_derive(&c->pd.keys, pk, LABEL_PATH);
+    npf_wipe(pk, sizeof pk);
     c->conv = npf_rd32(cv);
     npf_wipe(cv, sizeof cv);
     if (c->conv == 0)
         c->conv = 1;
     c->keys_ready = 1;
-    call_hs_free(c);                        /* nothing of the handshake is needed from here on */
-    anl_config_default(&cfg, c->caller ? ANL_ROLE_CLIENT : ANL_ROLE_SERVER);
-    npf_kdf(psk, c->k12, 64, "npf anliu psk v1", 16);
-    memcpy(cfg.psk, psk, 32);
+    call_hs_free(c);                        /* k1 | k2 with it: nothing of the handshake is needed from here on */
     cfg.mtu = ANL_MTU;
     cfg.default_rcv_wnd = NPF_ANL_CTRL_WND;
     cfg.keepalive_ms = 15000;
     cfg.idle_timeout_ms = 60000;
-    npf_wipe(psk, 32);
     c->anl = anl_create(c->conv, &cfg, c);
     npf_wipe(&cfg, sizeof cfg);
     if (!c->anl)

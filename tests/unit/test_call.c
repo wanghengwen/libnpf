@@ -168,7 +168,7 @@ static void deadline_invariant(npf_node *n, int caller)
     snprintf(c->call_id_s, sizeof c->call_id_s, "due-test-%d", caller);
     CHECK(armed(c) && c->due_at == c->limit_at, "a new call: its time limit");
     c->st = CS_CONNECTING;
-    npf_random(c->k12, sizeof c->k12);
+    npf_random(c->hs->k12, sizeof c->hs->k12);
     CHECK(call_start_transport(c) == 0 && armed(c), "the session made");
     call_set_state(c, CS_UP, "test");
     CHECK(!c->limit_at && armed(c), "established: no time limit, AnLiu's deadline");
