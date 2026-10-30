@@ -542,6 +542,28 @@ struct npf_path {
 
 **决定**（2026-10-28，用户）：Q1–Q10 全部按建议——Q1 请求 10 s、30 s 后重发，之后每 30 s，在平台配额内；Q2 先探测当前地址；Q3 中转与直连的空闲阈值统一为 20 s；Q4 只因中转不通而在 WS 上的会话每 5 分钟试一次回 UDP；Q5 WS 中转 30 s 无帧算半开，重连连续失败 5 次后改要别的中转；Q6 被叫发出 `call_established` 时也算接受（signaling.md 改一句）；Q7 等待与重试按每次失去中转计，`ws_wait_done` 也先等正在进行的重绑；Q8 状态 JSON 如实显示 `backoff`；Q9 测试钩子留在发布构建里，集中到一个结构；Q10 库的边界按第 7 节。行为上的改动在 1b、1c、2、3 各步里做，1a 不改行为。
 
+### 3.9 隧道的子链路
+
+（2026-10-30 实现，`tunnel/tunnel_socks.c` 的"the sublink's one timer"一节，不改行为。）每条子链路一个定时器 `t_due`，排在 `tunnel_sub_due` = `at` 与 `hs->he_at` 中较早的一个（`INT64_MAX` 表示没有）。`at` 是状态的截止时间（单调毫秒，0 表示没有）：下表的状态互斥，所以一个 `at` 就够；`he_at` 是 Happy Eyeballs 下一个地址的轮次，只在连接目标时有。
+
+| 状态 | 截止时间 `at` | 到时 | 不到时等的事件 |
+|---|---|---|---|
+| `SL_SOCKS_GREETING`、`SL_SOCKS_REQUEST`（对方开的，我们是 SOCKS5 服务器） | 第一个数据帧起 `GREET_MS`（10 s，`npf_tunnel_greet_ms`） | `RESET(PROTOCOL)` | 问候与请求的字节 |
+| `SL_LOCAL_GREETING`（`-D` 的应用） | 打开起 `GREET_MS` | 应用的连接复位关闭，`end` 为 `greeting_timeout`（对方什么都没收到） | 应用的问候 |
+| `SL_RESOLVING` | 查询开始起 `CONNECT_MS`（10 s） | `REP 6`、FIN，查询取消 | 查询结果 |
+| `SL_CONNECTING` | 同一个期限（名字从查询开始算，地址从请求算）；另有 `he_at`：250 ms 后试下一个地址 | 期限：`REP 6`、FIN，尝试都关掉；`he_at`：开始下一个地址的尝试 | 某个尝试的结果（失败时下一个地址立即开始） |
+| `SL_CLIENT_WAIT`、`SL_OPEN` | 无 | — | 对方的应答（等待由服务器一侧自己的期限兜底）、数据、FIN、WINDOW、RESET |
+| 虚拟本地端 `VE_GONE`（`SL_CLIENT_WAIT` 或 `SL_OPEN` 时所有者关闭，已处理） | FIN 发出起 `GONE_MS`（30 s） | `RESET(TIMEOUT)`，`end` 为 `local_reset` | 对方的 FIN（之前它的数据丢弃） |
+
+- `tunnel_sub_at(s, at)` 设截止时间并重排；`connect_next` 设 `he_at` 后重排。重排是精确的：最早的时刻变了就取消、重新挂上，没有截止时间就不挂（这些都在状态转移时发生，不在每个数据帧上，所以不用呼叫那样"只在提前时重排"）。`tunnel_hs_done`（握手结束：打开、`-D` 答完问候、子链路释放）把 `at` 清零：截止时间都是握手的。
+- `tunnel_sub_tick(s, now)` 做 `now` 时到期的事：先看 `at`（按状态，见上表；子链路走了返回 −1），再看 `he_at`。定时器回调 `sub_timer` 用 `npf_mono_ms()` 调它，之后按 `tunnel_sub_due` 重排；测试直接以给定的时刻调用。
+- 去掉的：子链路的 `t_greet`、`t_gone`，握手的 `t_connect`、`t_he`，它们的回调 `greet_timeout`、`connect_timeout`、`he_timer`、`gone_timeout` 与 `tunnel_greet_wait`。子链路连同握手原来有这 4 个定时器，同时挂着的最多 2 个（连接时的期限与下一个地址）。
+- 显式的状态：虚拟本地端原来的 `vgone`（`VG_NONE`、`VG_CLOSED`、`VG_RESET`：所有者关了、等 `virt_poll`）与 `gone`（处理过了、等对方的 FIN）合成一个 `vend`：`VE_NONE`、`VE_CLOSED`、`VE_RESET`、`VE_GONE`；隧道的 `ngone` 只数前两种。半关闭的 `local_eof`、`peer_fin`、`shut_wr` 是三个独立的方向，不是一个状态的组合，保留。
+- 不变的：隧道一级的 `t_rate`（速率组或配额的慢速桶用完时 50 ms 后再看，`tunnel_rate.c`，令牌桶与配额的语义不变）与 `t_virt`（虚拟本地端的下一轮轮询：第 4 节规则 5 的"下一轮"，不是截止时间）。
+- 原样保留的一处：虚拟本地端在 `SL_CLIENT_WAIT` 时被所有者关闭，之后对方的 FIN 或 RESET 到来，`end` 记为 `target_failed`（等应答时的规则），尽管目标可能是通的。
+- 行数：库的 `src` + `include` 38 015 → 38 022（+7，`git diff` +95 −88），`src/tunnel` 2 417 → 2 424：去掉的是 4 个回调与它们的启停，加的是定时器本身（`sub_timer`、`sub_arm`、`tunnel_sub_at`、`tunnel_sub_due`、`tunnel_sub_tick`）与截止时间的注释；原来的回调本来就短，内容变成 tick 照样留着（同第 8 节"1d 实际"）。
+- 单元测试 UT-42（`test_tunnel_tick.c`）以给定的时刻走上表每一行：截止时间的值、定时器在最早的截止时间、到时前一毫秒什么都不做、到时的动作（发出的 RESET、`REP` 与 FIN、`end`），Happy Eyeballs 的三个地址（250 ms 一个，第三个之后只剩期限），没有回来的查询，对方的 FIN 到来时子链路连同定时器释放。
+
 ## 4. 定时：每个对象一个截止时间
 
 **规则**：

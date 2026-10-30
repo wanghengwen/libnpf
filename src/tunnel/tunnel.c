@@ -197,11 +197,10 @@ void tunnel_sub_free(sublink *s, int rst)
         st.end = s->end ? s->end : !rst && s->fin_first == 2 ? "peer_closed" : !rst ? "local_closed" : "local_reset";
         t->io.sublink_done(t->arg, s->id, &st);
     }
-    npf_timer_cancel(t->loop, s->t_greet);
-    npf_timer_cancel(t->loop, s->t_gone);
-    if (s->vgone)
+    if (s->vend >= VE_CLOSED)
         t->ngone--;
     tunnel_hs_done(s);
+    npf_timer_cancel(t->loop, s->t_due);
     npf_resolve_cancel(s->resolve);
     if (s->v) {
         const npf_vend_io *v = s->v;
@@ -492,7 +491,7 @@ static void data_in(sublink *s, const uint8_t *p, size_t n)
         tunnel_sub_reset(s, NPF_RST_PROTOCOL);
         return;
     }
-    if (s->gone || s->vgone) {
+    if (s->vend) {
         s->rx_freed += (uint32_t)n;  /* consumed without granting any more window */
         return;   /* its local end closed: dropped, no credit back (the peer's window runs out) */
     }
@@ -576,7 +575,7 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         if (!s)
             return -1;
         s->state = SL_SOCKS_GREETING;
-        tunnel_greet_wait(s);
+        tunnel_sub_at(s, npf_mono_ms() + npf_tunnel_greet_ms);
     }
     switch (type) {
     case FR_DATA:
@@ -770,7 +769,6 @@ static void local_greeting(sublink *s)
     tunnel_hs_done(s);                  /* the replies are read with rep */
     s->fwd_rep = 1;                     /* the server's replies: its CONNECT reply is the application's */
     s->state = SL_CLIENT_WAIT;
-    npf_timer_stop(s->t->loop, &s->t_greet);
     tunnel_update_ev(s);
 }
 
@@ -1048,7 +1046,7 @@ static int open_sub(npf_tunnel *t, int fd, const npf_vend_io *v, void *varg, int
     t->next_id += 2;
     if (passthrough) {
         s->state = SL_LOCAL_GREETING;       /* -D: a SOCKS5 application */
-        tunnel_greet_wait(s);
+        tunnel_sub_at(s, npf_mono_ms() + npf_tunnel_greet_ms);
     } else {
         if (tunnel_sub_send(s, req, rl) < 0 || t->dead) {
             tunnel_sub_free(s, 0);

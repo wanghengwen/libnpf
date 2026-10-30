@@ -4,6 +4,7 @@ add_executable(npf_unit_tests
   test_json.c
   test_msg.c
   test_tunnel.c
+  test_tunnel_tick.c
   test_policy.c
   test_conf.c
   test_local.c

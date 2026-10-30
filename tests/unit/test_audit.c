@@ -212,7 +212,7 @@ static int gone_window(npf_loop *loop)
     REQUIRE(socketpair(AF_UNIX, SOCK_STREAM, 0, sp) == 0);
     id = npf_tunnel_open(f.t, sp[0], 0, "127.0.0.1", 80);
     REQUIRE(id > 0);
-    tunnel_find(f.t, (uint32_t)id)->gone = 1;
+    tunnel_find(f.t, (uint32_t)id)->vend = VE_GONE;
     for (i = 0; i <= NPF_INIT_WINDOW / NPF_FRAME_MAX; i++)
         REQUIRE(data_frame(&f, (uint32_t)id, data, sizeof data) == 0);
     REQUIRE(npf_tunnel_count(f.t) == 0 && f.done == 1);
@@ -292,7 +292,7 @@ static int gone_buffer(npf_loop *loop)
     npf_tunnel_vclose(f.t, (uint32_t)id, 0);
     npf_loop_once(loop, 0);
     s = tunnel_find(f.t, (uint32_t)id);
-    REQUIRE(s && s->gone && !s->wq.p && !s->wq.cap && s->rx_freed == 100);
+    REQUIRE(s && s->vend == VE_GONE && s->at && !s->wq.p && !s->wq.cap && s->rx_freed == 100);
     npf_tunnel_free(f.t);
     return 0;
 }

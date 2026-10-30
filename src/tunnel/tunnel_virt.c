@@ -6,22 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/platform.h"
 #include "tunnel_internal.h"
 
 #define VIRT_ROUNDS 64                  /* passes of one poll (a pass reads a frame per sublink) */
 #define GONE_MS     30000               /* a closed virtual end waits this long for the peer's FIN */
-
-static void gone_timeout(npf_loop *loop, void *arg)
-{
-    sublink *s = arg;
-    npf_tunnel *t = s->t;
-    (void)loop;
-    s->t_gone = NULL;
-    tunnel_sub_end(s, "local_reset");
-    tunnel_enter(t);
-    tunnel_sub_reset(s, NPF_RST_TIMEOUT);
-    tunnel_leave(t);
-}
 
 /* a virtual end its owner closed (npf_tunnel_vclose). A reset: the sublink
  * goes. Else a close: FIN after what was sent (on the data channel, in
@@ -32,8 +21,8 @@ static void gone_timeout(npf_loop *loop, void *arg)
 static void vend_close(sublink *s)
 {
     npf_tunnel *t = s->t;
-    int reset = s->vgone == VG_RESET;
-    s->vgone = VG_NONE;
+    int reset = s->vend == VE_RESET;
+    s->vend = VE_GONE;                  /* handled: no longer in ngone */
     t->ngone--;
     if (reset) {
         tunnel_sub_end(s, "local_reset");
@@ -50,12 +39,11 @@ static void vend_close(sublink *s)
         tunnel_send_fin(t, s->id);
     }
     s->shut_wr = 1;                     /* no local end to shut down */
-    s->gone = 1;
     if (s->peer_fin) {
         tunnel_sub_free(s, 0);
         return;
     }
-    s->t_gone = npf_timer_add(t->loop, GONE_MS, gone_timeout, s);
+    tunnel_sub_at(s, npf_mono_ms() + GONE_MS);  /* then a reset (tunnel_sub_tick) */
 }
 
 /* every virtual end closed since the last look; from the end: freeing s
@@ -64,7 +52,7 @@ static void vends_closed(npf_tunnel *t)
 {
     int i;
     for (i = t->nsubs - 1; i >= 0 && t->ngone > 0 && !t->dead; i--)
-        if (i < t->nsubs && t->subs[i]->vgone)
+        if (i < t->nsubs && t->subs[i]->vend >= VE_CLOSED)
             vend_close(t->subs[i]);
 }
 
@@ -120,7 +108,7 @@ void npf_tunnel_vclose(npf_tunnel *t, uint32_t id, int reset)
     if (!s || !s->v)
         return;
     s->v = NULL;
-    s->vgone = reset ? VG_RESET : VG_CLOSED;
+    s->vend = reset ? VE_RESET : VE_CLOSED;
     t->ngone++;
     npf_tunnel_vkick(t);
 }
