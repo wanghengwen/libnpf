@@ -251,9 +251,9 @@ static void *thread_main(void *arg)
 }
 #endif
 
-/* started and running, once, after the calls in progress; the caller's
- * thread is the loop's when it runs it (npf_run) */
-static int begin_run(npf_t *n, int here)
+/* started and running, once, after the calls in progress, on the loop
+ * thread tid (0: npf_start's own, which sets it) */
+static int begin_run(npf_t *n, unsigned long tid)
 {
     LOCK();
     while (n->exec_busy && n->exec_owner != self_tid())
@@ -264,7 +264,7 @@ static int begin_run(npf_t *n, int here)
     }
     n->started = 1;
     n->running = 1;                         /* calls from now on go through the loop */
-    n->loop_tid = here ? self_tid() : 0;    /* npf_start: the thread sets it */
+    n->loop_tid = tid;
     UNLOCK();
     return NPF_OK;
 }
@@ -430,11 +430,8 @@ static const npf_child_fns rt_fns = {rt_start, rt_end, rt_done};
 
 static int start_on_runtime(npf_t *n)
 {
-    if (begin_run(n, 0) != NPF_OK)
+    if (begin_run(n, n->rt->t[n->rt_slot].tid) != NPF_OK)
         return NPF_ESTATE;
-    LOCK();
-    n->loop_tid = n->rt->t[n->rt_slot].tid;
-    UNLOCK();
     if (npf_loop_attach(n->loop, &rt_fns, n) < 0) {
         LOCK();
         n->running = 0;
@@ -501,7 +498,7 @@ static int start_run(npf_t *n)
 
 static int run_run(npf_t *n)
 {
-    if (n->rt || begin_run(n, 1) != NPF_OK)
+    if (n->rt || begin_run(n, self_tid()) != NPF_OK)
         return NPF_ESTATE;
     loop_main(n);
     return NPF_OK;
