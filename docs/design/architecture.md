@@ -552,6 +552,44 @@ struct npf_path {
 
 **决定**（2026-10-28，用户）：Q1–Q10 全部按建议——Q1 请求 10 s、30 s 后重发，之后每 30 s，在平台配额内；Q2 先探测当前地址；Q3 中转与直连的空闲阈值统一为 20 s；Q4 只因中转不通而在 WS 上的会话每 5 分钟试一次回 UDP；Q5 WS 中转 30 s 无帧算半开，重连连续失败 5 次后改要别的中转；Q6 被叫发出 `call_established` 时也算接受（signaling.md 改一句）；Q7 等待与重试按每次失去中转计，`ws_wait_done` 也先等正在进行的重绑；Q8 状态 JSON 如实显示 `backoff`；Q9 测试钩子留在发布构建里，集中到一个结构；Q10 库的边界按第 7 节。行为上的改动在 1b、1c、2、3 各步里做，1a 不改行为。
 
+### 3.9 对端与转发（SDK 服务，`node/peers*.c`）
+
+**对端**（`peers_internal.h` 的 `PS_*`，2026-10-30）：原来的 `finished`、`removed`、`waiting`、"`t_retry` 存在"与 `last_why == "starting"` 合成一个 `p->st`，同一时刻只有一个；`call` 只在 `PS_CALL` 时有。
+
+| 状态 | 事件 | 下一状态 | 截止时间 |
+|---|---|---|---|
+| `PS_IDLE`（没有会话、没有在等的事：按需的，或等登录、等 UDP） | `peers_start_call`：发 `grant_get` / 解析直连对端的名字 | `PS_ASKING` | 等应答 |
+| `PS_IDLE` | 开始呼叫（`npf_call_start*`、`npf_direct_connect`） | `PS_CALL`；失败 `PS_RETRY` | — |
+| `PS_IDLE` | 没有配对、口令被拒、配对失效、没有账户会话 | `PS_ENDED`（`done`） | 无（等事件） |
+| `PS_IDLE` | 登录，有两个以上要起的平台对端（`NPF_TEST_NO_SPREAD` 关掉） | `PS_START` | `retry_at` = 现在 + 0–2 s |
+| `PS_START` / `PS_RETRY` | `retry_at` 到；`peers_kick`（连接、数据报、模块的转发在等）；`npf_peers_retry_now`（非按需） | `PS_IDLE` → 同上 | — |
+| `PS_ASKING` | `grant` 到、名字解析出 | `PS_CALL` | — |
+| `PS_ASKING` | 拒绝、无应答、解析不出 | `PS_RETRY`（`unavailable`：`PS_ENDED`） | `retry_at` |
+| `PS_CALL` | 会话结束 | `wrong_password`、`pairing_lost`、`ONCE`：`PS_ENDED`；按需：`PS_IDLE`；其余 `PS_RETRY` | 退避 1 s 起翻倍至 120 s，±25 %；会话稳定 60 s 后从 1 s 重来 |
+| `PS_START` / `PS_RETRY` | 改为 `ONCE`（没有会话） | `PS_ENDED`（`done`） | 无 |
+| `PS_START` / `PS_RETRY` | 改为按需 | `PS_IDLE` | 无 |
+| `PS_ENDED` | 给口令、唤醒、改回 `KEEP`、账户会话（`no_account`、`not_paired` 的平台对端） | `PS_IDLE` → 开始 | — |
+| 任何 | `npf_peers_remove` | `PS_REMOVED`（终止：不再开始、不再回调；回调里再删一次什么都不做） | 0：下一轮释放 |
+
+`peer_startable`（`PS_IDLE`、`PS_START`、`PS_RETRY`）= 没有会话、没有在要、没有放弃，可以立即开始；`npf_peer_state` 按状态给出 `NPF_PEER_*`：`PS_START` 与 `PS_IDLE` 都是 `WAITING`（原来分散时把 `last_why` 写成 `"starting"` 来区分，现在不写了，`last_why` 保留上一次的原因）。
+
+**转发**（`FS_*`）：原来的 `up`、`asked`、`refused`、"`t_retry` 存在"、`suspended` 合成 `f->st`；`used`（槽位是否在用）与 `draining`（额度用完，是模式不是状态）照旧。
+
+| 状态 | 进入 | 离开 |
+|---|---|---|
+| `FS_WAIT` | 新建；停止（`peers_fwd_stop`）；会话结束时的 `-R` | 开始：监听成功或模块接手 → `FS_UP`；失败 → `FS_RETRY`；`-R` 在已建立的会话上请求 → `FS_ASKED` |
+| `FS_ASKED`（`-R`） | `reverse_listen` 发出 | 应答：`FS_UP`、`FS_RETRY`、`forbidden` 时 `FS_REFUSED`；会话结束 `FS_WAIT`。删除的槽位留在 `FS_ASKED` 直到应答（应答指着它，不复用） |
+| `FS_UP` | 见上 | 停止、会话结束（`-R`）→ `FS_WAIT` |
+| `FS_RETRY` | 失败（端口被占、绑定失败、请求失败、模块拒绝） | `retry_at`（1 s 起翻倍至 60 s）到、网络变化（立即，退避清零）→ `FS_WAIT` → 开始 |
+| `FS_REFUSED`（`-R`） | 被叫的策略拒绝 | 下一个会话再请求（会话里不重试） |
+| `FS_SUSPENDED` | 公网映射排空、连接都结束（`npf_peer_forward_drained`） | 额度恢复（`drain` 关）→ 开始 |
+
+`NPF_FWD_*` 由状态得出：`FS_UP` 是 `UP`，`FS_RETRY`、`FS_REFUSED` 是 `FAILED`，其余 `WAITING`。
+
+**定时**（第 4 节的规则用在对端上）：每个对端一个定时器 `t_due`，排在 `peer_due` 的最小值；对端的截止时间有 `retry_at`（只在 `PS_START`、`PS_RETRY` 时算）与 `demand_at`（等会话的连接与数据报的期限、按需会话的空闲检查，5 s 一次；会话已建立而传输还不能接时 100 ms 一次），转发的有 `retry_at`（`FS_RETRY`）与 `accept_at`（描述符用完时 250 ms 后再接受）。`peers_at` 只在更早时重排，`peer_tick` 按顺序做到期的事：重试 → 等待的连接与空闲 → 各转发；对端在其中被删时 `peer_drop` 已清掉它所有的截止时间，后面的步骤什么都不做。`PS_REMOVED` 的截止时间是 0：删除之后的下一轮，同一个定时器释放它（原来的 `t_free`）。原来每个对端 4 个定时器（`t_retry`、`t_demand`、`t_ready`、`t_free`），每个转发 2 个（`t_retry`、`t_accept`），现在每个对端 1 个；对端集合的两个（local.json 的延迟写 `t_save`、公网连接的空闲检查 `t_idle`）各管一件互不相关的事，没有合并。单元测试 UT-42（`test_peers.c`）按测试给定的时刻走一遍上面两张表的主要行，每一步检查不变式：等时间的状态有截止时间，定时器不晚于最早的截止时间。
+
+**角色**：对端层对所有角色一样；`NPF_ROLE_CLIENT` 不恢复 local.json 保存的对端只在 `api/engine.c:restore` 一处（客户端是一次性的任务，npf.h 的 `npf_create`）。
+
 ## 4. 定时：每个对象一个截止时间
 
 **规则**：

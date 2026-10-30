@@ -357,7 +357,7 @@ void npf_peers_public_json(npf_peers *ps, int close, npf_out *o)
             pfwd *f = p->fwds[k];
             if (!f->used || !f->pub)
                 continue;
-            if (ps->closing && (f->fd >= 0 || f->t_retry)) {
+            if (ps->closing && (f->fd >= 0 || f->st == FS_RETRY)) {
                 peers_fwd_stop(f);
                 npf_log("%s: %s: closed (stopping)", p->name, f->spec);
             }

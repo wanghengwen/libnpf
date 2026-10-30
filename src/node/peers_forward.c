@@ -111,15 +111,7 @@ static int kind_taken(const npf_peers *ps, const pfwd *f, char *err, size_t errc
  * account: it was closed after DEMAND_WAIT_MS instead of at once) */
 static int peer_may_wait(const npf_peer *p)
 {
-    return !p->finished && (p->idle_ms || p->connect != NPF_CONNECT_ONCE);
-}
-
-static void accept_resume(npf_loop *loop, void *arg)
-{
-    pfwd *f = arg;
-    f->t_accept = NULL;
-    if (f->fd >= 0)
-        npf_loop_mod(loop, f->fd, NPF_EV_READ);
+    return p->st < PS_ENDED && (p->idle_ms || p->connect != NPF_CONNECT_ONCE);
 }
 
 #define ACCEPT_ROUND 64                 /* connections (datagrams) taken per wakeup: the loop's other work goes on */
@@ -133,23 +125,23 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
         int fd;
         /* a callback of the last round (refused, opened, a session's start)
          * may have removed the peer or the forward: lfd closed, maybe reused */
-        if (f->p->removed || !f->used || f->fd != lfd)
+        if (f->p->st == PS_REMOVED || !f->used || f->fd != lfd)
             break;
         fd = npf_accept(lfd);
         if (fd < 0) {
             /* the connection stays queued and the listener readable: a
              * moment's wait, else the loop would spin on it */
-            if (npf_sock_starved() && !f->t_accept) {
+            if (npf_sock_starved() && !f->accept_at) {
                 npf_logw("%s: %s: out of descriptors, not accepting for 250 ms", f->p->name, f->spec);
                 npf_loop_mod(loop, lfd, 0);
-                f->t_accept = npf_timer_add(loop, 250, accept_resume, f);
+                peers_at(f->p, f->accept_at = npf_mono_ms() + 250);
             }
             break;
         }
         uint64_t cid = 0;
         if (f->pub && !(cid = peers_public_admit(f, fd)))  /* a public mapping: who may, how many */
             continue;
-        if (f->draining || f->p->removed || !f->used || f->fd != lfd) {
+        if (f->draining || f->p->st == PS_REMOVED || !f->used || f->fd != lfd) {
             npf_sock_close(fd);             /* or the admission's callback (opened) removed it */
             peers_conn_gone(f->p->ps, cid, "mapping_closed");
             continue;
@@ -194,17 +186,13 @@ static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 
 static int fwd_state_of(const pfwd *f)
 {
-    if (f->up)
-        return NPF_FWD_UP;
-    if (f->t_retry || f->refused)
-        return NPF_FWD_FAILED;
-    return NPF_FWD_WAITING;
+    return f->st == FS_UP ? NPF_FWD_UP : f->st == FS_RETRY || f->st == FS_REFUSED ? NPF_FWD_FAILED : NPF_FWD_WAITING;
 }
 
 /* the why code of a failure's text */
 static int fwd_why_code(const pfwd *f, const char *why)
 {
-    if (f->refused)
+    if (f->st == FS_REFUSED)
         return NPF_FWD_WHY_FORBIDDEN;
     if (strstr(why, "in use") || strstr(why, "taken"))
         return NPF_FWD_WHY_PORT_IN_USE;
@@ -222,7 +210,7 @@ static void fwd_changed(pfwd *f)
 {
     npf_peers *ps = f->p->ps;
     int st = fwd_state_of(f);
-    if (f->p->removed || (st == f->told_state && f->lport == f->told_port && f->why_code == f->told_why))
+    if (f->p->st == PS_REMOVED || (st == f->told_state && f->lport == f->told_port && f->why_code == f->told_why))
         return;
     f->told_state = st;
     f->told_port = f->lport;
@@ -235,19 +223,11 @@ static void fwd_changed(pfwd *f)
 static void fwd_report(pfwd *f, const char *why)
 {
     if (!why)
-        f->up = 1, f->backoff = 0;
+        f->st = FS_UP, f->backoff = 0;
     else if (why != f->why)
         snprintf(f->why, sizeof f->why, "%s", why);
     f->why_code = why ? fwd_why_code(f, why) : NPF_FWD_WHY_NONE;
     fwd_changed(f);
-}
-
-static void fwd_retry_cb(npf_loop *loop, void *arg)
-{
-    pfwd *f = arg;
-    (void)loop;
-    f->t_retry = NULL;
-    fwd_start(f);
 }
 
 /* try this mapping again later; the session goes on */
@@ -255,33 +235,35 @@ static void fwd_retry(pfwd *f, const char *why)
 {
     char k[4] = {'-', f->opt, ' ', 0};     /* a module's kind in its form */
     int d;
-    if (f->t_retry || !f->used)
+    if (f->st == FS_RETRY || !f->used)
         return;
     d = npf_backoff(&f->backoff, 1000, FWD_BACKOFF_MAX_MS);
+    f->st = FS_RETRY;
     f->retry_at = npf_mono_ms() + d;
     npf_logw("%s: %s%s: %s, again in %d s", f->p->name, f->kind ? k : "", f->spec, why, (d + 999) / 1000);
-    f->t_retry = npf_timer_add(f->p->ps->n->loop, d, fwd_retry_cb, f);
+    peers_at(f->p, f->retry_at);
     fwd_report(f, why);
 }
 
+/* closed, not retried (a -R asked stays asked: its reply comes) */
 void peers_fwd_stop(pfwd *f)
 {
     npf_loop *loop = f->p->ps->n->loop;
-    npf_timer_stop(loop, &f->t_retry);
-    npf_timer_stop(loop, &f->t_accept);
+    f->accept_at = 0;
     if (f->udp) {
         peers_udp_queue_drop(f->p, f->idx);
         if (f->fd >= 0 && f->p->call)
             npf_call_udp_forget(f->p->call, f->fd);     /* its flows end */
     }
-    if (f->kind && f->up && f->kind->k->down)
+    if (f->kind && f->st == FS_UP && f->kind->k->down)
         f->kind->k->down(f->kind->arg, f->id);          /* its connections and flows end */
     if (f->fd >= 0) {
         npf_loop_del(loop, f->fd);
         npf_sock_close(f->fd);
         f->fd = -1;
     }
-    f->up = 0;
+    if (f->st == FS_UP || f->st == FS_RETRY)
+        f->st = FS_WAIT;
     if (!f->reverse)
         f->lport = 0;
 }
@@ -289,15 +271,16 @@ void peers_fwd_stop(pfwd *f)
 static void rev_done(npf_call *call, int port, uint32_t listen_id, const char *err, void *arg)
 {
     pfwd *f = arg;
-    f->asked = 0;
+    if (f->st == FS_ASKED)
+        f->st = FS_WAIT;
     if (!f->used || call != f->p->call) {           /* deleted meanwhile, or an old session */
         if (port >= 0 && call == f->p->call)
             npf_call_reverse_close(call, listen_id);
         return;
     }
     if (port < 0 && err && strcmp(err, "forbidden") == 0) {
-        /* the callee's policy: the same request is refused again */
-        f->refused = 1;
+        /* the callee's policy: the same request is refused again (in this session) */
+        f->st = FS_REFUSED;
         snprintf(f->why, sizeof f->why, strcmp(f->bind, "0.0.0.0") == 0
                  ? "refused by the device (port or LAN not allowed)" : "refused by the device (its policy)");
         npf_logw("%s: %s: refused by the device's policy", f->p->name, f->spec);
@@ -324,7 +307,7 @@ npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
         p->idle_since = 0;
         return p->call;
     }
-    if (!p->call && !p->waiting && !p->finished) {
+    if (peer_startable(p)) {
         npf_log("%s: a connection through -%c %s: starting the session", p->name, p->fwds[i]->kind->k->opt,
                 p->fwds[i]->spec);
         peers_kick(p);                      /* on demand: idle from when it is up */
@@ -375,15 +358,15 @@ static void fwd_start(pfwd *f)
     npf_peer *p = f->p;
     char why[64];
     int in_use, type = f->udp ? SOCK_DGRAM : SOCK_STREAM;
-    if (!f->used || f->up || f->t_retry || f->suspended || (f->pub && p->ps->closing))
-        return;                             /* (suspended: drained for the quota, npf_peer_forward_drain) */
+    if (!f->used || (f->st != FS_WAIT && f->st != FS_REFUSED) || (f->pub && p->ps->closing))
+        return;
     if (f->reverse) {
-        if (!p->call || npf_call_state(p->call) != NPF_CALL_ESTABLISHED || f->asked)
+        if (!p->call || npf_call_state(p->call) != NPF_CALL_ESTABLISHED)
             return;
         if (npf_call_reverse(p->call, f->bind, f->port, f->host, (uint16_t)f->hostport, f->udp, rev_done, f) < 0)
             fwd_retry(f, "request failed");
         else
-            f->asked = 1, f->refused = 0;
+            f->st = FS_ASKED;
         return;
     }
     if (f->kind) {                          /* a module's: it carries the forward itself */
@@ -434,20 +417,42 @@ void peers_listeners_close(npf_peer *p)
 void peers_forwards_start(npf_peer *p)
 {
     int i;
-    for (i = 0; i < p->nfwd && !p->removed; i++)    /* (removed in a forward event) */
+    for (i = 0; i < p->nfwd && p->st != PS_REMOVED; i++)    /* (removed in a forward event) */
         fwd_start(p->fwds[i]);
     p->listening = 1;
+}
+
+/* tried again now (backoff: from the last one) */
+static void fwd_again(pfwd *f)
+{
+    f->st = FS_WAIT;
+    fwd_start(f);
+}
+
+void peers_forwards_tick(npf_peer *p, int64_t now)
+{
+    int i;
+    for (i = 0; i < p->nfwd && p->st != PS_REMOVED; i++) {
+        pfwd *f = p->fwds[i];
+        if (f->accept_at && f->accept_at <= now) {
+            f->accept_at = 0;
+            if (f->fd >= 0)
+                npf_loop_mod(p->ps->n->loop, f->fd, NPF_EV_READ);
+        }
+        if (f->st == FS_RETRY && f->retry_at <= now)
+            fwd_again(f);
+    }
 }
 
 /* the session ended: reverse mappings go with it (asked again next time) */
 void peers_forwards_session_gone(npf_peer *p)
 {
     int i;
-    for (i = 0; i < p->nfwd && !p->removed; i++) {
+    for (i = 0; i < p->nfwd && p->st != PS_REMOVED; i++) {
         pfwd *f = p->fwds[i];
         if (f->reverse) {
-            npf_timer_stop(p->ps->n->loop, &f->t_retry);
-            f->up = f->asked = 0;
+            if (f->st == FS_UP || f->st == FS_ASKED || f->st == FS_RETRY)
+                f->st = FS_WAIT;            /* (refused: stays told so until asked again) */
             f->lport = 0;
             if (f->used)
                 fwd_changed(f);             /* waiting for the next session */
@@ -493,7 +498,7 @@ static int fwd_put(npf_peer *p, pfwd *tmp, int perm, uint64_t ext, char *err, si
     pfwd *f = NULL;
     int i;
     char o = tmp->opt;
-    if (p->removed) {
+    if (p->st == PS_REMOVED) {
         snprintf(err, errcap, "%s: removed", p->name);
         return -3;
     }
@@ -516,7 +521,7 @@ static int fwd_put(npf_peer *p, pfwd *tmp, int perm, uint64_t ext, char *err, si
         return -3;
     }
     for (i = 0; i < p->nfwd && !f; i++)
-        if (!p->fwds[i]->used && !p->fwds[i]->asked)
+        if (!p->fwds[i]->used && p->fwds[i]->st != FS_ASKED)
             f = p->fwds[i];                /* a free slot, no pending reply points at it (a -R's
                                               reverse_listen answered later took the new one up) */
     if (!f) {
@@ -619,7 +624,7 @@ int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
     st->perm = f->perm;
     snprintf(st->bind, sizeof st->bind, "%s", f->bind);
     st->port = f->port;
-    st->lport = f->up ? f->lport : 0;
+    st->lport = f->st == FS_UP ? f->lport : 0;
     snprintf(st->host, sizeof st->host, "%s", f->host);
     st->hostport = f->hostport;
     st->state = fwd_state_of(f);
@@ -631,21 +636,21 @@ int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
     st->ctx = f->ctx;
     st->ext = f->ext;
     snprintf(st->spec, sizeof st->spec, "%s", f->spec);
-    if (f->up && f->reverse)
+    if (f->st == FS_UP && f->reverse)
         snprintf(st->text, sizeof st->text, "up (callee port %d)", f->lport);
-    else if (f->up && f->kind)
+    else if (f->st == FS_UP && f->kind)
         snprintf(st->text, sizeof st->text, "up (%s)", f->kind->k->name ? f->kind->k->name(f->kind->arg) : "");
-    else if (f->up)
+    else if (f->st == FS_UP)
         snprintf(st->text, sizeof st->text, "up");
-    else if (f->t_retry)
+    else if (f->st == FS_RETRY)
         snprintf(st->text, sizeof st->text, "retry in %lld s (%s)", (long long)((f->retry_at - npf_mono_ms() + 999) / 1000),
                  f->why);
-    else if (f->refused)
+    else if (f->st == FS_REFUSED)
         snprintf(st->text, sizeof st->text, "%s", f->why);
-    else if (f->reverse)
-        snprintf(st->text, sizeof st->text, f->asked ? "asked" : "waiting for the session");
+    else if (f->st == FS_ASKED)
+        snprintf(st->text, sizeof st->text, "asked");
     else
-        snprintf(st->text, sizeof st->text, "waiting");
+        snprintf(st->text, sizeof st->text, f->reverse ? "waiting for the session" : "waiting");
     return 0;
 }
 
@@ -680,7 +685,7 @@ int npf_peer_forward_del_at(npf_peer *p, int i)
     pfwd *f = fwd_at(p, i);
     if (!f)
         return -1;
-    if (f->reverse && f->up && p->call)
+    if (f->reverse && f->st == FS_UP && p->call)
         npf_call_reverse_close(p->call, f->rev_id);
     /* a public mapping taken off (turned off, expired, deleted): its open
      * connections end with it */
@@ -701,10 +706,8 @@ int npf_peer_forward_drain(npf_peer *p, int i, int on)
     if (!f)
         return -1;
     f->draining = on;
-    if (!on && f->suspended) {
-        f->suspended = 0;
-        fwd_start(f);                       /* listening again */
-    }
+    if (!on && f->st == FS_SUSPENDED)
+        fwd_again(f);                       /* listening again */
     return 0;
 }
 
@@ -713,12 +716,12 @@ int npf_peer_forward_drained(npf_peer *p, int i)
     pfwd *f = fwd_at(p, i);
     if (!f)
         return 0;
-    if (f->draining && !f->suspended && (!p->call || npf_call_group_count(p->call, (uint32_t)f->id) == 0)) {
+    if (f->draining && f->st != FS_SUSPENDED && (!p->call || npf_call_group_count(p->call, (uint32_t)f->id) == 0)) {
         peers_fwd_stop(f);                  /* its connections have ended: the port closes */
-        f->suspended = 1;
+        f->st = FS_SUSPENDED;
         npf_log("%s: %s: closed (quota)", p->name, f->spec);
     }
-    return f->suspended;
+    return f->st == FS_SUSPENDED;
 }
 
 int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, int nallow, uint32_t rate)
@@ -743,7 +746,7 @@ int npf_peer_forward_set_public(npf_peer *p, int i, const char *const *allow, in
     }
     f->rate = rate;
     f->pub = 1;
-    if (p->ps->closing && (f->fd >= 0 || f->t_retry))
+    if (p->ps->closing && (f->fd >= 0 || f->st == FS_RETRY))
         peers_fwd_stop(f);                  /* the public ports stay closed (it listened, made before it was public) */
     return 0;
 }
@@ -762,14 +765,11 @@ void npf_peers_net_changed(npf_peers *ps)
     for (p = ps ? ps->list : NULL; p; p = p->next) {
         int i;
         p->backoff = 0;
-        for (i = 0; i < p->nfwd; i++) {
-            pfwd *f = p->fwds[i];
-            if (f->used && f->t_retry) {
-                npf_timer_cancel(ps->n->loop, f->t_retry);
-                f->backoff = 0;
-                fwd_retry_cb(ps->n->loop, f);
+        for (i = 0; i < p->nfwd; i++)
+            if (p->fwds[i]->used && p->fwds[i]->st == FS_RETRY) {
+                p->fwds[i]->backoff = 0;
+                fwd_again(p->fwds[i]);
             }
-        }
     }
     npf_peers_retry_now(ps);
 }

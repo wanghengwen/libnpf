@@ -10,7 +10,12 @@
  * - direct peers by name: looked up off the loop thread (npf/resolve.h), a
  *   name with an IPv6 address only connects from the IPv6 main socket, a
  *   name without an address (or only IPv6 and no IPv6 socket) ends the peer
- *   "unreachable", a peer removed during its lookup hears nothing of it. */
+ *   "unreachable", a peer removed during its lookup hears nothing of it;
+ * - the peer's and its forwards' states and their one timer (architecture.md
+ *   3.9), by the test's clock (peer_tick): retry with backoff, retry_now,
+ *   ONCE, a wake, on demand, the login's spread, a forward retried, drained,
+ *   -R waiting, the network change; removal (again, from its done callback)
+ *   freed at the next turn. */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -91,7 +96,7 @@ static void test_names(npf_loop *loop, npf_node *node)
     if (!dl || fd6 < 0) {
         printf("  note: no IPv6 loopback here: the name's IPv6 session not tried\n");
     } else if ((p = direct_peer("v6.example", port))) {
-        CHECK(npf_peer_state(p, NULL, NULL) == NPF_PEER_CONNECTING && p->waiting && !p->call,
+        CHECK(npf_peer_state(p, NULL, NULL) == NPF_PEER_CONNECTING && p->st == PS_ASKING && !p->call,
               "the name being looked up: connecting, no session yet");
         LOOP_UNTIL(loop, npf_peer_state(p, NULL, NULL) == NPF_PEER_CONNECTED, 3000);
         CHECK(npf_peer_state(p, NULL, NULL) == NPF_PEER_CONNECTED && p->call && p->call->pd.fd == fd6,
@@ -122,7 +127,7 @@ static void test_names(npf_loop *loop, npf_node *node)
     done = 0;
     __atomic_store_n(&g_hold, 1, __ATOMIC_SEQ_CST);
     p = direct_peer("slow.example", port);
-    CHECK(p && p->rs && p->waiting, "a lookup running");
+    CHECK(p && p->rs && p->st == PS_ASKING, "a lookup running");
     if (p)
         npf_peers_remove(ps, p);
     __atomic_store_n(&g_hold, 0, __ATOMIC_SEQ_CST);
@@ -195,6 +200,212 @@ static int mapped(npf_loop *loop, npf_peer **pp, int port)
     return fd;
 }
 
+/* ---- the peer's and its forwards' states (architecture.md 3.9) ---- */
+
+static npf_peers *sps;
+static int remove_in_done;
+
+static void st_hook(npf_node *n, npf_call *c, int st, const char *why, void *arg)
+{
+    (void)n, (void)arg;
+    npf_peers_on_call_state(sps, c, st, why);
+}
+
+static void st_done(npf_peer *p, const char *why, void *arg)
+{
+    on_done(p, why, arg);
+    if (remove_in_done)
+        npf_peers_remove(sps, p);
+}
+
+/* after each step: a state waiting for a time has its deadline, and the
+ * peer's one timer is no later than its earliest deadline */
+static void due_ok(const npf_peer *p, const char *step)
+{
+    int64_t d = peer_due(p);
+    CHECK(!peer_waits(p) || (p->retry_at && d <= p->retry_at),
+          "%s: waiting to (re)start, with its deadline", step);
+    CHECK(d == INT64_MAX || (p->t_due && p->due_at <= d), "%s: the timer no later than the deadline", step);
+}
+
+/* the session ends (the peer hears it closed) */
+static void end_call(npf_peer *p, const char *why)
+{
+    CHECK(p->st == PS_CALL && p->call, "%s: a session to end (%d)", why, p->st);
+    if (p->call)
+        npf_call_end(p->call, why);
+}
+
+static void test_states(npf_loop *loop)
+{
+    static npf_node node;
+    static const uint8_t psk[32] = {5};
+    static const npf_node_hooks hooks = {.on_call_state = st_hook};
+    static const npf_peers_cbs cbs = {.done = st_done};
+    struct sockaddr_in a, b;
+    npf_peer_new pn = {.host = "127.0.0.1", .psk = psk, .connect = NPF_CONNECT_KEEP};
+    npf_fwd_new fn = {.opt = 'L', .host = "127.0.0.1", .hostport = 80};
+    npf_peer_new pp = {.number = 4242, .connect = NPF_CONNECT_KEEP};
+    npf_fwd_state fs;
+    npf_peer *p, *q, *r;
+    char err[128];
+    int ms, i, n0;
+    int64_t at, d1;
+    int sink = lo_socket(SOCK_DGRAM, 0, &a, sizeof a);   /* the direct peer: never answers */
+    int block = lo_socket(SOCK_STREAM, 4, &b, sizeof b); /* a port taken */
+
+    CHECK(sink >= 0 && block >= 0 && offline_node(&node, loop, &hooks, NULL) == 0, "states: set-up");
+    if (sink < 0 || block < 0 || !(sps = npf_peers_new(&node, NULL, &cbs, NULL)))
+        return;
+    pn.port = ntohs(a.sin_port);
+
+    /* a platform peer, offline: waits for the login, no deadline */
+    q = npf_peers_create(sps, &pp, err, sizeof err, NULL);
+    CHECK(q != NULL, "a platform peer (%s)", err);
+    if (!q)
+        return;
+    npf_peer_start(q);
+    CHECK(q->st == PS_IDLE && npf_peer_state(q, NULL, NULL) == NPF_PEER_WAITING && peer_due(q) == INT64_MAX,
+          "offline: idle, waiting for the server, no deadline");
+
+    /* a direct one, kept: a session at once */
+    p = npf_peers_create(sps, &pn, err, sizeof err, NULL);
+    CHECK(p != NULL, "a direct peer (%s)", err);
+    if (!p)
+        return;
+    npf_peer_start(p);
+    CHECK(p->st == PS_CALL && npf_peer_state(p, NULL, NULL) == NPF_PEER_CONNECTING, "started: a session, connecting");
+
+    /* it ends: reconnecting after 1 s +-25 % */
+    end_call(p, "transport_lost");
+    CHECK(p->st == PS_RETRY && !p->call && npf_peer_state(p, NULL, &ms) == NPF_PEER_RETRY && ms > 0 && ms <= 1250
+              && strcmp(p->last_why, "transport_lost") == 0, "ended: retry in %d ms (%s)", ms, p->last_why);
+    due_ok(p, "retry");
+    d1 = p->retry_at;
+    peer_tick(p, d1 - 1);
+    CHECK(p->st == PS_RETRY, "1 ms before: still waiting");
+    peer_tick(p, d1);
+    CHECK(p->st == PS_CALL, "at the deadline: a session again");
+    due_ok(p, "again");
+
+    /* the second time the delay doubles; an account session tries now */
+    end_call(p, "closed");
+    CHECK(p->st == PS_RETRY && p->retry_at - npf_mono_ms() > 1250, "backoff: about 2 s now");
+    npf_peers_retry_now(sps);
+    CHECK(p->st == PS_CALL && q->st == PS_IDLE, "retry_now: the waiting one tries at once (the offline one waits)");
+
+    /* waiting to retry, made ONCE: ended now, told once */
+    end_call(p, "closed");
+    done = 0;
+    npf_peer_connect_put(p, NPF_CONNECT_ONCE, 0, 1);
+    CHECK(p->st == PS_ENDED && done == 1 && strcmp(done_why, "closed") == 0 && peer_due(p) == INT64_MAX
+              && npf_peer_state(p, NULL, NULL) == NPF_PEER_ENDED, "ONCE while waiting: ended (%d %s)", done, done_why);
+    npf_peer_connect_put(p, NPF_CONNECT_ONCE, 0, 1);
+    CHECK(done == 1, "ended once");
+
+    /* woken: one more try; ONCE: its end ends the peer */
+    npf_peer_wake_now(p);
+    CHECK(p->st == PS_CALL, "woken: a session");
+    end_call(p, "closed");
+    CHECK(p->st == PS_ENDED && done == 2, "ONCE: its session's end ends it");
+
+    /* KEEP again: a session now; on demand: no reconnecting, the idle check runs */
+    npf_peer_connect_put(p, NPF_CONNECT_KEEP, 0, 1);
+    CHECK(p->st == PS_CALL, "KEEP: a session again");
+    npf_peer_connect_put(p, NPF_CONNECT_ON_DEMAND, 60000, 1);
+    CHECK(p->st == PS_CALL && p->demand_at, "on demand with a session: the idle check set");
+    due_ok(p, "on demand");
+    end_call(p, "closed");
+    CHECK(p->st == PS_IDLE && npf_peer_state(p, NULL, NULL) == NPF_PEER_IDLE && !(peer_due(p) < INT64_MAX && !p->demand_at),
+          "on demand: idle after its session, no retry");
+    npf_peer_wake_now(p);
+    CHECK(p->st == PS_CALL, "on demand, woken: a session");
+
+    /* forwards: the port taken, retried with backoff by the peer's tick */
+    fn.port = ntohs(b.sin_port);
+    i = npf_peer_forward_add_parts(p, &fn, 0, 0, err, sizeof err);
+    CHECK(i >= 0 && npf_peer_forward_state(p, i, &fs) == 0 && fs.state == NPF_FWD_FAILED
+              && fs.why_code == NPF_FWD_WHY_PORT_IN_USE && p->fwds[i]->st == FS_RETRY,
+          "a forward on a taken port: failed, to retry (%s)", i < 0 ? err : fs.why);
+    if (i < 0)
+        return;
+    due_ok(p, "forward retry");
+    CHECK(peer_due(p) <= p->fwds[i]->retry_at, "the forward's retry is the peer's deadline");
+    close(block);
+    peer_tick(p, p->fwds[i]->retry_at - 1);
+    CHECK(p->fwds[i]->st == FS_RETRY, "1 ms before: still waiting");
+    peer_tick(p, p->fwds[i]->retry_at);
+    CHECK(p->fwds[i]->st == FS_UP && npf_peer_forward_state(p, i, &fs) == 0 && fs.state == NPF_FWD_UP && fs.lport == fn.port,
+          "at its deadline: up on the freed port");
+
+    /* a public mapping drained: suspended, then up again */
+    CHECK(npf_peer_forward_set_public(p, i, NULL, 0, 0) == 0 && npf_peer_forward_drain(p, i, 1) == 0, "drain on");
+    CHECK(npf_peer_forward_drained(p, i) == 1 && p->fwds[i]->st == FS_SUSPENDED && p->fwds[i]->fd < 0
+              && npf_peer_forward_state(p, i, &fs) == 0 && fs.state == NPF_FWD_WAITING, "drained: suspended, closed");
+    npf_peer_forward_drain(p, i, 0);
+    CHECK(p->fwds[i]->st == FS_UP && p->fwds[i]->fd >= 0, "drain off: listening again");
+
+    /* -R waits for an established session; the network change retries a
+     * failed forward at once */
+    fn.opt = 'R';
+    fn.port = 0;
+    npf_peer_connect_put(p, NPF_CONNECT_KEEP, 0, 1);
+    i = npf_peer_forward_add_parts(p, &fn, 0, 0, err, sizeof err);
+    CHECK(i >= 0 && p->fwds[i]->st == FS_WAIT && npf_peer_forward_state(p, i, &fs) == 0
+              && strcmp(fs.text, "waiting for the session") == 0, "-R: waiting for the session (%s)", i < 0 ? err : fs.text);
+    block = lo_socket(SOCK_STREAM, 4, &b, sizeof b);
+    fn.opt = 'L';
+    fn.port = ntohs(b.sin_port);
+    i = npf_peer_forward_add_parts(p, &fn, 0, 0, err, sizeof err);
+    CHECK(i >= 0 && p->fwds[i]->st == FS_RETRY, "another on a taken port: to retry");
+    if (i >= 0) {
+        at = p->fwds[i]->retry_at;
+        close(block);
+        npf_peers_net_changed(sps);
+        CHECK(p->fwds[i]->st == FS_UP, "the network changed: tried now, up (was due in %lld ms)",
+              (long long)(at - npf_mono_ms()));
+    }
+
+    /* at the login, several platform peers start spread over 2 s */
+    r = npf_peers_create(sps, &(npf_peer_new){.number = 4343, .connect = NPF_CONNECT_KEEP}, err, sizeof err, NULL);
+    CHECK(r != NULL, "a second platform peer (%s)", err);
+    node.online = 1;
+    node.th.no_spread = 0;
+    npf_peers_on_login(sps);
+    node.online = 0;
+    CHECK(q->st == PS_START && r && r->st == PS_START && npf_peer_state(q, NULL, NULL) == NPF_PEER_WAITING
+              && q->retry_at - npf_mono_ms() <= 2000, "login: both start spread, still waiting for the server");
+    due_ok(q, "spread");
+    peer_tick(q, q->retry_at);
+    CHECK(q->st == PS_IDLE, "its time, offline again: idle until the next login");
+    npf_peers_retry_now(sps);
+    CHECK(r && r->st == PS_IDLE, "retry_now: the spread one tried now (offline: idle)");
+
+    /* removed: freed at the next turn, once; a callback's removal too */
+    n0 = npf_peers_count(sps);
+    npf_peers_remove(sps, q);
+    CHECK(q->st == PS_REMOVED && peer_due(q) == 0 && q->t_due && npf_peers_count(sps) == n0 - 1,
+          "removed: its timer due now");
+    npf_peers_remove(sps, q);
+    CHECK(sps->gone == q && !q->gone_next, "removed again: nothing more");
+    npf_peer_wake_now(q);
+    npf_peer_connect_put(q, NPF_CONNECT_KEEP, 0, 1);
+    CHECK(q->st == PS_REMOVED, "removed: nothing starts it again");
+    npf_peer_connect_put(p, NPF_CONNECT_ONCE, 0, 1);
+    remove_in_done = 1;
+    end_call(p, "closed");
+    remove_in_done = 0;
+    CHECK(p->st == PS_REMOVED && done == 3, "removed in its done callback");
+    for (i = 0; i < 5 && sps->gone; i++)
+        npf_loop_once(loop, 1);
+    CHECK(!sps->gone && npf_peers_count(sps) == 1, "freed at the next turn (%d left)", npf_peers_count(sps));
+
+    npf_peers_free(sps);
+    sps = NULL;
+    close(sink);
+    npf_node_stop(&node);
+}
+
 int test_peers(void)
 {
     static npf_node node;
@@ -236,6 +447,7 @@ int test_peers(void)
     test_names(loop, &node);
     for (i = 0; i < 5; i++)
         npf_loop_once(loop, 1);
+    test_states(loop);
     npf_peers_free(ps);
     npf_node_stop(&node);
     npf_loop_free(loop);
