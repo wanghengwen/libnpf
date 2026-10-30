@@ -37,9 +37,9 @@ static int fz_send(const void *p, size_t len, const struct sockaddr_in *to, void
 
 static void fz_ready(npf_sig *s, void *arg) { (void)s, (void)arg; }
 static void fz_msg(npf_sig *s, const npf_json *j, void *arg) { (void)s, (void)j, (void)arg; }
-static void fz_down(npf_sig *s, const char *why, void *arg)
+static void fz_down(npf_sig *s, npf_sig_down code, const char *why, void *arg)
 {
-    (void)s, (void)why;
+    (void)s, (void)code, (void)why;
     *(npf_sig **)arg = NULL;
 }
 

@@ -81,7 +81,7 @@ typedef struct sigudp {
     struct sockaddr_in srv;
     npf_sig_cookie    *ck;
     npf_timer         *t;               /* the next hello, else the RTO */
-    int                state, depth, dead;
+    int                state;
     const char        *fail;            /* a failure to report from the timer (not inside a send) */
     /* the handshake */
     npf_siv_keys       hk;
@@ -118,44 +118,6 @@ typedef struct sigudp {
 
 static void timer_cb(npf_loop *loop, void *arg);
 
-static void su_free(npf_sig *s)
-{
-    sigudp *u = s->udp;
-    omsg *m;
-    int i;
-    npf_timer_cancel(u->loop, u->t);
-    while ((m = u->q) != NULL) {
-        u->q = m->next;
-        npf_wipe_free(m, sizeof *m + m->len);
-    }
-    for (i = 0; i < WND; i++)
-        if (u->ooo[i])
-            npf_wipe_free(u->ooo[i], u->ooo_len[i] + 1u);
-    if (u->ra)
-        npf_wipe_free(u->ra, NPF_JSON_MAX_SIZE);
-    npf_wipe_free(u, sizeof *u);        /* the keys */
-    npf_wipe_free(s, sizeof *s);
-}
-
-/* the end of a callback from the loop: a session closed in it goes now */
-static void leave(npf_sig *s)
-{
-    if (--s->udp->depth == 0 && s->udp->dead)
-        su_free(s);
-}
-
-/* the session is over: on_down once (inside a callback: freed by leave) */
-static void down(npf_sig *s, const char *why)
-{
-    sigudp *u = s->udp;
-    if (u->dead)
-        return;
-    u->dead = 1;
-    npf_timer_stop(u->loop, &u->t);
-    if (s->cbs.on_down)
-        s->cbs.on_down(s, why, s->arg);
-}
-
 static void out(npf_sig *s, const uint8_t *p, size_t len)
 {
     (void)s->udp->send_fn(p, len, &s->udp->srv, s->arg);
@@ -191,7 +153,7 @@ static void hello_due(npf_sig *s)
 {
     sigudp *u = s->udp;
     if (u->nhello == NHELLO) {
-        down(s, "udp: no answer");
+        sig_down(s, NPF_SIG_DOWN_NO_ANSWER, "udp: no answer");
         return;
     }
     hello_send(s);
@@ -256,7 +218,7 @@ static void ack_hs_in(npf_sig *s, const uint8_t *noise2, uint32_t ts_ms)
     size_t np = npf_rand_range(0, PAD3_MAX);
     int k;
     if (npf_noise_read(&u->hs, noise2, NOISE2_LEN, pl, sizeof pl) != 4) {
-        down(s, "udp: server authentication failed");
+        sig_down(s, NPF_SIG_DOWN_ERROR, "udp: server authentication failed");
         return;
     }
     memcpy(u->idx, pl, 4);              /* opaque, echoed as it came */
@@ -264,7 +226,7 @@ static void ack_hs_in(npf_sig *s, const uint8_t *noise2, uint32_t ts_ms)
     npf_random(pad, np);
     k = npf_noise_write(&u->hs, pad, np, u->m3 + 4, sizeof u->m3 - 4);
     if (k < 0 || npf_noise_split(&u->hs, NULL, NULL, u->k1, u->k2, s->hash) < 0) {
-        down(s, "udp: noise handshake failed");
+        sig_down(s, NPF_SIG_DOWN_ERROR, "udp: noise handshake failed");
         return;
     }
     npf_wipe(&u->hs, sizeof u->hs);
@@ -352,7 +314,7 @@ static void close_send(npf_sig *s, const char *reason)
 static void fail(npf_sig *s, const char *reason, const char *why)
 {
     close_send(s, reason);
-    down(s, why);
+    sig_down(s, NPF_SIG_DOWN_ERROR, why);
 }
 
 static void seg_send(npf_sig *s, uint16_t sn, int first)
@@ -495,7 +457,7 @@ static void seg_in(npf_sig *s, uint16_t sn, const uint8_t *d, size_t len, int en
     }
     u->rcv_nxt++;                       /* first: a reply sent from on_msg acks it */
     take(s, d, len, end);
-    while (!u->dead && u->ooo[k = u->rcv_nxt % WND]) {
+    while (!s->dead && u->ooo[k = u->rcv_nxt % WND]) {
         uint8_t *p = u->ooo[k];
         u->ooo[k] = NULL;
         u->rcv_nxt++;
@@ -504,6 +466,7 @@ static void seg_in(npf_sig *s, uint16_t sn, const uint8_t *d, size_t len, int en
     }
 }
 
+/* the server's CLOSE: no CLOSE back */
 static void close_in(npf_sig *s, const uint8_t *r, size_t len)
 {
     char why[16 + REASON_MAX];
@@ -511,7 +474,7 @@ static void close_in(npf_sig *s, const uint8_t *r, size_t len)
     for (i = 0; i < len && o + 1 < sizeof why; i++)
         why[o++] = r[i] >= 0x20 && r[i] < 0x7f ? (char)r[i] : '?';
     why[o] = 0;
-    down(s, why);                       /* no CLOSE back */
+    sig_down(s, len == 4 && memcmp(r, "busy", 4) == 0 ? NPF_SIG_DOWN_BUSY : NPF_SIG_DOWN_CLOSED, why);
 }
 
 static void tr_in(npf_sig *s, const uint8_t *buf, size_t len)
@@ -542,7 +505,7 @@ static void tr_in(npf_sig *s, const uint8_t *buf, size_t len)
     ack_in(s, npf_rd16(pt + 1));
     if (n >= 5)
         seg_in(s, npf_rd16(pt + 3), pt + 5, n - 5, fl & F_END);
-    if (!u->dead) {
+    if (!s->dead) {
         try_send(s);
         if (u->ack_due) {
             uint8_t a[3] = {0};
@@ -554,7 +517,7 @@ done:
     npf_wipe(pt, n);
 }
 
-/* ---- the interface ---- */
+/* ---- the carrier ---- */
 
 static void timer_cb(npf_loop *loop, void *arg)
 {
@@ -562,74 +525,36 @@ static void timer_cb(npf_loop *loop, void *arg)
     sigudp *u = s->udp;
     (void)loop;
     u->t = NULL;
-    u->depth++;
+    sig_enter(s);
     if (u->fail)
         fail(s, "closed", u->fail);
     else if (u->state == SU_HELLO)
         hello_due(s);
     else
         rto_due(s);
-    leave(s);
+    sig_leave(s);
 }
 
-npf_sig *npf_sig_open_udp(npf_loop *loop, npf_sig_send_fn send, const struct sockaddr_in *server,
-                          const uint8_t server_pub[32], const npf_identity *id, npf_sig_cookie *cookie,
-                          const npf_sig_cbs *cbs, void *arg)
+static int su_input(npf_sig *s, const struct sockaddr_storage *from, const uint8_t *buf, size_t len)
 {
-    static const char prologue[] = PROLOGUE;
-    npf_sig *s = calloc(1, sizeof *s);
-    sigudp *u = calloc(1, sizeof *u);
-    if (!s || !u) {
-        free(s);
-        free(u);
-        return NULL;
-    }
-    s->cbs = *cbs;
-    s->arg = arg;
-    s->udp = u;
-    u->loop = loop;
-    u->send_fn = send;
-    u->srv = *server;
-    u->ck = cookie;
-    u->rto = RTO_MAX;
-    u->q_end = &u->q;
-    npf_siv_derive(&u->hk, server_pub, LABEL);
-    if (npf_noise_init(&u->hs, NPF_NOISE_XK, 1, prologue, sizeof prologue - 1, id->dh_sk, server_pub, NULL) < 0
-        || npf_noise_write(&u->hs, NULL, 0, u->m1, sizeof u->m1) != NOISE1_LEN) {
-        su_free(s);
-        return NULL;
-    }
-    npf_random(u->txid, sizeof u->txid);
-    u->t0 = npf_mono_ms();
-    if (cookie && cookie->until > u->t0 && npf_addr_eq(&cookie->to, server)) {
-        memcpy(u->cookie, cookie->c, MAC_LEN);
-        u->has_cookie = 1;
-    }
-    hello_due(s);
-    return s;
-}
-
-int npf_sig_input(npf_sig *s, const struct sockaddr_storage *from, const uint8_t *buf, size_t len)
-{
-    sigudp *u = s ? s->udp : NULL;
-    if (!u || !npf_addr_eq(from, &u->srv))
+    if (!npf_addr_eq(from, &s->udp->srv))
         return 0;
-    if (u->dead)
+    if (s->dead)
         return 1;
-    u->depth++;
-    if (u->state == SU_HELLO)
+    sig_enter(s);
+    if (s->udp->state == SU_HELLO)
         hs_in(s, buf, len);
     else
         tr_in(s, buf, len);
-    leave(s);
+    sig_leave(s);
     return 1;
 }
 
-int sigudp_send(npf_sig *s, const char *json, size_t len)
+static int su_send(npf_sig *s, const char *json, size_t len)
 {
     sigudp *u = s->udp;
     omsg *m;
-    if (u->dead || u->fail || u->state == SU_HELLO || len > NPF_JSON_MAX_SIZE)
+    if (u->fail)
         return -1;
     if (u->nq >= QUEUE_MAX) {           /* closed from the loop, not under the caller */
         u->fail = "udp: send queue full";
@@ -652,25 +577,22 @@ int sigudp_send(npf_sig *s, const char *json, size_t len)
     return 0;
 }
 
-int sigudp_ping(npf_sig *s)
+static int su_ping(npf_sig *s)
 {
-    sigudp *u = s->udp;
-    if (u->dead || u->state == SU_HELLO)
-        return -1;
-    return in_flight(u) ? 0 : sigudp_send(s, "", 0);   /* in flight: its ack answers */
+    return in_flight(s->udp) ? 0 : su_send(s, "", 0);  /* in flight: its ack answers */
 }
 
-int64_t sigudp_last_rx(const npf_sig *s)
+static int64_t su_last_rx(const npf_sig *s)
 {
     return s->udp->last_rx;
 }
 
-int sigudp_rtt(const npf_sig *s)
+static int su_rtt(const npf_sig *s)
 {
     return s->udp->has_rtt ? (s->udp->srtt > 0 ? s->udp->srtt : 1) : 0;
 }
 
-const char *sigudp_diag(const npf_sig *s, char *buf, size_t cap)
+static const char *su_diag(const npf_sig *s, char *buf, size_t cap)
 {
     const sigudp *u = s->udp;
     if (u->state == SU_HELLO)
@@ -682,14 +604,64 @@ const char *sigudp_diag(const npf_sig *s, char *buf, size_t cap)
     return buf;
 }
 
-void sigudp_close(npf_sig *s)
+static void su_bye(npf_sig *s)
+{
+    close_send(s, "closed");
+}
+
+static void su_free(npf_sig *s)
 {
     sigudp *u = s->udp;
-    if (!u->dead) {
-        close_send(s, "closed");
-        u->dead = 1;
-        npf_timer_stop(u->loop, &u->t);
+    omsg *m;
+    int i;
+    npf_timer_cancel(u->loop, u->t);
+    while ((m = u->q) != NULL) {
+        u->q = m->next;
+        npf_wipe_free(m, sizeof *m + m->len);
     }
-    if (!u->depth)
-        su_free(s);
+    for (i = 0; i < WND; i++)
+        if (u->ooo[i])
+            npf_wipe_free(u->ooo[i], u->ooo_len[i] + 1u);
+    if (u->ra)
+        npf_wipe_free(u->ra, NPF_JSON_MAX_SIZE);
+    npf_wipe_free(u, sizeof *u);        /* the keys */
+}
+
+npf_sig *npf_sig_open_udp(npf_loop *loop, npf_sig_send_fn send, const struct sockaddr_in *server,
+                          const uint8_t server_pub[32], const npf_identity *id, npf_sig_cookie *cookie,
+                          const npf_sig_cbs *cbs, void *arg)
+{
+    static const sig_ops ops = {"udp", su_send, su_ping, su_last_rx, su_rtt, su_diag, su_input, su_bye, su_free};
+    static const char prologue[] = PROLOGUE;
+    npf_sig *s = calloc(1, sizeof *s);
+    sigudp *u = calloc(1, sizeof *u);
+    if (!s || !u) {
+        free(s);
+        free(u);
+        return NULL;
+    }
+    s->ops = &ops;
+    s->cbs = *cbs;
+    s->arg = arg;
+    s->udp = u;
+    u->loop = loop;
+    u->send_fn = send;
+    u->srv = *server;
+    u->ck = cookie;
+    u->rto = RTO_MAX;
+    u->q_end = &u->q;
+    npf_siv_derive(&u->hk, server_pub, LABEL);
+    if (npf_noise_init(&u->hs, NPF_NOISE_XK, 1, prologue, sizeof prologue - 1, id->dh_sk, server_pub, NULL) < 0
+        || npf_noise_write(&u->hs, NULL, 0, u->m1, sizeof u->m1) != NOISE1_LEN) {
+        npf_sig_close(s);               /* nothing sent yet: no CLOSE */
+        return NULL;
+    }
+    npf_random(u->txid, sizeof u->txid);
+    u->t0 = npf_mono_ms();
+    if (cookie && cookie->until > u->t0 && npf_addr_eq(&cookie->to, server)) {
+        memcpy(u->cookie, cookie->c, MAC_LEN);
+        u->has_cookie = 1;
+    }
+    hello_due(s);
+    return s;
 }

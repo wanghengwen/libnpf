@@ -207,6 +207,8 @@ option(NPF_SIG_UDP "Signaling over UDP (WebSocket the fallback)" ON)
 if(NPF_SIG_UDP)
   target_sources(npf_common PRIVATE src/proto/sigudp.c)
   target_compile_definitions(npf_common PUBLIC NPF_SIG_UDP)
+else()
+  target_sources(npf_common PRIVATE src/proto/sig_noudp.c)
 endif()
 # the synchronous NAT probe and bind query (npf_natprobe_run,
 # npf_bind_query): only the debugging tools use them (npf-natprobe,

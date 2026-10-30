@@ -25,10 +25,26 @@
 
 typedef struct npf_sig npf_sig;
 
+/* why a connection went down (the why text says more, for the log) */
+typedef enum npf_sig_down {
+    NPF_SIG_DOWN_ERROR,                 /* it failed or broke */
+    NPF_SIG_DOWN_NO_ANSWER,             /* UDP: no handshake answer in 7.5 s */
+    NPF_SIG_DOWN_CLOSED,                /* UDP: the server's CLOSE */
+    NPF_SIG_DOWN_BUSY                   /* UDP: the server's CLOSE "busy" */
+} npf_sig_down;
+
+/* on_ready: our side of the handshake is done (Noise message 3 sent) and
+ * messages may be sent; the server confirms only by answering (its first
+ * reply, to the login). on_down: once, the connection is over (forget the
+ * handle there).
+ * The one rule of the handle's life: npf_sig_close may be called anywhere,
+ * in the connection's own callbacks too; no callback runs after it (nor
+ * after on_down), and the memory goes when the outermost callback of the
+ * connection returns (at once when none runs). */
 typedef struct npf_sig_cbs {
-    void (*on_ready)(npf_sig *s, void *arg);                     /* handshake done */
+    void (*on_ready)(npf_sig *s, void *arg);
     void (*on_msg)(npf_sig *s, const npf_json *j, void *arg);    /* token 0 = root object */
-    void (*on_down)(npf_sig *s, const char *why, void *arg);     /* handle freed after return; do not close it here */
+    void (*on_down)(npf_sig *s, npf_sig_down code, const char *why, void *arg);
 } npf_sig_cbs;
 
 /* outside_vpn: the connection goes around a VPN like the node's UDP sockets
@@ -53,8 +69,7 @@ typedef struct npf_sig_cookie {
 
 /* A UDP session to server (IPv4) whose Noise static key is server_pub; its
  * first datagram goes out before this returns; cookie may be NULL. NULL on
- * no memory (or NPF_SIG_UDP off). on_down's why: "udp: no answer" (no
- * handshake in 7.5 s), "closed: REASON" (the server's CLOSE), ... */
+ * no memory (or NPF_SIG_UDP off). The server's CLOSE: why "closed: REASON" */
 npf_sig *npf_sig_open_udp(npf_loop *loop, npf_sig_send_fn send, const struct sockaddr_in *server,
                           const uint8_t server_pub[32], const npf_identity *id, npf_sig_cookie *cookie,
                           const npf_sig_cbs *cbs, void *arg);

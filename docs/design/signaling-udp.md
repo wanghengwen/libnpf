@@ -1,6 +1,6 @@
 # UDP 信令设计：UDP 优先，WebSocket 兜底
 
-状态：v0.4.2（已实现：12.2 的第 0–6 步与之后的四项修正，2026-10-30）。日期：2026-10-30。变更记录见文末。
+状态：v0.4.3（已实现：12.2 的第 0–6 步与之后的四项修正，2026-10-30）。日期：2026-10-30。变更记录见文末。
 
 **线上格式与安全分析**在 [信令协议](../protocol/signaling.md)"UDP 承载"（封装、握手、传输、可靠层、CLOSE、计时、限额、服务器列表的 `udp`、选择与兜底）与 [安全设计](security.md) 7.6（威胁与对策）。本文只留设计理由（第 0–9 节）与实施记录（第 7、11、12 节）；两边不一致时以那两份为准。
 
@@ -132,11 +132,11 @@
 
 | 状态 | 进入 | 定时 | 离开 |
 |---|---|---|---|
-| `HELLO` | `npf_sig_open_udp` | 第 1 条消息 0 / 0.5 / 1.5 / 3.5 秒 | `SIG_COOKIE` → 带 cookie 重发；`SIG_HELLO_ACK` 认证通过 → `FINISH`；7.5 秒 → `on_down("udp: no answer")` |
+| `HELLO` | `npf_sig_open_udp` | 第 1 条消息 0 / 0.5 / 1.5 / 3.5 秒 | `SIG_COOKIE` → 带 cookie 重发；`SIG_HELLO_ACK` 认证通过 → `FINISH`；7.5 秒 → `on_down(NPF_SIG_DOWN_NO_ANSWER, "udp: no answer")` |
 | `FINISH` | 写出第 3 条消息，`on_ready` | 第 3 条消息按 RTO 重发 | 第一个传输报文 → `UP`；登录期限（20 秒，`node_signal.c`） |
-| `UP` | | 可靠层的 RTO（只在有段在途时） | `CLOSE` → `on_down(原因)`；节点的看门狗（第 8 节） |
+| `UP` | | 可靠层的 RTO（只在有段在途时） | `CLOSE` → `on_down(NPF_SIG_DOWN_CLOSED, "closed: 原因")`（原因是 `busy` 时 `NPF_SIG_DOWN_BUSY`）；节点的看门狗（第 8 节） |
 
-`on_ready`、`on_msg`、`on_down` 与 WS 后端相同，`node_signal.c` 看到的接口不变（加一个"承载是哪种"的查询）。
+`on_ready`、`on_msg`、`on_down` 与 WS 后端相同，`node_signal.c` 看到的接口不变（加一个"承载是哪种"的查询）。两种承载在 `sig.c` 里共用一张操作表（`sig_int.h` 的 `sig_ops`）与同一个生命周期：`on_down` 只有一次，`npf_sig_close` 在任何地方（包括这条连接自己的回调里）都可以调用，内存在这条连接最外层的回调返回时释放（`npf/sig.h`）；节点按 `on_down` 的原因码（`npf_sig_down`）而不是原因文字判断 `busy`。`NPF_SIG_UDP` 关时没有 `sigudp.c`，`sig_noudp.c` 的 `npf_sig_open_udp` 返回 NULL。
 
 ### 5.2 服务器
 
@@ -484,6 +484,7 @@ v0.2 是约 1900（加负载工具 2200）与 1630：去掉的主要是合并保
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-30 | 0.4.3 | 按一份外部评审整理客户端的信令层：两种承载一张操作表、一个生命周期（5.1），`on_down` 带原因码 `npf_sig_down`；`on_ready` 只表示我方的握手做完（服务器靠应答确认）。线上格式不变 |
 | 2026-10-30 | 0.4.2 | 从 npf 的 docs/design 移入 libnpf 的 docs/design；去掉测试主机的名字 |
 | 2026-10-30 | 0.4.1 | 第 6 步之后的四项（11.5）：`s2b-busy` 的失败是端口分配的步长测错（请求在 15 ms 内发出）；服务器在通配地址上从节点发往的地址应答（`udpsock`，中转与探测同样）；呼叫的 UDP 路径无声时立即检查 UDP 信令、3 秒没有回答就改用 WSS；可靠层的部分确认（6.2） |
 | 2026-10-30 | 0.4 | 实现完成（第 6 步）：线上格式与安全分析移入 libnpf 的 signaling.md"UDP 承载"与 security.md 7.6，第 3、9 节与 5.3、6.2、8.1 只留理由；11.4、11.5 记下第 6 步的结果（natlab 原来一直在 WS 上：通配地址的应答源地址不对） |
