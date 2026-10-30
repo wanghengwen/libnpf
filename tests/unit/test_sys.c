@@ -54,28 +54,29 @@ int test_sys(void)
 #ifdef __linux__
     tcp_diag();
 #endif
-    fd = npf_udp_socket(AF_INET, 0);                /* no hook yet */
+    fd = npf_udp_socket(AF_INET, 0, 1);             /* no hook yet */
     CHECK(fd >= 0 && seen == 0, "a socket without a hook");
     npf_sock_close(fd);
     npf_udp_hook_set(hook, &arg);
-    fd = npf_udp_socket(AF_INET, 0);
+    fd = npf_udp_socket(AF_INET, 0, 1);
     CHECK(fd >= 0 && seen == 1 && last_fd == fd && last_family == AF_INET && arg == 1, "the hook sees the socket");
     npf_sock_close(fd);
     answer = -1;                                    /* the platform cannot bind it: the socket stays */
-    fd = npf_udp_socket(AF_INET, 1);
+    fd = npf_udp_socket(AF_INET, 1, 1);
     CHECK(fd >= 0 && seen == 2, "a failing hook leaves the socket");
     npf_sock_close(fd);
-    npf_udp_hook_on(0);                             /* connect_mode secure */
-    fd = npf_udp_socket(AF_INET, 0);
-    CHECK(fd >= 0 && seen == 2, "off: the hook is not called");
+    fd = npf_udp_socket(AF_INET, 0, 0);             /* a node in connect_mode secure */
+    CHECK(fd >= 0 && seen == 2, "without bypass the hook is not called");
     npf_sock_close(fd);
-    npf_udp_hook_on(1);
+    fd = npf_udp_socket(AF_INET, 0, 1);             /* ... while one in p2p goes on around the VPN */
+    CHECK(fd >= 0 && seen == 3, "bypass is the caller's: one socket's does not change the next");
+    npf_sock_close(fd);
     fd = npf_socket(AF_INET, SOCK_DGRAM, 0, 0);     /* not the node's (the loop's wake-up) */
-    CHECK(fd >= 0 && seen == 2, "other sockets are not the hook's");
+    CHECK(fd >= 0 && seen == 3, "other sockets are not the hook's");
     npf_sock_close(fd);
     npf_udp_hook_set(NULL, NULL);
     answer = 0;
-    fd = npf_udp_socket(AF_INET, 0);                /* the built-in one: no VPN on a test host */
+    fd = npf_udp_socket(AF_INET, 0, 1);             /* the built-in one: no VPN on a test host */
     CHECK(fd >= 0 && npf_vpn_bypass(fd, AF_INET, NULL) == 0, "built-in bypass without a VPN: nothing to do");
     npf_sock_close(fd);
     CHECK(npf_if_tunnel_name("utun3") && npf_if_tunnel_name("wg0") && npf_if_tunnel_name("tun0")

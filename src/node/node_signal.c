@@ -451,7 +451,7 @@ static npf_sig *ws_open(npf_node *n, int r, const char *how)
     npf_sigconn *c = &n->sc.c[r];
     npf_server_entry *f = &n->servers[c->server];
     npf_log("signaling: %s server %d %s", how, f->id, f->ws[c->url]);
-    return c->s = npf_sig_open(n->loop, f->ws[c->url], f->dh_pub, &n->id, &sig_cbs, n, !n->sig_via_vpn);
+    return c->s = npf_sig_open(n->loop, f->ws[c->url], f->dh_pub, &n->id, &sig_cbs, n, !n->cfg.secure && !n->sig_via_vpn);
 }
 
 static void move_arm(npf_node *n)
@@ -948,7 +948,7 @@ static void sc_arm(npf_node *n)
 static void sig_failed(npf_node *n, npf_sig *s, npf_sig_down code, const char *why)
 {
     int was_online = n->online;
-    if (!was_online && !is_udp(s) && npf_net_bypass_active()) {
+    if (!was_online && !is_udp(s) && !n->cfg.secure && npf_net_bypass_active()) {
         /* no login this time: the next attempt the other way (around a VPN, or
          * on the default route for servers reachable through the VPN only) */
         n->sig_via_vpn = !n->sig_via_vpn;

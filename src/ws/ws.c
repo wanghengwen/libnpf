@@ -30,6 +30,7 @@ struct npf_ws {
     char       path[512];
     char       key[32];             /* Sec-WebSocket-Key (base64) */
     buf        out, in;
+    size_t     out_off;             /* out's bytes before this are written */
     buf        frag;                /* fragmented message being assembled */
     int        frag_active;
     int        frag_binary;
@@ -70,6 +71,22 @@ static void buf_consume(buf *b, size_t n)
     }
 }
 
+/* out's bytes not written yet */
+static size_t out_left(const npf_ws *ws)
+{
+    return ws->out.len - ws->out_off;
+}
+
+/* the written front taken back before out grows: moving at most what is
+ * left, no more than was written since, not the queue at each write */
+static void out_compact(npf_ws *ws)
+{
+    if (ws->out_off && ws->out_off >= out_left(ws)) {
+        buf_consume(&ws->out, ws->out_off);
+        ws->out_off = 0;
+    }
+}
+
 static void buf_free(buf *b)
 {
     free(b->p);
@@ -97,9 +114,9 @@ static void ws_fail(npf_ws *ws, int code, const char *why)
  * loop reports it (not from inside a caller's send) */
 static int flush_out(npf_ws *ws)
 {
-    size_t off = 0;                     /* moved down once, not at each TLS record (16 KB of a 1 MB queue) */
+    size_t off = ws->out_off;
     int r = 0;
-    if (ws->out.len)
+    if (off < ws->out.len)
         ws->drained = 1;                /* reported (if still empty) when on_io returns */
     while (off < ws->out.len) {
         ssize_t w = npf_tcp_write(&ws->tcp, ws->out.p + off, ws->out.len - off);
@@ -111,7 +128,11 @@ static int flush_out(npf_ws *ws)
         }
         off += (size_t)w;
     }
-    buf_consume(&ws->out, off);
+    ws->out_off = off;
+    if (off == ws->out.len) {           /* all written: nothing to move */
+        buf_consume(&ws->out, off);
+        ws->out_off = 0;
+    }
     npf_loop_mod(ws->loop, ws->tcp.fd, NPF_EV_READ | (ws->out.len > 0 ? NPF_EV_WRITE : 0));
     return r;
 }
@@ -144,6 +165,7 @@ static int send_frame2(npf_ws *ws, int opcode, const void *head, size_t hlen, co
     hl += 4;
     /* Reserve the entire frame before changing out: an allocation failure
      * must not leave an orphan header in front of the next message. */
+    out_compact(ws);
     if (buf_room(&ws->out, hl + len))
         return -1;
     buf_put(&ws->out, h, hl);
@@ -322,7 +344,7 @@ static int parse_frames_at(npf_ws *ws, size_t *off)
         }
         case 0x9:
             /* RFC 6455 5.5.3: answering only the latest ping is enough */
-            if (ws->out.len <= PONG_ROOM && send_frame(ws, 0xA, p, (size_t)len))
+            if (out_left(ws) <= PONG_ROOM && send_frame(ws, 0xA, p, (size_t)len))
                 return -1;
             break;
         case 0xA:
@@ -462,13 +484,13 @@ int npf_ws_ping(npf_ws *ws)
 
 size_t npf_ws_pending(const npf_ws *ws)
 {
-    return ws->out.len;
+    return out_left(ws);
 }
 
 const char *npf_ws_diag(const npf_ws *ws, char *buf, size_t cap)
 {
     char k[200];
-    snprintf(buf, cap, "%zu B queued here, %s", ws->out.len,
+    snprintf(buf, cap, "%zu B queued here, %s", out_left(ws),
              ws->tcp.fd >= 0 ? npf_sock_tcp_diag(ws->tcp.fd, k, sizeof k) : "no socket");
     return buf;
 }

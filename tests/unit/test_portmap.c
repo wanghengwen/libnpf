@@ -80,14 +80,14 @@ int test_portmap_gw(void)
     pthread_create(&th, NULL, gateway, NULL);
 
     memset(&res, 0, sizeof res);
-    CHECK(npf_portmap_request(at, 4242, 3600, &res) == 0 && res.method == NPF_PORTMAP_PCP, "PCP mapping made");
+    CHECK(npf_portmap_request(at, 0, 4242, 3600, &res) == 0 && res.method == NPF_PORTMAP_PCP, "PCP mapping made");
     CHECK(res.internal_port == 4242 && res.external_port == 40000, "the reply for our port taken (%u -> %u)",
           res.internal_port, res.external_port);
 
-    CHECK(npf_portmap_remove(at, 4242, NPF_PORTMAP_PCP) == 0, "removed");
+    CHECK(npf_portmap_remove(at, 0, 4242, NPF_PORTMAP_PCP) == 0, "removed");
     __atomic_store_n(&gw_mode, 1, __ATOMIC_RELEASE);
     t0 = npf_mono_ms();
-    CHECK(npf_portmap_remove(at, 4242, NPF_PORTMAP_PCP) < 0, "a removal answered for another port does not count");
+    CHECK(npf_portmap_remove(at, 0, 4242, NPF_PORTMAP_PCP) < 0, "a removal answered for another port does not count");
     CHECK(npf_mono_ms() - t0 < 1000, "one short try (%lld ms)", (long long)(npf_mono_ms() - t0));
 
     __atomic_store_n(&gw_stop, 1, __ATOMIC_RELEASE);

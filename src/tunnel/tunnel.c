@@ -200,7 +200,7 @@ void tunnel_sub_free(sublink *s, int rst)
     if (s->vend >= VE_CLOSED)
         t->ngone--;
     tunnel_hs_done(s);
-    npf_timer_cancel(t->loop, s->t_due);
+    npf_timer_cancel(t->loop, &s->t_due);
     npf_resolve_cancel(s->resolve);
     if (s->v) {
         const npf_vend_io *v = s->v;
@@ -266,6 +266,7 @@ static sublink *sub_new(npf_tunnel *t, uint32_t id, int server, int hs)
     }
     s->t = t;
     s->id = id;
+    npf_timer_init(&s->t_due, tunnel_sub_timer, s);
     s->fd = -1;
     s->server = server;
     s->tx_credit = t->peer_window;
@@ -866,6 +867,7 @@ npf_tunnel *npf_tunnel_new(npf_loop *loop, int caller, const npf_tunnel_io *io, 
     if (!t)
         return NULL;
     t->loop = loop;
+    npf_timer_init(&t->t_virt, tunnel_virt_poll, t);
     t->caller = caller;
     t->io = *io;
     t->arg = arg;
@@ -921,7 +923,7 @@ static void tunnel_destroy(npf_tunnel *t)
 {
     tunnel_enter(t);
     npf_timer_stop(t->loop, &t->t_rate);
-    npf_timer_stop(t->loop, &t->t_virt);
+    npf_timer_cancel(t->loop, &t->t_virt);
     while (t->nsubs) {                      /* (dead: set by npf_tunnel_free) */
         sublink *s = t->subs[t->nsubs - 1];
         tunnel_sub_end(s, "session_ended");

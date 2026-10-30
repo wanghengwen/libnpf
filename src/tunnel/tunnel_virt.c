@@ -56,12 +56,11 @@ static void vends_closed(npf_tunnel *t)
             vend_close(t->subs[i]);
 }
 
-static void virt_poll(npf_loop *loop, void *arg)
+void tunnel_virt_poll(npf_loop *loop, void *arg)
 {
     npf_tunnel *t = arg;
     int round, busy = 1;
     (void)loop;
-    t->t_virt = NULL;
     t->in_poll = 1;
     tunnel_enter(t);
     vends_closed(t);
@@ -94,8 +93,8 @@ static void virt_poll(npf_loop *loop, void *arg)
 /* a poll soon (one at a time, not from inside one) */
 void npf_tunnel_vkick(npf_tunnel *t)
 {
-    if (!t->t_virt && !t->in_poll && !t->dead)
-        t->t_virt = npf_timer_add(t->loop, 0, virt_poll, t);
+    if (!npf_timer_pending(&t->t_virt) && !t->in_poll && !t->dead)
+        npf_timer_set(t->loop, &t->t_virt, 0);
 }
 
 /* the owner closed the virtual end: not called again from now on, the rest

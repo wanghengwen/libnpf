@@ -46,6 +46,7 @@ typedef struct npf_natprobe_cfg {
                                    filtering test */
     int      filter_test;       /* default 1 */
     int      main_fd;           /* the socket whose mapping is probed; -1 (default): npf_natprobe_run makes one */
+    int      bypass;            /* its own sockets go around a VPN (npf_udp_socket); default 1 */
 } npf_natprobe_cfg;
 
 typedef struct npf_natprobe_result {

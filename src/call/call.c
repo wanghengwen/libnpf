@@ -13,7 +13,7 @@
 #include "npf/why.h"
 
 #include "call_internal.h"
-#include "home.h"
+#include "../node/home.h"
 
 #define CALL_LIMIT_MS      25000  /* to be established, from the start and again from the accept */
 
@@ -61,7 +61,6 @@ static void call_timer(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
     (void)loop;
-    c->t_due = NULL;
     c->ticking = 1;
     call_tick(c, npf_mono_ms());
     c->ticking = 0;
@@ -72,9 +71,8 @@ void call_arm(npf_call *c, int64_t at)
 {
     if (call_over(c) || c->ticking || at == INT64_MAX)
         return;
-    npf_timer_stop(c->n->loop, &c->t_due);
     c->due_at = at;
-    c->t_due = npf_timer_add(c->n->loop, at - npf_mono_ms(), call_timer, c);
+    npf_timer_set(c->n->loop, &c->t_due, at - npf_mono_ms());
 }
 
 int64_t call_due(const npf_call *c, int64_t now)
@@ -139,6 +137,8 @@ npf_call *call_new(npf_node *n, int caller)
     }
     c->n = n;
     c->caller = caller;
+    npf_timer_init(&c->t_due, call_timer, c);
+    npf_timer_init(&c->pw.t_flush, path_ws_flush_timer, c);
     c->secure = n->cfg.secure;
     if (caller)
         n->calls_out++;
@@ -167,7 +167,7 @@ void call_free(npf_call *c)
         }
     if (n->relay_hit == c)
         n->relay_hit = NULL;
-    npf_timer_stop(n->loop, &c->t_due);
+    npf_timer_cancel(n->loop, &c->t_due);
     npf_timer_stop(n->loop, &c->t_free);    /* freed now (the node stops): not again */
     call_ws_leave_conn(c);
     call_punch_to(c, PN_IDLE, 0);
@@ -225,7 +225,7 @@ void call_close(npf_call *c, const char *why, int how)
         c->n->hooks.on_call_state(c->n, c, NPF_CALL_CLOSED, reason, c->n->hook_arg);
     call_ctl_fail_all(c);                   /* after CLOSED: the peers know the session is gone */
     call_punch_to(c, PN_IDLE, 0);
-    npf_timer_stop(c->n->loop, &c->t_due);
+    npf_timer_cancel(c->n->loop, &c->t_due);
     if (!c->t_free)
         c->t_free = npf_timer_add(c->n->loop, 0, free_later, c);
 }

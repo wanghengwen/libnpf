@@ -178,7 +178,7 @@ static void probe_done(int ok, const npf_natprobe_result *res, void *arg)
      * comes. Once, right after a restart, a sequential NAT was measured a
      * block (RN-16): no strategy with its sequential peer, an hour on the
      * relay where they had punched for days */
-    if (ok && !n->nat_again && !n->nat_quick
+    if (ok && !n->nat_again && !n->nat_quick && !n->cfg.secure      /* secure: not measured */
         && (res->alloc_doubt || (n->nat_valid && n->nat_udp && n->nat.allocation != NPF_ALLOC_UNKNOWN
                                  && n->nat.allocation != res->profile.allocation
                                  && n->pub_ip.s_addr == res->mapped[0].sin_addr.s_addr))) {
@@ -300,8 +300,11 @@ static int nat_probe_start(npf_node *n)
         memcpy(cfg.probe_key, pk, 32);
         memcpy(cfg.ticket, n->ticket, sizeof cfg.ticket);
         cfg.clock_offset_ms = n->clock_offset_ms;
-        cfg.alloc_sockets = n->nat_quick ? 0 : 4;  /* quick: a reopened socket, the NAT measured before */
+        /* quick: a reopened socket, the NAT measured before; secure: only
+         * whether UDP works (nothing else is reported nor punched) */
+        cfg.alloc_sockets = n->nat_quick || n->cfg.secure ? 0 : 4;
         cfg.main_fd = n->udp_fd;
+        cfg.bypass = !n->cfg.secure;
         if ((n->probe = npf_natprobe_start(n->loop, &cfg, probe_done, n)) != NULL)
             return 0;
     }
@@ -377,10 +380,9 @@ void npf_node_write_cands(npf_node *n, npf_out *w)
     int i, none = n->cfg.secure;      /* secure: none, the peer learns no address */
     char a[64];
     if (n->th.cands_late_ms) {  /* tests: none for this many ms after the first time (a node just come up) */
-        static int64_t first;
-        if (!first)
-            first = npf_mono_ms();
-        none |= npf_mono_ms() - first < n->th.cands_late_ms;
+        if (!n->cands_first_ms)
+            n->cands_first_ms = npf_mono_ms();
+        none |= npf_mono_ms() - n->cands_first_ms < n->th.cands_late_ms;
     }
     npf_out_jkey(w, "cand");
     npf_out_jarr(w);

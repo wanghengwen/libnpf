@@ -12,7 +12,7 @@
 #include "npf/platform.h"
 #include "npf/why.h"
 
-#include "msgs.h"
+#include "../node/msgs.h"
 
 int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
 {
@@ -57,7 +57,6 @@ int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
     cfg->punch_lead_ms = (int)npf_conf_int(conf, "punch_lead_ms");
     cfg->punch_sockets = (int)npf_conf_int(conf, "punch_sockets");
     cfg->secure = npf_conf_int(conf, "connect_mode") == 1;     /* p2p|secure */
-    npf_udp_hook_on(!cfg->secure);         /* p2p: the UDP sockets go around a VPN */
     cfg->no_portmap = !npf_conf_int(conf, "portmap");
     cfg->test_one_host = (int)npf_conf_int(conf, "test_one_host");     /* tests only */
     cfg->no_host_report = !npf_conf_int(conf, "report_host");

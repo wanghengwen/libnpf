@@ -146,7 +146,7 @@ static void ws_gives_up(npf_node *n, int caller)
 static int armed(const npf_call *c)
 {
     int64_t d = call_due(c, npf_mono_ms());
-    return d < INT64_MAX && c->t_due && c->due_at <= d;
+    return d < INT64_MAX && npf_timer_pending(&c->t_due) && c->due_at <= d;
 }
 
 /* the loop run until at, or until *flag (NULL none) is at least want */
@@ -184,7 +184,7 @@ static void deadline_invariant(npf_node *n, int caller)
     call_ws_failed(c, "relay connection closed");
     CHECK(c->pw.re_at && armed(c), "a WS relay to connect again");
     npf_call_end(c, "test");
-    CHECK(!c->t_due, "an ended call's timer");
+    CHECK(!npf_timer_pending(&c->t_due), "an ended call's timer");
 }
 
 static void deadline_moves(npf_node *n)

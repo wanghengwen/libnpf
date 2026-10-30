@@ -1225,9 +1225,9 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 信令编码与 Noise 承载 | [src/proto/sig.c](../../src/proto/sig.c) | binary WebSocket、JSON 接收与发送，两种承载的分派 |
 | UDP 承载 | [src/proto/sigudp.c](../../src/proto/sigudp.c)、[src/node/node_signal.c](../../src/node/node_signal.c) | 握手、cookie、传输、防重放、可靠层；选择、兜底与换回 |
 | 登录、事件与重连 | [src/node/node.c](../../src/node/node.c) | `login` / `enroll`、`keys` / `probe`、重定向、请求与 `call_end` 队列 |
-| 呼叫、打洞与中转 | [src/node/call.c](../../src/node/call.c) | 握手字段、`punch_*`、`relay_*`、会话期限与隧道控制 |
+| 呼叫、打洞与中转 | [src/call/call.c](../../src/call/call.c) | 握手字段、`punch_*`、`relay_*`、会话期限与隧道控制 |
 | NAT 与候选 | [src/node/nat.c](../../src/node/nat.c) | 画像、`pred` 候选、报告与 UDP 恢复 |
-| 默认被叫 | [src/node/callee.c](../../src/node/callee.c) | 绑定、配对同步、锁定报告、`grant` 与撤销处理 |
+| 默认被叫 | [src/service/callee.c](../../src/service/callee.c) | 绑定、配对同步、锁定报告、`grant` 与撤销处理 |
 | 应用的平台请求入口 | [src/api/platform.c](../../src/api/platform.c)、[src/node/node_signal.c](../../src/node/node_signal.c) | 应用请求的标记 `app`、登录密钥证明；账户会话按 `account` 事件（`node_on_account`） |
 | 资源事件 | [src/api/publish.c](../../src/api/publish.c) | 隧道内 `resources` 推送 |
 

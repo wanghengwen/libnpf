@@ -80,7 +80,7 @@ static const npf_vend_io k_vend = {v_read, v_write, v_ready, v_shutdown, v_close
 static int armed(const sublink *s)
 {
     int64_t d = tunnel_sub_due(s);
-    return d == INT64_MAX ? s->t_due == NULL : s->t_due != NULL && s->due_at == d;
+    return d == INT64_MAX ? !npf_timer_pending(&s->t_due) : npf_timer_pending(&s->t_due) && s->due_at == d;
 }
 
 /* about now + ms (the deadline was set between t0 and now) */
@@ -219,7 +219,7 @@ static void client_side(npf_tunnel *t)
     npf_tunnel_vclose(t, (uint32_t)id, 0);
     npf_loop_once(loop, 0);
     s = tunnel_find(t, (uint32_t)id);
-    CHECK(s && s->vend == VE_GONE && s->t_due, "another one waits for the FIN");
+    CHECK(s && s->vend == VE_GONE && npf_timer_pending(&s->t_due), "another one waits for the FIN");
     npf_le32(m, (uint32_t)id);
     npf_tunnel_input_data(t, m, 4);
     CHECK(npf_tunnel_count(t) == 0, "its FIN: released");

@@ -273,12 +273,11 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
 
 /* ---- the sublink's one timer (architecture.md 3.10) ---- */
 
-static void sub_timer(npf_loop *loop, void *arg)
+void tunnel_sub_timer(npf_loop *loop, void *arg)
 {
     sublink *s = arg;
     npf_tunnel *t = s->t;
     (void)loop;
-    s->t_due = NULL;
     tunnel_enter(t);                    /* sublink_done may free the tunnel */
     if (tunnel_sub_tick(s, npf_mono_ms()) == 0)
         sub_arm(s);
@@ -288,11 +287,12 @@ static void sub_timer(npf_loop *loop, void *arg)
 static void sub_arm(sublink *s)
 {
     int64_t d = tunnel_sub_due(s);
-    if (s->t_due && d == s->due_at)
+    if (npf_timer_pending(&s->t_due) && d == s->due_at)
         return;
-    npf_timer_stop(s->t->loop, &s->t_due);
     if (d != INT64_MAX)
-        s->t_due = npf_timer_add(s->t->loop, d - npf_mono_ms(), sub_timer, s);
+        npf_timer_set(s->t->loop, &s->t_due, d - npf_mono_ms());
+    else
+        npf_timer_cancel(s->t->loop, &s->t_due);
     s->due_at = d;
 }
 

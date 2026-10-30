@@ -303,6 +303,7 @@ struct npf_node {
     /* counters for status */
     int64_t       started_unix_ms;  /* npf_node_init's wall clock */
     int64_t       started_mono_ms;
+    int64_t       cands_first_ms;   /* tests (cands_late_ms): the first offer's candidates */
     int64_t       last_login_unix_ms;   /* the last welcome, 0 none */
     int           logins;           /* welcomes since the start */
     int           calls_out, calls_in;  /* sessions started / incoming calls (platform and direct) */
@@ -674,8 +675,7 @@ void npf_node_set_secure(npf_node *n, int on);
 struct npf_conf;
 /* Fills cfg (zeroed first) from conf's platform and network keys; the
  * program sets callable, number, model, fw, app, enroll and offline.
- * Strings point into conf, which must outlive cfg. Also sets the
- * process-wide npf_udp_hook_on: on unless connect_mode is secure.
+ * Strings point into conf, which must outlive cfg.
  * 0, or -1 (logged): no or bad root, or server without server_pub. */
 int npf_node_cfg_from_conf(npf_node_cfg *cfg, const struct npf_conf *conf);
 /* Applies conf's log_level to the log; always 0 (the key table checked it). */

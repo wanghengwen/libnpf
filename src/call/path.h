@@ -12,7 +12,7 @@
 #include "npf/loop.h"
 #include "npf/siv.h"
 #include "npf/wsrelay.h"
-#include "relay_bind.h"
+#include "../node/relay_bind.h"
 
 enum { PK_DIRECT, PK_UDP_RELAY, PK_WS_RELAY, PK_N };     /* kinds, by rank: direct > UDP relay > WS relay */
 /* health: NEW not proven yet (a UDP relay binding, a WS relay not paired),
@@ -81,7 +81,7 @@ typedef struct path_ws {
     uint8_t  id[8];                 /* the allocation's id */
     npf_siv_keys keys;              /* ... its alloc_key's (LABEL_RELAY): the binds */
     uint64_t kseq;                  /* ... the last bind's (one each connection) */
-    npf_timer *t_flush;             /* the datagrams queued this turn of the loop go out in one write */
+    npf_timer t_flush;              /* the datagrams queued this turn of the loop go out in one write */
     int64_t  re_at;                 /* connected again after a loss; a connection made again: paired by then */
     int      paired_once;           /* it worked at least once */
     int      fails;                 /* connections made again in a row that did not pair (5: DEAD) */

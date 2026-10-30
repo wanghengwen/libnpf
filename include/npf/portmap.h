@@ -34,24 +34,25 @@ int  npf_natpmp_build_map(uint8_t out[12], uint16_t internal_port, uint16_t sugg
 int  npf_natpmp_parse_map(const uint8_t *in, size_t len, npf_portmap *res);
 
 /* at, in the three below: a gateway "IP:PORT" (IPv4) to use instead of the
- * default route's (tests), or NULL. */
+ * default route's (tests), or NULL; bypass: the socket goes around a VPN
+ * (npf_udp_socket). */
 
 /* Maps UDP internal_port (the same external port asked for), PCP first,
  * then NAT-PMP, 4 tries each (250 ms doubling). Blocks up to ~7.5 s: the
  * node calls it on a thread of its own. Only a success reply for
  * internal_port with an external port counts. 0 with res filled, -2 without
  * a gateway, -1 without an answer. */
-int  npf_portmap_request(const char *at, uint16_t internal_port, uint32_t lifetime, npf_portmap *res);
+int  npf_portmap_request(const char *at, int bypass, uint16_t internal_port, uint32_t lifetime, npf_portmap *res);
 
 /* Removes the mapping of internal_port with the method that made it: one
  * try, blocking up to 250 ms (an unremoved mapping ends with its lifetime).
  * 0, or -1. */
-int  npf_portmap_remove(const char *at, uint16_t internal_port, int method);
+int  npf_portmap_remove(const char *at, int bypass, uint16_t internal_port, int method);
 
 /* The network the gateway is on, to notice a change: the gateway's IPv4
  * address << 32 | this host's address toward it (both network order; 0 when
  * unknown). No packet is sent. 0 without a gateway. */
-uint64_t npf_portmap_net(const char *at);
+uint64_t npf_portmap_net(const char *at, int bypass);
 
 /* "none", "PCP", "NAT-PMP" (static; out of range: "none") */
 const char *npf_portmap_method_str(int method);

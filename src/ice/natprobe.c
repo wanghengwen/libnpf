@@ -132,11 +132,11 @@ static int tx_step(const npf_natprobe_cfg *cfg, const npf_siv_keys *keys, tx *tx
 }
 
 /* a fresh non-blocking UDP socket on any port: its port in *local_port */
-static int udp_socket(uint16_t *local_port)
+static int udp_socket(int bypass, uint16_t *local_port)
 {
     struct sockaddr_in a;
     socklen_t alen = sizeof(a);
-    int fd = npf_udp_socket(AF_INET, 0);
+    int fd = npf_udp_socket(AF_INET, 0, bypass);
     if (fd < 0)
         return -1;
     memset(&a, 0, sizeof(a));
@@ -357,6 +357,7 @@ void npf_natprobe_cfg_init(npf_natprobe_cfg *cfg)
     cfg->alloc_sockets = 8;
     cfg->filter_test = 1;
     cfg->main_fd = -1;
+    cfg->bypass = 1;
 }
 
 /* ---- event-driven (roadmap 1.1, review R8) ----
@@ -451,7 +452,7 @@ static void ev_pump(npf_natprobe *p)
         now = npf_mono_ms();
         for (i = 0; i < k; i++) {
             uint16_t lp;
-            int s = udp_socket(&lp);
+            int s = udp_socket(p->cfg.bypass, &lp);
             if (s < 0)
                 break;
             if (npf_loop_add(p->loop, s, NPF_EV_READ, ev_alloc_cb, p) < 0) {
@@ -590,7 +591,7 @@ int npf_natprobe_run(const npf_natprobe_cfg *cfg, npf_natprobe_result *res)
     if (!loop)
         return -1;
     if (c.main_fd < 0)
-        c.main_fd = own = udp_socket(&lp);
+        c.main_fd = own = udp_socket(c.bypass, &lp);
     if (c.main_fd >= 0 && npf_loop_add(loop, c.main_fd, NPF_EV_READ, run_input, &r) == 0) {
         if ((r.p = npf_natprobe_start(loop, &c, run_done, &r)) != NULL)
             while (!r.done)

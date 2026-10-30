@@ -886,12 +886,12 @@ void npf_node_dump(npf_node *n)
             if (c->stream)
                 anl_stream_get_stats(c->stream, &ss);
             fprintf(stderr, "  anl: waitsnd=%d state=%d srtt=%u rto=%u min_rtt=%u cwnd=%u inflight=%u pace=%u bw=%u cc=%d "
-                    "retrans=%u tx=%llu rx=%llu authfail=%llu stale=%llu rcv_bytes=%u t_due=%p | stream state=%d "
+                    "retrans=%u tx=%llu rx=%llu authfail=%llu stale=%llu rcv_bytes=%u t_due=%d | stream state=%d "
                     "rmt_wnd=%u backlog=%u\n",
                     c->stream ? anl_stream_waitsnd(c->stream) : -1, anl_state(c->anl), st.srtt, st.rto, st.min_rtt, st.cwnd,
                     st.inflight, st.pace_rate, st.bw_estimate, st.cc_state, st.retrans, (unsigned long long)st.tx_datagrams,
                     (unsigned long long)st.rx_datagrams, (unsigned long long)st.rx_auth_fail,
-                    (unsigned long long)st.rx_stale, st.rcv_bytes, (void *)c->t_due, ss.state, ss.rmt_wnd,
+                    (unsigned long long)st.rx_stale, st.rcv_bytes, npf_timer_pending(&c->t_due), ss.state, ss.rmt_wnd,
                     ss.backlog_bytes);
         }
         if (c->tun)

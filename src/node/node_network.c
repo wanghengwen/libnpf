@@ -51,7 +51,7 @@ static int udp_open(npf_node *n, int fam, uint16_t port, uint16_t *bound)
 {
     struct sockaddr_storage a;
     socklen_t al = sizeof a;
-    int fd = npf_udp_socket(fam, 0), one = 1, sz = 4 << 20;
+    int fd = npf_udp_socket(fam, 0, !n->cfg.secure), one = 1, sz = 4 << 20;
     if (fd < 0)
         return -1;
     if (fam == AF_INET6)
@@ -272,7 +272,6 @@ void npf_node_set_secure(npf_node *n, int on)
     if (n->cfg.secure == (on != 0))
         return;
     n->cfg.secure = on != 0;
-    npf_udp_hook_on(!on);
     npf_log("connect_mode %s: %s", on ? "secure" : "p2p",
             on ? "relays only, no address to the peers, a VPN kept" : "direct paths first, around a VPN");
     npf_node_report_nat(n);

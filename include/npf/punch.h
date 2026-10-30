@@ -90,6 +90,7 @@ typedef struct npf_punch_cfg {
     uint8_t  prio[NPF_PUNCH_MAX_PEERS]; /* their priority (10.1): host6 4, mapped 3, host4 2, else 1; 0: 1 */
     int      fd6;                   /* the node's IPv6 socket for IPv6 peers, -1: none */
     int      test_deaf;             /* tests: the peer's PROBE / PROBE_ACK are dropped */
+    int      bypass;                /* its own sockets go around a VPN (npf_udp_socket) */
     /* S2B, S2's hard side: probe servers E1 (the fresh socket's mapping) and
      * E2 (S2B's controlling side: one more mapping before each pass), with
      * their key, ticket and clock offset; info gets the measured port (for

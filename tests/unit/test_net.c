@@ -111,6 +111,51 @@ int main(void)
     REQUIRE(tcp_next(&ws->tcp) == 0);
     LOOP_UNTIL(loop, ws->state != ST_CONNECTING, 2000);
     REQUIRE(ws->state == ST_UPGRADE && ws->tcp.icand == 2);
+    {   /* a peer reading slowly: what is left is written later, in order, frames queued meanwhile behind it */
+        static uint8_t got[1 << 21], msg[1000];
+        size_t glen = 0, at = 0;
+        int64_t t0;
+        int peer = accept(server, NULL, NULL), small = 4096, i, k, partial = 0;
+        REQUIRE(peer >= 0 && fcntl(peer, F_SETFL, O_NONBLOCK) == 0);
+        setsockopt(ws->tcp.fd, SOL_SOCKET, SO_SNDBUF, (const char *)&small, sizeof small);
+        for (k = 0; k < 1000 && !find_mem(got, glen, "\r\n\r\n", 4); k++) {     /* the upgrade request */
+            ssize_t r;
+            REQUIRE(flush_out(ws) == 0);
+            r = recv(peer, (char *)got + glen, 8192, 0);
+            glen += r > 0 ? (size_t)r : 0;
+        }
+        REQUIRE(ws->out.len == 0 && find_mem(got, glen, "\r\n\r\n", 4) == (char *)got + glen - 4);
+        glen = 0;
+        ws->state = ST_OPEN;
+        for (i = 0; i < 1500; i++) {
+            memset(msg, (uint8_t)i, sizeof msg);
+            msg[0] = (uint8_t)(i >> 8);
+            REQUIRE(send_frame(ws, 2, msg, sizeof msg) == 0);
+            if (i % 20 == 19) {
+                REQUIRE(flush_out(ws) == 0);
+                partial |= ws->out_off > 0;
+            }
+            if (i % 40 == 39) {
+                ssize_t r = recv(peer, (char *)got + glen, 8192, 0);
+                glen += r > 0 ? (size_t)r : 0;
+            }
+        }
+        for (t0 = npf_mono_ms(); npf_mono_ms() - t0 < 5000 && (out_left(ws) || glen < 1500 * 1008);) {
+            ssize_t r;
+            REQUIRE(flush_out(ws) == 0);
+            r = recv(peer, (char *)got + glen, sizeof got - glen, 0);
+            glen += r > 0 ? (size_t)r : 0;
+        }
+        REQUIRE(ws->out.len == 0 && ws->out_off == 0 && glen == 1500 * 1008);
+        for (i = 0; i < 1500; i++, at += 1008) {    /* 2 + 2 (126) + 4 (mask) + 1000 */
+            const uint8_t *f = got + at, *m = f + 4;
+            REQUIRE(f[0] == 0x82 && f[1] == (0x80 | 126) && f[2] == 1000 >> 8 && f[3] == (1000 & 255));
+            REQUIRE((f[8] ^ m[0]) == (uint8_t)(i >> 8) && (f[9] ^ m[1]) == (uint8_t)i
+                    && (f[1007] ^ m[999 & 3]) == (uint8_t)i);
+        }
+        REQUIRE(partial);
+        npf_sock_close(peer);
+    }
     npf_ws_free(ws);
     h = calloc(1, sizeof *h);
     h->loop = loop; h->max = 1024; h->fn = discard_http;

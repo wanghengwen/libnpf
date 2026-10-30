@@ -21,6 +21,18 @@ typedef struct npf_timer npf_timer;
 typedef void (*npf_io_fn)(npf_loop *loop, int fd, unsigned events, void *arg);
 typedef void (*npf_timer_fn)(npf_loop *loop, void *arg);
 
+/* A timer: npf_timer_add's (allocated, one-shot), or embedded in its owner
+ * (npf_timer_init / npf_timer_set: no allocation, set again any number of
+ * times). The fields are the loop's. */
+struct npf_timer {
+    int64_t      due;
+    uint64_t     seq;           /* equal due: in the order set */
+    npf_timer_fn fn;
+    void        *arg;
+    int          pos;           /* 1 + its index in the loop's heap; 0 not pending (also while it fires) */
+    int          owned;         /* npf_timer_add's: freed once it fired or was cancelled */
+};
+
 npf_loop *npf_loop_new(void);                  /* NULL on failure */
 void      npf_loop_free(npf_loop *loop);
 
@@ -36,8 +48,9 @@ void npf_loop_del(npf_loop *loop, int fd);
  * timer's callback runs no earlier than the next round. The handle is valid
  * until fn returns or the timer is cancelled; NULL when out of memory. */
 npf_timer *npf_timer_add(npf_loop *loop, int64_t delay_ms, npf_timer_fn fn, void *arg);
-/* Cancels a pending timer. t may be NULL, or the timer whose callback is
- * running (then nothing happens). */
+/* Cancels a pending timer (npf_timer_add's is freed). t may be NULL, the
+ * timer whose callback is running, or an embedded one not pending (then
+ * nothing happens). */
 void       npf_timer_cancel(npf_loop *loop, npf_timer *t);
 /* Cancels *t (if set) and clears it. */
 static inline void npf_timer_stop(npf_loop *loop, npf_timer **t)
@@ -45,6 +58,16 @@ static inline void npf_timer_stop(npf_loop *loop, npf_timer **t)
     npf_timer_cancel(loop, *t);
     *t = NULL;
 }
+
+/* An embedded timer, for one its owner sets again and again (a session's,
+ * a connection's): init once (a zeroed one is not pending either), then
+ * npf_timer_set and npf_timer_cancel as often as needed, also from its own
+ * callback; cancel it before the owner goes. set (re)schedules it delay_ms
+ * from now, moved within the heap when pending: 0, or -1 when out of memory
+ * (it is then not pending). The same ordering as npf_timer_add's. */
+void npf_timer_init(npf_timer *t, npf_timer_fn fn, void *arg);
+int  npf_timer_set(npf_loop *loop, npf_timer *t, int64_t delay_ms);
+static inline int npf_timer_pending(const npf_timer *t) { return t->pos != 0; }
 
 /* Runs the loop until npf_loop_stop. npf_loop_stop may be called from any
  * thread or a signal handler, also before npf_loop_run; it stays stopped. */

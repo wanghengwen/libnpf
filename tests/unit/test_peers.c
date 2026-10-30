@@ -225,7 +225,7 @@ static void due_ok(const npf_peer *p, const char *step)
     int64_t d = peer_due(p);
     CHECK(!peer_waits(p) || (p->retry_at && d <= p->retry_at),
           "%s: waiting to (re)start, with its deadline", step);
-    CHECK(d == INT64_MAX || (p->t_due && p->due_at <= d), "%s: the timer no later than the deadline", step);
+    CHECK(d == INT64_MAX || (npf_timer_pending(&p->t_due) && p->due_at <= d), "%s: the timer no later than the deadline", step);
 }
 
 /* the session ends (the peer hears it closed) */
@@ -391,7 +391,7 @@ static void test_states(npf_loop *loop)
     /* removed: freed at the next turn, once; a callback's removal too */
     n0 = npf_peers_count(sps);
     npf_peers_remove(sps, q);
-    CHECK(q->st == PS_REMOVED && peer_due(q) == 0 && q->t_due && npf_peers_count(sps) == n0 - 1,
+    CHECK(q->st == PS_REMOVED && peer_due(q) == 0 && npf_timer_pending(&q->t_due) && npf_peers_count(sps) == n0 - 1,
           "removed: its timer due now");
     npf_peers_remove(sps, q);
     CHECK(sps->gone == q && !q->gone_next, "removed again: nothing more");

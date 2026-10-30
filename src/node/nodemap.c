@@ -33,6 +33,7 @@ enum { PM_GW_UNKNOWN = 0, PM_GW_MAP, PM_GW_PRIVATE, PM_GW_NONE, PM_GW_NOGW };
 typedef struct pm_job {
     npf_node   *n;
     const char *gw;                 /* n->th.portmap_gw */
+    int         bypass;             /* !n->cfg.secure */
     uint16_t    port;
     uint32_t    lifetime;
     int         ret;                /* npf_portmap_request */
@@ -114,7 +115,7 @@ static void pm_deliver(npf_loop *loop, void *arg)
 static void pm_work(void *arg)
 {
     pm_job *j = arg;
-    j->ret = npf_portmap_request(j->gw, j->port, j->lifetime, &j->res);
+    j->ret = npf_portmap_request(j->gw, j->bypass, j->port, j->lifetime, &j->res);
     PM_LOCK();                              /* the node (and its loop) still there while not cancelled */
     if (j->cancelled || npf_loop_post_drop(j->n->loop, pm_deliver, free, j) < 0) {
         PM_UNLOCK();
@@ -144,6 +145,7 @@ static void pm_request(npf_node *n)
         return;
     j->n = n;
     j->gw = n->th.portmap_gw;
+    j->bypass = !n->cfg.secure;
     j->port = n->udp_port;
     j->lifetime = PM_LEASE_S;
     n->pm_job = j;
@@ -165,7 +167,7 @@ void node_portmap_start(npf_node *n)
 {
     if (n->cfg.offline || n->cfg.no_portmap)
         return;
-    n->pm_net = npf_portmap_net(n->th.portmap_gw);
+    n->pm_net = npf_portmap_net(n->th.portmap_gw, !n->cfg.secure);
     pm_request(n);
 }
 
@@ -173,7 +175,7 @@ void node_portmap_stop(npf_node *n)
 {
     pm_forget(n);
     if (n->pm_ok) {                         /* one short try: a gateway gone silent does not hold up the stop */
-        npf_portmap_remove(n->th.portmap_gw, n->udp_port, n->pm.method);
+        npf_portmap_remove(n->th.portmap_gw, !n->cfg.secure, n->udp_port, n->pm.method);
         n->pm_ok = 0;
     }
 }
@@ -191,7 +193,7 @@ void node_portmap_restart(npf_node *n)
 void node_portmap_net_change(npf_node *n)
 {
     uint64_t net;
-    if (n->cfg.offline || n->cfg.no_portmap || (net = npf_portmap_net(n->th.portmap_gw)) == n->pm_net)
+    if (n->cfg.offline || n->cfg.no_portmap || (net = npf_portmap_net(n->th.portmap_gw, !n->cfg.secure)) == n->pm_net)
         return;                             /* the same gateway, the same address toward it */
     npf_logd("portmap: another network: the router's mapping asked for again");
     n->pm_net = net;

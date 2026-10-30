@@ -80,7 +80,7 @@ typedef struct sigudp {
     npf_sig_send_fn    send_fn;          /* not "send": Winsock's macro (npf/sys.h) */
     struct sockaddr_in srv;
     npf_sig_cookie    *ck;
-    npf_timer         *t;               /* the next hello, else the RTO */
+    npf_timer          t;               /* the next hello, else the RTO (embedded: npf/loop.h) */
     int                state;
     const char        *fail;            /* a failure to report from the timer (not inside a send) */
     /* the handshake */
@@ -158,8 +158,7 @@ static void hello_due(npf_sig *s)
     }
     hello_send(s);
     u->nhello++;
-    u->t = npf_timer_add(u->loop, u->t0 + (u->nhello < NHELLO ? hello_at[u->nhello] : GIVE_UP_MS) - npf_mono_ms(),
-                         timer_cb, s);
+    npf_timer_set(u->loop, &u->t, u->t0 + (u->nhello < NHELLO ? hello_at[u->nhello] : GIVE_UP_MS) - npf_mono_ms());
 }
 
 /* RTO = SRTT + 4 RTTVAR in [200 ms, 1 s]; no sample yet: 1 s */
@@ -188,9 +187,10 @@ static void arm(npf_sig *s)
     sigudp *u = s->udp;
     if (u->fail)
         return;                         /* its timer runs */
-    npf_timer_stop(u->loop, &u->t);
     if (u->state == SU_FINISH || in_flight(u))
-        u->t = npf_timer_add(u->loop, u->rto, timer_cb, s);
+        npf_timer_set(u->loop, &u->t, u->rto);
+    else
+        npf_timer_cancel(u->loop, &u->t);
 }
 
 static void cookie_in(npf_sig *s, const uint8_t *c)
@@ -349,7 +349,7 @@ static void try_send(npf_sig *s)
         seg_send(s, u->snd_nxt, 1);
         u->snd_nxt++;
     }
-    if (!u->t && in_flight(u))
+    if (!npf_timer_pending(&u->t) && in_flight(u))
         arm(s);
 }
 
@@ -524,7 +524,6 @@ static void timer_cb(npf_loop *loop, void *arg)
     npf_sig *s = arg;
     sigudp *u = s->udp;
     (void)loop;
-    u->t = NULL;
     sig_enter(s);
     if (u->fail)
         fail(s, "closed", u->fail);
@@ -558,8 +557,7 @@ static int su_send(npf_sig *s, const char *json, size_t len)
         return -1;
     if (u->nq >= QUEUE_MAX) {           /* closed from the loop, not under the caller */
         u->fail = "udp: send queue full";
-        npf_timer_stop(u->loop, &u->t);
-        u->t = npf_timer_add(u->loop, 0, timer_cb, s);
+        npf_timer_set(u->loop, &u->t, 0);
         return -1;
     }
     if (!(m = malloc(sizeof *m + len)))
@@ -614,7 +612,7 @@ static void su_free(npf_sig *s)
     sigudp *u = s->udp;
     omsg *m;
     int i;
-    npf_timer_cancel(u->loop, u->t);
+    npf_timer_cancel(u->loop, &u->t);
     while ((m = u->q) != NULL) {
         u->q = m->next;
         npf_wipe_free(m, sizeof *m + m->len);
@@ -645,6 +643,7 @@ npf_sig *npf_sig_open_udp(npf_loop *loop, npf_sig_send_fn send, const struct soc
     s->arg = arg;
     s->udp = u;
     u->loop = loop;
+    npf_timer_init(&u->t, timer_cb, s);
     u->send_fn = send;
     u->srv = *server;
     u->ck = cookie;

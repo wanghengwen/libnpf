@@ -52,7 +52,6 @@ static void peer_timer(npf_loop *loop, void *arg)
 {
     npf_peer *p = arg;
     (void)loop;
-    p->t_due = NULL;
     if (p->st == PS_REMOVED) {              /* the turn after npf_peers_remove */
         peer_free_now(p);
         return;
@@ -64,11 +63,10 @@ static void peer_timer(npf_loop *loop, void *arg)
 void peers_at(npf_peer *p, int64_t at)
 {
     int64_t d = at - npf_mono_ms();
-    if (at == INT64_MAX || (p->t_due && at >= p->due_at))
+    if (at == INT64_MAX || (npf_timer_pending(&p->t_due) && at >= p->due_at))
         return;
-    npf_timer_stop(p->ps->n->loop, &p->t_due);
     p->due_at = at;
-    p->t_due = npf_timer_add(p->ps->n->loop, d > 0 ? d : 0, peer_timer, p);
+    npf_timer_set(p->ps->n->loop, &p->t_due, d);
 }
 
 static int64_t earliest(int64_t d, int64_t at)
@@ -503,7 +501,7 @@ static void peer_free_now(npf_peer *p)
             break;
         }
     peer_drop(p);                           /* its waiting queues emptied and freed too */
-    npf_timer_stop(p->ps->n->loop, &p->t_due);
+    npf_timer_cancel(p->ps->n->loop, &p->t_due);
     for (i = 0; i < p->nfwd; i++) {
         free(p->fwds[i]->acl);
         npf_wipe_free(p->fwds[i], sizeof *p->fwds[i]);
@@ -674,6 +672,7 @@ npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, siz
         return NULL;
     }
     p->ps = ps;
+    npf_timer_init(&p->t_due, peer_timer, p);
     memcpy(p->name, name, strlen(name) + 1);        /* it fits: checked above */
     p->number = pn->number;
     if (!pn->number) {
