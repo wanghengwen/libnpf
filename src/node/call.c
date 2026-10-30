@@ -252,25 +252,8 @@ void call_close(npf_call *c, const char *why, int how)
     call_ctl_fail_all(c);                   /* after CLOSED: the peers know the session is gone */
     call_punch_to(c, PN_IDLE, 0);
     npf_timer_stop(c->n->loop, &c->t_due);
-    if (!c->t_free) {
+    if (!c->t_free)
         c->t_free = npf_timer_add(c->n->loop, 0, free_later, c);
-        if (!c->t_free) {
-            /* OOM: cannot defer. Drop sockets and AnLiu now; unlink so the
-             * session slot frees. The struct leaks until the process ends —
-             * freeing here would UAF a callback still on the stack. */
-            npf_call **pp;
-            call_data_free(c);
-            call_anl_drop(c);
-            call_p2p_drop(c);
-            for (pp = &c->n->calls; *pp; pp = &(*pp)->next)
-                if (*pp == c) {
-                    *pp = c->next;
-                    break;
-                }
-            npf_logw("call %s: closed with no free timer (out of memory); slot released, struct leaked",
-                     c->call_id_s);
-        }
-    }
 }
 
 void npf_call_info_get(const npf_call *c, npf_call_info *i)
