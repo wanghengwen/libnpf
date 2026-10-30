@@ -617,12 +617,12 @@ target_link_libraries(acme-app PRIVATE npf_common)
 
 - 钩子均可选。`create` 在 `npf_create` 的调用线程上、恢复保存的对端之前执行；正常销毁时，`destroy` 在 `npf_destroy` 的调用线程上执行。创建失败的清理在创建线程执行；从未运行的实例销毁前会调用 `end(2)`。`end` 按注册顺序执行，`destroy` 按相反顺序执行；
 - 运行中的业务钩子在实例线程执行，包括 `begin`、分步结束的 `end`、登录、平台事件、账户与会话状态等。启动前调用命令、查询或设置，也可能在调用线程触发对应钩子，不能假定所有钩子都在后台线程执行；
-- 对端钩子覆盖连接、结束、转发变化（`peer_up`、`peer_done`、`peer_fwd`），平台公网映射的连接（`peer_opened`、`peer_conn`、`peer_refused`），以及删除（`peer_removing`、`peer_removed`）。`peer_removing` 返回 1 表示模块将重新打开对端；`sig_busy` 返回非零可在模块仍有业务时保持信令连接；
+- 对端钩子覆盖连接、结束、转发变化（`peer_up`、`peer_done`、`peer_fwd`），平台公网映射的连接（`peer_opened`、`peer_conn`、`peer_refused`），以及删除（`peer_removing`、`peer_removed`）。`peer_removing` 返回 1 表示模块将重新打开对端；模块自己删对端时调用 `npf_mods_peer_remove`，它在删除前后调这两个钩子；`sig_busy` 返回非零可在模块仍有业务时保持信令连接；
 - 本地记录变更可触发 `nick_set` 和 `fwds_saved`，分别通知备注和保存的转发列表变化。这些钩子不代表磁盘写入成功；调用方仍要检查保存结果；
 - 模块命令通过 `npf_command` 调用。模块还可提供状态 JSON 的键和配置键（状态的文字由程序自己的命令给出，库里没有）。配置键是与库自己的键同一种表（`npf_key`：类型、范围或取值、缺省、标志 `NPF_K_FILE` / `LIVE` / `SECRET` / `PATH` / `MULTI`），库按表检查每个来源（npf.conf、`overrides`、local.json、`npf_config_set`）、拒绝只能来自 npf.conf 的键、隐藏秘密、把 `LIVE` 的列在 `npf_config_json` 里；`npf_key_find` 认得已注册模块的键，所以程序在读 npf.conf 之前注册模块（`npf_conf_load` 才知道哪些键是路径）。`conf_set` 在支持即时更新的配置（库的 `log_level`、`peer_idle`，模块自己的 `LIVE` 键）生效后调用；
 - 模块发给平台的请求（`npf_node_request`）与会话的控制请求（`npf_call_ctl_request`）的应答回调拿到解析好的信封 `npf_env`（`status`、`error`、`message`，`data` 是 `j` 里数据对象的位置），没有应答（连接或会话断了）时为 `NULL`；
 - 一种新的转发：在 `create` 钩子里用 `npf_peers_add_kind` 登记一个 `npf_fwd_kind`（大写字母，以及解析、检查、建立、撤销的回调），用 `npf_peer_forward_add_kind` 加到对端上，库像本地转发一样保存、重试、随对端删除；`npf_peers_fwd_call` 给出这条转发所在的会话；
-- 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`），库原样保留；
+- 模块可以在 local.json 的设备记录里保存自己的键（`npf_local_ext` / `npf_local_ext_set`，键最长 `NPF_LOCAL_EXT_KEY` 即 47 字节，更长的被拒），库原样保留；
 - 状态 JSON 里模块的字段和库的字段在同一个对象里，模块应使用带自己前缀的键名，避免与库现有或以后的字段重名；
 - JSON 的读与写都在 `include/npf/json.h`（`src/proto/json.c`）：读是严格的 token 式解析（`npf_json_parse`，自己的大 JSON 如 local.json、状态用 `npf_json_parse_big`，token 在堆上），写在 `npf_out`（`include/npf/out.h`，通用的可增长文字缓冲）上：`npf_out_jobj` / `jarr` / `jend` 开合容器，`npf_out_kstr` / `kint` / `kbool` / `kb64` 写成员、`jstr` / `jint` 等写数组项，逗号与转义（键也转义）由它负责；模块发给平台的消息（`npf_node_send`、`npf_node_request` 的 `data`）也这样写，`w.failed` 为真时不发，用完 `npf_out_free`。`max` 限定总长（库的信封是 `NPF_JSON_MAX_SIZE`），`secret` 让含口令的文字在增长与释放时擦除；
 - `tests/api/test_module.c` 是一个完整的例子：注册（重复、冲突、上限）、命令、配置键的检查、即时生效与只能来自 npf.conf 的键、`conf_set`、状态字段、销毁、创建失败时的清理，以及注册之前创建的实例。
