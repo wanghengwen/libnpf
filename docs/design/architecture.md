@@ -83,7 +83,7 @@
 | 对象 | 定义 | 拥有 | 定时器 | 状态 |
 |---|---|---|---|---|
 | `npf_t` | `include/npf/module.h` `struct npf`（`src/api's own from here on` 之后是 API 自己的） | 配置（`conf`、`lc`）、身份、`callee`、事件循环、`npf_node`、`npf_peers`、资源、直连监听、会话与媒体编号表、模块 | 无 | `started`、`running`、`stopping`、`ended`、`torn_down`、`end_stage` |
-| `npf_node` | `include/npf/node.h` | 信令（`sig`、`race`、`sig_move`、`sig_old`）、服务器列表、UDP 套接字、NAT 画像与候选、端口映射、`home`、`calls`、`conv_tab`、密钥份额 | 14 个，各有自己的回调（第 4 节"节点"）：信令 `t_reconnect`、`t_login`、`t_ping`、`t_expect`、`t_race`、`t_move`、`t_old`、`t_idle`、`t_wake`；网络 `t_watch`、`t_netcheck`、`t_udp_reopen`、`t_nat_retry`、`t_pm` | 隐含在标志与哪个连接指针不为空里：`online`、`dormant`、`udp_bad`、`udp_silent`、`moving`、`move_taken`、`expect_probed`、`sig_refused`、`replaced_ms`；`nat_valid`、`nat_udp`、`nat_again`、`nat_quick`、`login_waits_nat`、`repunch_on_nat`、`udp_waiters` |
+| `npf_node` | `include/npf/node.h` | 信令（`sc`：按角色 MAIN、RACE、MOVE、OLD 的连接与状态，`src/node/sigconn.c`）、服务器列表、UDP 套接字、NAT 画像与候选、端口映射、`home`、`calls`、`conv_tab`、密钥份额 | 11 个（第 4 节"节点"）：信令 `t_sc`（连接状态机的四个截止时间）、`t_reconnect`、`t_ping`、`t_expect`、`t_idle`、`t_wake`；网络 `t_watch`、`t_netcheck`、`t_udp_reopen`、`t_nat_retry`、`t_pm` | 隐含在标志与哪个连接指针不为空里：连接的是显式的（`sc.state`：`SS_IDLE`、`CONNECT`、`ONLINE`、`MOVE`、`TAKEN`、`WELCOME`，`sc.udp_bad`、`sc.udp_silent`）；其余隐含在标志里：`online`、`dormant`、`expect_probed`、`sig_refused`、`replaced_ms`；`nat_valid`、`nat_udp`、`nat_again`、`nat_quick`、`login_waits_nat`、`repunch_on_nat`、`udp_waiters` |
 | `npf_call` | `node/call_internal.h` | 握手（`hs`）、密钥、AnLiu 连接与数据流、隧道、媒体、UDP 流、打洞（`punch`、`pcfg`）、路径管理器 `pm` 与三条路径 `pd`、`pu`、`pw`、反向监听、控制请求 | `t_due`，排在 `call.c:call_due`：期限 `limit_at`、打洞 `punch_at`、直连重发 `direct_at`、`pm.check_at`、绑定器的 `pu.r.at`、WS 重连 `pw.re_at` 与 AnLiu 的 `tr_due` 的最小值；下一轮回调 `t_free`、`pw.t_flush` | `st`（`CS_*`，3.1）、`punch_st`（`PN_*`，3.2）、每条路径的 `health` 与 `role`（2.3）、管理器的 `tried`、`wait`、`need`（3.6）；另有 `keys_ready`、`secure`、`direct` |
 | `relay_c`（绑定器） | `node/relay_bind.h` | 一个中转分配：`relay_id`、密钥、最多 4 个地址、cookie、`kseq`、最近的 `RELAY_BIND` | 没有自己的：截止时间 `at` 由所有者排（呼叫的 `call_due`、备用分配的 `home_due`） | `state`（`RB_*`，3.3） |
 | 备用分配 `npf_home` | `node/home.c` | 一个 `relay_c`、中转看到的地址 R、学习状态 | `t_due`，排在 `home_due` | 没有分配时 `H_OFF`、`H_OPENING`、`H_TAKEN`，有分配时是绑定器的（3.4）；`backoff` |
@@ -580,7 +580,7 @@ struct npf_path {
 | `t_direct` | 呼叫 | 直连握手的重发（呼叫的 `due`） |
 | `t_wsflush`、`t_free` | 呼叫 | 保留（下一轮循环） |
 | `t_dog`、`t_retry` | 备用分配 | 备用分配的 `due`；第 2 步：`home_due`，连同 `t_bind` 一个定时器 |
-| 节点的 11 个 | 节点 | 没有合并；UDP 信令又加了 `t_race`、`t_move`、`t_old`，现在 14 个（下文"节点"） |
+| 节点的 11 个 | 节点 | UDP 信令加过 `t_race`、`t_move`、`t_old`（14 个）；连接的状态机（2026-10-30）把它们与 `t_login` 合成 `t_sc`，现在 11 个（下文"节点"） |
 
 一个呼叫从 13 个定时器变成 1 个（另有 2 个下一轮回调），备用分配从 3 个变成 1 个。1b 去掉了 `t_pcheck`、`t_rcheck`（管理器的 `t_check`），1c 去掉了 `t_ws_wait` 与 `t_standby`（管理器的 `act_at`，同一个 `t_check`）：现在每个呼叫 9 个（`t_anl`、`t_timeout`、`t_punch`、`t_linger`、`t_direct`、`t_free`、`pm.t_check`、`pw.t_flush`、`pw.t_re`），另有 `relay.t_bind`。
 
@@ -593,17 +593,14 @@ struct npf_path {
 - 不变式：没有结束的呼叫总有截止时间（建立之前是期限，有了密钥之后是 AnLiu 的 `anl_check`，它总是有限的：保活、空闲超时或 5 s 的安静检查），定时器不晚于最早的截止时间。单元测试 UT-35（`test_call.c`）在新呼叫、会话建立、已建立、UDP 中转绑定中、WS 中转待重连各检查一次，并检查截止时间提前、推后、完成三种重排。
 - 绑定器（`relay_bind.c`）不再有自己的定时器：`relay_bind_run`、`relay_bind_probe` 与 `relay_c` 里的定时器和回调去掉，呼叫与备用分配都用 `relay_bind_begin` / `relay_bind_step`，时间由所有者管（呼叫是 `pu.bind_at`，备用分配是 `home.c` 的 `t_bind`，第 2 步并入备用分配的一个截止时间）。第 2 步之后：`pu.bind_at` 是绑定器自己的 `pu.r.at`，`relay_bind_step` 换成 `relay_bind_tick`，备用分配的三个定时器合成一个（第 3.3、3.4 节"2 的实现"）。
 
-**节点**（`ac50d6e`）：没有按本节的规则做。14 个定时器各有自己的回调，状态是一组标志与哪个连接指针不为空。
+**节点**（int-w9）：信令的连接按本节的规则做了（一个状态机、一个定时器、几个截止时间）；别的 10 个定时器各有自己的回调。
 
 - 信令（`node_signal.c`）：
-  - 连接：`t_reconnect`（`schedule_reconnect`：退避 1–60 s ±25 %，必须升级时 5–10 分钟）、`t_login`（`SIG_LOGIN_MS` 20 s 内要到 `welcome`，否则 `login_deadline` 放弃这次连接；UDP 会话握手了却没有登录时记 `udp_bad`，之后只用 WebSocket，网络变化时清掉）。
-  - 先 UDP、后 WebSocket（signaling-udp.md 5.3）：`node_sig_connect` 先开 UDP 会话（`sig`），`t_race` 在 `SIG_WS_AFTER_MS`（1 s）后开同一台服务器的 WebSocket（`race`；UDP 先失败时立即开），先登录的那条留下（`udp_silent` 记下 UDP 是否一直没有回音）；不用 UDP 时 `race` 是同时开的第二个接入点。
-  - 在 WebSocket 上：`t_move`（`move_arm`：`SIG_UDP_AGAIN_MS` 10 分钟 ±20 %，测试 `NPF_TEST_SIG_UDP_AGAIN_MS`）到时，没有呼叫在建立、没有请求在等就开 UDP 会话 `sig_move` 登录（否则 30 s 后再看）；它登录后成为 `sig`（`move_done`），换下的 WebSocket 成为 `sig_old`，平台在 `t_old`（`SIG_OLD_MS` 10 s）内不关就自己关。`moving`、`move_taken` 记下 UDP 的 `welcome` 与平台关掉 WebSocket 哪个先到；`sig_move` 失败就留在 WebSocket 上，重新 `move_arm`。
+  - 连接（`sigconn.c` 是不碰套接字的状态机，`node_signal.c:sig_do` 把它返回的动作变成连接、日志与回调）：`npf_sigc sc` 按角色放连接（MAIN 正在用的、RACE 同时试的第二条、MOVE 换回 UDP 中的、OLD 被换下的 WebSocket），状态 `SS_IDLE`、`CONNECT`、`ONLINE`、`MOVE`、`TAKEN`（换回中 MAIN 收到 `replaced`）、`WELCOME`（被换下的 WebSocket 先关、UDP 的 `welcome` 在路上）；事件是 `sc_ready`、`sc_down`、`sc_abort`、`sc_login`、`sc_replaced` 与 `sc_tick`，单元测试 UT-42。四个截止时间共用 `t_sc`：`race_at`（UDP 之后 `SIG_WS_AFTER_MS` 1 s 开同一台服务器的 WebSocket；UDP 先失败立即开）、`login_at`（`SIG_LOGIN_MS` 20 s 内要到 `welcome`；UDP 握手了却没有登录时 `udp_bad`）、`move_at`（在 WebSocket 上 `SIG_UDP_AGAIN_MS` 10 分钟 ±20 %，空闲时开 MOVE 换回 UDP，忙时 30 s 后再看）、`old_at`（换下的 WebSocket 平台 `SIG_OLD_MS` 10 s 内不关就自己关）。`udp_bad` 之后只用 WebSocket，网络变化或 UDP 登录时清掉；不用 UDP 时 RACE 是同时开的第二个接入点。`t_reconnect`（`schedule_reconnect`：退避 1–60 s ±25 %，必须升级时 5–10 分钟）在没有连接剩下时才排。
   - 无声检测：`t_ping`（一个方向安静 `ping_s`，默认 25 s，才 ping）、`t_expect`（`sig_expect`：请求之后 10 s 内要听到平台，否则 ping；ping 之后 10 s 内要有回音，否则 `expect_cb` 断开重连）。
   - 按需信令（`cfg.sig_idle_ms`，托管客户端）：`t_idle` 每秒看一次还有没有谁要用连接，空闲够久就断开（`dormant`）；`t_wake`（`sig_wake_ms` ±20 %）定期醒来。
 - 网络（`node_network.c`、`nat.c`、`nodemap.c`）：`t_watch`（2 s 一次：进程挂起过、地址变了、测试文件）、`t_netcheck`（网络变化后的 ping 要在 8 s 内应答，UDP 上 3 s）、`t_udp_reopen`（主套接字失效后重开，失败 5 s 后再试）、`t_nat_retry`（NAT 探测无回应后 5、10、20、30 s，之后每 60 s 再测：`udp_back` 由它发现）、`t_pm`（端口映射的续租）。
 
-`node_signal.c` 正在改写为显式的状态机（另一项工作）；合入时本段的信令部分由它的说明代替。
 
 ## 5. 信令消息描述表
 
