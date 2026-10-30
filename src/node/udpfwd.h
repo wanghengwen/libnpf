@@ -25,7 +25,11 @@
 #define NPF_UDP_ONE_SEG      1150   /* larger datagrams go in more than one AnLiu segment (MTU 1200) */
 
 enum { NPF_UDP_OK = 1, NPF_UDP_CLOSE = 2 };
-enum { NPF_UDP_R_CLOSED = 1, NPF_UDP_R_REFUSED = 2, NPF_UDP_R_LIMIT = 3, NPF_UDP_R_FAILED = 4 };
+/* a CLOSE's reason (data-channel.md 15): idle or closed here; not a published
+ * udp resource (callee) / not a mapping (caller); over a limit; the closing
+ * side's own failure (its socket, its loop); the target does not resolve or
+ * has no route */
+enum { NPF_UDP_R_CLOSED = 1, NPF_UDP_R_REFUSED, NPF_UDP_R_LIMIT, NPF_UDP_R_FAILED, NPF_UDP_R_TARGET, NPF_UDP_R_N };
 
 typedef struct npf_udpf npf_udpf;
 
@@ -47,7 +51,8 @@ typedef struct npf_udpf_stats {
     uint64_t bytes_out, bytes_in;
     uint64_t dropped;                   /* not sent (AnLiu refused, no flow) */
     uint64_t split;                     /* sent in more than one AnLiu segment */
-    uint64_t refused;                   /* flows the callee refused (caller) / refused here (callee) */
+    uint64_t ends[NPF_UDP_R_N];         /* flows a CLOSE ended, sent or received, by its reason
+                                         * (R_REFUSED .. R_TARGET counted) */
 } npf_udpf_stats;
 
 /* policy: the callee's (NULL refuses every flow); idle_ms: a flow's idle

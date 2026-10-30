@@ -160,9 +160,12 @@ static void unlink_flow(npf_udpf *u, uflow *f)
     u->nflows--;
 }
 
+/* OK, or CLOSE with reason (a refusal or failure counted) */
 static int unit(npf_udpf *u, int op, uint32_t id, int reason)
 {
     uint8_t b[6];
+    if (op == NPF_UDP_CLOSE && reason > NPF_UDP_R_CLOSED)
+        u->st.ends[reason]++;
     b[0] = (uint8_t)op;
     npf_le32(b + 1, id);
     b[5] = (uint8_t)reason;
@@ -427,11 +430,10 @@ static void flow_send(npf_udpf *u, uflow *f, const uint8_t *p, size_t len)
 static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *to, socklen_t tl)
 {
     char a[64];
-    int fd, i;
+    int fd, i, noroute = 0;
     if (!u->caller && !npf_policy_udp_allowed(u->policy, (const struct sockaddr *)to)) {
         if (warn_due(u))
             npf_logw("udp: %s is not a published udp resource: refused", npf_addr_str(to, a, sizeof a));
-        u->st.refused++;
         drop_flow(u, f, 1, NPF_UDP_R_REFUSED);
         return;
     }
@@ -442,13 +444,14 @@ static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *t
             drop_flow(u, f, 1, NPF_UDP_R_LIMIT);
             return;
         }
+    /* connect fails for the target (no route), the rest for this side */
     fd = npf_socket(to->ss_family, SOCK_DGRAM, 0, 0);
-    if (fd < 0 || connect(fd, (const struct sockaddr *)to, tl) < 0
+    if (fd < 0 || (noroute = connect(fd, (const struct sockaddr *)to, tl) < 0)
         || npf_loop_add(u->loop, fd, NPF_EV_READ, flow_readable, f) < 0) {
         npf_logw("udp: no socket to %s: %s", npf_addr_str(to, a, sizeof a), npf_sock_strerror());
         if (fd >= 0)
             npf_sock_close(fd);
-        drop_flow(u, f, 1, NPF_UDP_R_FAILED);
+        drop_flow(u, f, 1, noroute ? NPF_UDP_R_TARGET : NPF_UDP_R_FAILED);
         return;
     }
     f->fd = fd;
@@ -474,7 +477,7 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     u->nresolving--;
     if (err || n < 1) {
         npf_logw("udp: %s: the name does not resolve", f->host);
-        drop_flow(u, f, 1, NPF_UDP_R_FAILED);
+        drop_flow(u, f, 1, NPF_UDP_R_TARGET);
         return;
     }
     for (i = 0; i < n && !u->caller; i++)   /* the first address the resources allow */
@@ -531,7 +534,6 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     int name = literal(host, port, &ss, &sl) < 0;
     uflow *f;
     if (!u->caller && (!u->policy || (u->io.allowed && !u->io.allowed(u->arg)))) {
-        u->st.refused++;
         unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_REFUSED);
         return NULL;
     }
@@ -552,7 +554,7 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     if (!name) {
         flow_connect(u, f, &ss, sl);
     } else if (!(f->res = npf_resolve_start_peer(u->loop, host, port, SOCK_DGRAM, resolved, f))) {
-        drop_flow(u, f, 1, NPF_UDP_R_FAILED);
+        drop_flow(u, f, 1, NPF_UDP_R_LIMIT);    /* the peers' share of the resolver is full */
         return NULL;
     } else {
         u->nresolving++;
@@ -614,7 +616,6 @@ void npf_udpf_frame_in(npf_udpf *u, const uint8_t *p, size_t n)
         if (u->caller) {
             if (!u->io.rev || !(rh = u->io.rev(u->arg, lid, &port))) {
                 unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_REFUSED);
-                u->st.refused++;
                 return;
             }
             f = flow_open(u, id, rh, port, lid);
@@ -693,18 +694,24 @@ void npf_udpf_unit_input(npf_udpf *u, const uint8_t *b, size_t len)
     if (b[0] == NPF_UDP_OK && f->out) {
         f->ok = 1;
     } else if (b[0] == NPF_UDP_CLOSE) {
+        /* [reason][caller]: what the other side says happened (an
+         * unknown reason counts as its failure) */
+        static const char *const why[NPF_UDP_R_N][2] = {
+            [NPF_UDP_R_REFUSED] = {"not a mapping there, refused", "not a published udp resource, refused"},
+            [NPF_UDP_R_LIMIT] = {"too many UDP flows, refused", "too many UDP flows, refused"},
+            [NPF_UDP_R_FAILED] = {"failed (a socket there)", "failed (a socket there)"},
+            [NPF_UDP_R_TARGET] = {"the target does not resolve or has no route",
+                                  "the name does not resolve or has no route"}};
         int reason = len >= 6 ? b[5] : NPF_UDP_R_CLOSED;
-        if (f->out && reason != NPF_UDP_R_CLOSED) {
-            u->st.refused++;
+        if (reason >= NPF_UDP_R_N)
+            reason = NPF_UDP_R_FAILED;
+        if (f->out && reason > NPF_UDP_R_CLOSED) {
+            u->st.ends[reason]++;
             if (warn_due(u)) {
                 if (u->caller)
-                    npf_logw("udp: %s:%u: %s on the other side", f->host, f->port,
-                             reason == NPF_UDP_R_REFUSED ? "not a published udp resource, refused"
-                             : reason == NPF_UDP_R_LIMIT ? "too many UDP flows, refused" : "failed");
+                    npf_logw("udp: %s:%u: %s on the other side", f->host, f->port, why[reason][1]);
                 else
-                    npf_logw("udp: reverse mapping %u: %s on the caller's side", f->lid,
-                             reason == NPF_UDP_R_REFUSED ? "not a mapping there, refused"
-                             : reason == NPF_UDP_R_LIMIT ? "too many UDP flows, refused" : "the target failed");
+                    npf_logw("udp: reverse mapping %u: %s on the caller's side", f->lid, why[reason][0]);
             }
         }
         drop_flow(u, f, 0, 0);

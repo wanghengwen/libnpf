@@ -229,9 +229,13 @@ static void calls_out(npf_t *c, npf_out *o)
         npf_out_kint(o, "sublinks", i.sublinks);
         if (i.udp_flows || i.udp_out || i.udp_in) {     /* UDP forwards (data-channel.md 15) */
             npf_out_jkey(o, "udp");
-            npf_out_printf(o, "{\"flows\":%d,\"out\":%llu,\"in\":%llu,\"dropped\":%llu,\"split\":%llu}", i.udp_flows,
-                           (unsigned long long)i.udp_out, (unsigned long long)i.udp_in,
-                           (unsigned long long)i.udp_dropped, (unsigned long long)i.udp_split);
+            npf_out_printf(o,
+                           "{\"flows\":%d,\"out\":%llu,\"in\":%llu,\"dropped\":%llu,\"split\":%llu,"
+                           "\"target_refused\":%llu,\"limit\":%llu,\"failed\":%llu,\"target_failed\":%llu}",
+                           i.udp_flows, (unsigned long long)i.udp_out, (unsigned long long)i.udp_in,
+                           (unsigned long long)i.udp_dropped, (unsigned long long)i.udp_split,
+                           (unsigned long long)i.udp_ends[0], (unsigned long long)i.udp_ends[1],
+                           (unsigned long long)i.udp_ends[2], (unsigned long long)i.udp_ends[3]);
         }
         npf_out_kstr(o, "app", nul_if_empty(i.app));
         if (i.hosted)
