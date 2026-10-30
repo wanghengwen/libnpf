@@ -72,16 +72,14 @@ int npf_if_tunnel_name(const char *n)
 /* the source address the system picks toward the internet (no packet sent) */
 static int default_src(struct in_addr *out)
 {
-    struct sockaddr_in to, me;
+    struct sockaddr_storage to;
+    struct sockaddr_in me;
     socklen_t ml = sizeof me;
     int fd = npf_socket(AF_INET, SOCK_DGRAM, 0, 1), r;
     if (fd < 0)
         return -1;
-    memset(&to, 0, sizeof to);
-    to.sin_family = AF_INET;
-    to.sin_port = htons(53);
-    to.sin_addr.s_addr = htonl(0x01010101);    /* 1.1.1.1 */
-    r = connect(fd, (struct sockaddr *)&to, sizeof to) == 0 && getsockname(fd, (struct sockaddr *)&me, &ml) == 0 ? 0 : -1;
+    npf_addr_ip("1.1.1.1", 53, &to);
+    r = connect(fd, (struct sockaddr *)&to, npf_addr_len(&to)) == 0 && getsockname(fd, (struct sockaddr *)&me, &ml) == 0 ? 0 : -1;
     npf_sock_close(fd);
     if (r == 0)
         *out = me.sin_addr;

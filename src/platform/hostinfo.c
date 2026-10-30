@@ -112,14 +112,6 @@ static void hostinfo_win(npf_host_info *h)
     }
 }
 
-/* Windows: the system UUID needs WMI; the network cards and MachineGuid serve */
-int npf_hw_items(npf_hw_item *it, int max)
-{
-    (void)it;
-    (void)max;
-    return 0;
-}
-
 #else
 
 #include <sys/types.h>
@@ -210,14 +202,6 @@ static void hostinfo_android(npf_host_info *h)
     snprintf(h->os, sizeof h->os, "Android %s (%s)", v, k);
     if (m[0])
         snprintf(h->hostname, sizeof h->hostname, "%s", m);
-}
-
-/* apps cannot read the hardware's serial numbers */
-int npf_hw_items(npf_hw_item *it, int max)
-{
-    (void)it;
-    (void)max;
-    return 0;
 }
 
 #else
@@ -340,6 +324,17 @@ int npf_hw_items(npf_hw_item *it, int max)
 }
 
 #endif
+#endif
+
+#if defined(_WIN32) || defined(__ANDROID__)
+/* Windows: the system UUID needs WMI, the network cards and MachineGuid
+ * serve; Android: apps cannot read the hardware's serial numbers */
+int npf_hw_items(npf_hw_item *it, int max)
+{
+    (void)it;
+    (void)max;
+    return 0;
+}
 #endif
 
 static int mac_cmp(const void *a, const void *b)

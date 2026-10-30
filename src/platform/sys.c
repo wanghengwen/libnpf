@@ -265,7 +265,6 @@ typedef struct {
 
 static NPF_THREAD_LOCAL send_err t_send_err;
 
-
 /* 1 when this one is only counted */
 static int quiet(send_err *e, int err, int64_t now)
 {
@@ -278,15 +277,12 @@ static int quiet(send_err *e, int err, int64_t now)
 
 static void report(send_err *e, int level, int err, int64_t now, const struct sockaddr *to, const char *hint)
 {
-    char d[80];
+    char d[80], more[80] = "";
     npf_addr_str(to, d, sizeof d);
     if (e->more)
-        npf_log_at(level, __FILE__, __LINE__,
-                   "udp: sending to %s failed: %s%s (and %u more failures of this kind in the last minute)", d,
-                   npf_sock_strerror_code(err), hint, e->more);
-    else
-        npf_log_at(level, __FILE__, __LINE__, "udp: sending to %s failed: %s%s", d, npf_sock_strerror_code(err),
-                   hint);
+        snprintf(more, sizeof more, " (and %u more failures of this kind in the last minute)", e->more);
+    npf_log_at(level, __FILE__, __LINE__, "udp: sending to %s failed: %s%s%s", d, npf_sock_strerror_code(err), hint,
+               more);
     e->err = err;
     e->at = now;
     e->more = 0;
@@ -328,16 +324,15 @@ static void send_failed(const struct sockaddr *to, int err)
     /* macOS's local network privacy: a program without the permission (one
      * started over SSH, say) gets "No route to host" for every address of
      * the local network, while the internet works */
-    if (err == EHOSTUNREACH && t_lan_err.err == err && now - t_lan_err.at < SEND_ERR_QUIET_MS) {
-        t_lan_err.more++;               /* told a moment ago: no interface list for each datagram */
-        return;
-    }
-    if (err == EHOSTUNREACH && on_local_subnet(to)) {
-        if (!quiet(&t_lan_err, err, now))
+    if (err == EHOSTUNREACH) {
+        if (quiet(&t_lan_err, err, now))
+            return;                     /* told a moment ago: no interface list for each datagram */
+        if (on_local_subnet(to)) {
             report(&t_lan_err, NPF_LOG_WARN, err, now, to,
                    "; macOS blocks the local network for this program: allow npf under System Settings > "
                    "Privacy & Security > Local Network, or run it as a launchd daemon");
-        return;
+            return;
+        }
     }
 #endif
     /* punching tries every candidate of the peer: some are not routable
