@@ -35,22 +35,18 @@ void path_direct_tx(npf_path *p, const uint8_t *dgram, size_t len)
  * falls back). */
 int path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
 {
+    int own = fd != c->n->udp_fd && fd != c->n->udp6_fd;
+    if (own && npf_loop_add(c->n->loop, fd, NPF_EV_READ, call_p2p_input_cb, c) < 0) {
+        npf_sock_close(fd);
+        return -1;
+    }
+    c->pd.owned = own;
     c->pd.fd = fd;
     c->pd.addr = *peer;
     c->pd.p.last_rx = npf_mono_ms();
     c->pd.p.since = c->pd.p.last_rx;
     c->pd.p.rt_ok = c->pd.p.busy_since = 0;
     c->pd.p.health = PH_UP;
-    c->pd.owned = 0;
-    if (fd != c->n->udp_fd && fd != c->n->udp6_fd) {
-        if (npf_loop_add(c->n->loop, fd, NPF_EV_READ, call_p2p_input_cb, c) < 0) {
-            npf_sock_close(fd);
-            c->pd.fd = -1;
-            c->pd.p.health = PH_DEAD;
-            return -1;
-        }
-        c->pd.owned = 1;
-    }
     pm_add(&c->pm, &c->pd.p);
     return 0;
 }

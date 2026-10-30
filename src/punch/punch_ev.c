@@ -631,8 +631,7 @@ static void tick_cb(npf_loop *loop, void *arg)
             p->nom_next = now + NOM_IVL_MS;
         }
     }
-    if (!p->finished)
-        schedule(p);
+    schedule(p);
     leave(p);
 }
 
@@ -709,13 +708,6 @@ static int replayed(npf_punch *p, const uint8_t txid[NPF_TXID_SIZE])
     return 0;
 }
 
-/* security.md 11.1 inbound: do not answer or nominate a source the node
- * would not probe (loopback, multicast, the platform's own endpoints, …) */
-static int from_allowed(const npf_punch *p, const struct sockaddr_storage *from)
-{
-    return !p->cfg.from_ok || p->cfg.from_ok(p->arg, from);
-}
-
 static void set_winner(npf_punch *p, int sock, int fd, const struct sockaddr_storage *from)
 {
     p->winner = *from;
@@ -731,14 +723,15 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
     npf_pkt pkt;
     if (len < 64 || len > 256)          /* send_pkt's sizes (within NPF_PKT_MAX, plain's) */
         return 0;
+    /* security.md 11.1 inbound: a source this side would never probe
+     * (loopback, multicast, the platform's own endpoints, ...) gets no ACK,
+     * no triggered probe, no say in the path; its txid is not taken */
+    if (p->cfg.from_ok && !p->cfg.from_ok(p, from, p->arg))
+        return 0;
     if (npf_pkt_open(&p->kp, peer_dir, buf, len, plain, &pkt) == 0
         && (pkt.type == NPF_PKT_PROBE || pkt.type == NPF_PKT_PROBE_ACK)
         && pkt.body_len >= 10 && npf_rd64(pkt.body) == pl->session_id) {
         if (p->cfg.test_deaf || replayed(p, pkt.txid))
-            return 1;
-        /* a source this side would never probe: no ACK, no triggered probe,
-         * no path (security.md 11.1 inbound) */
-        if (!from_allowed(p, from))
             return 1;
         p->got_any = 1;
         if (from->ss_family == AF_INET) {      /* 7.8: what the peer's NAT showed */
@@ -791,8 +784,6 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
     if (npf_pkt_open(&p->kn, peer_dir, buf, len, plain, &pkt) == 0
         && pkt.body_len >= 8 && npf_rd64(pkt.body) == pl->session_id) {
         if (replayed(p, pkt.txid))
-            return 1;
-        if (!from_allowed(p, from))
             return 1;
         p->got_any = 1;
         if (pkt.type == NPF_PKT_NOMINATE && pl->role == NPF_PUNCH_CONTROLLED) {

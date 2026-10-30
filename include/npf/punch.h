@@ -104,9 +104,10 @@ typedef struct npf_punch_cfg {
      * Called at most once; the round goes on to its timeout. NULL: none */
     void   (*quiet)(npf_punch *p, const npf_punch_result *res, void *arg);
     /* 1 when a datagram's source may be answered or win the path (security.md
-     * 11.1 inbound half: the same policy as outbound candidates). NULL: any
-     * (tests / npf-punch). arg is done's. */
-    int    (*from_ok)(void *arg, const struct sockaddr_storage *from);
+     * 11.1 inbound half: the same policy as outbound candidates); a datagram
+     * from another is not the round's (npf_punch_input: 0). NULL: any
+     * (tests, npf-punch) */
+    int    (*from_ok)(npf_punch *p, const struct sockaddr_storage *from, void *arg);
 } npf_punch_cfg;
 
 /* Starts a round on loop with primary_fd as the main socket (the caller's;

@@ -39,9 +39,10 @@ static void done_cb(npf_punch *p, const npf_punch_result *res, int fd, void *arg
 }
 
 /* the punch inbound filter of these tests: anything but 127.0.0.3 */
-static int from_ok_cb(void *arg, const struct sockaddr_storage *from)
+static int from_ok_cb(npf_punch *p, const struct sockaddr_storage *from, void *arg)
 {
     side *s = arg;
+    (void)p;
     s->late += !s->p;
     return ((const struct sockaddr_in *)from)->sin_addr.s_addr != htonl(0x7f000003);
 }
@@ -287,10 +288,8 @@ int test_punch(void)
         memset(&f, 0, sizeof f);
         f.p = npf_punch_new(loop, &cn, fb, done_cb, &f);
         n = sealed(cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE, 48, pkt);
-        npf_punch_input(f.p, fb, pkt, n, &bad);
-        CHECK(!f.done, "a NOMINATE from a source from_ok refuses: dropped");
-        n = sealed(cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE, 48, pkt);
-        npf_punch_input(f.p, fb, pkt, n, &aa);
+        CHECK(npf_punch_input(f.p, fb, pkt, n, &bad) == 0 && !f.done, "a NOMINATE from a source from_ok refuses: not the round's");
+        npf_punch_input(f.p, fb, pkt, n, &aa);  /* the same one: its txid was not taken */
         CHECK(f.done && f.ok && npf_addr_eq(&f.peer, &aa), "a NOMINATE before any validated path: taken (%d %d)",
               f.done, f.ok);
         npf_punch_free(f.p);

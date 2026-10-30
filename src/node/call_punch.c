@@ -289,8 +289,9 @@ static int peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a)
     return 0;
 }
 
-static int punch_from_ok(void *arg, const struct sockaddr_storage *from)
+static int punch_from_ok(npf_punch *p, const struct sockaddr_storage *from, void *arg)
 {
+    (void)p;
     return peer_addr_ok(arg, from);
 }
 
@@ -405,6 +406,16 @@ static int punch_probes(npf_call *c, int need)
     return 1;
 }
 
+/* a round that could not start: reported as a failed one, and the next one
+ * asked for */
+static void punch_none(npf_call *c)
+{
+    npf_punch_result res;
+    memset(&res, 0, sizeof res);
+    res.sock_idx = res.rtt_ms = -1;     /* unknown, as npf_punch_new starts them */
+    call_punch_done(NULL, &res, -1, c);
+}
+
 void call_punch_go(npf_call *c)
 {
     if (!c->keys_ready) {
@@ -443,18 +454,14 @@ void call_punch_go(npf_call *c)
     if (c->pcfg->plan.measure && !punch_probes(c, 1))  /* S2's hard side: its first new socket's mapping, from E1 */
         c->pcfg->plan.measure = 0;      /* the easy side sprays the predicted ports */
     if (c->pcfg->plan.strategy == NPF_PUNCH_S2B && !punch_probes(c, 2)) {
-        npf_punch_result res;
         npf_logw("call %s: punch round %d S2B: no probe servers to measure the fresh mapping with", c->call_id_s,
                  c->punch_round);
-        memset(&res, 0, sizeof res);    /* a failed round: reported, and the next one asked for */
-        call_punch_done(NULL, &res, -1, c);
+        punch_none(c);
         return;
     }
     if (!(c->punch = npf_punch_new(c->n->loop, c->pcfg, c->n->udp_fd, call_punch_done, c))) {
-        npf_punch_result res;
         npf_logw("call %s: punch round %d: no memory for the round", c->call_id_s, c->punch_round);
-        memset(&res, 0, sizeof res);
-        call_punch_done(NULL, &res, -1, c);
+        punch_none(c);
         return;
     }
     c->punch_socks = c->pcfg->plan.n_sockets;
