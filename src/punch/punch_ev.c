@@ -716,19 +716,6 @@ static int from_allowed(const npf_punch *p, const struct sockaddr_storage *from)
     return !p->cfg.from_ok || p->cfg.from_ok(p->arg, from);
 }
 
-static int same_ip(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
-{
-    if (a->ss_family != b->ss_family)
-        return 0;
-    if (a->ss_family == AF_INET)
-        return ((const struct sockaddr_in *)a)->sin_addr.s_addr
-            == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
-    if (a->ss_family == AF_INET6)
-        return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr,
-                      &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0;
-    return 0;
-}
-
 static void set_winner(npf_punch *p, int sock, int fd, const struct sockaddr_storage *from)
 {
     p->winner = *from;
@@ -810,10 +797,6 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
         p->got_any = 1;
         if (pkt.type == NPF_PKT_NOMINATE && pl->role == NPF_PUNCH_CONTROLLED) {
             uint8_t b[8];
-            /* only after a validated path, and only from that host (port may
-             * move): a forged source must not steer the AnLiu path */
-            if (!p->have_valid || !same_ip(&p->winner, from))
-                return 1;
             send_pkt(fd, &p->kn, pl->role, NPF_PKT_NOMINATE_ACK,
                      b, sid_body(b, pl->session_id), from);
             if (!p->finished) {

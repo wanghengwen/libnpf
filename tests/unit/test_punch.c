@@ -2,7 +2,9 @@
  * validate a path it could not probe itself; a candidate trickled into a
  * running round (npf_punch_add_peer) is probed with the others (punch_ev.c). */
 #include "npf/bind.h"
+#include "npf/crypto.h"
 #include "npf/natprobe.h"
+#include "npf/platform.h"
 #include "npf/punch.h"
 #include "npf/sys.h"
 #include "test.h"
@@ -11,6 +13,7 @@ typedef struct side {
     int        fd;
     npf_punch *p;
     int        done, ok, ms;
+    struct sockaddr_storage peer;
 } side;
 
 static int last_probes_recv;
@@ -29,7 +32,28 @@ static void done_cb(npf_punch *p, const npf_punch_result *res, int fd, void *arg
     s->done = 1;
     s->ok = res->ok;
     s->ms = res->elapsed_ms;
+    s->peer = res->peer;
     last_probes_recv = res->probes_recv;
+}
+
+/* the punch inbound filter of these tests: anything but 127.0.0.3 */
+static int from_ok_cb(void *arg, const struct sockaddr_storage *from)
+{
+    (void)arg;
+    return ((const struct sockaddr_in *)from)->sin_addr.s_addr != htonl(0x7f000003);
+}
+
+/* a controlling side's packet of type for round sid, sealed with key under
+ * label (a fresh txid), in out; its length */
+static size_t sealed(const uint8_t key[32], const char *label, int type, uint64_t sid, uint8_t out[128])
+{
+    npf_siv_keys k;
+    uint8_t tx[NPF_TXID_SIZE], body[10] = {0};
+    npf_siv_derive(&k, key, label);
+    npf_random(tx, sizeof tx);
+    npf_le64(body, sid);
+    return (size_t)npf_pkt_seal(&k, NPF_PUNCH_CONTROLLING, type, tx, 0, body, type == NPF_PKT_PROBE_ACK ? 10 : 8,
+                                96, out);
 }
 
 static void rx_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
@@ -211,6 +235,42 @@ int test_punch(void)
         CHECK(got, "S2: the port after the measured one not sprayed first");
         npf_punch_free(e.p);
         close(t);
+    }
+    /* NOMINATE (nat-traversal.md 10.1) is the controlling side's pick: the
+     * controlled one takes it before a path of its own is validated, and from
+     * another IP than the one it validated (another exit, a pooled NAT), not
+     * from a source from_ok refuses */
+    {
+        struct sockaddr_storage other = aa, bad = aa;
+        uint8_t pkt[128];
+        size_t n;
+        npf_punch_cfg cn = cb;
+        cn.peers[0] = nowhere;
+        cn.npeers = 1;
+        cn.from_ok = from_ok_cb;
+        cn.plan.session_id = 48;
+        ((struct sockaddr_in *)&other)->sin_addr.s_addr = htonl(0x7f000002);
+        ((struct sockaddr_in *)&bad)->sin_addr.s_addr = htonl(0x7f000003);
+        memset(&f, 0, sizeof f);
+        f.p = npf_punch_new(loop, &cn, fb, done_cb, &f);
+        n = sealed(cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE, 48, pkt);
+        npf_punch_input(f.p, fb, pkt, n, &bad);
+        CHECK(!f.done, "a NOMINATE from a source from_ok refuses: dropped");
+        n = sealed(cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE, 48, pkt);
+        npf_punch_input(f.p, fb, pkt, n, &aa);
+        CHECK(f.done && f.ok && npf_addr_eq(&f.peer, &aa), "a NOMINATE before any validated path: taken (%d %d)",
+              f.done, f.ok);
+        npf_punch_free(f.p);
+        cn.plan.session_id = 49;
+        memset(&f, 0, sizeof f);
+        f.p = npf_punch_new(loop, &cn, fb, done_cb, &f);
+        n = sealed(cn.plan.punch_key, NPF_SIV_LABEL_PUNCH, NPF_PKT_PROBE_ACK, 49, pkt);
+        npf_punch_input(f.p, fb, pkt, n, &aa);          /* the path via aa validated */
+        n = sealed(cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE, 49, pkt);
+        npf_punch_input(f.p, fb, pkt, n, &other);
+        CHECK(f.done && f.ok && npf_addr_eq(&f.peer, &other), "a NOMINATE from another IP: the path switches there (%d %d)",
+              f.done, f.ok);
+        npf_punch_free(f.p);
     }
     close(fa);
     close(fb);
