@@ -403,8 +403,6 @@ static void udp_watch_note(npf_udp_watch *w, const struct sockaddr *sa)
         w->other = npf_mono_ms();
 }
 
-static int npf_udp_hook_is_on(void);
-
 int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
 {
     const struct sockaddr *sa = to;
@@ -416,7 +414,7 @@ int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
                 udp_watch_note(t_watch[i].w, sa);
     }
 #ifdef _WIN32
-    if (npf_udp_hook_is_on() && is_loopback(sa)) {
+    if (is_loopback(sa)) {
         if (sendto_loopback(fd, buf, len, sa) >= 0)
             return 0;
     } else
@@ -434,7 +432,6 @@ int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
 
 static npf_udp_hook_fn g_udp_hook;
 static void *g_udp_hook_arg;
-static int g_udp_hook_on = 1;
 static int g_udp_hook_failed;               /* the last one failed: said once until one works */
 
 void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg)
@@ -443,20 +440,10 @@ void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg)
     __atomic_store_n(&g_udp_hook, fn, __ATOMIC_RELEASE);
 }
 
-void npf_udp_hook_on(int on)
-{
-    __atomic_store_n(&g_udp_hook_on, on != 0, __ATOMIC_RELAXED);
-}
-
-static int npf_udp_hook_is_on(void)
-{
-    return __atomic_load_n(&g_udp_hook_on, __ATOMIC_RELAXED);
-}
-
 int npf_net_bypass(int fd, int family)
 {
     npf_udp_hook_fn fn = __atomic_load_n(&g_udp_hook, __ATOMIC_ACQUIRE);
-    if (fd < 0 || !npf_udp_hook_is_on())
+    if (fd < 0)
         return 0;
     if (!fn)
         fn = npf_vpn_bypass;
@@ -465,13 +452,13 @@ int npf_net_bypass(int fd, int family)
 
 int npf_net_bypass_active(void)
 {
-    return npf_udp_hook_is_on() && (__atomic_load_n(&g_udp_hook, __ATOMIC_ACQUIRE) != NULL || npf_vpn_in_way());
+    return __atomic_load_n(&g_udp_hook, __ATOMIC_ACQUIRE) != NULL || npf_vpn_in_way();
 }
 
-int npf_udp_socket(int family, int blocking)
+int npf_udp_socket(int family, int blocking, int bypass)
 {
     int fd = npf_socket(family, SOCK_DGRAM, 0, blocking), r;
-    if (fd < 0 || !npf_udp_hook_is_on())
+    if (fd < 0 || !bypass)
         return fd;
     r = npf_net_bypass(fd, family);
     if (r < 0 && !__atomic_exchange_n(&g_udp_hook_failed, 1, __ATOMIC_RELAXED))

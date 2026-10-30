@@ -840,7 +840,7 @@ static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
 static int own_socket(npf_punch *p, int64_t first_send)
 {
     struct sockaddr_in a;
-    int fd = npf_udp_socket(AF_INET, 0);
+    int fd = npf_udp_socket(AF_INET, 0, p->cfg.bypass);
     if (fd < 0)
         return -1;
     memset(&a, 0, sizeof a);

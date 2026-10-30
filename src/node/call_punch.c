@@ -448,6 +448,7 @@ void call_punch_go(npf_call *c)
                     c->call_id_s, c->punch_round, c->pcfg->plan.n_sockets, want);
     }
     c->pcfg->fd6 = c->n->udp6_fd;
+    c->pcfg->bypass = !c->n->cfg.secure;
     c->pcfg->test_deaf = c->n->th.punch_fail_ms != 0;
     c->pcfg->quiet = punch_quiet;
     c->pcfg->from_ok = punch_from_ok;

@@ -171,23 +171,21 @@ void npf_udp_watch_on(int fd, npf_udp_watch *w);
 
 /* The node's UDP sockets (main, punching, NAT probing, port mapping; not
  * the loop's wake-up or a direct listener) come from npf_udp_socket:
- * npf_socket, then, while the hook is on (connect_mode p2p, not secure),
+ * npf_socket, then, with bypass (the node's connect_mode p2p, not secure),
  * the application's hook or else the built-in npf_vpn_bypass, so the
  * socket goes around a VPN (the Android app binds it to the physical
  * network). A hook that fails leaves the socket on the default route
- * (logged once). The hook and its switch are process-wide, set from any
- * thread; the hook runs on the thread that opens the socket. */
+ * (logged once). The hook is process-wide, set from any thread; it runs on
+ * the thread that opens the socket. */
 typedef int (*npf_udp_hook_fn)(int fd, int family, void *arg);
 void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg);
-void npf_udp_hook_on(int on);
 /* Takes one of the node's sockets (UDP, or the signaling's TCP) around a
- * VPN as above. 0 (also when the hook is off), or < 0 when the hook could
- * not. */
+ * VPN as above: 0, or < 0 when the hook could not. */
 int  npf_net_bypass(int fd, int family);
-/* 1 when npf_net_bypass may take a socket around a VPN now: the hook is on
- * and either the application's hook is set or a VPN is in the way. */
+/* 1 when npf_net_bypass may take a socket around a VPN now: the
+ * application's hook is set or a VPN is in the way. */
 int  npf_net_bypass_active(void);
-int  npf_udp_socket(int family, int blocking);
+int  npf_udp_socket(int family, int blocking, int bypass);
 
 /* ======== the network around: adapters, VPN, firewall, gateway ======== */
 

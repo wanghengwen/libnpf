@@ -671,8 +671,7 @@ void npf_node_set_secure(npf_node *n, int on);
 struct npf_conf;
 /* Fills cfg (zeroed first) from conf's platform and network keys; the
  * program sets callable, number, model, fw, app, enroll and offline.
- * Strings point into conf, which must outlive cfg. Also sets the
- * process-wide npf_udp_hook_on: on unless connect_mode is secure.
+ * Strings point into conf, which must outlive cfg.
  * 0, or -1 (logged): no or bad root, or server without server_pub. */
 int npf_node_cfg_from_conf(npf_node_cfg *cfg, const struct npf_conf *conf);
 /* Applies conf's log_level to the log; always 0 (the key table checked it). */

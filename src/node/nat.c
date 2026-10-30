@@ -310,6 +310,7 @@ static int nat_probe_start(npf_node *n)
         cfg.clock_offset_ms = n->clock_offset_ms;
         cfg.alloc_sockets = n->nat_quick ? 0 : 4;  /* quick: a reopened socket, the NAT measured before */
         cfg.main_fd = n->udp_fd;
+        cfg.bypass = !n->cfg.secure;
         if ((n->probe = npf_natprobe_start(n->loop, &cfg, probe_done, n)) != NULL)
             return 0;
     }
