@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.65。更新日期：2026-10-30。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.66。更新日期：2026-10-30。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -252,10 +252,13 @@ SIG_HELLO_ACK  不长于请求       body = noise2(52)
 | `type` | 字符串 | 消息类型，使用固定 ASCII 名称 |
 | `id` | 字符串 | 请求编号，在该连接本端未完成请求中唯一 |
 | `reply_to` | 字符串 | 响应对应的对端请求编号 |
+| `app` | 布尔 | 可选，节点上的应用经 `npf_request` 发的请求（库自己的信令不带）：平台只处理它的平台请求（账户、设备、分享、映射、托管、套餐等，见下文各消息目录，服务器以 `appHandler` 登记）；其他类型，即库自己的信令（`login`、`call`、`punch_*`、`relay_*`、`home_*`、`grant_get`、`enroll`、`nat_report` 等）与程序的报告，都回 `unsupported_type`、不处理，与没有的类型一样。库因此不必知道平台请求的名字，应用也冒充不了库的协议步骤 |
 | `status` | 字符串 | 响应为 `ok`、`pending` 或 `error` |
 | `error` | 字符串 | 仅失败时出现，供程序判断的错误码 |
 | `message` | 字符串 | 可选说明，不作为客户端判断依据 |
 | `data` | 对象 | 所有消息均携带，无业务字段时为空对象 |
+
+应用的请求（`app`）由库照原样发出：类型不超过 31 字节、`data` 是一个 JSON 对象，其余由平台判断；应答整个交给应用。库的账户会话只跟随平台的 `account` 事件（"接入与服务器列表"），不看应用发了什么请求。
 
 请求编号不是身份凭据，也不是跨连接幂等键。平台转发呼叫时两侧可使用不同请求编号，通过独立的 `call_id` 关联。账户身份来自认证上下文，禁止使用请求体中的 `account_id` 代替鉴权。
 
@@ -423,6 +426,10 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 
 `data = {}`。同一身份的新连接登录（在这台服务器，或在另一台服务器、经服务器之间的连接通知过来）时，平台先向旧连接发这个事件，约 200 ms 后关闭它。当前节点收到事件后记录被替换状态，在连接关闭时退避重连：基准从 10 秒开始，重复被替换时翻倍，最高 300 秒；实际调度取基准的约 1/2–1 倍随机延迟。上次登录已持续超过 120 秒时，基准重置为 10 秒。
 
+### `account`
+
+`data = {"account_id": "...", "account_cert": "<中间证书 | 客户端证书>"}`：连接的账户会话开始；`data = {}`：会话结束。平台在连接的账户会话变化时发出，先于引起变化的应答（同一条连接按序送达）：`account_login`、`account_register`、`password_reset_finish`、`auth_finish`、`hosted_login` 成功时开始（证书是刚签发的，应答不再带它），`account_logout`、`account_delete` 时结束，平台在处理请求时发现会话已被吊销（别处改了密码等）时也结束。节点按它设置会话：开始时验证并保存证书（不能验证的不保存，会话照样算开始）、告诉程序（npf 的模块拉取账户的映射与设备）；结束时删除证书。登录时的会话仍在 `welcome` 的 `account_id`、`account_cert` 里，不另发 `account`。
+
 ### `redirect`
 
 `data = {"server_id": 23, "reason": "maintenance", "within_s": 300}`。当前节点只读取 `server_id`：目标不在本地服务器列表中时忽略；存在时立即断开信令，把它设为后续连接选择的目标，再按重连调度处理。`within_s` 的随机延迟与 `reason` 尚未使用，不能依赖它们实现延后切换。已建立的数据通道独立于信令连接。
@@ -462,10 +469,10 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 绑定与解绑都要再次证明是本人（被盗的会话不能借此永久占有账户）：有密码的账户附 `current_password`（错了 `forbidden`，消息 `password`，计入该账户的密码错误次数）；没有密码的账户附一个已绑定身份的 `purpose = confirm` 事务（`confirm_transaction_id`、`confirm_code`，用后作废），或一个发到账户当前邮箱或手机号的验证（`current_verification_id`）。缺少或不对时 `forbidden`，消息 `reauth`。成功后平台给变更前的邮箱发一封通知 |
 | `password_change` | 客户端到平台 | 旧密码、新密码；成功后吊销该账户其他客户端的证书（R34）。旧密码不对回 `forbidden`、消息 `password`；账户没有密码（第三方登录注册的）回 `forbidden`、消息 `no_password`（用 `password_reset_begin` 设一个） |
 | `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：`password_reset_begin` 的字段、应答与错误同 `verify_begin`（邮件说明用途是找回密码），`verify_finish` 之后以 `verification_id` 调 `password_reset_finish` 设置新密码；验证不成立或地址不属于任何账户都回 `forbidden`、消息 `verification` |
-| `account_logout` | 客户端到平台 | 吊销当前客户端的客户端证书 |
-| `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、撤销分享、删除公网映射、吊销全部客户端证书）。返回 `pending` 与操作号，完成后该账户的所有连接被关闭。密码不对回 `forbidden`、消息 `password`；事务或确认码不对回 `forbidden`、消息 `verification` |
+| `account_logout` | 客户端到平台 | 吊销当前客户端的客户端证书；连接的会话结束（应答之前的空 `account`） |
+| `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、撤销分享、删除公网映射、吊销全部客户端证书）。同步完成：这条连接的会话结束（应答之前的空 `account`，连接留下，与退出相同），该账户的其他连接被关闭。密码不对回 `forbidden`、消息 `password`；事务或确认码不对回 `forbidden`、消息 `verification` |
 
-- **登录的结果**：`account_login`、`auth_finish`、`account_register`、`password_reset_finish` 成功后，平台为当前连接的客户端公钥（Noise 握手中的静态公钥）签发客户端证书（安全设计 8.1，有效期 30 天），客户端之后在 `login` 中出示它；证书的续签在 `welcome` 中完成，不另设刷新消息。这些请求都带 `sign_pub`（客户端的 Ed25519 公钥）和 `key_sig = Ed25519(签名私钥, "npf-client-key-v1" | Noise 握手哈希)`：证明持有签名私钥，并把证明绑定到这条连接；应答为账户资料加 `cert`（`中间证书 | 客户端证书`）；
+- **登录的结果**：`account_login`、`auth_finish`、`account_register`、`password_reset_finish` 成功后，平台为当前连接的客户端公钥（Noise 握手中的静态公钥）签发客户端证书（安全设计 8.1，有效期 30 天），客户端之后在 `login` 中出示它；证书的续签在 `welcome` 中完成，不另设刷新消息。这些请求都带 `sign_pub`（客户端的 Ed25519 公钥）和 `key_sig = Ed25519(签名私钥, "npf-client-key-v1" | Noise 握手哈希)`：证明持有签名私钥，并把证明绑定到这条连接；证书（`中间证书 | 客户端证书`）在应答之前的 `account` 事件里，应答为账户资料；
 - **账户不合并**（R31）：同一个邮箱、手机号或第三方身份只能属于一个账户。绑定时如果它已经属于另一个账户，返回 `conflict`；第一版不提供合并；
 - **验证码**：6 位数字，10 分钟有效，每个 `verification_id` 最多尝试 5 次；每个地址、每个源 IP 发送验证码有频率限制；
 - 密码只在已认证的加密信令内发送，平台保存适合密码验证的加盐哈希，算法参数另行定稿；第三方登录的账户没有本地密码，不生成用户不知道的默认密码。
@@ -488,7 +495,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
    - 成功：事务转 `ready`，生成 8 位数字的**确认码**，事务的有效期从此刻重新计算；页面显示确认码（`1234-5678`），并在有 `origin` 时用 `postMessage` 只发给该回环来源的打开者窗口。失败：事务转 `denied`，页面提示重新开始。页面按 `Accept-Language` 显示中文或英文，禁止缓存、禁止嵌入，脚本只允许本页带随机数的一段。
 3. **`auth_status{transaction_id}`** → `{status, provider, purpose}`，`status` 为 `waiting`、`ready`、`denied`、`expired` 或 `consumed`；`purpose = login` 且 `ready`、而该身份还没有账户时，附 `new_account: true` 与第三方给的昵称 `suggested_name`（去掉控制字符，最多 128 字节）。只有发起事务的客户端密钥能查询，其他连接得到 `not_found`。
 4. **确认码**：完成事务（`auth_finish`、`login_method_bind`、`account_delete`）都要附浏览器页面上的确认码 `code`（可以带 `-` 与空格）。它证明完成登录的浏览器在用户自己手里：别人发起事务、把授权链接发给受害者，受害者登录后确认码只出现在受害者的浏览器里，发起者拿不到会话。错 5 次事务转 `denied`。控制台收到 `postMessage` 的确认码时自动继续；收不到时（中间的页面切断了打开者关系、命令行）由用户输入。
-5. **`auth_finish{transaction_id, code, name?, sign_pub, key_sig}`**：只有发起事务的客户端密钥能完成。身份已有账户时登录；没有账户时是**首次登录自动注册**（R29）：必须带 `name`（客户端的确认页预填 `suggested_name`，用户可以修改；缺少时 `bad_request`，消息为 `name`，事务不消耗），建号并把身份记入账户，邮箱与手机号留空，没有密码。应答与 `account_login` 相同（账户资料加 `cert`），新建账户时另带 `new_account: true`。事务随即转 `consumed`；完成后 2 分钟内（只为应答丢失的情况），同一客户端用同一 `transaction_id` 重发 `auth_finish` 得到同一账户与新签的证书，不会重复建号，之后回 `expired`。同一身份由数据库唯一约束保证只属于一个账户。
+5. **`auth_finish{transaction_id, code, name?, sign_pub, key_sig}`**：只有发起事务的客户端密钥能完成。身份已有账户时登录；没有账户时是**首次登录自动注册**（R29）：必须带 `name`（客户端的确认页预填 `suggested_name`，用户可以修改；缺少时 `bad_request`，消息为 `name`，事务不消耗），建号并把身份记入账户，邮箱与手机号留空，没有密码。应答与 `account_login` 相同（之前的 `account` 带证书，应答为账户资料），新建账户时另带 `new_account: true`。事务随即转 `consumed`；完成后 2 分钟内（只为应答丢失的情况），同一客户端用同一 `transaction_id` 重发 `auth_finish` 得到同一账户与新签的证书，不会重复建号，之后回 `expired`。同一身份由数据库唯一约束保证只属于一个账户。
 
 `transaction_id` 只是标识：查询和完成都要求同一个客户端密钥（Noise 握手中的静态公钥），完成还要确认码；换了密钥的客户端只能重新发起。第三方应用的秘密只保存在平台（`client_secret_file`、`app_secret_file`），平台不保存第三方的访问令牌。
 
@@ -1154,7 +1161,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | `hosted_stats` | 托管服务 → 平台 | 请求 | 每分钟一次（`report_s`）报告自身与主机：`uptime_s`、`accounts`（托管客户端数）、`logged_in`、`sessions`、`open_conns`、`conns`、`bytes_in`、`bytes_out`、`refused`、`refused_by`、`rss`（进程常驻内存，字节）、`cpu`（上一个间隔的进程 CPU，占一个核的百分比）、`cpus`、`load1`、`mem_total`、`mem_avail`（主机内存，字节），以及生效中的 `max_conns`、`ip_conns`、`ip_rate`、`log_level`；平台记下供管理界面显示；它也是托管服务的心跳，平台据此刷新它的在线状态。它的登记已不在时（被判为失联后隔离，见 `public_moved`，或已被一次新的登记取代）回 `not_found`（`reason: registration`），托管服务随即重新 `hosted_register`。应答 `{"settings": {...}}`：平台为它设的参数（`max_conns`、`ip_conns`、`ip_rate`、`log_level`，没给的按它自己的 `hosted.conf`），托管服务立即应用到所有托管客户端与以后启动的；`hosted_register` 的应答也带 `settings`。暂停分配新账户与账户数上限由平台自己执行（选择托管服务时） |
 | `hosted_changed` | 平台 → 托管服务 | 事件 | `{"account_id", "mappings"}`：该账户在它上面的公网映射变了，`mappings` 为现在的个数，0 表示托管客户端可以停止。无论映射在哪台服务器上修改，都送到托管服务所在的服务器 |
 | `hosted_token` | 托管服务 → 平台 | 请求 | `{"account_id"}` → `{"token", "expires"}`：为该账户的托管客户端换证书用的一次性令牌，5 分钟有效；该账户在它上面没有公网映射时 `not_found` |
-| `hosted_login` | 托管客户端 → 平台 | 请求 | 托管客户端先匿名登录，再带 `token` 和密钥证明（`sign_pub`、`key_sig`，同 `account_login`）发送；平台为它的密钥签发绑定该账户、标记 `hosted` 的客户端证书，这条连接取得账户会话。应答同 `account_login`：`{"account_id", "cert"}`。之后它用这张证书直接登录 |
+| `hosted_login` | 托管客户端 → 平台 | 请求 | 托管客户端先匿名登录，再带 `token` 和密钥证明（`sign_pub`、`key_sig`，同 `account_login`）发送；平台为它的密钥签发绑定该账户、标记 `hosted` 的客户端证书，这条连接取得账户会话。证书在应答之前的 `account` 事件里，应答为 `{"account_id"}`。之后它用这张证书直接登录 |
 | `quota` | 托管客户端 → 平台 | 请求 | `{"want"}` → `{"granted", "state", "slow_kbps", "public_kbps", "level"}`：从账户本月额度中取一段字节给它的公网映射（每次最多 4 MB），见"流量额度" |
 | `usage_report` | 托管客户端 → 平台 | 事件或请求 | `{"call_id", "up", "down"}`：自上次报告以来该会话的公网映射在**公网端口上**收（`up`）、发（`down`）的字节数（访问者实际传过的数据，不含隧道开销；降速与排空阶段的也算），每 30 秒一次，会话结束时一次；只接受托管客户端为自己发起的呼叫报告，计入呼叫记录的 `public_up` / `public_down`，全部计费 |
 | `public_moved` | 平台 → 账户的连接 | 事件 | `{"mapping_id", "public_host", "listen_port", "from_host", "from_port", "reason": "service_offline"}`：托管服务离线超过 `hosted_failover_s`（默认 600 秒），或者显示在线、但超过 `hosted_failover_s` 没有任何报告并且它所在的服务器已经不在（Redis 里没有那台服务器的 `srv:`；Redis 不可用、无法判断时再静默满 10 分钟）后，它先被隔离（标为离线、登记作废），公网映射迁到另一个在线的托管服务（`pickHosted` 的规则；原端口号在新服务的范围内且空闲时保留，否则另分配），映射的 `revision` 加一、状态清空；发给执行迁移的服务器上该账户的连接，随后是 `mappings_changed`；新服务收到 `hosted_changed`，原服务也收到（它那里剩下的映射数）。没有可用的服务时映射留在原处，等原服务回来。原服务重新登记时，不再属于它的账户的托管客户端停止 |
@@ -1221,12 +1228,12 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 呼叫、打洞与中转 | [src/node/call.c](../../src/node/call.c) | 握手字段、`punch_*`、`relay_*`、会话期限与隧道控制 |
 | NAT 与候选 | [src/node/nat.c](../../src/node/nat.c) | 画像、`pred` 候选、报告与 UDP 恢复 |
 | 默认被叫 | [src/node/callee.c](../../src/node/callee.c) | 绑定、配对同步、锁定报告、`grant` 与撤销处理 |
-| 应用的平台请求入口 | [src/api/platform.c](../../src/api/platform.c) | 消息白名单、登录密钥证明、应答与账户状态处理 |
+| 应用的平台请求入口 | [src/api/platform.c](../../src/api/platform.c)、[src/node/node_signal.c](../../src/node/node_signal.c) | 应用请求的标记 `app`、登录密钥证明；账户会话按 `account` 事件（`node_on_account`） |
 | 资源事件 | [src/api/publish.c](../../src/api/publish.c) | 隧道内 `resources` 推送 |
 
 当前需要区分的对接边界：
 
-- `node_enroll`、`node_retire`、`operation_get` 在本文保留为平台约定，但不在当前 `npf_request` 的转发白名单中；不能仅凭消息目录认为公共 API 已支持它们。
+- `node_enroll`、`node_retire`、`operation_get` 在本文保留为平台约定，但不是应用可发的平台请求（平台对带 `app` 的回 `unsupported_type`）；不能仅凭消息目录认为公共 API 已支持它们。
 - `pending` 需要应用自行安排后续查询；连接活性看门狗也不等于每个请求都有独立业务超时。
 - `welcome.redirect`、重定向的 `within_s`、关闭时的 2 秒排空、固定 30 分钟 NAT 探测均不是当前库行为，正文已按源码说明。
 - 密码验证参数、第三方登录、平台数据库与幂等窗口、托管服务限额和计费算法须由对应服务端另行确认。绑定证明与 `grant` 的二进制布局已在本仓库实现，不再列为未定编码。
@@ -1236,6 +1243,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-10-30 | 0.66 | 应用的请求带信封字段 `app`，平台只处理其中的平台请求（服务器的 `appHandler` 登记），库自己的信令与程序的报告回 `unsupported_type`（"公共消息格式"）：库不再有应用可发类型的白名单。新增平台事件 `account`：连接的账户会话开始（带 `account_id` 与 `account_cert`）或结束（空）时先于引起它的应答发出，节点只按它保存或删除会话，不再按请求的名字；`account_login`、`account_register`、`password_reset_finish`、`auth_finish`、`hosted_login` 的应答不再带 `cert`；`account_delete` 结束这条连接的会话（连接留下），其他连接关闭；平台发现会话已被吊销时也发空的 `account` |
 | 2026-10-30 | 0.65 | UDP 承载：服务器在通配地址上从节点发往的地址应答（`IP_PKTINFO`），有几个地址的机器不必再按地址列出；呼叫的 UDP 路径无声时 UDP 会话立即 ping，3 秒内没有回答就置 `udp_bad`、改连 WSS（"选择与兜底"、计时表）；可靠层的部分确认：超时之后 `ack` 前进而未到超时时的 `snd_nxt` 时立即重传新的最早段（NewReno，"可靠层"） |
 | 2026-10-30 | 0.64 | 新增"UDP 承载"：信令有自己的 UDP 端口（`sig_udp_listen`，默认 9940），节点从主 socket 发出；握手是 6.2 封装（以服务器公钥派生、标签 `NPF-SIGHS-v1`）里的 Noise_XK（prologue `npf-sigudp-v1`），半开状态多时要 cookie；传输报文 `srv_idx \| ctr \| AEAD`（服务器 → 节点不带 `srv_idx`），64 个报文的防重放窗口，服务器一侧漫游；小的可靠层（16 位段号、累计确认、RTO 200 ms – 1 s 只重传最早的段、窗口 32），ping 是一个空段；认证过的 `CLOSE`（`refused`、`busy`、`shutdown`、`idle`、`protocol`、`closed`）；服务器列表的 `udp`；UDP 先、1 秒后 WSS，`udp_bad`，在 WSS 上每 10 分钟空闲时换回；`sig_udp`、`server_via`、`udp_sig`。被拒的登录在 UDP 上以 `CLOSE refused` 结束 |
 | 2026-10-29 | 0.63 | `login` 变小（节点的最大约 1300 字节降到约 400）：节点不再出示自己的证书（认证本来就是握手公钥对平台记录），平台在节点记录中记下所签证书的到期时间与中间证书，据此续签，节点另可带 `renew`；`cert` / `account_cert` 只带叶子证书；节点平时只带主机信息的摘要 `host_digest`，平台没有这份时回 `host_required`，节点在同一连接上带 `host` 再登录一次。`welcome` 与其他应答中的证书仍是完整的链 |

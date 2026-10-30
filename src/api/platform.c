@@ -10,7 +10,6 @@
 #include <string.h>
 
 #include "api_internal.h"
-#include "npf/peers.h"
 
 
 /* data (a JSON object) with the key proof of this connection added:
@@ -46,59 +45,17 @@ static int json_object_ok(const char *data)
     return ok;
 }
 
-/* ---- the running npf: requests relayed for the command line ---- */
-
-static const char *const k_relay[] = {"verify_begin", "verify_finish", "account_register", "account_login",
-                                      "account_logout", "account_get", "account_update", "account_delete", "plan_list",
-                                      "pay_ticket", "password_change", "password_reset_begin", "password_reset_finish", "device_list",
-                                      "device_get", "device_update", "device_unbind", "share_create", "share_accept",
-                                      "share_list", "share_revoke", "share_set", "share_leave", "owner_reset", "mapping_list",
-                                      "mapping_create", "mapping_update", "mapping_delete", "hosted_register",
-                                      "hosted_token", "hosted_accounts", "hosted_stats", "hosted_login", "auth_providers",
-                                      "auth_begin", "auth_status", "auth_finish", "login_method_bind",
-                                      "login_method_unbind", "pubconn_list", NULL};
+/* ---- the application's requests (npf_request) ---- */
 
 typedef struct relay {
-    npf_t       *c;
     npf_reply_cb cb;
     void        *user;
-    char         type[32];
 } relay;
-
-/* what the reply changes here: the account session and its certificate */
-static void relay_apply(npf_t *c, const char *type, const npf_json *j, int d)
-{
-    npf_node *n = &c->node;
-    if (strcmp(type, "account_login") == 0 || strcmp(type, "account_register") == 0
-        || strcmp(type, "password_reset_finish") == 0 || strcmp(type, "hosted_login") == 0
-        || strcmp(type, "auth_finish") == 0) {
-        char a[24];
-        int cl = npf_json_get_b64(j, d, "cert", n->account_cert, sizeof n->account_cert);
-        if (cl > 0) {
-            n->account_cert_len = (size_t)cl;
-            npf_save_account_cert(c);
-        }
-        if (npf_json_get_str(j, d, "account_id", a, sizeof a) > 0)
-            n->account_id = strtoull(a, NULL, 10);
-        npf_log("account %llu: session started", (unsigned long long)n->account_id);
-        npf_mods_account(c, 1);             /* its mappings saved on the platform, its devices' nicks */
-        npf_peers_retry_now(c->peers);      /* its devices let them in now */
-        npf_account_info(c);
-        npf_ev_account(c);
-    } else if (strcmp(type, "account_logout") == 0 || strcmp(type, "account_delete") == 0) {
-        npf_log("account %llu: %s", (unsigned long long)n->account_id,
-                strcmp(type, "account_logout") == 0 ? "logged out" : "deleted");
-        npf_forget_account(c);
-        npf_mods_account(c, 0);             /* the platform's mappings go */
-    }
-}
 
 static void relay_done(npf_node *n, const npf_env *e, int ok, void *arg)
 {
     relay *r = arg;
     (void)n;
-    if (ok)
-        relay_apply(r->c, r->type, e->j, e->data);
     if (r->cb) {
         if (e) {
             char *t = malloc(e->j->len + 1);
@@ -119,11 +76,11 @@ int npf_plat_request(npf_t *c, const char *type, const char *data, int proof, np
 {
     char *buf = NULL;
     relay *r;
-    int i, rc;
-    for (i = 0; k_relay[i] && strcmp(k_relay[i], type) != 0; i++)
-        ;
-    if (!k_relay[i]) {
-        npf_out_printf(err, "not a request an application may send\n");
+    int rc;
+    /* any type the platform has (it takes from an application only its
+     * platform requests: "app"); the reply's envelope holds 31 bytes */
+    if (!*type || strlen(type) > 31) {
+        npf_out_printf(err, "not a request type\n");
         return NPF_EINVAL;
     }
     if (!c->node.online) {
@@ -146,11 +103,9 @@ int npf_plat_request(npf_t *c, const char *type, const char *data, int proof, np
         free(buf);
         return NPF_ENOMEM;
     }
-    r->c = c;
     r->cb = cb;
     r->user = user;
-    snprintf(r->type, sizeof r->type, "%s", type);
-    rc = npf_node_request(&c->node, type, proof ? buf : data && *data ? data : NULL, relay_done, r);
+    rc = npf_node_app_request(&c->node, type, proof ? buf : data && *data ? data : NULL, relay_done, r);
     npf_wipe_free(buf, NPF_JSON_MAX_SIZE);  /* passwords */
     if (rc < 0) {
         free(r);

@@ -32,7 +32,7 @@ int64_t npf_node_time(const npf_node *n)
     return npf_unix_ms() + n->clock_offset_ms;
 }
 
-static int send_env(npf_sig *s, const char *type, const char *id, const char *reply_to, const char *status,
+static int send_env(npf_sig *s, const char *type, const char *id, int app, const char *reply_to, const char *status,
                     const char *error, const char *data_json)
 {
     npf_out w = {.max = NPF_JSON_MAX_SIZE, .secret = 1};    /* data carries passwords, codes, keys */
@@ -43,6 +43,7 @@ static int send_env(npf_sig *s, const char *type, const char *id, const char *re
     npf_out_kint(&w, "v", 1);
     npf_out_kstr(&w, "type", type);
     if (id) npf_out_kstr(&w, "id", id);
+    if (app) npf_out_kbool(&w, "app", 1);
     if (reply_to) npf_out_kstr(&w, "reply_to", reply_to);
     if (status) npf_out_kstr(&w, "status", status);
     if (error) npf_out_kstr(&w, "error", error);
@@ -60,17 +61,17 @@ static int send_env(npf_sig *s, const char *type, const char *id, const char *re
     return r;
 }
 
-/* npf_node_send on connection s */
+/* npf_node_send on connection s (request NPF_REQ_APP: an application's) */
 static int send_on(npf_node *n, npf_sig *s, const char *type, int request, const char *data_json)
 {
     char id[16];
     if (!request)
-        return send_env(s, type, NULL, NULL, NULL, NULL, data_json) < 0 ? -1 : 0;
+        return send_env(s, type, NULL, 0, NULL, NULL, NULL, data_json) < 0 ? -1 : 0;
     if (n->req_seq == INT_MAX)
         return -1;                         /* never wrap into negative / reused request ids */
     n->req_seq++;
     snprintf(id, sizeof id, "r%d", n->req_seq);
-    return send_env(s, type, id, NULL, NULL, NULL, data_json) < 0 ? -1 : n->req_seq;
+    return send_env(s, type, id, request == NPF_REQ_APP, NULL, NULL, NULL, data_json) < 0 ? -1 : n->req_seq;
 }
 
 int npf_node_send(npf_node *n, const char *type, int request, const char *data_json)
@@ -81,7 +82,7 @@ int npf_node_send(npf_node *n, const char *type, int request, const char *data_j
 #define SIG_REPLY_MS 10000      /* a request sent: something from the server within, else a ping asks */
 #define SIG_PONG_MS  10000      /* a ping sent: its pong (or anything) within */
 
-int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_reply_fn fn, void *arg)
+static int request_as(npf_node *n, const char *type, int how, const char *data_json, npf_reply_fn fn, void *arg)
 {
     int i, id;
     for (i = 0; i < NPF_PENDING_MAX; i++)
@@ -89,7 +90,7 @@ int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_r
             break;
     if (!fn || i == NPF_PENDING_MAX)
         return -1;
-    id = npf_node_send(n, type, 1, data_json);
+    id = npf_node_send(n, type, how, data_json);
     if (id < 0)
         return -1;
     n->pending[i].id = id;
@@ -97,6 +98,16 @@ int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_r
     n->pending[i].arg = arg;
     sig_expect(n, SIG_REPLY_MS, 0);     /* a connection that took it and carries nothing: found */
     return 0;
+}
+
+int npf_node_request(npf_node *n, const char *type, const char *data_json, npf_reply_fn fn, void *arg)
+{
+    return request_as(n, type, 1, data_json, fn, arg);
+}
+
+int npf_node_app_request(npf_node *n, const char *type, const char *data_json, npf_reply_fn fn, void *arg)
+{
+    return request_as(n, type, NPF_REQ_APP, data_json, fn, arg);
 }
 
 /* ---- call_end reports ---- */
@@ -170,7 +181,7 @@ void node_sig_fail_pending(npf_node *n)
 int npf_node_reply(npf_node *n, const char *type, const char *reply_to, const char *status,
                    const char *error, const char *data_json)
 {
-    return send_env(n->sig, type, NULL, reply_to, status, error, data_json);
+    return send_env(n->sig, type, NULL, 0, reply_to, status, error, data_json);
 }
 
 /* a new list from an external channel: drop the attempt in progress (to
@@ -814,8 +825,8 @@ static void apply_keys(npf_node *n, const m_welcome *m)
     }
 }
 
-/* a (re)issued certificate from welcome, this node's own or (account) the
- * account's (client) one, for this key: kept, and the program told */
+/* a (re)issued certificate from welcome or "account", this node's own or
+ * (account) the account's (client) one, for this key: kept, and the program told */
 static void cert_in(npf_node *n, const uint8_t *blob, size_t bl, int account)
 {
     const char *what = account ? "account" : "node";
@@ -824,12 +835,12 @@ static void cert_in(npf_node *n, const uint8_t *blob, size_t bl, int account)
     if (npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, blob, bl, &inter, &leaf,
                              npf_node_time(n) / 1000) < 0
         || leaf.type != (account ? NPF_CERT_CLIENT : NPF_CERT_NODE) || memcmp(leaf.dh_pub, n->id.dh_pub, 32) != 0) {
-        npf_log("login: received %s certificate does not verify, ignored", what);
+        npf_log("received %s certificate does not verify, ignored", what);
         return;
     }
     memcpy(account ? n->account_cert : n->cert, blob, bl);
     *(account ? &n->account_cert_len : &n->cert_len) = bl;
-    npf_log("login: %s certificate renewed (expires in %lld days)", what,
+    npf_log("%s certificate received (expires in %lld days)", what,
             (long long)(leaf.not_after - npf_node_time(n) / 1000) / 86400);
     if (account && n->on_account_cert)
         n->on_account_cert(n, n->on_account_cert_arg);
@@ -863,8 +874,8 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m)
         /* the platform no longer accepts our account session */
         npf_logw("login: account session expired or revoked, log in again");
         n->account_cert_len = 0;
-        if (n->on_account_lost)
-            n->on_account_lost(n, n->hook_arg);
+        if (n->on_account)
+            n->on_account(n, n->hook_arg);
     }
     if (m->ping_s)
         n->ping_s = (int)m->ping_s;
@@ -959,6 +970,24 @@ void node_on_login(npf_node *n, const m_env *e, const void *m)
     }
     n->sig_refused = 1;
     sig_refused(n, 3);
+}
+
+/* the connection's account session began or ended (signaling.md
+ * "account": a login, logout, deletion, a session no longer valid) */
+void node_on_account(npf_node *n, const m_env *e, const void *msg)
+{
+    const m_welcome *m = msg;
+    uint64_t was = n->account_id;
+    (void)e;
+    n->account_id = strtoull(m->account_id, NULL, 10);
+    npf_log("account %llu: session %s", (unsigned long long)(n->account_id ? n->account_id : was),
+            n->account_id ? "started" : "ended");
+    if (!n->account_id)
+        n->account_cert_len = 0;
+    else if (m->account_cert_len)
+        cert_in(n, m->account_cert, (size_t)m->account_cert_len, 1);
+    if (n->on_account)
+        n->on_account(n, n->hook_arg);
 }
 
 void node_on_server_list(npf_node *n, const m_env *e, const void *m)

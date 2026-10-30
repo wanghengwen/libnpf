@@ -672,7 +672,7 @@ TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 
 | 类别 | 走描述表 | 仍是手写 |
 |---|---|---|
-| 平台 → 节点 | `welcome`（`login` 应答，及 `upgrade_required` 的 `data`）、`server_list`、`upgrade`、`probe`、`keys`（后两者用 `welcome` 的表）、`replaced`、`redirect`、`relay_spare`、`home_open` 应答、`enroll` 应答、`incoming`、`punch_request`、`revoke`、`bind_committed`、`call` 应答、`call_accepted`、`call_rejected`、`handshake`、`punch_start`、`punch_info`、`relay_switch`、`call_ended`：22 种 | `api/` 里等平台应答的回调（`engine_identity.c`、`platform.c`、`publish.c`、`peers.c`：每处读一两个字段，`npf_reply_fn` 改成结构不省行，见下）|
+| 平台 → 节点 | `welcome`（`login` 应答，及 `upgrade_required` 的 `data`）、`server_list`、`upgrade`、`probe`、`keys`、`account`（后三者用 `welcome` 的表；`account` 是 2026-10-30 加的，原来 `platform.c` 按请求的名字读应答）、`replaced`、`redirect`、`relay_spare`、`home_open` 应答、`enroll` 应答、`incoming`、`punch_request`、`revoke`、`bind_committed`、`call` 应答、`call_accepted`、`call_rejected`、`handshake`、`punch_start`、`punch_info`、`relay_switch`、`call_ended`：23 种 | `api/` 里等平台应答的回调（`engine_identity.c`、`publish.c`、`peers.c`：每处读一两个字段，`npf_reply_fn` 改成结构不省行，见下）|
 | 隧道内控制 | `close`、`reverse_listen` 及其应答、`reverse_close`、`reverse_closed`、`grant_update`、`bind_approve`：7 种 | `hello`（`tunnel/`：两个整数，表不比两行 `npf_json_get_int` 短）、`resources`（原样交给钩子） |
 | WS 中转控制 | — | `proto/wsrelay.c` 的 4 种收到的（`relay_bound`、`relay_paired`、`relay_peer_gone`、`relay_error`）：只读 `type` 与 `relay_paired.peer`，表与分发都比这三行长；连接本身改在 `npf_sig` 上（下面"WS 与 XK 的骨架"）。2026-10-29 起是一个事件字节，没有 JSON 了 |
 | 节点 → 平台、写出 | — | 全部：`npf_out` 的 JSON（第二波起库里唯一的写法，原来的 `npf_jw` 并入）与 `snprintf`（见下） |

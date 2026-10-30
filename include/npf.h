@@ -586,13 +586,13 @@ NPF_API int npf_network_changed(npf_t *n);
 typedef void (*npf_text_cb)(void *user, int code, const char *text);
 NPF_API int npf_command(npf_t *n, int argc, const char *const *argv, npf_text_cb cb, void *user);
 
-/* Sends a request to the platform (signaling.md). type must be one the
- * library lets applications send (account_*, verify_*, password_*, auth_*,
- * login_method_*, device_*, share_*, mapping_*, hosted_*, plan_list,
- * pay_ticket, owner_reset, pubconn_list), else NPF_EINVAL. data_json is a
- * JSON object or NULL. key_proof adds this connection's key proof
- * (account_register, account_login, password_reset_finish, auth_finish).
- * The library keeps the account session and certificate a reply gives.
+/* Sends a request to the platform (signaling.md): any type, marked as an
+ * application's; the platform takes only its platform requests so (account_*,
+ * device_*, share_*, mapping_*, hosted_* ...: the library's own messages get
+ * unsupported_type). data_json is a JSON object or NULL, else NPF_EINVAL.
+ * key_proof adds this connection's key proof (account_register,
+ * account_login, password_reset_finish, auth_finish, hosted_login). The
+ * library keeps the account session the platform reports (event "account").
  * cb gets, on the instance's thread, the whole reply in JSON, or NULL when
  * the connection was lost. NPF_ESTATE: not online. */
 typedef void (*npf_reply_cb)(void *user, int ok, const char *reply);

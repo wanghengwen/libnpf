@@ -155,15 +155,21 @@ static void on_account_cert(npf_node *node, void *arg)
     npf_save_account_cert(arg);
 }
 
-/* the platform's session of the account went (a login without it): as a
- * logout (platform.c): the certificate forgotten, the modules told (the
- * platform's mappings stayed until a restart) */
-static void on_account_lost(npf_node *node, void *arg)
+/* the account session began (its certificate saved already) or ended (a
+ * logout, the account deleted, a login without it): the certificate
+ * forgotten; the modules told either way */
+static void on_account(npf_node *node, void *arg)
 {
     npf_t *n = arg;
-    (void)node;
-    npf_forget_account(n);
-    npf_mods_account(n, 0);
+    if (!node->account_id) {
+        npf_forget_account(n);
+        npf_mods_account(n, 0);             /* the platform's mappings go */
+        return;
+    }
+    npf_mods_account(n, 1);                 /* its mappings saved on the platform, its devices' nicks */
+    npf_peers_retry_now(n->peers);          /* its devices let them in now */
+    npf_account_info(n);
+    npf_ev_account(n);
 }
 
 /* ---- node hooks ---- */
@@ -476,7 +482,7 @@ int npf_engine_node_init(npf_t *n, const npf_node_cfg *cfg)
     int r = npf_node_init(&n->node, n->loop, cfg, &n->id, &hooks, n);
     if (r < 0)
         return r;
-    n->node.on_account_lost = on_account_lost;
+    n->node.on_account = on_account;
     n->node.on_udp_ready = on_udp_ready;
     n->node.on_account_cert = on_account_cert;
     n->node.on_account_cert_arg = n;

@@ -261,6 +261,41 @@ static void doc_ranges(void)
     CHECK(seen == 8, "signaling.md: %d of punch_start's eight optional values", seen);
 }
 
+/* "account" (signaling.md): the session's id kept and the program told, a
+ * certificate that does not verify left out; an empty one ends the session */
+static int account_calls;
+
+static void on_account(npf_node *n, void *arg)
+{
+    (void)n, (void)arg;
+    account_calls++;
+}
+
+static void to_node(npf_node *n, const char *s)
+{
+    if (npf_json_parse(&j, s, strlen(s), tok, 512) == 0)
+        node_msg(n, &j);
+}
+
+static void account_event(void)
+{
+    static npf_node node;
+    npf_loop *loop = npf_loop_new();
+    CHECK(offline_node(&node, loop, NULL, NULL) == 0, "account: set-up");
+    if (fails)
+        return;
+    node.on_account = on_account;
+    to_node(&node, "{\"v\":1,\"type\":\"account\",\"data\":{\"account_id\":\"42\",\"account_cert\":\"AAAA\"}}");
+    CHECK(node.account_id == 42 && node.account_cert_len == 0 && account_calls == 1,
+          "account: the session began (id %llu, a certificate of %zu bytes)", (unsigned long long)node.account_id,
+          node.account_cert_len);
+    node.account_cert_len = 100;
+    to_node(&node, "{\"v\":1,\"type\":\"account\",\"data\":{}}");
+    CHECK(node.account_id == 0 && node.account_cert_len == 0 && account_calls == 2, "account: the session ended");
+    npf_node_stop(&node);
+    npf_loop_free(loop);
+}
+
 int test_msg(void)
 {
     int i;
@@ -272,5 +307,6 @@ int test_msg(void)
     more_rules();
     files();
     doc_ranges();
+    account_event();
     return fails;
 }

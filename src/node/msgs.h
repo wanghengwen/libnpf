@@ -61,8 +61,8 @@ NODE_MSG(m_relay, M_RELAY)
 NODE_MSG(m_upgrade, M_UPGRADE)
 #define M_DAYKEY(T) F_INT(T, day, F_REQ, 0, INT32_MAX, 0) F_B64X(T, key, 32, F_SECRET)
 NODE_MSG(m_daykey, M_DAYKEY)
-/* login's reply; "keys" and "probe" carry some of its fields (server_list:
- * the token of 64 KB at most, decoded by its handler) */
+/* login's reply; "keys", "probe" and "account" carry some of its fields
+ * (server_list: the token of 64 KB at most, decoded by its handler) */
 #define M_WELCOME(T) F_INT(T, time, 0, 0, F_TIME_MAX, -1) F_INT(T, server_id, 0, 0, 1 << 30, -1) \
     F_INT(T, ping_s, 0, 5, 3600, 0) F_STR(T, client_id, 24, 0) F_STR(T, account_id, 24, 0) \
     F_TOK(T, upgrade, 0, NPF_JT_OBJECT) F_B64(T, ticket, 28, F_SECRET, 28) F_ARR(T, probe_keys, m_daykey, 2, F_SKIP) \

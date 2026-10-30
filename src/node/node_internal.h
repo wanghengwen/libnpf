@@ -20,6 +20,7 @@ int node_server_pick(npf_node *n, int prio, int skip);
 int  node_sig_reply(npf_node *n, const m_env *e);
 /* the platform's messages to the node (msgs.c); m: the type's struct */
 void node_on_login(npf_node *n, const m_env *e, const void *m);
+void node_on_account(npf_node *n, const m_env *e, const void *m);
 void node_on_server_list(npf_node *n, const m_env *e, const void *m);
 void node_on_upgrade(npf_node *n, const m_env *e, const void *m);
 void node_on_probe(npf_node *n, const m_env *e, const void *m);

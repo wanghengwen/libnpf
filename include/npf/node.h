@@ -310,7 +310,9 @@ struct npf_node {
     npf_pending   pending[NPF_PENDING_MAX];
     npf_end_report ends[NPF_ENDS_MAX];  /* call_end reports not answered yet */
     uint64_t      account_id;       /* the account session of this connection, 0 none */
-    void        (*on_account_lost)(npf_node *n, void *arg);   /* the account certificate was rejected */
+    /* the account session began (account_id) or ended: the platform's
+     * "account", or a login without the session the certificate was for */
+    void        (*on_account)(npf_node *n, void *arg);
     int           server_id;
     uint64_t      client_id;
     int64_t       clock_offset_ms;  /* server time - local wall clock */
@@ -600,8 +602,11 @@ void npf_node_stop(npf_node *n);
 
 /* Sends a signaling message; the envelope (v, type, id) is added and
  * data_json is the data object (NULL {}). The text is wiped after sending.
+ * request: 0 an event, 1 a request, NPF_REQ_APP an application's request
+ * (envelope "app": the platform takes only its platform requests so).
  * Returns the request id (> 0) for a request, 0 for an event, -1 when not
  * connected or it does not fit. */
+enum { NPF_REQ_APP = 2 };
 int  npf_node_send(npf_node *n, const char *type, int request, const char *data_json);
 int  npf_node_reply(npf_node *n, const char *type, const char *reply_to, const char *status,
                     const char *error, const char *data_json);
@@ -609,6 +614,8 @@ int  npf_node_reply(npf_node *n, const char *type, const char *reply_to, const c
  * the connection is lost or the node stops first. 0, or -1 (not sent: not
  * connected, or NPF_PENDING_MAX requests waiting). */
 int  npf_node_request(npf_node *n, const char *type, const char *data_json, npf_reply_fn fn, void *arg);
+/* npf_node_request as NPF_REQ_APP (npf_request) */
+int  npf_node_app_request(npf_node *n, const char *type, const char *data_json, npf_reply_fn fn, void *arg);
 /* Forgets the waiting requests with callback argument arg: their callbacks never come. */
 void npf_node_cancel_requests(npf_node *n, void *arg);
 

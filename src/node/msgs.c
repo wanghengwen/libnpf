@@ -121,6 +121,7 @@ static const struct {
     {"upgrade", D(m_upgrade), node_on_upgrade, NULL},
     {"probe", D(m_welcome), node_on_probe, NULL},
     {"keys", D(m_welcome), node_on_keys, NULL},
+    {"account", D(m_welcome), node_on_account, NULL},
     {"replaced", NULL, node_on_replaced, NULL},
     {"redirect", D(m_redirect), node_on_redirect, NULL},
     {"relay_spare", D(m_relay_spare), node_on_relay_spare, NULL},
