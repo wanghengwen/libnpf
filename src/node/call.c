@@ -429,21 +429,27 @@ void node_on_call(npf_node *n, const m_env *e, const void *msg)
     }
 }
 
+/* what the platform's refusal or end of a call means to its caller */
+static void call_why_hint(const char *why)
+{
+    if (strcmp(why, "no_path") == 0)
+        npf_log("UDP is unusable here and only callers logged in to an account get a relay: "
+                "log in to an account, or check that UDP is not blocked");
+    else if (strcmp(why, "secure_plan") == 0)
+        npf_log("connect_mode secure on one side: relays only, which takes a caller's account with a paid plan "
+                "(set connect_mode p2p allows direct paths)");
+    else if (strcmp(why, "quota") == 0)
+        npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
+                "until next month or a larger plan");
+}
+
 void call_on_rejected(npf_call *c, const void *msg)
 {
     const m_call_rejected *m = msg;
     if (!c->caller)
         return;
     npf_logw("call %s: rejected (%s)", c->call_id_s, m->error);
-    if (strcmp(m->error, "no_path") == 0)
-        npf_log("UDP is unusable here and only callers logged in to an account get a relay: "
-                "log in to an account, or check that UDP is not blocked");
-    else if (strcmp(m->error, "secure_plan") == 0)
-        npf_log("connect_mode secure on one side: relays only, which takes a caller's account with a paid plan "
-                "(set connect_mode p2p allows direct paths)");
-    else if (strcmp(m->error, "quota") == 0)
-        npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
-                "until next month or a larger plan");
+    call_why_hint(m->error);
     call_close(c, m->error, CALL_END_QUIET);
 }
 
@@ -458,7 +464,9 @@ void call_on_ended(npf_call *c, const void *msg)
 {
     const m_call_ended *m = msg;
     const char *r = m->reason[0] ? m->reason : "closed";
-    npf_log("call %s: ended by the peer (%s)", c->call_id_s, r);
+    npf_log("call %s: ended by the peer or the platform (%s)", c->call_id_s, r);
+    if (c->caller)
+        call_why_hint(r);   /* the platform ends a call no path can carry (quota) */
     call_close(c, r, CALL_END_QUIET);
 }
 
