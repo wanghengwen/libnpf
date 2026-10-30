@@ -222,6 +222,8 @@ void tunnel_sub_free(sublink *s, int rst)
 
 void tunnel_sub_reset(sublink *s, int reason)
 {
+    if (reason == NPF_RST_PROTOCOL)
+        tunnel_sub_end(s, "protocol_error");    /* the peer broke the protocol, not the local end */
     send_reset(s->t, s->id, reason);
     tunnel_sub_free(s, 1);
 }
@@ -516,8 +518,7 @@ static void data_in(sublink *s, const uint8_t *p, size_t n)
     if (s->state == SL_CLIENT_WAIT) {
         size_t drop;
         int r = tunnel_client_reply(s, p, n, &drop);
-        if (r < 0) {
-            tunnel_sub_end(s, "target_failed");   /* the other side could not reach the target */
+        if (r < 0) {                    /* s->end: the reply's REP, or protocol_error */
             tunnel_sub_reset(s, r == -2 ? NPF_RST_PROTOCOL : NPF_RST_LOCAL);
             return;
         }
@@ -585,8 +586,8 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
         if (!s->local_eof && !s->fin_first)
             s->fin_first = 2;
         s->peer_fin = 1;
-        if (s->state == SL_CLIENT_WAIT)
-            tunnel_sub_end(s, "target_failed");     /* the replies cut short: the target was not reached */
+        if (s->state == SL_CLIENT_WAIT && !s->vend)  /* the replies cut short (a closed virtual end's: unread) */
+            tunnel_sub_end(s, "protocol_error");
         if (s->state == SL_OPEN || s->state == SL_CLIENT_WAIT) {
             if (tunnel_flush_local(s, NULL, 0) < 0)
                 return 0;
@@ -601,8 +602,7 @@ static int handle_frame(npf_tunnel *t, uint32_t id, int type, const uint8_t *p, 
          * once connected (nc -z through a name: both ends then end) */
         return 0;
     case FR_RESET:
-        /* (a refusal seen in a reply stays the reason) */
-        tunnel_sub_end(s, s->state == SL_CLIENT_WAIT ? "target_failed" : "peer_reset");
+        tunnel_sub_end(s, "peer_reset");    /* (a failure seen in a reply stays the reason) */
         tunnel_sub_free(s, 1);
         return 0;
     default: {                              /* FR_WINDOW, its increment at p (handle_unit took 4 bytes) */

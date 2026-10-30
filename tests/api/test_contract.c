@@ -1,7 +1,8 @@
 /* The public API's contracts, on npf.h alone: the initialisers write only
  * the caller's size; a change in effect that cannot be saved says so
  * (NPF_ESAVE, exit code 3) and is written with the next change saved; a
- * shared runtime's callback never waits for another thread. */
+ * change refused in safe mode says that instead; a shared runtime's
+ * callback never waits for another thread. */
 #define _DEFAULT_SOURCE                     /* mkdtemp */
 #include <stddef.h>
 #include <stdlib.h>
@@ -158,6 +159,45 @@ static void node_json(void)
     rm_dir(dir);
 }
 
+/* safe mode (state.json and its copy damaged): the pairing calls neither
+ * read nor change anything and say so (NPF_ESTATE, not NPF_ESAVE's "in
+ * effect, not written"); a repaired file is taken at the next call */
+static void safe_mode(void)
+{
+    char dir[] = "/tmp/npf-contract-XXXXXX", err[300] = "", pw[64];
+    npf_pairing pr[4];
+    size_t count = 9;
+    npf_t *n;
+    if (!mkdtemp(dir)) {
+        check(0, "a directory");
+        return;
+    }
+    put_file(dir, "npf.conf", "root = nvwgWTOBpFl_zXsDesOy2N9KGi56wOLQRngcgZkD_xM\nserver = wss://127.0.0.1:1/v1/ws\n"
+                              "server_pub = nvwgWTOBpFl_zXsDesOy2N9KGi56wOLQRngcgZkD_xM\n");
+    put_file(dir, "node.json", "{\"number\":\"123456789\",\"password\":\"ABCD-EFGH\"}\n");
+    put_file(dir, "state.json", "{\"password\":");
+    put_file(dir, "state.json.bak", "not json");
+    if (!(n = instance(dir, NPF_ROLE_NODE, "udp_port = 0\n", NULL, err, sizeof err))) {
+        printf("     (%s)\n", err);
+        check(0, "a node with a number");
+        rm_dir(dir);
+        return;
+    }
+    check(npf_pairing_password_set(n, "new-password-1", err, sizeof err) == NPF_ESTATE && strstr(err, "safe mode")
+              && strstr(err, "not changed"),
+          "safe mode: password set NPF_ESTATE, \"not changed ... safe mode\"");
+    check(npf_pairing_password_get(n, pw, sizeof pw) == NPF_ESTATE && !pw[0], "password get: NPF_ESTATE, nothing");
+    check(npf_pairing_list(n, pr, 4, &count) == NPF_ESTATE, "pairing list: NPF_ESTATE (who is paired is not known)");
+    check(npf_pairing_remove(n, NULL) == NPF_ESTATE && npf_owner_reset(n) == NPF_ESTATE,
+          "unpair and owner reset: NPF_ESTATE");
+    put_file(dir, "state.json", "{\"password\":\"repaired-pw-1\",\"paired\":[]}\n");
+    check(npf_pairing_password_set(n, "new-password-1", err, sizeof err) == NPF_OK
+              && npf_pairing_password_get(n, pw, sizeof pw) == NPF_OK && strcmp(pw, "new-password-1") == 0,
+          "the file repaired: taken, the password set");
+    npf_destroy(n);
+    rm_dir(dir);
+}
+
 /* a structure not initialised (no _init: its size 0) or NULL: NPF_EINVAL
  * naming the _init, the number out 0, nothing made */
 static void not_initialised(void)
@@ -258,6 +298,7 @@ int main(void)
     unsaved();
     file_only();
     node_json();
+    safe_mode();
     runtime_guard();
     return fails != 0;
 }

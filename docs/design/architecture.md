@@ -607,7 +607,7 @@ struct npf_path {
 - 去掉的：子链路的 `t_greet`、`t_gone`，握手的 `t_connect`、`t_he`，它们的回调 `greet_timeout`、`connect_timeout`、`he_timer`、`gone_timeout` 与 `tunnel_greet_wait`。子链路连同握手原来有这 4 个定时器，同时挂着的最多 2 个（连接时的期限与下一个地址）。
 - 显式的状态：虚拟本地端原来的 `vgone`（`VG_NONE`、`VG_CLOSED`、`VG_RESET`：所有者关了、等 `virt_poll`）与 `gone`（处理过了、等对方的 FIN）合成一个 `vend`：`VE_NONE`、`VE_CLOSED`、`VE_RESET`、`VE_GONE`；隧道的 `ngone` 只数前两种。半关闭的 `local_eof`、`peer_fin`、`shut_wr` 是三个独立的方向，不是一个状态的组合，保留。
 - 不变的：隧道一级的 `t_rate`（速率组或配额的慢速桶用完时 50 ms 后再看，`tunnel_rate.c`，令牌桶与配额的语义不变）与 `t_virt`（虚拟本地端的下一轮轮询：第 4 节规则 5 的"下一轮"，不是截止时间）。
-- 原样保留的一处：虚拟本地端在 `SL_CLIENT_WAIT` 时被所有者关闭，之后对方的 FIN 或 RESET 到来，`end` 记为 `target_failed`（等应答时的规则），尽管目标可能是通的。
+- 结束原因（`npf_sublink_stats.end`，2026-10-30 按实际发生的事改正）：`target_failed` 只用于 CONNECT 应答的 `REP 03`–`06`（目标不可达、拒绝、超时），`02` 是 `target_refused`，`01` 是 `peer_failed`（对方自己的失败：资源、未细分的连接错误），`07`、`08` 是 `request_unsupported`；不合规的应答（含未分配的 `REP 09` 及以上）、应答没收完就收到 FIN、对方超出信用窗口等对方的协议错误都是 `protocol_error`（发 `RESET(PROTOCOL)` 时记下，原来记为 `target_failed` 或 `local_reset`）；等应答时收到对方的 `RESET` 是 `peer_reset`（对方的限额或失败，失败应答总是先 FIN）；虚拟本地端在 `SL_CLIENT_WAIT` 时被所有者关闭，应答丢弃不读，之后对方的 FIN 是 `local_closed`。失败应答的 `connect_ms` 为 −1（`-D` 原来记了应答的时刻）。
 - 行数：库的 `src` + `include` 38 015 → 38 022（+7，`git diff` +95 −88），`src/tunnel` 2 417 → 2 424：去掉的是 4 个回调与它们的启停，加的是定时器本身（`sub_timer`、`sub_arm`、`tunnel_sub_at`、`tunnel_sub_due`、`tunnel_sub_tick`）与截止时间的注释；原来的回调本来就短，内容变成 tick 照样留着（同第 8 节"1d 实际"）。
 - 单元测试 UT-42（`test_tunnel_tick.c`）以给定的时刻走上表每一行：截止时间的值、定时器在最早的截止时间、到时前一毫秒什么都不做、到时的动作（发出的 RESET、`REP` 与 FIN、`end`），Happy Eyeballs 的三个地址（250 ms 一个，第三个之后只剩期限），没有回来的查询，对方的 FIN 到来时子链路连同定时器释放。
 
