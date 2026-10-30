@@ -202,8 +202,8 @@ static void triggered(npf_punch *p, int sock, const struct sockaddr_storage *fro
 static void finish(npf_punch *p, int ok)
 {
     int i, fd = -1;
-    if (p->finished)
-        return;
+    if (p->finished || p->free_me)
+        return;                     /* free_me: the owner has dropped it */
     p->finished = 1;
     p->res.ok = ok;
     p->res.elapsed_ms = (int)(npf_mono_ms() - p->start);
@@ -580,9 +580,9 @@ static void tick_cb(npf_loop *loop, void *arg)
         p->quiet_said = 1;
         p->res.elapsed_ms = (int)(now - p->start);
         p->cfg.quiet(p, &p->res, p->arg);
-        if (p->finished) {
+        if (p->finished || p->free_me) {
             leave(p);
-            return;                 /* the owner ended it */
+            return;                 /* the owner ended it or let it go */
         }
     }
     if ((probes_all(p) || v6_alongside(p)) && now >= p->socks[0].next_send) {
@@ -835,11 +835,11 @@ static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
         ssize_t r = recvfrom(fd, buf, sizeof buf, MSG_DONTWAIT, (struct sockaddr *)&from, &fl);
         if (r <= 0)
             break;
-        if ((p->cfg.plan.strategy == NPF_PUNCH_S2B || (p->cfg.plan.measure && i == 1)) && s2b_input(p, buf, (size_t)r, &from))
-            continue;
-        handle(p, i, fd, buf, (size_t)r, &from);
-        if (p->finished)
-            break;  /* the socket table changed; free deferred until leave */
+        if (!((p->cfg.plan.strategy == NPF_PUNCH_S2B || (p->cfg.plan.measure && i == 1))
+              && s2b_input(p, buf, (size_t)r, &from)))
+            handle(p, i, fd, buf, (size_t)r, &from);
+        if (p->finished || p->free_me)
+            break;  /* the socket table changed, or the owner let it go (freed in leave) */
     }
     leave(p);
 }

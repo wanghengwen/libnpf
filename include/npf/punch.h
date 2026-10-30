@@ -117,7 +117,8 @@ typedef struct npf_punch_cfg {
  * is then the caller's and off the loop), or failed (fd -1) at the timeout or
  * npf_punch_stop. The round's other sockets are closed before done. done,
  * info and quiet may call npf_punch_free (deferred while an input or tick
- * callback of this punch is on the stack). */
+ * callback of this punch is on the stack); no callback of the round's
+ * comes after it. */
 npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_fd,
                          npf_punch_done_fn done, void *arg);
 /* A datagram that came on the main socket or fd6: 1 when it is a punch
