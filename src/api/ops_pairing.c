@@ -1,6 +1,6 @@
 /* libnpf: a device's pairing (npf_pairing_* and npf_owner_reset): its
  * password, the keys paired, the owner reset. Without a number (no callee
- * state yet): NPF_ESTATE. */
+ * state yet) or in safe mode: NPF_ESTATE. */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -10,10 +10,15 @@
 
 #include "api_internal.h"
 
-/* the callee state, once there is a number (npf_become_node makes the state first) */
+/* the callee state, once there is a number (npf_become_node makes the
+ * state first), out of safe mode (callee.h: its file and the copy damaged,
+ * nothing known or changed; a repaired file is read first) */
 static npf_callee *callee_of(npf_t *n)
 {
-    return n->has_number ? n->callee : NULL;
+    npf_callee *c = n->has_number ? n->callee : NULL;
+    if (c)
+        npf_callee_refresh(c);
+    return c && !c->damaged ? c : NULL;
 }
 
 static int callee_rc(int r)
@@ -48,7 +53,8 @@ static int pw_set_run(npf_t *n, void *arg)
     npf_callee *c = callee_of(n);
     int r;
     if (!c)
-        return NPF_ESTATE;
+        return n->has_number ? op_fail(x, NPF_ESTATE, "not changed: the device's state file is damaged (safe mode)")
+                             : NPF_ESTATE;
     if ((r = npf_callee_password_set(c, x->in)) == -1)
         return op_fail(x, NPF_EINVAL, "the password needs 8 to 127 bytes");
     if (r == -2)

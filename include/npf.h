@@ -75,8 +75,9 @@ enum {
     NPF_OK = 0,
     NPF_EINVAL = -1,        /* bad argument */
     NPF_ENOENT = -2,        /* no such peer, forward, resource, session or stream */
-    NPF_ESTATE = -3,        /* not now: not started, not online, no number, the session not up, the run ended;
-                               or from a shared runtime's callback for an instance on another thread */
+    NPF_ESTATE = -3,        /* not now: not started, not online, no number, the session not up, the run ended,
+                               a device's state.json damaged (safe mode); or from a shared runtime's callback
+                               for an instance on another thread */
     NPF_EUNAVAIL = -4,      /* not available here: this build, role or npf_options.flags */
     NPF_ETOOBIG = -5,       /* the output buffer or the input is too large */
     NPF_ENOMEM = -6,
@@ -533,8 +534,9 @@ NPF_API int npf_resource_list_size(npf_t *n, uint32_t peer, npf_resource_info *o
     npf_resource_list_size((n), (peer), (out), sizeof *(out), (cap), (count))
 
 /* ---- a device's pairing and owner (state.json in data_dir) ----
- * Only for a node with a number: else NPF_ESTATE. NPF_ESAVE: in effect,
- * state.json not written (npf_save). */
+ * Only for a node with a number, out of safe mode (state.json and its copy
+ * damaged: nothing read or changed; npf_status_json's state_damaged): else
+ * NPF_ESTATE. NPF_ESAVE: in effect, state.json not written (npf_save). */
 
 NPF_API int npf_pairing_password_get(npf_t *n, char *out, size_t cap);
 /* 8 .. NPF_PASSWORD_MAX bytes, else NPF_EINVAL */
