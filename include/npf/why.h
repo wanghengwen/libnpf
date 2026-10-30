@@ -20,8 +20,10 @@ const char *npf_why_platform_text(const char *code);
 /* Enrolment refusal: reason first, then err; never NULL. */
 const char *npf_why_enroll_text(const char *err, const char *reason);
 
-/* Forward failure text → NPF_FWD_WHY_*. refused: policy (FS_REFUSED);
- * reverse: else NPF_FWD_WHY_REQUEST when no needle matches. */
+/* A forward's failure text why → NPF_FWD_WHY_*: FORBIDDEN when the peer's
+ * reverse resource refused it (refused), else the first table entry whose
+ * words why contains ("in use", "bind", "too many", ...), else REQUEST for a
+ * reverse forward (-R: the request failed or timed out), else OTHER. */
 int npf_why_fwd(int refused, int reverse, const char *why);
 
 /* A free-form reason as the peer and the platform get it: a-z 0-9 _, at most
