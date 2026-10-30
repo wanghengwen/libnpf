@@ -99,8 +99,6 @@ static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_j
     return 0;
 }
 
-static int state_save(npf_callee *d);
-
 static int state_load(npf_callee *d)
 {
     npf_jtok *tok = NULL;
@@ -177,11 +175,11 @@ static int state_load(npf_callee *d)
     if (n >= 0)
         npf_wipe_free(s, (size_t)n);        /* the password */
     if (from_bak)
-        state_save(d);                      /* the file from its copy */
+        npf_callee_save(d);                      /* the file from its copy */
     return 0;
 }
 
-static int state_save(npf_callee *d)
+int npf_callee_save(npf_callee *d)
 {
     char bak[1100];
     npf_out w = {.max = STATE_MAX - 1, .secret = 1};    /* the password */
@@ -241,7 +239,7 @@ static int state_save(npf_callee *d)
 static void report_lock(npf_callee *d);
 
 /* reload when the local command line changed the file */
-static void state_refresh(npf_callee *d)
+void npf_callee_refresh(npf_callee *d)
 {
     if (state_changed(d)) {
         int64_t lock = d->locked_until;
@@ -262,7 +260,7 @@ static void state_watch(npf_loop *loop, void *arg)
 {
     npf_callee *d = arg;
     d->t_watch = npf_timer_add(loop, 5000, state_watch, d);
-    state_refresh(d);
+    npf_callee_refresh(d);
 }
 
 static void state_watch_start(npf_callee *d)
@@ -359,7 +357,7 @@ static int op_authorized(npf_node *n, const uint8_t pub[32], void *arg)
 {
     npf_callee *d = arg;
     (void)n;
-    state_refresh(d);
+    npf_callee_refresh(d);
     return !d->damaged && paired_at(d, pub) >= 0;   /* safe mode: who is paired is not known */
 }
 
@@ -367,7 +365,7 @@ static const char *op_password(npf_node *n, void *arg)
 {
     npf_callee *d = arg;
     (void)n;
-    state_refresh(d);
+    npf_callee_refresh(d);
     return d->damaged ? NULL : d->password;    /* safe mode: no pairing (never the default password) */
 }
 
@@ -383,7 +381,7 @@ static void op_paired(npf_node *n, const uint8_t pub[32], void *arg)
 {
     npf_callee *d = arg;
     (void)n;
-    state_refresh(d);                   /* a local change first: not saved over */
+    npf_callee_refresh(d);                   /* a local change first: not saved over */
     d->fails = 0;
     d->lock_secs = 0;
     if (paired_at(d, pub) < 0 && d->npaired < NPF_MAX_PAIRED) {
@@ -391,7 +389,7 @@ static void op_paired(npf_node *n, const uint8_t pub[32], void *arg)
         d->paired[d->npaired].added = time(NULL);
         d->npaired++;
     }
-    state_save(d);
+    npf_callee_save(d);
     sync_paired(d);
 }
 
@@ -402,7 +400,7 @@ static void op_pair_failed(npf_node *n, void *arg)
 {
     npf_callee *d = arg;
     (void)n;
-    state_refresh(d);                   /* a local change first: not saved over */
+    npf_callee_refresh(d);                   /* a local change first: not saved over */
     d->fails++;
     if (d->fails >= 5) {
         d->lock_secs = d->lock_secs >= 12 * 3600 ? 24 * 3600
@@ -412,7 +410,7 @@ static void op_pair_failed(npf_node *n, void *arg)
         npf_logw("pairing locked for %lld s after repeated wrong passwords", (long long)d->lock_secs);
         report_lock(d);
     }
-    state_save(d);
+    npf_callee_save(d);
 }
 
 /* hosted trust (security.md 8.2): the grant is signed by the platform's
@@ -425,7 +423,7 @@ static int op_grant_check(npf_node *n, const uint8_t *g, size_t len, const uint8
     npf_cert inter;
     npf_grant gr;
     int64_t now = npf_node_time(n) / 1000;
-    state_refresh(d);
+    npf_callee_refresh(d);
     if (d->damaged)
         return -1;                      /* safe mode: the revocations are not known */
     if (!d->hosted_trust || n->cert_len == 0 || npf_cert_parse(n->cert, n->cert_len, &inter) < 0
@@ -450,7 +448,7 @@ static void op_revoke(npf_node *n, uint64_t account, int64_t before, int owner, 
     npf_callee *d = arg;
     int i;
     (void)n;
-    state_refresh(d);
+    npf_callee_refresh(d);
     for (i = 0; i < d->nrevokes; i++)
         if (d->revokes[i].account == account)
             break;
@@ -467,7 +465,7 @@ static void op_revoke(npf_node *n, uint64_t account, int64_t before, int owner, 
     if (owner && d->owner == account)
         d->owner = 0;
     npf_log("revoked account %llu%s", (unsigned long long)account, owner ? " (owner)" : "");
-    state_save(d);
+    npf_callee_save(d);
     npf_callee_changed(d);                  /* grant sessions the revocation covers end (also by a local change) */
 }
 
@@ -475,12 +473,12 @@ static void op_bind_committed(npf_node *n, uint64_t account, const uint8_t op[16
 {
     npf_callee *d = arg;
     (void)n;
-    state_refresh(d);                   /* a local change first: not saved over */
+    npf_callee_refresh(d);                   /* a local change first: not saved over */
     if (d->pending_owner != account || memcmp(d->pending_op, op, 16) != 0 || time(NULL) > d->pending_until)
         return;
     d->owner = account;
     d->pending_owner = 0;
-    state_save(d);
+    npf_callee_save(d);
     npf_log("owner is now account %llu", (unsigned long long)account);
 }
 
@@ -500,7 +498,7 @@ static void op_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
         npf_call_ctl_reply(c, e.type, j, "error", "unsupported_type", NULL);
         return;
     }
-    state_refresh(d);
+    npf_callee_refresh(d);
     if (npf_call_auth(c) != NPF_AUTH_IK && npf_call_auth(c) != NPF_AUTH_PAKE) {   /* paired callers only */
         npf_call_ctl_reply(c, e.type, j, "error", "forbidden", NULL);
         return;
@@ -535,10 +533,10 @@ static void on_cert(npf_node *n, void *arg)
 {
     npf_callee *d = arg;
     (void)n;
-    state_refresh(d);                   /* a local change first: not saved over */
+    npf_callee_refresh(d);                   /* a local change first: not saved over */
     memcpy(d->cert, n->cert, n->cert_len);
     d->cert_len = n->cert_len;
-    state_save(d);
+    npf_callee_save(d);
 }
 
 int npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, const uint8_t seed[32],
@@ -554,11 +552,6 @@ int npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, cons
     if (state_load(d) < 0 && !d->damaged)
         return -1;
     return 0;                           /* loaded, first run, or safe mode (d->damaged) */
-}
-
-int npf_callee_save(npf_callee *d)
-{
-    return state_save(d);
 }
 
 void npf_callee_attach(npf_callee *d, npf_node *n)
@@ -587,7 +580,7 @@ void npf_callee_attach(npf_callee *d, npf_node *n)
 
 void npf_callee_on_login(npf_callee *d)
 {
-    state_refresh(d);                   /* a local change first: not saved over */
+    npf_callee_refresh(d);                   /* a local change first: not saved over */
     if (d->damaged)
         npf_loge("state: %s damaged: online, but every call and pairing refused (safe mode)", d->state_path);
     sync_paired(d);
@@ -596,7 +589,7 @@ void npf_callee_on_login(npf_callee *d)
     if (d->owner_reset_pending) {
         npf_node_send(d->node, "owner_reset", 0, NULL);
         d->owner_reset_pending = 0;
-        state_save(d);
+        npf_callee_save(d);
     }
 }
 
@@ -620,19 +613,14 @@ int npf_callee_fresh(npf_callee *d, const char *np)
     d->nrevokes = 0;
     d->owner_reset_pending = 0;
     npf_callee_changed(d);
-    return state_save(d) < 0 ? -2 : 0;
-}
-
-void npf_callee_refresh(npf_callee *d)
-{
-    state_refresh(d);
+    return npf_callee_save(d) < 0 ? -2 : 0;
 }
 
 int npf_callee_password_set(npf_callee *d, const char *np)
 {
     if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
         return -1;
-    state_refresh(d);
+    npf_callee_refresh(d);
     if (d->damaged)
         return -2;                      /* safe mode: npf_callee_fresh writes a fresh state */
     snprintf(d->password, sizeof d->password, "%s", np);
@@ -640,13 +628,13 @@ int npf_callee_password_set(npf_callee *d, const char *np)
     d->locked_until = 0;
     d->lock_secs = 0;
     report_lock(d);
-    return state_save(d) < 0 ? -2 : 0;
+    return npf_callee_save(d) < 0 ? -2 : 0;
 }
 
 int npf_callee_unpair_key(npf_callee *d, const uint8_t *key)
 {
     int k;
-    state_refresh(d);
+    npf_callee_refresh(d);
     if (d->damaged)
         return -2;
     if (!key) {
@@ -658,15 +646,15 @@ int npf_callee_unpair_key(npf_callee *d, const uint8_t *key)
         d->npaired--;
     }
     npf_callee_changed(d);
-    return state_save(d) < 0 ? -2 : 0;
+    return npf_callee_save(d) < 0 ? -2 : 0;
 }
 
 int npf_callee_owner_reset(npf_callee *d)
 {
-    state_refresh(d);                   /* a local change first: not saved over */
+    npf_callee_refresh(d);                   /* a local change first: not saved over */
     if (d->damaged)
         return -2;
     d->owner = 0;
     d->owner_reset_pending = 1;
-    return state_save(d) < 0 ? -2 : 0;
+    return npf_callee_save(d) < 0 ? -2 : 0;
 }
