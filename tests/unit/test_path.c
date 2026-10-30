@@ -1,7 +1,8 @@
 /* The path manager (path.h, architecture.md 2.4) over bare paths: where
  * pm_send would send (the primary path; a direct path in doubt and the UDP
  * relay both; the WS relay alone) is the manager's primary/second; the
- * roles, the name of the path in use, and npf.h's NPF_PATH_* for it. */
+ * roles, the name of the path in use, and npf.h's NPF_PATH_* for it.
+ * pm_send itself, over a call's own paths: test_relay_data. */
 #include <stdio.h>
 #include <string.h>
 

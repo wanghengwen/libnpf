@@ -243,32 +243,31 @@ enum { PK_DIRECT, PK_UDP_RELAY, PK_WS_RELAY };                   /* 排名：直
 enum { PH_NEW, PH_UP, PH_SUSPECT, PH_DEAD };                     /* 健康 */
 enum { PR_IDLE, PR_PRIMARY, PR_SECOND, PR_STANDBY };             /* 在管理器里的角色 */
 
-typedef struct npf_path_ops {
-    int     (*send)(npf_path *p, const uint8_t *dgram, size_t len);  /* 热路径：不分配、不查表 */
-    void    (*probe)(npf_path *p, int64_t now);   /* 证明一次往返：PATH_CHECK / RELAY_BIND / WS ping 或重连 */
-    int64_t (*due)(const npf_path *p, int64_t now);   /* 自己的事（绑定重发、保活、重连），INT64_MAX 没有 */
-    void    (*tick)(npf_path *p, int64_t now);
-    void    (*close)(npf_path *p);
-} npf_path_ops;
+/* 不是操作表：三种种类是固定的，pm_send 与健康事件按 kind 直接调用 */
+void path_direct_tx(npf_path *p, const uint8_t *dgram, size_t len);   /* 热路径：不分配、不查表 */
+void path_udp_tx(npf_path *p, const uint8_t *dgram, size_t len);
+void path_ws_tx(npf_path *p, const uint8_t *dgram, size_t len);
+void path_direct_suspect(npf_path *p, int64_t quiet);                 /* 可疑了：各自的反应 */
+void path_udp_suspect(npf_path *p, int64_t quiet);
+void path_ws_suspect(npf_path *p, int64_t quiet);
+void path_direct_probe(npf_path *p);                                  /* 证明一次往返：PATH_CHECK */
+void path_direct_dead(npf_path *p);
 
 struct npf_path {
-    const npf_path_ops *ops;
-    uint8_t  kind, health, role, carrier;   /* carrier：ANL_CARRIER_DGRAM / STREAM */
-    uint16_t mtu;                           /* 现在都是 1200 */
+    uint8_t  kind, health, role;
     int64_t  since;                         /* 加入的时刻 */
     int64_t  last_rx;                       /* 经它来的、AnLiu 认了的数据报 */
+    int64_t  busy_since;                    /* 被依赖且有数据在途的起点 */
     int64_t  rt_ok;                         /* 最近一次证明的往返（回应、BIND_ACK、配对 / pong） */
-    int64_t  suspect_at, busy_since;
-    int      rtt_ms;
-    int      tx_before_rx;                  /* 收到之前就可以发（UDP 中转：发送不等本侧绑定） */
+    int64_t  suspect_at, probe_at, probe_until;
 };
 ```
 
-第 1a 步实际的结构（`src/node/path.h`）比草图少：没有 `carrier`、`mtu`、`rt_ok`、`rtt_ms`、`tx_before_rx`，直连的可疑时刻在 `path_direct` 里；发送的操作叫 `tx`（MinGW 的头文件把 `send` 定义成宏）。第 1b 步加了 `rt_ok`、`suspect_at`、`probe_at`、`probe_until`，可疑时刻移到 `npf_path`（第 2.4 节"1b 的实现"）。第 3 步之后的瘦身去掉了操作表的 `name`：名字由管理器按种类查表（`pm_name`），UDP 中转不是 `UP` 时是 `relay (binding)`（路径的健康与绑定器的状态一一对应：`NEW` 绑定中、`UP` 已绑定、`SUSPECT` 探测中、`DEAD` 放弃），操作表只剩 `tx`、`suspect`、`probe`、`dead`。
+最初的草图有一张操作表（`send`、`probe`、`due`、`tick`、`close`）和 `carrier`、`mtu`、`rtt_ms`、`tx_before_rx`，实际（`src/node/path.h`）都没有：第 1a 步的发送操作叫 `tx`（MinGW 的头文件把 `send` 定义成宏），第 1b 步加了 `rt_ok`、`suspect_at`、`probe_at`、`probe_until`（可疑时刻从 `path_direct` 移到 `npf_path`，第 2.4 节"1b 的实现"），第 3 步之后的瘦身去掉了 `name`：名字由管理器按种类查表（`pm_name`），UDP 中转不是 `UP` 时是 `relay (binding)`（路径的健康与绑定器的状态一一对应：`NEW` 绑定中、`UP` 已绑定、`SUSPECT` 探测中、`DEAD` 放弃）。2026-10-30 操作表本身也去掉了：只剩 `tx`、`suspect`、`probe`、`dead` 四项、三种固定的种类，`pm_send`（`path.h` 的内联函数）按主路径的 `kind` 调 `path_*_tx`，第二条总是 UDP 中转；`pm_tick` 按 `kind` 调可疑、探测、失效的反应（只有直连有探测与失效的反应），单元测试（`test_path_health.c`）经 `path_mgr.c` 的 `pm_hook_*` 换掉这些反应。
 
 三种路径的实现：
 
-| 种类 | 来自 `ee2f0f7` 的 | `send` | `probe` | 自己的定时 | 载体 |
+| 种类 | 来自 `ee2f0f7` 的 | `tx` | 探测 | 自己的定时 | 载体 |
 |---|---|---|---|---|---|
 | 直连 | `call_path.c`、`call_punch.c:punch_done` 的后半、`call_direct.c` 的路径部分 | `npf_udp_send(fd, addr)`，`fd` 可以是主套接字或 S3 留下的套接字（`p2p_owned`） | `PATH_CHECK{nonce}`（SIV，`LABEL_PATH`），500 ms 一次 | 无 | DGRAM |
 | UDP 中转 | `call_relay.c`、`relay_bind.c`、`relay_data.c` | `relay_data_pack` → 当前地址 | `RELAY_BIND`（先当前地址，再其余，见 Q2） | 绑定重发 700 ms、保活 25 s | DGRAM |

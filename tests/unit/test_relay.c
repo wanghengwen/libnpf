@@ -401,6 +401,39 @@ int test_relay_data(void)
     path_udp_tx(&c1->pu.p, dgram, RDATA_ATAG - 1);           /* no AnLiu datagram is this short */
     CHECK(recv_within(f1, got, sizeof got, 50) < 0, "a datagram shorter than its tag sent");
 
+    /* pm_send over the call's own paths: the primary by its kind (the direct
+     * path, the UDP relay, the WS relay: here with no relay connection, so
+     * nothing on UDP), the second to the UDP relay */
+    {
+        struct sockaddr_storage pa;
+        int fp = lo_socket(SOCK_DGRAM, 0, &pa, sizeof pa);
+        c1->pd.fd = fc;
+        c1->pd.addr = pa;
+        c1->pd.p.health = PH_UP;
+        pm_add(&c1->pm, &c1->pu.p);
+        pm_add(&c1->pm, &c1->pd.p);
+        pm_send(&c1->pm, dgram, sizeof dgram);
+        CHECK(recv_within(fp, got, sizeof got, 1000) == (ssize_t)sizeof dgram && recv_within(f1, got, sizeof got, 50) < 0,
+              "pm_send: the direct path primary");
+        pm_health(&c1->pm, &c1->pd.p, PH_SUSPECT);
+        pm_send(&c1->pm, dgram, sizeof dgram);
+        CHECK(recv_within(fp, got, sizeof got, 1000) == (ssize_t)sizeof dgram
+              && recv_within(f1, got, sizeof got, 1000) == RDATA_HDR + (ssize_t)sizeof dgram,
+              "pm_send: the direct path in doubt, the UDP relay second");
+        pm_del(&c1->pm, &c1->pd.p);
+        pm_send(&c1->pm, dgram, sizeof dgram);
+        CHECK(recv_within(f1, got, sizeof got, 1000) == RDATA_HDR + (ssize_t)sizeof dgram
+              && recv_within(fp, got, sizeof got, 50) < 0, "pm_send: the UDP relay primary");
+        c1->pw.p.health = PH_UP;
+        pm_add(&c1->pm, &c1->pw.p);
+        pm_send(&c1->pm, dgram, sizeof dgram);
+        CHECK(recv_within(f1, got, sizeof got, 50) < 0 && recv_within(fp, got, sizeof got, 50) < 0,
+              "pm_send: the WS relay primary, alone");
+        pm_del(&c1->pm, &c1->pw.p);
+        c1->pd.fd = -1;
+        close(fp);
+    }
+
     /* from the relays: by the hint, the source and the tag (the caller has
      * no keys yet: the datagram is kept for them, relay_early_keep) */
     len = rdata_from(&k2, rid2, 5, w);
