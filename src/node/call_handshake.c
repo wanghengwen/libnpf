@@ -48,7 +48,7 @@ static void sid_of(const npf_call *c, uint8_t sid[24])
 static int call_finish_handshake(npf_call *c)
 {
     const uint8_t *rs = npf_noise_remote_static(&c->hs->noise);
-    if (!rs || npf_noise_split(&c->hs->noise, NULL, NULL, c->k12, c->k12 + 32, NULL) < 0)
+    if (!rs || npf_noise_split(&c->hs->noise, NULL, NULL, c->hs->k12, c->hs->k12 + 32, NULL) < 0)
         return -1;
     memcpy(c->peer_pub, rs, 32);
     if (c->hs->password[0])
@@ -393,9 +393,5 @@ void call_on_handshake(npf_call *c, const void *msg)
     npf_log("call %s: paired", c->call_id_s);
     /* the platform plans no punching round before this (signaling.md
      * handshake_done, security.md 8.3) */
-    {
-        char data[96];
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
-        npf_node_send(c->n, "handshake_done", 0, data);
-    }
+    call_tell(c, "handshake_done");
 }

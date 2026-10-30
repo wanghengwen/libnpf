@@ -59,7 +59,7 @@ static npf_call *direct_call(npf_node *n, int caller, int fd, const struct socka
 /* keys from the handshake, then the same transport as a call */
 static int direct_up(npf_call *c)
 {
-    if (npf_noise_split(&c->hs->noise, NULL, NULL, c->k12, c->k12 + 32, NULL) < 0)
+    if (npf_noise_split(&c->hs->noise, NULL, NULL, c->hs->k12, c->hs->k12 + 32, NULL) < 0)
         return -1;
     pm_add(&c->pm, &c->pd.p);
     call_set_state(c, CS_CONNECTING, NULL);    /* first: the initiator is established with its hello */
@@ -76,7 +76,7 @@ void call_direct_tick(npf_call *c)
     c->direct_at = 0;
     if (c->keys_ready)
         return;
-    if (++c->dtries > 8) {
+    if (++c->hs->dtries > 8) {
         char a[64];
         npf_logw("direct %s: no answer from %s (wrong key, or the port is not reachable)", c->call_id_s,
                 npf_addr_str(&c->pd.addr, a, sizeof a));
@@ -84,7 +84,7 @@ void call_direct_tick(npf_call *c)
         return;
     }
     npf_udp_send(c->pd.fd, c->hs->dmsg1, c->hs->dmsg1_len, &c->pd.addr);
-    c->direct_at = npf_mono_ms() + (c->dtries < 3 ? 300LL << c->dtries : 2000);
+    c->direct_at = npf_mono_ms() + (c->hs->dtries < 3 ? 300LL << c->hs->dtries : 2000);
 }
 
 npf_call *npf_direct_connect(npf_node *n, const struct sockaddr_storage *to, const uint8_t psk[32])
@@ -132,7 +132,7 @@ int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct 
      * than message 1 (no amplification): anything else is no attempt at it.
      * Each attempt costs an X25519 before the tag says no; a sender spoofing
      * the listener's address gets 64 of them per session */
-    if (len < 48 || len > c->hs->dmsg1_len || len > 256 || ++c->direct_tries > 64) {
+    if (len < 48 || len > c->hs->dmsg1_len || len > 256 || ++c->hs->direct_tries > 64) {
         npf_wipe(&hs, sizeof hs);
         return 0;
     }
