@@ -232,7 +232,7 @@ void    tr_tick(npf_transport *t, int64_t now);
 /* tr_io.output(arg, dgram, len)：AnLiu 的输出，交给路径管理器 */
 ```
 
-**流上的服务**：接口不变（`npf_tunnel_io`、`npf_media_io`、`npf_udpf_io`），只是适配函数从 `npf_call` 移到 `npf_transport`。
+**流上的服务**：接口不变（`npf_tunnel_io`、`npf_media_io`、`npf_udpf_io`），只是适配函数从 `npf_call` 移到 `npf_transport`。（实际没有单独的 `npf_transport`，见第 2.5 节"会话的实现"。）
 
 **API 与模块钩子**：npf.h、`npf_setup` 不变。`npf/module.h` 不变；npf 的模块用到的内部接口必须保留（`~/workspace/npf/client` 中数出）：`npf_node_request`（13 处）、`npf_node_time`、`npf_node_calls`、`npf_call_next`、`npf_call_state`、`npf_call_info_get`、`npf_call_path_label`、`npf_node_send`、`npf_node_cancel_requests`、`npf_node_wake`、`npf_node_home_status`、`npf_node_end_calls`、`npf_node_dump`、`npf_node_udp_forget_v`、`npf_call_usage_take`、`npf_call_udp_send_v`、`npf_call_open_v`、`npf_call_ctl_request`，以及 `npf_node` 的字段 `online`、`cfg.app_name`、`cfg.app_ver`、`cfg.roots`、`cfg.nroots`、`cfg.callable`、`account_id`、`upgrade.*`、`loop`、`skip_cand`、`skip_cand_arg`、`budget`。这些在第 8 节的每一步里保持可用（字段换位置时给访问函数）。
 
@@ -351,6 +351,13 @@ struct npf_path {
 | 会话 | `anl`、`conv`、`conv_next`、`stream`、`dpend*`、`tun`、`media`、`udp`、`t_anl`、`anl_due`、`flush_pending`、`k12`、`nominate_key`、`keys_ready`、`anl_srtt`、`auth_fail_*`、`tx_bytes`、`rx_bytes`、`peer_hello`、`ctl[]`、`ctl_seq`、`sub_done`、`sub_arg`、`rearly`、`nrearly` | 约 28 |
 | 打洞 | `punch`、`punch_of`、`punch_socks`、`punch_round`、`pcfg`、`info_port`、`info_round`、`tcand`、`spray_refused_said`、`punch_wait_keys`、`punched`、`t_punch`、`t_linger` | 13 |
 | 呼叫 | 其余：`call_id*`、`req_id`、`call_req`、`number`、`caller_number`、`auth`、`state`、`accepted`、`secure`、`up_told`、`peer_closed`、`ended`、`t_timeout`、`t_free`、被叫的准入（`grant_*`、`targets`、`hosted_grant`、`kshare`、`policy`、`caller_app`）、反向监听 | 约 40 |
+
+**会话的实现**（2026-10-30，w12）：没有做成 2.2 草图里单独的 `npf_transport`（也没有嵌入的 `npf_xport` 结构），而是同一个 `npf_call` 分成前后两半，边界在文件上：
+
+- `call_internal.h` 的 `struct npf_call` 先是呼叫（身份、状态、唯一的定时器、握手与被叫准入、打洞、反向映射），后是会话的传输（"the session's transport"：AnLiu 连接、`conv`、数据流与 `dpend`、隧道、媒体、UDP 流、字节数、控制请求，然后是它的路径 `pm`、`pd`、`pu`、`pw`、`rearly`）。声明也按这两半排。成员 75 → 72：`k12`（k1 | k2）与直连发起方的两个重发计数移进握手状态 `call_hs`，`call_start_transport` 派生出会话的密钥后随握手一起擦除释放（原来 `k12` 留在建立了的会话里直到结束）。
+- 传输的事都在 `call_transport.c`：会话的操作（`npf_call_open`、子链路与速率组、用量、UDP 流、应用数据、媒体）、释放（`tr_free`：隧道、UDP、媒体，再 AnLiu 与它的 conv 表项，原来分在 `call.c:call_data_free` 与 `call_anl_drop`）、告诉对方的 `close`（`tr_close`，经 `ctl_send`）、`npf_call_info` 的会话部分（`tr_info`）、`npf_node_dump`；调用方密钥份额的类型是它自己的。`call.c` 对传输成员的直接引用从 75 处降到 5 处（`node_udp_input` 按 conv 分发、`call_tick` 与 `npf_node_check_paths` 看有没有 AnLiu 连接）。
+
+不做独立结构体的原因（数过）：`call_transport.c` 的 69 个函数里 35 个直接读呼叫那一半（角色 `caller`、日志的 `call_id_s`、被叫的准入 `policy` / `hosted_grant` / `targets`、钩子、`npf_call_end`、`call_set_state`），其余多数经 `anl_kick`（`call_at`：会话没有自己的定时器，第 1d 步合成了呼叫的一个）或 `call_over` 间接用到；路径同样要 `keys_ready`、`punch`、`st` 与节点。以 `npf_xport *` 为参数的函数几乎每个都要 `CALL_OF` 回到呼叫，`c->anl` 变成 `c->x.anl` 的两百多处改动只换来更长的名字；要真正分开就得给传输加回调（结束、日志、定时），这正是不该为分层而加的。热路径不变：`node_udp_input` → conv 表 → `call_anl_feed` → `anl_input`，`anl_out` → `pm_send(&c->pm)`，中间没有指针，没有查找或分配。
 
 ## 3. 状态机
 
