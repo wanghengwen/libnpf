@@ -630,8 +630,8 @@ struct npf_path {
 2. 对象（呼叫、备用分配）只有一个 `npf_timer`，排在各组件 `due` 的最小值。组件的截止时间变了就调用 `obj_reschedule()`：只在新的最小值比已排的早时取消重排，否则什么都不做（`punch/punch_ev.c:schedule`、`call/call_internal.h:call_at` 都是这样）。节点没有这样做（下文"节点"）。
 3. 定时器到时：`now = npf_mono_ms()`，按固定顺序 tick：会话（`anl_update`、flush、排空）→ 路径（健康、绑定器、重连）→ 路径管理器（选择、请求）→ 打洞 → 呼叫（期限）；每一步之后若对象已结束就停（`call.c:call_tick` 每一步之前看 `call_over`）；最后重排。
 4. **不变式**：非终止状态都有有限的截止时间，或在表里注明"等事件"（第 3 节的最后一列）。单元测试对每个组件枚举所有状态检查这一点——"状态没有定时器"（BACKOFF 那次）从此在测试里就会失败。
-5. "下一轮循环做"的两件事不是截止时间：释放（`t_free`）与 WS 的合并写出（`pw.t_flush`），保留为 0 ms 的一次性回调。
-6. 对象的那个定时器嵌在对象里（2026-10-30，`npf/loop.h`：`npf_timer` 值，`npf_timer_init` 一次，`npf_timer_set` / `npf_timer_cancel` 任意多次）：重排只是在循环的最小堆里上浮或下沉，不分配也不释放；呼叫、对端、子链路、打洞、UDP 信令的重传定时器都是这样，对象释放之前取消它。一次性的回调（`t_free` 等）与很少重排的（节点的 `t_sc`、备用分配）仍用 `npf_timer_add`。
+5. "下一轮循环做"的两件事不是截止时间：释放（`t_free`）与 WS 的合并写出（`pw.t_flush`），保留为 0 ms 的回调（`pw.t_flush` 是嵌入的，规则 6）。
+6. 对象的那个定时器嵌在对象里（2026-10-30，`npf/loop.h`：`npf_timer` 值，`npf_timer_init` 一次，`npf_timer_set` / `npf_timer_cancel` 任意多次）：重排只是在循环的最小堆里上浮或下沉，不分配也不释放；呼叫、对端、子链路、打洞、UDP 信令的重传定时器都是这样，对象释放之前取消它（循环释放时还挂着的嵌入定时器只是摘下：`npf_timer_pending` 为假）。数据面上每轮都可能挂一次的下一轮回调也嵌入（WS 中转的 `pw.t_flush`、隧道虚拟端的 `t_virt`）。一次性的回调（`t_free` 等）与很少重排的（节点的 `t_sc`、备用分配、`t_rate`、wsrelay 的 ping、udpfwd 的 tick、NAT 探测）仍用 `npf_timer_add`。
 
 **热路径**：每个数据报只算一次 AnLiu 的 `anl_check`（`tr_due`），再由 `call_at` 与已排的时刻比较：两次整数比较，没有额外的堆操作；路径只写一个时间戳（`last_rx`）。
 

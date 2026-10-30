@@ -134,6 +134,7 @@ npf_call *call_new(npf_node *n, int caller)
     c->n = n;
     c->caller = caller;
     npf_timer_init(&c->t_due, call_timer, c);
+    npf_timer_init(&c->pw.t_flush, path_ws_flush_timer, c);
     c->secure = n->cfg.secure;
     if (caller)
         n->calls_out++;

@@ -302,6 +302,7 @@ struct npf_node {
     /* counters for status */
     int64_t       started_unix_ms;  /* npf_node_init's wall clock */
     int64_t       started_mono_ms;
+    int64_t       cands_first_ms;   /* tests (cands_late_ms): the first offer's candidates */
     int64_t       last_login_unix_ms;   /* the last welcome, 0 none */
     int           logins;           /* welcomes since the start */
     int           calls_out, calls_in;  /* sessions started / incoming calls (platform and direct) */

@@ -19,11 +19,10 @@
 #define WS_PAIR_MS       10000      /* a connection made again pairs by then, or it failed */
 #define WS_RECONNECTS    5          /* connections made again in a row that did not pair: the relay given up */
 
-static void ws_flush_timer(npf_loop *loop, void *arg)
+void path_ws_flush_timer(npf_loop *loop, void *arg)
 {
     npf_call *c = arg;
     (void)loop;
-    c->pw.t_flush = NULL;
     if (c->pw.wsr)
         npf_wsr_flush(c->pw.wsr);
 }
@@ -36,8 +35,8 @@ void path_ws_tx(npf_path *p, const uint8_t *dgram, size_t len)
     npf_call *c = CALL_OF(p, pw.p);
     if (!c->pw.wsr || npf_wsr_pending(c->pw.wsr) > WS_QUEUE_MAX || npf_wsr_queue(c->pw.wsr, dgram, len) < 0)
         return;
-    if (!c->pw.t_flush)
-        c->pw.t_flush = npf_timer_add(c->n->loop, 0, ws_flush_timer, c);
+    if (!npf_timer_pending(&c->pw.t_flush))
+        npf_timer_set(c->n->loop, &c->pw.t_flush, 0);
 }
 
 /* the path's last_rx from the connection's last frame (pm_check: not per datagram) */
@@ -221,7 +220,7 @@ int call_ws_setup(npf_call *c, const m_relay *r)
 /* the relay connection closed, its flush and deadline gone (the carrier stays) */
 void call_ws_leave_conn(npf_call *c)
 {
-    npf_timer_stop(c->n->loop, &c->pw.t_flush);
+    npf_timer_cancel(c->n->loop, &c->pw.t_flush);
     c->pw.re_at = 0;
     if (c->pw.wsr)
         npf_wsr_close(c->pw.wsr);

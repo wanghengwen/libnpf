@@ -264,6 +264,7 @@ void call_ws_leave(npf_call *c);        /* back to UDP: the WS relay connection 
 void call_ws_leave_conn(npf_call *c);
 void path_ws_heard(npf_call *c);        /* the path's last_rx from the connection's last frame */
 void path_ws_tick(npf_call *c);         /* pw.re_at: connected again, or not paired again in time */
+void path_ws_flush_timer(npf_loop *loop, void *arg);   /* pw.t_flush's callback (arg: the call) */
 
 /* call_direct.c: direct connections (no platform) */
 int call_direct_reply(npf_call *c, const uint8_t *buf, size_t len, const struct sockaddr_storage *from);

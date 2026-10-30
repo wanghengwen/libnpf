@@ -120,7 +120,7 @@ struct npf_tunnel {
     npf_budget *budget;         /* NULL: none */
     uint64_t    local_in, local_out;    /* read from / written to the local sockets */
     npf_timer  *t_rate;         /* a group ran dry: look again soon */
-    npf_timer  *t_virt;         /* virtual local ends to look at (virt_poll) */
+    npf_timer   t_virt;         /* virtual local ends to look at (tunnel_virt_poll) */
     int         in_poll;        /* virt_poll runs (it arms itself again) */
     int         depth;          /* calls in here that may call out (the transport, the local ends,
                                    sublink_done): npf_tunnel_free from one waits for their end */
@@ -182,5 +182,6 @@ void tunnel_sub_at(sublink *s, int64_t at);
 int64_t tunnel_sub_due(const sublink *s);
 int  tunnel_sub_tick(sublink *s, int64_t now);
 void tunnel_sub_timer(npf_loop *loop, void *arg);
+void tunnel_virt_poll(npf_loop *loop, void *arg);    /* t_virt's callback (arg: the tunnel) */
 
 #endif

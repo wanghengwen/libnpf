@@ -478,7 +478,9 @@ void npf_loop_free(npf_loop *l)
     l->nfree_hook = 0;
     for (i = 0; i < l->nheap; i++)
         if (l->heap[i]->owned)
-            free(l->heap[i]);       /* an embedded one is its owner's */
+            free(l->heap[i]);
+        else
+            l->heap[i]->pos = 0;    /* its owner's, alive: cancelled before an owner goes */
     free(l->heap);
     free_posted(l);
     npf_mutex_free(&l->post_mu);

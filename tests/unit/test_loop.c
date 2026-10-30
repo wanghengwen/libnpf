@@ -187,6 +187,7 @@ static void test_embedded(void)
     npf_timer_cancel(l, &z->t);
     free(z);                                    /* the owner goes once it is cancelled */
     npf_loop_free(l);
+    CHECK(!npf_timer_pending(&b.t), "not pending once its loop is freed");
 }
 
 /* a standalone loop's callbacks run in the thread's log context (the
