@@ -106,10 +106,17 @@ static void random_password(char out[10])
 /* node.json at path: the number and its default password; 0 or -1 */
 static int write_node(const char *path, uint64_t number, const char *pw)
 {
-    char out[128];
-    int len = snprintf(out, sizeof out, "{\"number\":\"%llu\",\"password\":\"%s\"}\n", (unsigned long long)number, pw);
-    int r = npf_file_write(path, out, (size_t)len, 0600);
-    npf_wipe(out, sizeof out);              /* the default password */
+    npf_out o = {.secret = 1};              /* the default password: wiped */
+    char num[24];
+    int r;
+    snprintf(num, sizeof num, "%llu", (unsigned long long)number);
+    npf_out_jobj(&o);
+    npf_out_kstr(&o, "number", num);
+    npf_out_kstr(&o, "password", pw);
+    npf_out_jend(&o);
+    npf_out_write(&o, "\n", 1);
+    r = o.failed ? -1 : npf_file_write(path, o.p, o.len, 0600);
+    npf_out_free(&o);
     return r;
 }
 
