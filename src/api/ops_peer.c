@@ -145,18 +145,15 @@ int npf_peer_create(npf_t *n, const npf_peer_opt *o, uint32_t *peer, char *err, 
 static int peer_remove_run(npf_t *n, void *arg)
 {
     npf_peer *p = peer_of(n, *(uint32_t *)arg);
-    int rc = NPF_OK, again;
+    int rc = NPF_OK;
     if (!p)
         return NPF_ENOENT;
     if (npf_peer_tag(p) == NPF_PLATFORM)
         return NPF_EREADONLY;               /* the platform's mappings: removed there */
-    again = npf_mods_peer_removing(n, p);   /* its platform mappings: back after (a module's) */
     if (npf_peer_tag(p) == NPF_PERSIST)
         rc = npf_ops_record(n, p, 0, NULL);
     npf_log("peer %s removed", npf_peer_shown(p));
-    npf_peers_remove(n->peers, p);
-    if (again)
-        npf_mods_peer_removed(n);
+    npf_mods_peer_remove(n, p);             /* its platform mappings: back after (a module's) */
     return rc;
 }
 

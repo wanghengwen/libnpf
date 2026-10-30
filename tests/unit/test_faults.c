@@ -70,8 +70,21 @@ int main(void)
     REQUIRE(npf_local_save(&l) < 0);
     failing = 0;
     REQUIRE(npf_file_read(l.path, &after) == len && memcmp(before, after, (size_t)len) == 0);
-    free(before); free(after); rm_dir(dir);
+    free(before); free(after);
     npf_local_free(&l);
+    /* a device's record without the memory to hold it: the load fails (a save would drop it) */
+    {
+        FILE *f = fopen(l.path, "w");
+        char err[300];
+        REQUIRE(f && fputs("{\"devices\": {\"611631552\": {\"name\": \"dev\"}}}", f) >= 0 && fclose(f) == 0);
+        failing = 1;
+        REQUIRE(npf_local_load(&l, dir, err, sizeof err) < 0);
+        failing = 0;
+        npf_local_free(&l);
+        REQUIRE(npf_local_load(&l, dir, err, sizeof err) == 0 && l.ndev == 1);
+        npf_local_free(&l);
+    }
+    rm_dir(dir);
 
     loop = npf_loop_new();
     REQUIRE(loop);

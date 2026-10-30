@@ -138,6 +138,16 @@ void node_servers_load(npf_node *n)
     }
 }
 
+/* the index of server id in the node's servers, -1 none */
+static int server_at(const npf_node *n, int id)
+{
+    int i;
+    for (i = 0; i < n->nservers; i++)
+        if (n->servers[i].id == id)
+            return i;
+    return -1;
+}
+
 /* a server_list blob (login, push, or an external channel named by via):
  * verify, compare serial, adopt, save a full list. A seed list (full =
  * false, from DNS) is used but not saved: the full list on disk stays
@@ -147,7 +157,7 @@ int node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const 
     npf_server_entry *tmp = malloc(NPF_MAX_SERVERS * sizeof *tmp);
     npf_list_meta meta;
     int64_t serial;
-    int c, r = 0;
+    int c, r = 0, k, ids[SR_N + 1];
     if (!tmp)
         return 0;
     if ((c = list_read(n, blob, len, tmp, &serial, &meta)) < 0)
@@ -170,6 +180,10 @@ int node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const 
         meta.nhttps = n->sl_meta.nhttps;
     }
     n->sl_meta = meta;
+    for (k = 0; k <= SR_N; k++) {       /* the servers in use (cur_server last), by id */
+        int i = k < SR_N ? n->sc.c[k].server : n->cur_server;
+        ids[k] = i >= 0 && i < n->nservers ? n->servers[i].id : -1;
+    }
     if (servers_set(&n->list, tmp, c) < 0 || (!n->cfg.server_url && servers_set(&n->servers, tmp, c) < 0)) {
         npf_loge("server list: out of memory");
         n->nlist = n->nlist < c ? n->nlist : c;
@@ -177,8 +191,14 @@ int node_server_list_update(npf_node *n, const uint8_t *blob, size_t len, const 
     }
     n->nlist = c;
     if (!n->cfg.server_url) {
+        /* the indexes into the new list: the welcome that brought it resets
+         * the current server's fails and arms the move to UDP on it */
         n->nservers = c;
-        n->cur_server = -1;
+        n->cur_server = server_at(n, ids[SR_N]);
+        for (k = 0; k < SR_N; k++) {
+            int i = server_at(n, ids[k]);
+            n->sc.c[k].server = i > 0 ? i : 0;      /* gone: an index still valid */
+        }
     }
     n->sl_serial = serial;
     npf_log("server list: serial %lld, %d servers%s%s%s", (long long)serial, c, meta.full ? "" : " (seed list)",

@@ -151,11 +151,12 @@ static void node_json(void)
     put_file(dir, "node.json", "{\"number\":\"1234");
     npf_destroy(instance(dir, NPF_ROLE_NODE, "udp_port = 0\n", &rc, err, sizeof err));
     check(rc != NPF_OK && strstr(err, "node.json is damaged"), "a damaged node.json: npf_create says so");
-    put_file(dir, "node.json.bak", "{\"number\":\"123456789\",\"password\":\"ABCD-EFGH\"}\n");
+    put_file(dir, "node.json.bak", "{\"number\":\"123456789\",\"password\":\"AB\\\"CD-EFGH\"}\n");
     npf_destroy(instance(dir, NPF_ROLE_NODE, "udp_port = 0\n", NULL, err, sizeof err));
     /* (no server list here: npf_create stops later, at the configuration) */
-    check(!strstr(err, "damaged") && strstr(file_text(dir, "node.json", text, sizeof text), "123456789"),
-          "its copy taken, and the file written again");
+    check(!strstr(err, "damaged") && strstr(file_text(dir, "node.json", text, sizeof text), "123456789")
+              && strstr(text, "\"password\":\"AB\\\"CD-EFGH\""),
+          "its copy taken, and the file written again (the password JSON-escaped)");
     rm_dir(dir);
 }
 

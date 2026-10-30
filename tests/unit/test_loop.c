@@ -1,6 +1,7 @@
 /* Event loop timers (binary min-heap): firing order by due time, then by the
  * order added; cancel from anywhere, including a timer cancelling itself or
- * another one from its callback, and adding timers from a callback. */
+ * another one from its callback, and adding timers from a callback; a
+ * descriptor the queue takes in part (kqueue) leaves nothing in it. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +12,11 @@
 #include "npf/log.h"
 #include "npf/loop.h"
 #include "npf/platform.h"
+#include "../../src/platform/loop_int.h"    /* the loop's queue (epfd) */
 #include "test.h"
+#if !defined(__linux__) && !defined(_WIN32)
+#include <sys/event.h>
+#endif
 
 #define NT 300
 
@@ -188,6 +193,16 @@ static void test_slots(void)
             close(f);
             unlink(path);
         }
+    }
+#elif !defined(_WIN32)
+    {   /* kqueue: a kqueue takes a read filter but no write filter; the read
+         * one is not left behind pointing at the registration freed */
+        int k = kqueue();
+        struct kevent del;
+        CHECK(k >= 0 && npf_loop_add(l, k, NPF_EV_READ | NPF_EV_WRITE, slot_cb, (void *)0L) < 0, "a kqueue for writing refused");
+        EV_SET(&del, k, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+        CHECK(kevent(l->epfd, &del, 1, NULL, 0, NULL) < 0, "and nothing left of it in the queue");
+        close(k);
     }
 #endif
     for (i = 0; i < 3; i++)

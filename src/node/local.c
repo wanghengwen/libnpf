@@ -112,8 +112,8 @@ static int ext_put(npf_ldev *d, const char *key, const char *json, size_t n)
 {
     struct npf_lext *e;
     int i = ext_find(d, key);
-    char *v = malloc(n + 1);
-    if (!v)
+    char *v;
+    if (strlen(key) > NPF_LOCAL_EXT_KEY || !(v = malloc(n + 1)))
         return -1;
     memcpy(v, json, n);
     v[n] = 0;
@@ -199,8 +199,10 @@ static int device(npf_local *l, const char *s, const npf_json *j, int v, const c
 {
     npf_ldev *d;
     int i, q, rc = 0;
-    if (npf_msg_parse(&m_device_d, j, v, m, NULL, 0) < 0 || !(d = npf_local_dev(l, target, 1)))
+    if (npf_msg_parse(&m_device_d, j, v, m, NULL, 0) < 0)
         return 0;                           /* not an object: not carried over */
+    if (!(d = npf_local_dev(l, target, 1)))
+        return -1;                          /* no memory: ours, not to be lost by a silent drop */
     if (npf_name_valid(m->name))
         snprintf(d->name, sizeof d->name, "%s", m->name);
     snprintf(d->nick, sizeof d->nick, "%s", m->nick);
@@ -230,7 +232,7 @@ static int device(npf_local *l, const char *s, const npf_json *j, int v, const c
                                          j->tok[m->resources].end - j->tok[m->resources].start);
     for (i = 0, q = v + 1; i < j->tok[v].size && rc == 0; i++, q = j->tok[q + 1].next) {
         /* the keys not in the table are the modules': kept as they are (a string's text with its quotes) */
-        char key[48];
+        char key[NPF_LOCAL_EXT_KEY + 1];
         int k, str = j->tok[q + 1].type == NPF_JT_STRING;
         size_t vs = j->tok[q + 1].start - (str ? 1 : 0), vl = j->tok[q + 1].end + (str ? 1 : 0) - vs;
         if (npf_json_str(j, q, key, sizeof key) < 0)
