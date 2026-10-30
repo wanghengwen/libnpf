@@ -16,10 +16,10 @@
 
 int test_crypto(void), test_json(void), test_msg(void), test_tunnel(void), test_tunnel_tick(void), test_policy(void), test_conf(void),
     test_local(void), test_direct(void), test_loop(void), test_log(void), test_resolve(void), test_dns(void),
-    test_punch(void), test_anlsec(void), test_sys(void), test_text(void), test_creply(void), test_portmap_gw(void),
-    test_callee(void), test_relay(void), test_relay_data(void), test_peeraddr(void), test_home(void), test_call(void),
-    test_call_state(void), test_path(void), test_path_health(void), test_path_decide(void), test_peers(void), test_sigudp(void),
-    test_sigconn(void), test_udpfwd(void);
+    test_punch(void), test_anlsec(void), test_sys(void), test_text(void), test_why(void), test_creply(void),
+    test_portmap_gw(void), test_callee(void), test_relay(void), test_relay_data(void), test_peeraddr(void),
+    test_home(void), test_call(void), test_call_state(void), test_path(void), test_path_health(void),
+    test_path_decide(void), test_peers(void), test_sigudp(void), test_sigconn(void), test_udpfwd(void);
 int node_wake_delay(int ms);        /* node_signal.c */
 
 /* the same known answers as AnLiu test.c (the construction must stay identical) */
@@ -262,7 +262,7 @@ static const struct {
     {"main", test_own}, {"crypto", test_crypto}, {"json", test_json}, {"msg", test_msg}, {"tunnel", test_tunnel}, {"tunnel_tick", test_tunnel_tick},
     {"policy", test_policy}, {"conf", test_conf}, {"local", test_local}, {"direct", test_direct}, {"loop", test_loop},
     {"log", test_log}, {"resolve", test_resolve}, {"dns", test_dns}, {"anlsec", test_anlsec}, {"sys", test_sys},
-    {"text", test_text}, {"creply", test_creply},
+    {"text", test_text}, {"why", test_why}, {"creply", test_creply},
 #ifdef NPF_PORTMAP
     {"portmap", test_portmap_gw},
 #endif

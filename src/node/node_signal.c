@@ -9,6 +9,7 @@
 #include "npf/cert.h"
 #include "npf/node.h"
 #include "npf/platform.h"
+#include "npf/why.h"
 
 #include "node_internal.h"
 #include "home.h"
@@ -558,34 +559,6 @@ static void send_login(npf_node *n, npf_sig *s)
 
 /* ---- one key per model: enrol (security.md 5.2) ---- */
 
-/* what an enrolment refusal's reason means (signaling.md "enroll") */
-static const char *enroll_why(const char *err, const char *reason)
-{
-    static const struct { const char *r, *text; } t[] = {
-        {"bad_chain", "the model credential is not one NPF's vendors signed"},
-        {"bad_sig", "the enrolment's signatures are wrong"},
-        {"unregistered", "the model is not registered on the platform (the vendor registers it)"},
-        {"unbound", "this model credential was never given to the platform (the vendor binds it)"},
-        {"revoked", "the model is disabled or this model credential revoked"},
-        {"expired", "the model's registration has ended"},
-        {"whitelist", "this serial number is not on the model's whitelist"},
-        {"quota", "the model has all the devices it may have"},
-        {"rate", "the model has had all its enrolments this hour"},
-        {"clone", "a device with this serial number is online with other keys"},
-        {"conflict", "this serial number belongs to another device (its owner releases it)"},
-        {"wait", "the old identity was online moments ago"},
-        {"disabled", "this device's number is disabled on the platform"},
-    };
-    size_t i;
-    for (i = 0; reason[0] && i < sizeof t / sizeof t[0]; i++)
-        if (strcmp(reason, t[i].r) == 0)
-            return t[i].text;
-    return strcmp(err, "rate_limited") == 0 ? "over the model's quota or rate, or the old identity was online moments ago"
-           : strcmp(err, "conflict") == 0   ? "this serial number belongs to another device (the owner releases it)"
-           : strcmp(err, "forbidden") == 0  ? "revoked credential, serial not on the whitelist, or the old identity is online"
-                                            : "no reason given";
-}
-
 /* the number and the certificate an enrolment gave: a device number (nine
  * digits, its check digit right) and a node certificate for this
  * identity's key that the roots signed. Its validity period is not looked
@@ -613,7 +586,8 @@ static void enroll_reply(npf_node *n, const npf_env *e, int ok, void *arg)
         return;                             /* the connection went: enrol again on the next one */
     if (!ok || npf_msg_parse(&m_enrolled_d, e->j, e->data, &m, NULL, 0) < 0 || enroll_got(n, &m) < 0) {
         const char *err = !ok ? (e->error[0] ? e->error : "no reply") : "bad_reply";
-        npf_loge("enrol: refused (%s%s%s): %s", err, e->message[0] ? ", " : "", e->message, enroll_why(err, e->message));
+        npf_loge("enrol: refused (%s%s%s): %s", err, e->message[0] ? ", " : "", e->message,
+                 npf_why_enroll_text(err, e->message));
         if (n->backoff_ms < 10000)
             n->backoff_ms = 10000;          /* enrol again later, not every second */
         n->enroll_state = NPF_ENROLL_REFUSED;

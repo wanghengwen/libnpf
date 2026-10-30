@@ -10,6 +10,7 @@
 #include "npf/crypto.h"
 #include "npf/node.h"
 #include "npf/platform.h"
+#include "npf/why.h"
 
 #include "msgs.h"
 
@@ -137,53 +138,19 @@ uint64_t npf_number_parse(const char *s)
     return digits == 9 && interim == 0 && v >= 100000000ULL ? v : 0;
 }
 
-/* the reasons first (the reply's message), then the codes */
-static const char *const k_err[][2] = {
-    {"no_hosted", "no public-mapping server has room right now (all are full or offline); try again later, or "
-                  "tell the platform's operator"},
-    {"plan_limit", "the account's plan allows no more public mappings (the free plan: none); upgrade it or delete one"},
-    {"not_publisher", "only the device's owner, or a visitor the owner allows, may open it to the internet"},
-    {"choose_port", "choosing the public port needs a higher plan; leave the port to the platform"},
-    {"port_range", "that public port is outside the platform's port ranges"},
-    {"port_taken", "that port is already in use"},
-    {"mapping_limit", "the account has as many mappings as it may have; delete one first"},
-    {"device", "the account has no such device"},
-    {"credentials", "wrong email / phone number or password (forgot it? npf account reset EMAIL|PHONE)"},
-    {"password", "wrong password"},
-    {"no_password", "the account has no password (signed up with Google or WeChat): log in that way, or set one "
-                    "with npf account reset"},
-    {"verification", "the code is wrong or has expired; ask for a new one"},
-    {"no reply", "the platform did not answer (no connection to it, or it timed out); try again"},
-    {"unauthenticated", "not logged in to an account, or the login expired: log in again"},
-    {"forbidden", "not allowed"},
-    {"not_found", "not found"},
-    {"conflict", "conflicts with what is there (or was changed elsewhere: look again)"},
-    {"rate_limited", "too many attempts; wait a minute and try again"},
-    {"unavailable", "the platform cannot do it right now; try again later"},
-    {"timeout", "timed out; try again"},
-    {"quota", "this month's traffic of the account is used up"},
-    {"internal_error", "the platform had an internal error; try again later"},
-    {"bad_request", "the platform did not accept the request (check the values)"},
-    {"expired", "expired"},
-    {"offline", "the other side is offline"},
-    {"unsupported_type", "the platform does not support this (an older server?)"},
-};
-
 void npf_platform_err(const npf_json *j, char *buf, size_t cap)
 {
     m_env e;
     const char *code = "no reply", *why = "", *say = NULL;
-    size_t i;
     if (j && npf_msg_parse(&m_env_d, j, 0, &e, NULL, 0) == 0) {
         code = e.error[0] ? e.error : code;
         why = e.message;
     }
-    for (i = 0; i < sizeof k_err / sizeof k_err[0] && !say; i++)
-        if (why[0] && strcmp(why, k_err[i][0]) == 0)
-            say = k_err[i][1];
-    for (i = 0; i < sizeof k_err / sizeof k_err[0] && !say; i++)
-        if (strcmp(code, k_err[i][0]) == 0)
-            say = k_err[i][1];
+    /* the reasons first (the reply's message), then the codes */
+    if (why[0])
+        say = npf_why_platform_text(why);
+    if (!say)
+        say = npf_why_platform_text(code);
     if (why[0] && strspn(why, "abcdefghijklmnopqrstuvwxyz_") == strlen(why))
         snprintf(buf, cap, "%s (%s)%s%s", code, why, say ? ": " : "", say ? say : "");
     else

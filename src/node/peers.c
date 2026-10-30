@@ -10,6 +10,7 @@
 #include "npf/platform.h"
 #include "npf/resolve.h"
 #include "npf/text.h"
+#include "npf/why.h"
 
 #include "peers_internal.h"
 
@@ -885,19 +886,9 @@ void npf_peer_set_label(npf_peer *p, const char *name)
     snprintf(p->label, sizeof p->label, "%s", name ? name : "");
 }
 
-/* what a session that ended for why waits for: NPF_NEED_*, 0 nothing */
-static int why_needs(const char *why)
-{
-    return strcmp(why, "not_paired") == 0       ? NPF_NEED_PASSWORD
-           : strcmp(why, "wrong_password") == 0 ? NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG
-           : strcmp(why, "pairing_lost") == 0   ? NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST
-           : strcmp(why, "no_account") == 0     ? NPF_NEED_ACCOUNT
-                                                : 0;
-}
-
 int npf_peer_needs(const npf_peer *p)
 {
-    return p->call || p->password[0] ? 0 : why_needs(p->last_why);
+    return p->call || p->password[0] ? 0 : npf_why_needs(p->last_why);
 }
 
 int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
@@ -977,7 +968,7 @@ int npf_peer_password_try(npf_peer *p, const char *password)
     if (!password[0] || strlen(password) >= sizeof p->password)
         return -1;
     snprintf(p->password, sizeof p->password, "%s", password);
-    if (why_needs(p->last_why))
+    if (npf_why_needs(p->last_why))
         p->last_why[0] = 0;
     npf_log("%s: password given", p->name);
     npf_peer_wake_now(p);

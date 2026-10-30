@@ -17,6 +17,7 @@ add_executable(npf_unit_tests
   test_anlsec.c
   test_sys.c
   test_text.c
+  test_why.c
   test_creply.c
   test_callee.c
   test_relay.c

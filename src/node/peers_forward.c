@@ -7,6 +7,7 @@
 
 #include "npf.h"
 #include "npf/platform.h"
+#include "npf/why.h"
 #include "udpfwd.h"
 
 #include "peers_internal.h"
@@ -189,22 +190,6 @@ static int fwd_state_of(const pfwd *f)
     return f->st == FS_UP ? NPF_FWD_UP : f->st == FS_RETRY || f->st == FS_REFUSED ? NPF_FWD_FAILED : NPF_FWD_WAITING;
 }
 
-/* the why code of a failure's text */
-static int fwd_why_code(const pfwd *f, const char *why)
-{
-    if (f->st == FS_REFUSED)
-        return NPF_FWD_WHY_FORBIDDEN;
-    if (strstr(why, "in use") || strstr(why, "taken"))
-        return NPF_FWD_WHY_PORT_IN_USE;
-    if (strstr(why, "cannot listen") || strstr(why, "bind"))
-        return NPF_FWD_WHY_BIND;
-    if (strstr(why, "too many") || strstr(why, "limit"))
-        return NPF_FWD_WHY_TOO_MANY;
-    if (f->reverse)
-        return NPF_FWD_WHY_REQUEST;
-    return NPF_FWD_WHY_OTHER;
-}
-
 /* tell the application when the state, the port in use or the failure changed */
 static void fwd_changed(pfwd *f)
 {
@@ -226,7 +211,7 @@ static void fwd_report(pfwd *f, const char *why)
         f->st = FS_UP, f->backoff = 0;
     else if (why != f->why)
         snprintf(f->why, sizeof f->why, "%s", why);
-    f->why_code = why ? fwd_why_code(f, why) : NPF_FWD_WHY_NONE;
+    f->why_code = why ? npf_why_fwd(f->st == FS_REFUSED, f->reverse, why) : NPF_FWD_WHY_NONE;
     fwd_changed(f);
 }
 

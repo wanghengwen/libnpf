@@ -152,6 +152,7 @@ add_library(npf_common STATIC
   src/node/relay_data.c
   src/node/sources.c
   src/node/setup.c
+  src/node/why.c
   src/node/callee.c
   src/node/call.c
   src/node/call_handshake.c

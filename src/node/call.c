@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/why.h"
+
 #include "call_internal.h"
 #include "home.h"
 
@@ -214,19 +216,6 @@ static void free_later(npf_loop *loop, void *arg)
     call_free(c);
 }
 
-/* a reason as the peer and the platform get it (the server keeps the same
- * characters): a-z 0-9 _, at most an end report's 23; "closed" when none is
- * left. A peer's close carries its own, printed into JSON from here on */
-static const char *reason_code(const char *r, char out[24])
-{
-    size_t k = 0;
-    for (; r && *r && k < 23; r++)
-        if ((*r >= 'a' && *r <= 'z') || (*r >= '0' && *r <= '9') || *r == '_')
-            out[k++] = *r;
-    out[k] = 0;
-    return k ? out : "closed";
-}
-
 void npf_call_end(npf_call *c, const char *why)
 {
     call_close(c, why, CALL_END_LOCAL);
@@ -238,7 +227,7 @@ void npf_call_end(npf_call *c, const char *why)
 void call_close(npf_call *c, const char *why, int how)
 {
     char rc[24];
-    const char *reason = how == CALL_END_QUIET ? why : reason_code(why, rc);
+    const char *reason = how == CALL_END_QUIET ? why : npf_why_wire(why, rc);
     if (call_over(c))
         return;
     c->st = CS_CLOSED;
