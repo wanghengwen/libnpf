@@ -178,6 +178,7 @@ int64_t call_due(const npf_call *c, int64_t now);
 void call_tick(npf_call *c, int64_t now);
 void call_accept(npf_call *c);
 void call_set_state(npf_call *c, int st, const char *why);      /* CS_*, forward only */
+void call_tell(const npf_call *c, const char *type);  /* a message to the platform naming this call alone */
 /* the end; how: CALL_END_LOCAL (npf_call_end: call_end and close), _PEER (the
  * same, the record naming the peer), _QUIET (no word: the platform told us) */
 enum { CALL_END_LOCAL, CALL_END_PEER, CALL_END_QUIET };

@@ -26,6 +26,13 @@ static const int call_pub[] = {0, NPF_CALL_CALLING, NPF_CALL_CONNECTING, NPF_CAL
 
 int npf_call_state(const npf_call *c) { return call_pub[c->st]; }
 
+void call_tell(const npf_call *c, const char *type)
+{
+    char data[64];
+    snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
+    npf_node_send(c->n, type, 0, data);
+}
+
 /* the call's transition, forward only; the hooks hear NPF_CALL_* when it
  * changes. UP (the peer's hello) ends the time limit, and a callee tells
  * the platform: the E2E handshake held, relay_switch allocates freely from
@@ -33,7 +40,6 @@ int npf_call_state(const npf_call *c) { return call_pub[c->st]; }
 void call_set_state(npf_call *c, int st, const char *why)
 {
     int was = npf_call_state(c);
-    char data[64];
     if (st <= c->st)
         return;
     c->st = st;
@@ -45,8 +51,7 @@ void call_set_state(npf_call *c, int st, const char *why)
         c->n->hooks.on_call_state(c->n, c, call_pub[st], why, c->n->hook_arg);
     if (st == CS_UP && !c->caller && !c->direct && !call_over(c)) {
         npf_logd("call %s: call_established", c->call_id_s);
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
-        npf_node_send(c->n, "call_established", 0, data);
+        call_tell(c, "call_established");
     }
 }
 
@@ -392,7 +397,6 @@ void node_calls_relogin(npf_node *n)
 {
     npf_call *c;
     int64_t now = npf_mono_ms();
-    char data[64];
     for (c = n->calls; c; c = c->next) {
         if (call_over(c) || !call_up(c))
             continue;
@@ -401,10 +405,8 @@ void node_calls_relogin(npf_node *n)
             c->pm.ask_at = now;
             call_need(c, c->pm.need, now);
         }
-        if (c->st == CS_UP && !c->caller && !c->direct) {   /* idempotent at the platform */
-            snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
-            npf_node_send(n, "call_established", 0, data);
-        }
+        if (c->st == CS_UP && !c->caller && !c->direct)
+            call_tell(c, "call_established");      /* idempotent at the platform */
     }
 }
 

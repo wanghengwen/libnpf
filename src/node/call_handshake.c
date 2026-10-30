@@ -393,9 +393,5 @@ void call_on_handshake(npf_call *c, const void *msg)
     npf_log("call %s: paired", c->call_id_s);
     /* the platform plans no punching round before this (signaling.md
      * handshake_done, security.md 8.3) */
-    {
-        char data[96];
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
-        npf_node_send(c->n, "handshake_done", 0, data);
-    }
+    call_tell(c, "handshake_done");
 }

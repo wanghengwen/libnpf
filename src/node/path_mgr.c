@@ -429,9 +429,8 @@ void call_need(npf_call *c, int need, int64_t now)
     }
     if (need == PM_NEED_RELEASE) {      /* once: only the caller frees both allocations (data-channel.md 3) */
         path_udp_off(c);
-        snprintf(data, sizeof data, "{\"call_id\":\"%s\"}", c->call_id_s);
         if (c->caller)
-            npf_node_send(c->n, "relay_release", 0, data);
+            call_tell(c, "relay_release");
         npf_log("call %s: relay released", c->call_id_s);
         return;
     }
