@@ -84,18 +84,25 @@ static int evq_set(int q, ep_reg *r, unsigned want, int add)
     e.data.ptr = r;
     return epoll_ctl(q, add ? EPOLL_CTL_ADD : EPOLL_CTL_MOD, r->fd, &e);
 #else
-    /* a filter each way: what changed added or deleted */
-    struct kevent k[2];
-    int n = 0;
-    (void)add;
+    /* a filter each way: what changed added or deleted, one at a time (in
+     * one call a failure leaves the changes before it applied); r->kev what
+     * is in q. A delete that fails left nothing (a closed socket's went by
+     * itself); an add that fails: r new in q leaves q again, as nothing may
+     * point at it once the caller frees it */
+    unsigned bit;
     want &= NPF_EV_READ | NPF_EV_WRITE;
-    if ((want ^ r->kev) & NPF_EV_READ)
-        EV_SET(&k[n++], r->fd, EVFILT_READ, (want & NPF_EV_READ) ? EV_ADD : EV_DELETE, 0, 0, r);
-    if ((want ^ r->kev) & NPF_EV_WRITE)
-        EV_SET(&k[n++], r->fd, EVFILT_WRITE, (want & NPF_EV_WRITE) ? EV_ADD : EV_DELETE, 0, 0, r);
-    if (n && kevent(q, k, n, NULL, 0, NULL) < 0)
-        return -1;
-    r->kev = want;
+    for (bit = NPF_EV_READ; bit <= NPF_EV_WRITE; bit <<= 1) {
+        struct kevent k;
+        if (!((want ^ r->kev) & bit))
+            continue;
+        EV_SET(&k, r->fd, bit == NPF_EV_READ ? EVFILT_READ : EVFILT_WRITE, (want & bit) ? EV_ADD : EV_DELETE, 0, 0, r);
+        if (kevent(q, &k, 1, NULL, 0, NULL) < 0 && (want & bit)) {
+            if (add)
+                (void)evq_set(q, r, 0, 0);
+            return -1;
+        }
+        r->kev ^= bit;
+    }
     return 0;
 #endif
 }
