@@ -16,17 +16,17 @@
 #define NPF_TAG_MEDIA      16       /* AnLiu tag: NPF_TAG_MEDIA + the application's tag (0..999) */
 #define NPF_MEDIA_TAGS     1000
 #define NPF_MEDIA_TAG_RDK  0x8000   /* tag bit: the receiver drops non-key frames after a loss */
-#define NPF_MEDIA_OUT_MAX  30       /* AnLiu streams one side opens: 2 x 30 + sid 0 + the data
-                                       stream = 62 of AnLiu's 64 (closing ones count until confirmed) */
+#define NPF_MEDIA_OUT_MAX  30       /* AnLiu streams one side opens: 2 x 30 + sid 0 + the data and
+                                       the UDP stream = 63 of AnLiu's 64 (closing ones count until confirmed) */
 /* AnLiu receive windows (segments). A stream's rcv_wnd is the opener's
  * choice, up to ANL_MAX_WND (32768), and the receiver may have to hold
  * that many out-of-order segments of it whether the application reads or
  * not (AnLiu SECURITY_AUDIT.md 4.1: ~3 GB a connection at 63 streams of
  * 32768). Both ends open with these and refuse a peer's stream above them:
- * a session holds at most 4096 + 4096 + 30 x 512 segments (~25 MB). */
+ * a session holds at most 4096 + 4096 + 31 x 512 segments (~25 MB). */
 #define NPF_ANL_CTRL_WND   4096     /* sid 0: control (our cfg.default_rcv_wnd) */
 #define NPF_ANL_DATA_WND   4096     /* the data stream (5 MB: 10 MB/s up to 500 ms RTT) */
-#define NPF_ANL_MEDIA_WND  512      /* each media stream */
+#define NPF_ANL_MEDIA_WND  512      /* each media stream, the UDP stream (udpfwd.h) */
 
 typedef struct npf_media npf_media;
 
