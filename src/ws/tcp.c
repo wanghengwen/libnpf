@@ -149,21 +149,14 @@ void npf_tcp_init(npf_tcp *c, npf_loop *loop, const char *host, npf_io_fn io,
 int npf_tcp_start(npf_tcp *c, const struct sockaddr_storage *addr)
 {
     struct sockaddr_storage *a = &c->cand[0];
-    memset(a, 0, sizeof *a);
     if (addr) {
         *a = *addr;
-    } else if (inet_pton(AF_INET, c->host, &((struct sockaddr_in *)a)->sin_addr) == 1) {
-        a->ss_family = AF_INET;
-        ((struct sockaddr_in *)a)->sin_port = htons((uint16_t)c->port);
-    } else if (inet_pton(AF_INET6, c->host, &((struct sockaddr_in6 *)a)->sin6_addr) == 1) {
-        a->ss_family = AF_INET6;
-        ((struct sockaddr_in6 *)a)->sin6_port = htons((uint16_t)c->port);
-    } else {
+    } else if (npf_addr_ip(c->host, (uint16_t)c->port, a) < 0) {
         c->state = TCP_RESOLVING;
         c->resolve = npf_resolve_start(c->loop, c->host, (uint16_t)c->port, SOCK_STREAM, tcp_resolved, c);
         return c->resolve ? 0 : -1;
     }
-    c->cand_len[0] = a->ss_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in);
+    c->cand_len[0] = npf_addr_len(a);
     c->ncand = 1;
     return tcp_next(c);
 }

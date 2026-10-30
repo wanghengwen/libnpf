@@ -24,7 +24,7 @@ static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
     /* none: loopback; empty or "*": every address */
     const char *bind = !fn->bind ? "127.0.0.1" : !*fn->bind || strcmp(fn->bind, "*") == 0 ? "0.0.0.0" : fn->bind;
     int socks = fn->opt == 'D';
-    unsigned char a[16];
+    struct sockaddr_storage ss;
     if (strcmp(bind, "localhost") == 0)
         bind = "127.0.0.1";                 /* as the callee takes it: the spec and the state stay the same */
     if (fn->opt != 'L' && fn->opt != 'D' && fn->opt != 'R') {
@@ -35,7 +35,7 @@ static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
         snprintf(err, errcap, "bad listening port or address");
         return -1;
     }
-    if (inet_pton(AF_INET, bind, a) != 1 && inet_pton(AF_INET6, bind, a) != 1) {
+    if (npf_addr_ip(bind, 0, &ss) < 0) {
         /* no name: listening would look it up on the loop thread */
         snprintf(err, errcap, "the listening address is an IP address, localhost or *, not a name");
         return -1;
@@ -311,34 +311,28 @@ npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
  * taken (as opposed to the address family missing) */
 static int listen_on(const char *bind_host, int port, int type, char *why, size_t whycap, int *in_use)
 {
-    struct addrinfo hints, *res;
-    char ps[8];
+    struct sockaddr_storage ss;
     int fd;
     *in_use = 0;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_socktype = type;               /* SOCK_DGRAM: a UDP forward's socket, bound only */
-    hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;   /* no DNS on the loop thread */
-    snprintf(ps, sizeof ps, "%d", port);
-    if (getaddrinfo(bind_host, ps, &hints, &res) != 0) {
+    if (npf_addr_ip(bind_host, (uint16_t)port, &ss) < 0) {
         snprintf(why, whycap, "bad bind address");
         return -1;
     }
-    fd = npf_socket(res->ai_family, type, 0, 0);
+    fd = npf_socket(ss.ss_family, type, 0, 0);  /* SOCK_DGRAM: a UDP forward's socket, bound only */
     if (fd >= 0) {
         npf_sock_listen_opts(fd, type);
-        if (res->ai_family == AF_INET6 && strcmp(bind_host, "::") == 0) {
+        if (ss.ss_family == AF_INET6 && strcmp(bind_host, "::") == 0) {
             int zero = 0;
             setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&zero, sizeof zero);
         }
     }
-    if (fd < 0 || bind(fd, res->ai_addr, res->ai_addrlen) < 0 || (type == SOCK_STREAM && listen(fd, 64) < 0)) {
+    if (fd < 0 || bind(fd, (struct sockaddr *)&ss, npf_addr_len(&ss)) < 0 || (type == SOCK_STREAM && listen(fd, 64) < 0)) {
         *in_use = fd >= 0 && npf_sock_in_use();
         snprintf(why, whycap, "cannot listen: %s", npf_sock_strerror());
         if (fd >= 0)
             npf_sock_close(fd);
         fd = -1;
     }
-    freeaddrinfo(res);
     return fd;
 }
 

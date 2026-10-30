@@ -427,7 +427,7 @@ static void flow_send(npf_udpf *u, uflow *f, const uint8_t *p, size_t len)
 
 /* the target's address (check: the callee's, within its "udp" resources; the
  * caller's -R targets are its own), a socket connected to it */
-static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *to, socklen_t tl)
+static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *to)
 {
     char a[64];
     int fd, i, noroute = 0;
@@ -446,7 +446,7 @@ static void flow_connect(npf_udpf *u, uflow *f, const struct sockaddr_storage *t
         }
     /* connect fails for the target (no route), the rest for this side */
     fd = npf_socket(to->ss_family, SOCK_DGRAM, 0, 0);
-    if (fd < 0 || (noroute = connect(fd, (const struct sockaddr *)to, tl) < 0)
+    if (fd < 0 || (noroute = connect(fd, (const struct sockaddr *)to, npf_addr_len(to)) < 0)
         || npf_loop_add(u->loop, fd, NPF_EV_READ, flow_readable, f) < 0) {
         npf_logw("udp: no socket to %s: %s", npf_addr_str(to, a, sizeof a), npf_sock_strerror());
         if (fd >= 0)
@@ -473,6 +473,7 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     npf_udpf *u = f->u;
     int i;
     (void)r;
+    (void)lens;
     f->res = NULL;
     u->nresolving--;
     if (err || n < 1) {
@@ -482,33 +483,10 @@ static void resolved(npf_resolve *r, int err, const struct sockaddr_storage *add
     }
     for (i = 0; i < n && !u->caller; i++)   /* the first address the resources allow */
         if (npf_policy_udp_allowed(u->policy, (const struct sockaddr *)&addrs[i])) {
-            flow_connect(u, f, &addrs[i], lens[i]);
+            flow_connect(u, f, &addrs[i]);
             return;
         }
-    flow_connect(u, f, &addrs[0], lens[0]); /* the callee refuses it there, with the reason logged */
-}
-
-/* an IP address (or localhost) and the port as a socket address; 0, or -1 for a name */
-static int literal(const char *host, uint16_t port, struct sockaddr_storage *ss, socklen_t *sl)
-{
-    struct sockaddr_in *s4 = (struct sockaddr_in *)ss;
-    struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ss;
-    memset(ss, 0, sizeof *ss);
-    if (strcmp(host, "localhost") == 0)
-        host = "127.0.0.1";
-    if (inet_pton(AF_INET, host, &s4->sin_addr) == 1) {
-        s4->sin_family = AF_INET;
-        s4->sin_port = htons(port);
-        *sl = sizeof *s4;
-        return 0;
-    }
-    if (inet_pton(AF_INET6, host, &s6->sin6_addr) == 1) {
-        s6->sin6_family = AF_INET6;
-        s6->sin6_port = htons(port);
-        *sl = sizeof *s6;
-        return 0;
-    }
-    return -1;
+    flow_connect(u, f, &addrs[0]);          /* the callee refuses it there, with the reason logged */
 }
 
 static int closed_lately(const npf_udpf *u, uint32_t id)
@@ -529,9 +507,8 @@ static int closed_lately(const npf_udpf *u, uint32_t id)
 static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t port, uint32_t lid)
 {
     struct sockaddr_storage ss;
-    socklen_t sl;
     size_t hl = strlen(host);
-    int name = literal(host, port, &ss, &sl) < 0;
+    int name = npf_addr_ip(strcmp(host, "localhost") == 0 ? "127.0.0.1" : host, port, &ss) < 0;
     uflow *f;
     if (!u->caller && (!u->policy || (u->io.allowed && !u->io.allowed(u->arg)))) {
         unit(u, NPF_UDP_CLOSE, id, NPF_UDP_R_REFUSED);
@@ -552,7 +529,7 @@ static uflow *flow_open(npf_udpf *u, uint32_t id, const char *host, uint16_t por
     link_flow(u, f);
     tick_arm(u);
     if (!name) {
-        flow_connect(u, f, &ss, sl);
+        flow_connect(u, f, &ss);
     } else if (!(f->res = npf_resolve_start_peer(u->loop, host, port, SOCK_DGRAM, resolved, f))) {
         drop_flow(u, f, 1, NPF_UDP_R_LIMIT);    /* the peers' share of the resolver is full */
         return NULL;
