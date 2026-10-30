@@ -321,7 +321,14 @@ static void test_states(npf_loop *loop)
     npf_peer_wake_now(p);
     CHECK(p->st == PS_CALL, "on demand, woken: a session");
 
-    /* forwards: the port taken, retried with backoff by the peer's tick */
+    /* forwards: a name to listen on is refused when the forward is made (no
+     * DNS on the loop thread) */
+    fn.bind = "localhost.example";
+    i = npf_peer_forward_add_parts(p, &fn, 0, 0, err, sizeof err);
+    CHECK(i < 0 && strstr(err, "not a name") && p->nfwd == 0, "a name to listen on: refused (%s)", err);
+    fn.bind = NULL;
+
+    /* the port taken, retried with backoff by the peer's tick */
     fn.port = ntohs(b.sin_port);
     i = npf_peer_forward_add_parts(p, &fn, 0, 0, err, sizeof err);
     CHECK(i >= 0 && npf_peer_forward_state(p, i, &fs) == 0 && fs.state == NPF_FWD_FAILED

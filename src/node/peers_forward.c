@@ -24,6 +24,7 @@ static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
     /* none: loopback; empty or "*": every address */
     const char *bind = !fn->bind ? "127.0.0.1" : !*fn->bind || strcmp(fn->bind, "*") == 0 ? "0.0.0.0" : fn->bind;
     int socks = fn->opt == 'D';
+    unsigned char a[16];
     if (strcmp(bind, "localhost") == 0)
         bind = "127.0.0.1";                 /* as the callee takes it: the spec and the state stay the same */
     if (fn->opt != 'L' && fn->opt != 'D' && fn->opt != 'R') {
@@ -32,6 +33,11 @@ static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
     }
     if (fn->port < 0 || fn->port > 65535 || strlen(bind) >= sizeof f->bind) {
         snprintf(err, errcap, "bad listening port or address");
+        return -1;
+    }
+    if (inet_pton(AF_INET, bind, a) != 1 && inet_pton(AF_INET6, bind, a) != 1) {
+        /* no name: listening would look it up on the loop thread */
+        snprintf(err, errcap, "the listening address is an IP address, localhost or *, not a name");
         return -1;
     }
     if (!socks && (!fn->host || !*fn->host || strlen(fn->host) >= sizeof f->host || strchr(fn->host, ' ')
@@ -300,8 +306,8 @@ npf_call *npf_peers_fwd_call(npf_peers *ps, int id)
     return NULL;
 }
 
-/* a socket on bind:port, listening (SOCK_STREAM) or bound (SOCK_DGRAM);
- * "::" is IPv6 and IPv4 on one socket. -1 with why; *in_use: the port is
+/* a socket on bind:port (an IP address, fwd_fill), listening (SOCK_STREAM)
+ * or bound (SOCK_DGRAM); "::" is IPv6 and IPv4 on one socket. -1 with why; *in_use: the port is
  * taken (as opposed to the address family missing) */
 static int listen_on(const char *bind_host, int port, int type, char *why, size_t whycap, int *in_use)
 {
@@ -311,7 +317,7 @@ static int listen_on(const char *bind_host, int port, int type, char *why, size_
     *in_use = 0;
     memset(&hints, 0, sizeof hints);
     hints.ai_socktype = type;               /* SOCK_DGRAM: a UDP forward's socket, bound only */
-    hints.ai_flags = AI_PASSIVE;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;   /* no DNS on the loop thread */
     snprintf(ps, sizeof ps, "%d", port);
     if (getaddrinfo(bind_host, ps, &hints, &res) != 0) {
         snprintf(why, whycap, "bad bind address");

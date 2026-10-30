@@ -70,7 +70,7 @@ npf_peer *npf_peers_create(npf_peers *ps, const npf_peer_new *pn, char *err, siz
 typedef struct npf_fwd_new {
     char        opt;                /* 'L', 'D', 'R' */
     int         udp;
-    const char *bind;               /* NULL: 127.0.0.1; "*" and "": every address */
+    const char *bind;               /* an IP address or localhost (no name); NULL: 127.0.0.1; "*" and "": every address */
     int         port;               /* 0: picked (by the system here, by the peer for -R) */
     const char *host;               /* -L / -R: the target */
     int         hostport;
