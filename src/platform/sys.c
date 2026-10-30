@@ -167,6 +167,26 @@ int npf_addr_ip(const char *host, uint16_t port, struct sockaddr_storage *out)
     return 0;
 }
 
+const char *npf_path_sep(const char *p)
+{
+    const char *s = strrchr(p, '/');
+#ifdef _WIN32
+    const char *b = strrchr(p, '\\');
+    if (!s || b > s)
+        s = b;
+#endif
+    return s;
+}
+
+void npf_dirname(const char *p, char *out, size_t cap)
+{
+    const char *s = npf_path_sep(p);
+    if (s)
+        snprintf(out, cap, "%.*s", (int)(s - p), p);
+    else
+        snprintf(out, cap, ".");
+}
+
 int npf_addr_parse(const char *s, struct sockaddr_storage *out)
 {
     char host[64];

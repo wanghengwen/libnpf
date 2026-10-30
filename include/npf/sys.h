@@ -236,6 +236,10 @@ int  npf_file_too_open(const char *path);
  * into out of cap bytes. 0, or -1 (an error, or it does not fit). */
 int  npf_abspath(const char *p, char *out, size_t cap);
 int  npf_path_is_abs(const char *p);
+/* p's last separator ('/', on Windows '\\' too), NULL: none; its directory
+ * into out ("." when it has none) */
+const char *npf_path_sep(const char *p);
+void        npf_dirname(const char *p, char *out, size_t cap);
 
 /* ======== scratch buffers ======== */
 

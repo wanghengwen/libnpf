@@ -13,21 +13,6 @@
 
 /* ---- configuration ---- */
 
-static void dir_of(const char *path, char *out, size_t cap)
-{
-    char *slash;
-    snprintf(out, cap, "%s", path);
-    slash = strrchr(out, '/');
-#ifdef _WIN32
-    if (!slash || strrchr(out, '\\') > slash)
-        slash = strrchr(out, '\\');
-#endif
-    if (slash)
-        *slash = 0;
-    else
-        snprintf(out, cap, ".");
-}
-
 /* the configurations, and the paths made from them */
 void npf_engine_config_free(npf_t *n)
 {
@@ -127,7 +112,7 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
     }
     {
         char d[1100];
-        dir_of(ro->path, d, sizeof d);
+        npf_dirname(ro->path, d, sizeof d);
         if (path_set(&n->conf_dir, "%s", d) < 0) {
             snprintf(err, errcap, "no memory");
             return NPF_EFAIL;
