@@ -35,17 +35,6 @@ static void socks_fail(sublink *s, uint8_t rep)
     socks_close(s);
 }
 
-static void connect_timeout(npf_loop *loop, void *arg)
-{
-    sublink *s = arg;
-    npf_tunnel *t = s->t;
-    (void)loop;
-    s->hs->t_connect = NULL;
-    tunnel_enter(t);                    /* sublink_done may free the tunnel */
-    socks_fail(s, 6);
-    tunnel_leave(t);
-}
-
 static int map_errno(int e)
 {
     switch (e) {
@@ -91,23 +80,12 @@ void npf_he_order(struct sockaddr_storage *a, socklen_t *l, int n)
 }
 
 static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg);
-static int connect_next(sublink *s);
-
-static void he_timer(npf_loop *loop, void *arg)
-{
-    sublink *s = arg;
-    npf_tunnel *t = s->t;
-    (void)loop;
-    s->hs->t_he = NULL;
-    tunnel_enter(t);
-    connect_next(s);                    /* no answer yet: the next address too */
-    tunnel_leave(t);
-}
+static void sub_arm(sublink *s);
 
 /* start the next address's attempt (Happy Eyeballs: the others keep going);
  * the one after it follows in HE_DELAY_MS, or at once when this one fails.
  * Returns -1 when the sublink was released (nothing left to try). */
-static int connect_next(sublink *s)
+static int connect_next(sublink *s, int64_t now)
 {
     sl_hs *h = s->hs;
     while (h->icand < h->ncand) {
@@ -125,14 +103,16 @@ static int connect_next(sublink *s)
         }
         h->cfd[h->ncfd++] = fd;
         npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s);
-        if (h->icand < h->ncand && !h->t_he)
-            h->t_he = npf_timer_add(s->t->loop, HE_DELAY_MS, he_timer, s);
-        return 0;
+        if (h->icand < h->ncand && !h->he_at)
+            h->he_at = now + HE_DELAY_MS;
+        break;
     }
-    if (h->ncfd)
-        return 0;                       /* the ones under way may still answer */
-    socks_fail(s, (uint8_t)map_errno(h->last_err));
-    return -1;
+    if (!h->ncfd) {                     /* none under way that may still answer */
+        socks_fail(s, (uint8_t)map_errno(h->last_err));
+        return -1;
+    }
+    sub_arm(s);
+    return 0;
 }
 
 /* an attempt answered: connected (the others closed, the sublink open) or
@@ -156,9 +136,8 @@ static void conn_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
     if (err) {
         npf_sock_close(fd);
         h->last_err = err;
-        /* its turn is now */
-        npf_timer_stop(loop, &h->t_he);
-        connect_next(s);
+        h->he_at = 0;                   /* its turn is now */
+        connect_next(s, npf_mono_ms());
         goto out;
     }
     s->fd = fd;
@@ -210,10 +189,10 @@ static int socks_connect_addrs(sublink *s, const struct sockaddr_storage *cand, 
     memcpy(s->hs->clen, clen, (size_t)nc * sizeof *clen);
     npf_he_order(s->hs->cand, s->hs->clen, nc);
     s->hs->ncand = nc;
+    if (s->state != SL_RESOLVING)       /* a name: the deadline runs since the lookup began */
+        s->at = npf_mono_ms() + CONNECT_MS;
     s->state = SL_CONNECTING;
-    if (!s->hs->t_connect)              /* a name: the deadline runs since the lookup began */
-        s->hs->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
-    return connect_next(s);
+    return connect_next(s, npf_mono_ms());
 }
 
 /* the worker thread's answer for a domain-name target */
@@ -288,32 +267,68 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
     /* one deadline for the lookup and the connection: a lookup that never
      * returns fails the sublink after CONNECT_MS (the worker is released by
      * the system, the request's callback is cancelled) */
-    s->hs->t_connect = npf_timer_add(s->t->loop, CONNECT_MS, connect_timeout, s);
+    tunnel_sub_at(s, npf_mono_ms() + CONNECT_MS);
     return 0;
 }
 
-/* the greeting and request did not come in time: a peer's sublink is reset
- * (it holds one of the session's sublinks), a local application's (-D) closed
- * (nothing went to the peer yet) */
-static void greet_timeout(npf_loop *loop, void *arg)
+/* ---- the sublink's one timer (architecture.md 3.9) ---- */
+
+static void sub_timer(npf_loop *loop, void *arg)
 {
     sublink *s = arg;
     npf_tunnel *t = s->t;
     (void)loop;
-    s->t_greet = NULL;
+    s->t_due = NULL;
     tunnel_enter(t);                    /* sublink_done may free the tunnel */
-    if (s->state == SL_LOCAL_GREETING) {
-        s->end = "greeting_timeout";
-        tunnel_sub_free(s, 1);
-    } else if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
-        tunnel_sub_reset(s, NPF_RST_PROTOCOL);
-    }
+    if (tunnel_sub_tick(s, npf_mono_ms()) == 0)
+        sub_arm(s);
     tunnel_leave(t);
 }
 
-void tunnel_greet_wait(sublink *s)
+static void sub_arm(sublink *s)
 {
-    s->t_greet = npf_timer_add(s->t->loop, npf_tunnel_greet_ms, greet_timeout, s);
+    int64_t d = tunnel_sub_due(s);
+    if (s->t_due && d == s->due_at)
+        return;
+    npf_timer_stop(s->t->loop, &s->t_due);
+    if (d != INT64_MAX)
+        s->t_due = npf_timer_add(s->t->loop, d - npf_mono_ms(), sub_timer, s);
+    s->due_at = d;
+}
+
+void tunnel_sub_at(sublink *s, int64_t at)
+{
+    s->at = at;
+    sub_arm(s);
+}
+
+int64_t tunnel_sub_due(const sublink *s)
+{
+    int64_t d = s->at ? s->at : INT64_MAX;
+    return s->hs && s->hs->he_at && s->hs->he_at < d ? s->hs->he_at : d;
+}
+
+int tunnel_sub_tick(sublink *s, int64_t now)
+{
+    if (s->at && s->at <= now) {
+        s->at = 0;
+        if (s->vend == VE_GONE) {       /* no FIN from the peer */
+            tunnel_sub_end(s, "local_reset");
+            tunnel_sub_reset(s, NPF_RST_TIMEOUT);
+        } else if (s->state == SL_LOCAL_GREETING) {
+            s->end = "greeting_timeout";    /* -D's application: closed (nothing went to the peer yet) */
+            tunnel_sub_free(s, 1);
+        } else if (s->state == SL_SOCKS_GREETING || s->state == SL_SOCKS_REQUEST) {
+            tunnel_sub_reset(s, NPF_RST_PROTOCOL);  /* the peer's: it holds one of the session's sublinks */
+        } else {
+            socks_fail(s, 6);           /* SL_RESOLVING, SL_CONNECTING: TTL expired */
+        }
+        return -1;
+    }
+    if (tunnel_sub_due(s) > now)
+        return 0;
+    s->hs->he_at = 0;                   /* the next address's turn: no answer yet */
+    return connect_next(s, now);
 }
 
 int tunnel_socks_greeting(const uint8_t *b, size_t n, int *noauth)
@@ -386,8 +401,8 @@ int tunnel_socks_parse(sublink *s)
             return -1;
         s->sl = 0;
         tunnel_credit_back(s, need);
-        npf_timer_stop(s->t->loop, &s->t_greet);
-        /* addr stays in hs->sb (nothing writes there now) while socks_connect reads it */
+        /* the greeting's deadline: the connection's from here (socks_connect sets it);
+         * addr stays in hs->sb (nothing writes there now) while socks_connect reads it */
         return socks_connect(s, atyp, addr, alen, port);
     }
     return 0;
@@ -431,11 +446,10 @@ void tunnel_hs_done(sublink *s)
         npf_loop_del(s->t->loop, h->cfd[i]);
         npf_sock_close(h->cfd[i]);
     }
-    npf_timer_cancel(s->t->loop, h->t_connect);
-    npf_timer_cancel(s->t->loop, h->t_he);
     free(h->cand);
     free(h);
     s->hs = NULL;
+    tunnel_sub_at(s, 0);                /* its deadlines were the handshake's */
 }
 
 /* client side: the server's method reply (05 00) and its CONNECT reply

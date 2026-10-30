@@ -42,11 +42,12 @@ typedef struct sl_hs {
     struct sockaddr_storage *cand;
     socklen_t clen[NPF_RESOLVE_MAX];
     int       ncand, icand, cfd[NPF_RESOLVE_MAX], ncfd, last_err;
-    npf_timer *t_connect, *t_he;    /* the deadline (lookup too), the next address's turn */
+    int64_t   he_at;            /* the next address's turn (mono ms), 0: none */
 } sl_hs;
 
-/* a virtual end its owner closed (npf_tunnel_vclose), for virt_poll */
-enum { VG_NONE, VG_CLOSED, VG_RESET };
+/* a virtual end closed by its owner (npf_tunnel_vclose): CLOSED / RESET for
+ * virt_poll, then GONE: the peer's data dropped till its FIN */
+enum { VE_NONE, VE_GONE, VE_CLOSED, VE_RESET };
 
 typedef struct sublink {
     npf_tunnel *t;
@@ -59,8 +60,11 @@ typedef struct sublink {
     uint8_t  rep[7];            /* client: the replies' first bytes (tunnel_client_reply) */
     size_t   sl;                /* bytes in hs->sb; client: of the replies seen */
     int      fwd_rep;           /* client (-D): the CONNECT reply goes to the application as it is */
-    npf_timer *t_greet;         /* the SOCKS greeting and request still to come (GREET_MS) */
     npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
+    /* the one timer, at the earliest of at (the state's deadline, mono ms,
+     * 0 none: architecture.md 3.9) and hs->he_at; due_at its time */
+    int64_t  at, due_at;
+    npf_timer *t_due;
     /* flow control */
     int64_t  tx_credit;         /* DATA bytes we may still send */
     uint32_t rx_freed;          /* written locally since the last WINDOW */
@@ -76,9 +80,7 @@ typedef struct sublink {
     /* a virtual end */
     const npf_vend_io *v;       /* a virtual local end (npf_tunnel_open_v), fd -1; NULL: none */
     void    *varg;
-    int      vgone;             /* VG_* */
-    int      gone;              /* closed so: the peer's data dropped until its FIN (or t_gone) */
-    npf_timer *t_gone;
+    int      vend;              /* VE_* */
     /* stats: opened here, for its record (npf_sublink_stats) */
     uint64_t in, out;           /* read from / written to its local socket */
     int64_t  t_open, t_ok, t_first;     /* mono ms: opened, CONNECT reply, first byte to the local socket */
@@ -173,6 +175,11 @@ int  tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop);
 /* the handshake is over (open, or the sublink goes): hs freed, the
  * attempts still under way closed */
 void tunnel_hs_done(sublink *s);
-void tunnel_greet_wait(sublink *s);
+/* the sublink's deadline set to at (0: none), its timer moved; the
+ * earliest deadline (INT64_MAX: none); what is due at now done: -1 when
+ * the sublink went */
+void tunnel_sub_at(sublink *s, int64_t at);
+int64_t tunnel_sub_due(const sublink *s);
+int  tunnel_sub_tick(sublink *s, int64_t now);
 
 #endif

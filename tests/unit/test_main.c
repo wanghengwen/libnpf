@@ -14,7 +14,7 @@
 #include "npf/version.h"
 #include "test.h"
 
-int test_crypto(void), test_json(void), test_msg(void), test_tunnel(void), test_policy(void), test_conf(void),
+int test_crypto(void), test_json(void), test_msg(void), test_tunnel(void), test_tunnel_tick(void), test_policy(void), test_conf(void),
     test_local(void), test_direct(void), test_loop(void), test_log(void), test_resolve(void), test_dns(void),
     test_punch(void), test_anlsec(void), test_sys(void), test_text(void), test_creply(void), test_portmap_gw(void),
     test_callee(void), test_relay(void), test_relay_data(void), test_peeraddr(void), test_home(void), test_call(void),
@@ -259,7 +259,7 @@ static const struct {
     const char *name;
     int (*fn)(void);
 } tests[] = {
-    {"main", test_own}, {"crypto", test_crypto}, {"json", test_json}, {"msg", test_msg}, {"tunnel", test_tunnel},
+    {"main", test_own}, {"crypto", test_crypto}, {"json", test_json}, {"msg", test_msg}, {"tunnel", test_tunnel}, {"tunnel_tick", test_tunnel_tick},
     {"policy", test_policy}, {"conf", test_conf}, {"local", test_local}, {"direct", test_direct}, {"loop", test_loop},
     {"log", test_log}, {"resolve", test_resolve}, {"dns", test_dns}, {"anlsec", test_anlsec}, {"sys", test_sys},
     {"text", test_text}, {"creply", test_creply},
