@@ -3,8 +3,9 @@
  * send them: whole, or a byte a frame, with the application's data in the
  * same frame. A port mapping keeps them from the application; -D gives it
  * the CONNECT reply as it is, a failure too. Each byte is credited back
- * once. A refusal, a bad reply and a reply cut short end the sublink with
- * the right reason; a failure reply the application cannot take yet waits
+ * once. Each REP, a bad reply, a reply cut short, a RESET before it and a
+ * virtual end closed while waiting end the sublink with the reason that
+ * says what happened; a failure reply the application cannot take yet waits
  * in the queue across the FIN. */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -44,11 +45,13 @@ static int w_data(void *arg, const uint8_t *m, size_t len) { (void)arg; (void)m;
 static size_t backlog(void *arg) { (void)arg; return 0; }
 static void ready(void *arg) { (void)arg; }
 static void broken(void *arg, const char *why) { (void)arg; (void)why; }
+static npf_sublink_stats done_st;
 static void sub_done(void *arg, uint32_t id, const npf_sublink_stats *st)
 {
     (void)arg;
     (void)id;
     ndone++;
+    done_st = *st;
     snprintf(done_end, sizeof done_end, "%s", st->end ? st->end : "");
 }
 
@@ -76,6 +79,22 @@ static void frame(uint32_t id, const uint8_t *p, size_t len)
         memcpy(m + NPF_DATA_HDR, p, len);
     npf_tunnel_input_data(C, m, NPF_DATA_HDR + len);
 }
+
+/* a RESET of sublink id from the peer */
+static void reset(uint32_t id, int reason)
+{
+    uint8_t u[NPF_CU_HDR + 5] = {NPF_CU_RESET, 5, 0};
+    npf_le32(u + NPF_CU_HDR, id);
+    u[NPF_CU_HDR + 4] = (uint8_t)reason;
+    npf_tunnel_input_ctrl(C, u, sizeof u);
+}
+
+static ssize_t v_read(void *arg, uint8_t *p, size_t n) { (void)arg; (void)p; (void)n; return -1; }
+static ssize_t v_write(void *arg, const uint8_t *p, size_t n) { (void)arg; (void)p; return (ssize_t)n; }
+static unsigned v_ready(void *arg) { (void)arg; return 0; }
+static void v_shutdown(void *arg) { (void)arg; }
+static void v_closed(void *arg, int reset) { (void)arg; (void)reset; }
+static const npf_vend_io k_vend = {v_read, v_write, v_ready, v_shutdown, v_closed};
 
 static void spin(int n)
 {
@@ -239,33 +258,59 @@ int test_creply(void)
     rl = replies(r, 1, 2);              /* REP 2: the other side's policy */
     fail_case(0, r, rl, "target_refused", 1);
     fail_case(1, r, rl, "target_refused", 0);
-    rl = replies(r, 1, 5);              /* REP 5: refused by the target */
-    fail_case(0, r, rl, "target_failed", 1);
-    fail_case(1, r, rl, "target_failed", 0);
+    for (k = 1; k <= 8; k++) {          /* RFC 1928 6, each REP for what it says */
+        static const char *const want[] = {"", "peer_failed", "target_refused", "target_failed", "target_failed",
+                                           "target_failed", "target_failed", "request_unsupported",
+                                           "request_unsupported"};
+        rl = replies(r, 1, (uint8_t)k);
+        fail_case(0, r, rl, want[k], 1);
+        fail_case(1, r, rl, want[k], 0);
+        CHECK(done_st.connect_ms < 0, "REP %d: no connect_ms (%d)", k, done_st.connect_ms);
+    }
+    rl = replies(r, 1, 9);              /* unassigned: not a SOCKS5 reply */
+    fail_case(1, r, rl, "protocol_error", 1);
     rl = replies(r, 1, 0);
     r[4] = 1;                           /* RSV not 0 */
-    fail_case(0, r, rl, "target_failed", 1);
-    fail_case(1, r, rl, "target_failed", 1);
+    fail_case(0, r, rl, "protocol_error", 1);
+    fail_case(1, r, rl, "protocol_error", 1);
     r[4] = 0;
     r[5] = 2;                           /* no such ATYP */
-    fail_case(1, r, rl, "target_failed", 1);
+    fail_case(1, r, rl, "protocol_error", 1);
     r[5] = 1;
     r[2] = 4;                           /* not SOCKS5 */
-    fail_case(0, r, rl, "target_failed", 1);
+    fail_case(0, r, rl, "protocol_error", 1);
     r[2] = 5;
     r[1] = 0xff;                        /* no acceptable method */
-    fail_case(1, r, rl, "target_failed", 1);
+    fail_case(1, r, rl, "protocol_error", 1);
     r[1] = 0;
 
-    /* a reply cut short by the peer's FIN: the target was not reached */
-    {
+    /* a reply cut short by the peer's FIN: its protocol broken; a RESET
+     * before the replies: the peer's (its limit, its own failure) */
+    for (k = 0; k < 2; k++) {
         int app, before = ndone;
-        uint32_t id = open_sub(0, &app);
+        uint32_t id = open_sub(k, &app);
         frame(id, r, 5);
-        frame(id, NULL, 0);
+        if (k)
+            reset(id, NPF_RST_LIMIT);
+        else
+            frame(id, NULL, 0);
         close(app);
         spin(5);
-        CHECK(ndone == before + 1 && strcmp(done_end, "target_failed") == 0, "cut short: %s", done_end);
+        CHECK(ndone == before + 1 && strcmp(done_end, k ? "peer_reset" : "protocol_error") == 0, "cut short: %s",
+              done_end);
+    }
+
+    /* a virtual end its owner closed while waiting: the replies are dropped
+     * unread, the peer's FIN ends it as closed here first */
+    {
+        int before = ndone, id = npf_tunnel_open_v(C, &k_vend, NULL, "127.0.0.1", 80);
+        npf_tunnel_vclose(C, (uint32_t)id, 0);
+        for (k = 0; k < 50 && sub_of((uint32_t)id) && sub_of((uint32_t)id)->vend != VE_GONE; k++)
+            spin(1);
+        rl = replies(r, 1, 0);
+        frame((uint32_t)id, r, 3);
+        frame((uint32_t)id, NULL, 0);
+        CHECK(ndone == before + 1 && strcmp(done_end, "local_closed") == 0, "closed virtual end: %s", done_end);
     }
 
     /* -D: a failure reply the application cannot take yet is queued, the

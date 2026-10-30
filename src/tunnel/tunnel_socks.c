@@ -452,14 +452,20 @@ void tunnel_hs_done(sublink *s)
     tunnel_sub_at(s, 0);                /* its deadlines were the handshake's */
 }
 
+/* REP 1-8 (RFC 1928 6) as the sublink's end: the other side's own failure
+ * (01), its policy (02), the target unreachable, refusing or silent (03-06),
+ * a command or address type it does not take (07, 08) */
+static const char *const rep_end[9] = {NULL, "peer_failed", "target_refused", "target_failed", "target_failed",
+                                       "target_failed", "target_failed", "request_unsupported", "request_unsupported"};
+
 /* client side: the server's method reply (05 00) and its CONNECT reply
  * (05 REP 00 ATYP BND.ADDR BND.PORT), however the frames split them. Only
  * what judging them takes is kept (their first 7 bytes in rep), nothing to
  * deliver later: of p[0..n), the first *drop bytes are the replies' own
  * (the method reply; the CONNECT reply too, unless fwd_rep: -D gives it to
  * the application as it is, a failure too), the rest goes to the local
- * end. 0: fine, s->state SL_OPEN once both replies are complete; -1: the
- * target failed (s->end says how); -2: not a SOCKS5 reply */
+ * end. 0: fine, s->state SL_OPEN once both replies are complete; -1: a
+ * failure reply (s->end says which); -2: not a SOCKS5 reply */
 int tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop)
 {
     size_t k = 0;
@@ -483,8 +489,10 @@ int tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop)
                 return -2;
             break;
         case 3:                         /* REP */
+            if (b > 8)
+                return -2;
             if (b != 0) {
-                s->end = b == 2 ? "target_refused" : "target_failed";  /* 2: the other side's policy */
+                s->end = rep_end[b];
                 if (!s->fwd_rep)
                     return -1;          /* -D: the reply goes on to the application */
             }
@@ -500,7 +508,7 @@ int tunnel_client_reply(sublink *s, const uint8_t *p, size_t n, size_t *drop)
             size_t len = 2 + 4 + (s->rep[5] == 1 ? 4 : s->rep[5] == 4 ? 16 : 1 + (size_t)s->rep[6]) + 2;
             if (s->sl == len) {
                 s->state = SL_OPEN;
-                s->t_ok = npf_mono_ms();
+                s->t_ok = s->rep[3] ? 0 : npf_mono_ms();  /* a -D failure: the target never reached */
                 s->sl = 0;
             }
         }

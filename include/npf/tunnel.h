@@ -102,10 +102,12 @@ typedef struct npf_sublink_stats {
     uint64_t    in, out;            /* bytes read from / written to its local end */
     int         connect_ms;         /* open to the other side's CONNECT reply (target reached); -1 never */
     int         first_byte_ms;      /* open to the first byte written to the local end; -1 none */
-    const char *end;                /* local_closed / peer_closed (who closed first), target_failed (the
-                                     * other side could not reach the target), target_refused (its policy),
-                                     * peer_reset, local_reset, session_ended, greeting_timeout, or the why
-                                     * of npf_tunnel_sub_reset / npf_tunnel_group_reset; a static string */
+    const char *end;                /* local_closed / peer_closed (who closed first); the other side's
+                                     * CONNECT reply: target_failed (REP 03-06: the target unreachable,
+                                     * refusing, silent), target_refused (02: its policy), peer_failed (01),
+                                     * request_unsupported (07, 08); protocol_error (the peer's), peer_reset,
+                                     * local_reset, session_ended, greeting_timeout, or the why of
+                                     * npf_tunnel_sub_reset / npf_tunnel_group_reset; a static string */
 } npf_sublink_stats;
 
 /* The transport and the owner's hooks, called on the loop thread. A hook

@@ -83,7 +83,7 @@ typedef struct sublink {
     int      vend;              /* VE_* */
     /* stats: opened here, for its record (npf_sublink_stats) */
     uint64_t in, out;           /* read from / written to its local socket */
-    int64_t  t_open, t_ok, t_first;     /* mono ms: opened, CONNECT reply, first byte to the local socket */
+    int64_t  t_open, t_ok, t_first;     /* mono ms: opened, CONNECT reply (a success), first byte to the local socket */
     int      fin_first;                 /* 1: the local side closed first, 2: the peer */
     const char *end;                    /* why it ended, when not by FIN (npf_sublink_stats.end) */
 } sublink;
