@@ -170,7 +170,8 @@ typedef struct npf_node_cfg {
     const char *serverlist_saved;   /* file for the lists the platform sends; NULL none */
     const char *doh_servers;        /* tests: "IP:PORT=HOST,..." instead of the public DoH services */
     const char *server_url;         /* tests: this one server instead of the list ... */
-    uint8_t     server_pub[32];     /* ... with this key */
+    uint8_t     server_pub[32];     /* ... with this key ... */
+    struct sockaddr_in server_udp;  /* ... and this UDP signaling address (AF_INET when given) */
     int         udp_port;           /* 0 any */
     int         offline;            /* no platform: no server list, no signaling (direct mode) */
     int         max_calls;          /* callee: platform sessions at once, 0: 32 */

@@ -43,7 +43,7 @@ enum { F = NPF_K_FILE, L = NPF_K_LIVE, X = NPF_K_SECRET, U = NPF_K_SETUP, P = NP
        H = NPF_K_UNLISTED };
 const npf_key npf_keys[] = {
     /* the platform, the identity: npf.conf (or npf_setup) only, except the password and the serial */
-    S("root", F | U), S("server", F | U), S("server_pub", F | U), S("serverlist", F | U | P),
+    S("root", F | U), S("server", F | U), S("server_pub", F | U), S("server_udp", F | U), S("serverlist", F | U | P),
     S("serverlist_saved", F | U | P), S("doh_servers", F | U), B("report_host", F | U, "1"), S("cred", F | X | U),
     S("model_cred", F | X | U), S("model", F | U), S("password", X | U), S("serial", U), S("serial_file", F | U),
     S("hw_info", U), S("direct", F | U), S("direct_psk", F | X | U), S("direct_psk_file", F | U | P),

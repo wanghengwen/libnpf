@@ -132,6 +132,8 @@ void node_servers_load(npf_node *n)
         snprintf(e->ws[0], sizeof e->ws[0], "%s", n->cfg.server_url);
         e->nws = 1;
         memcpy(e->dh_pub, n->cfg.server_pub, 32);
+        e->udp[0] = n->cfg.server_udp;
+        e->nudp = n->cfg.server_udp.sin_family == AF_INET;
         n->nservers = 1;
     }
 }
