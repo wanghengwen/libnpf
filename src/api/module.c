@@ -160,7 +160,6 @@ void npf_mods_call_state(npf_t *n, npf_call *call, int st, const char *why) { CA
 void npf_mods_peer_up(npf_t *n, npf_peer *p, npf_call *call) { CALL(peer_up, n, p, call); }
 void npf_mods_peer_done(npf_t *n, npf_peer *p, const char *why) { CALL(peer_done, n, p, why); }
 void npf_mods_peer_fwd(npf_t *n, npf_peer *p, int i, int up, const char *why) { CALL(peer_fwd, n, p, i, up, why); }
-void npf_mods_peer_removed(npf_t *n) { CALL(peer_removed, n); }
 void npf_mods_nick_set(npf_t *n, const char *target, const char *nick) { CALL(nick_set, n, target, nick); }
 void npf_mods_fwds_saved(npf_t *n, npf_ldev *d) { CALL(fwds_saved, n, d); }
 void npf_mods_status_json(npf_t *n, npf_out *o) { CALL(status_json, n, o); }
@@ -192,14 +191,15 @@ int npf_mods_sig_busy(npf_t *n)
     return 0;
 }
 
-int npf_mods_peer_removing(npf_t *n, npf_peer *p)
+void npf_mods_peer_remove(npf_t *n, npf_peer *p)
 {
     const npf_module *m;
     int again = 0;
-    if (!n->mods_made)
-        return 0;
-    EACH(m) if (m->peer_removing && m->peer_removing(n, p)) again = 1;
-    return again;
+    if (n->mods_made)
+        EACH(m) if (m->peer_removing && m->peer_removing(n, p)) again = 1;
+    npf_peers_remove(n->peers, p);
+    if (again)
+        EACH(m) if (m->peer_removed) m->peer_removed(n);
 }
 
 int npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o, int *rc)

@@ -252,7 +252,6 @@ void npf_mods_peer_conn(npf_t *n, npf_peer *p, npf_call *call, uint64_t mapping,
                         const struct npf_sublink_stats *st);
 void npf_mods_peer_refused(npf_t *n, npf_peer *p, uint64_t mapping, int port, const struct sockaddr_storage *from,
                            const char *why, int opened);
-void npf_mods_peer_removed(npf_t *n);
 void npf_mods_fwds_saved(npf_t *n, npf_ldev *d);
 /* a module's command: 1 found (*rc its result), 0 none of that name */
 int  npf_mods_cmd(npf_t *n, int argc, char **argv, npf_text_cb cb, void *user, npf_out *o, int *rc);

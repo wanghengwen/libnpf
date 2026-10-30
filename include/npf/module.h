@@ -217,8 +217,9 @@ int  npf_ops_record_fwd(npf_t *n, npf_peer *p, int i, int add);
 #define NPF_CMD_UNSAVED 3
 
 /* For a module that changes what the others hear of: runs the other
- * modules' nick_set, or peer_removing (1: one of them opens the peer again). */
+ * modules' nick_set; removes peer p, between the modules' peer_removing
+ * and (when one of them opens it again) peer_removed. */
 void npf_mods_nick_set(npf_t *n, const char *target, const char *nick);
-int  npf_mods_peer_removing(npf_t *n, npf_peer *p);
+void npf_mods_peer_remove(npf_t *n, npf_peer *p);
 
 #endif
