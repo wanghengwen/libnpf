@@ -30,8 +30,10 @@ static void direct_send(npf_path *p, const uint8_t *dgram, size_t len)
         npf_udp_send(c->pd.fd, dgram, len, &c->pd.addr);
 }
 
-/* a punch's path (punch_done): fd the main socket, or an S3 one handed over */
-void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
+/* a punch's path (punch_done): fd the main socket, or an S3 one handed over.
+ * 0, or -1 when an owned socket could not be watched (closed here; caller
+ * falls back). */
+int path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
 {
     c->pd.fd = fd;
     c->pd.addr = *peer;
@@ -39,11 +41,18 @@ void path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
     c->pd.p.since = c->pd.p.last_rx;
     c->pd.p.rt_ok = c->pd.p.busy_since = 0;
     c->pd.p.health = PH_UP;
-    pm_add(&c->pm, &c->pd.p);
+    c->pd.owned = 0;
     if (fd != c->n->udp_fd && fd != c->n->udp6_fd) {
+        if (npf_loop_add(c->n->loop, fd, NPF_EV_READ, call_p2p_input_cb, c) < 0) {
+            npf_sock_close(fd);
+            c->pd.fd = -1;
+            c->pd.p.health = PH_DEAD;
+            return -1;
+        }
         c->pd.owned = 1;
-        npf_loop_add(c->n->loop, fd, NPF_EV_READ, call_p2p_input_cb, c);
     }
+    pm_add(&c->pm, &c->pd.p);
+    return 0;
 }
 
 /* a direct connection's path, used once its handshake is done (pm_add) */

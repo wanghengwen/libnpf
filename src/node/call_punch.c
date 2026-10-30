@@ -116,11 +116,16 @@ void call_punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *ar
     struct sockaddr_storage ls;
     socklen_t ll = sizeof ls;
     npf_out w = {0};
+    int ok = res->ok;
     (void)p;
     socks_back(c);                  /* finish() closed the extra sockets */
-    result_begin(c, &w, res->ok);
-    if (res->ok) {
-        getsockname(fd, (struct sockaddr *)&ls, &ll);
+    if (ok && path_direct_up(c, fd, &res->peer) < 0) {
+        npf_logw("call %s: punch won but the winning socket could not be watched", c->call_id_s);
+        ok = 0;                     /* report a failed round; the platform plans again */
+    }
+    result_begin(c, &w, ok);
+    if (ok) {
+        getsockname(c->pd.fd, (struct sockaddr *)&ls, &ll);
         npf_out_jkey(&w, "path");
         npf_out_jobj(&w);
         npf_out_kstr(&w, "local", npf_addr_str(&ls, la, sizeof la));
@@ -139,7 +144,7 @@ void call_punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *ar
     }
     write_pressure(c, &w);
     result_send(c, &w);
-    if (!res->ok) {
+    if (!ok) {
         npf_logw("call %s: punching failed after %d ms (%d probes sent, %d received)", c->call_id_s,
                 res->elapsed_ms, res->probes_sent, res->probes_recv);
         call_punch_to(c, PN_LINGER, npf_mono_ms());     /* freed after this callback */
@@ -148,7 +153,6 @@ void call_punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *ar
     }
     npf_log("call %s: direct path %s (%d ms)", c->call_id_s, npf_addr_str(&res->peer, a, sizeof a),
             res->elapsed_ms);
-    path_direct_up(c, fd, &res->peer);
     call_punch_to(c, PN_LINGER, npf_mono_ms() + PUNCH_LINGER_MS);
     call_path_up(c);
 }
@@ -267,7 +271,8 @@ static int platform_addr(const npf_call *c, struct in_addr ip, uint16_t port)
 
 /* a peer candidate the node may probe: an IPv4 one as above and not one of
  * the platform's endpoints; an IPv6 one not unspecified, loopback (but on
- * one host), link-local, multicast or v4-mapped */
+ * one host), link-local, multicast or v4-mapped. Also the punch inbound
+ * filter (cfg.from_ok): the same policy for a datagram's source. */
 static int peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a)
 {
     if (a->ss_family == AF_INET) {
@@ -282,6 +287,11 @@ static int peer_addr_ok(const npf_call *c, const struct sockaddr_storage *a)
                && !IN6_IS_ADDR_LINKLOCAL(v) && !IN6_IS_ADDR_MULTICAST(v) && !IN6_IS_ADDR_V4MAPPED(v);
     }
     return 0;
+}
+
+static int punch_from_ok(void *arg, const struct sockaddr_storage *from)
+{
+    return peer_addr_ok(arg, from);
 }
 
 /* a peer candidate a module says is no use here (npf_node.skip_cand: one
@@ -429,6 +439,7 @@ void call_punch_go(npf_call *c)
     c->pcfg->fd6 = c->n->udp6_fd;
     c->pcfg->test_deaf = c->n->th.punch_fail_ms != 0;
     c->pcfg->quiet = punch_quiet;
+    c->pcfg->from_ok = punch_from_ok;
     if (c->pcfg->plan.measure && !punch_probes(c, 1))  /* S2's hard side: its first new socket's mapping, from E1 */
         c->pcfg->plan.measure = 0;      /* the easy side sprays the predicted ports */
     if (c->pcfg->plan.strategy == NPF_PUNCH_S2B && !punch_probes(c, 2)) {
@@ -440,7 +451,10 @@ void call_punch_go(npf_call *c)
         return;
     }
     if (!(c->punch = npf_punch_new(c->n->loop, c->pcfg, c->n->udp_fd, call_punch_done, c))) {
-        call_punch_to(c, PN_IDLE, 0);
+        npf_punch_result res;
+        npf_logw("call %s: punch round %d: no memory for the round", c->call_id_s, c->punch_round);
+        memset(&res, 0, sizeof res);
+        call_punch_done(NULL, &res, -1, c);
         return;
     }
     c->punch_socks = c->pcfg->plan.n_sockets;

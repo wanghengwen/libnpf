@@ -103,6 +103,10 @@ typedef struct npf_punch_cfg {
      * start and 2 s after a new candidate; S2B: 2.2 s after the last pass).
      * Called at most once; the round goes on to its timeout. NULL: none */
     void   (*quiet)(npf_punch *p, const npf_punch_result *res, void *arg);
+    /* 1 when a datagram's source may be answered or win the path (security.md
+     * 11.1 inbound half: the same policy as outbound candidates). NULL: any
+     * (tests / npf-punch). arg is done's. */
+    int    (*from_ok)(void *arg, const struct sockaddr_storage *from);
 } npf_punch_cfg;
 
 /* Starts a round on loop with primary_fd as the main socket (the caller's;
@@ -112,7 +116,8 @@ typedef struct npf_punch_cfg {
  * winning socket fd (the main one, fd6, or one of the round's own: that one
  * is then the caller's and off the loop), or failed (fd -1) at the timeout or
  * npf_punch_stop. The round's other sockets are closed before done. done,
- * info and quiet must not free p. */
+ * info and quiet may call npf_punch_free (deferred while an input or tick
+ * callback of this punch is on the stack). */
 npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_fd,
                          npf_punch_done_fn done, void *arg);
 /* A datagram that came on the main socket or fd6: 1 when it is a punch

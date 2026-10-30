@@ -390,7 +390,12 @@ static void fwd_start(pfwd *f)
         return;
     }
     npf_set_nonblock(f->fd);
-    npf_loop_add(p->ps->n->loop, f->fd, NPF_EV_READ, f->udp ? udp_cb : accept_cb, f);
+    if (npf_loop_add(p->ps->n->loop, f->fd, NPF_EV_READ, f->udp ? udp_cb : accept_cb, f) < 0) {
+        npf_sock_close(f->fd);
+        f->fd = -1;
+        fwd_retry(f, "cannot listen");
+        return;
+    }
     {                                       /* the port in use (0 asked: the system's choice) */
         struct sockaddr_storage ss;
         socklen_t sl = sizeof ss;

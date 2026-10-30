@@ -78,12 +78,14 @@ struct npf_punch {
     uint8_t        *sent_to;        /* S3 easy: the peer's IPv4 ports probed (S2's targets after the
                                      * measured port skip them), 8 KB */
     npf_punch_result res;
-    uint64_t        seen_tx[SEEN_MAX];  /* the last SEEN_MAX authenticated packets' txids (first 8 bytes) */
+    uint8_t         seen_tx[SEEN_MAX][NPF_TXID_SIZE]; /* the last SEEN_MAX authenticated packets' txids */
     int             seen_at;
     npf_timer      *tick;
     int64_t         tick_due;
     npf_punch_done_fn done;
     void           *arg;
+    int             depth;          /* input / tick / sock_cb: free deferred while > 0 */
+    int             free_me;
 };
 
 /* the bodies: session_id(8), then PROBE: sock(2); PROBE_ACK: its PROBE's
@@ -530,6 +532,27 @@ void npf_punch_stop(npf_punch *p)
     finish(p, 0);
 }
 
+static void punch_destroy(npf_punch *p)
+{
+    int i;
+    npf_timer_cancel(p->loop, p->tick);
+    for (i = 0; i < p->nsock; i++) {
+        if (p->socks[i].owned && p->socks[i].fd >= 0) {
+            npf_loop_del(p->loop, p->socks[i].fd);
+            npf_sock_close(p->socks[i].fd);
+        }
+    }
+    free(p->socks);
+    free(p->sent_to);
+    npf_wipe_free(p, sizeof *p);        /* punch_key, nominate_key, SIV keys */
+}
+
+static void leave(npf_punch *p)
+{
+    if (--p->depth == 0 && p->free_me)
+        punch_destroy(p);
+}
+
 static void tick_cb(npf_loop *loop, void *arg)
 {
     struct sockaddr_storage pa;
@@ -540,8 +563,10 @@ static void tick_cb(npf_loop *loop, void *arg)
     int i, k;
     (void)loop;
     p->tick = NULL;
+    p->depth++;
     if (now >= p->deadline) {
         finish(p, 0);
+        leave(p);
         return;
     }
     if (now >= quiet_end(p)) {
@@ -555,8 +580,10 @@ static void tick_cb(npf_loop *loop, void *arg)
         p->quiet_said = 1;
         p->res.elapsed_ms = (int)(now - p->start);
         p->cfg.quiet(p, &p->res, p->arg);
-        if (p->finished)
+        if (p->finished) {
+            leave(p);
             return;                 /* the owner ended it */
+        }
     }
     if ((probes_all(p) || v6_alongside(p)) && now >= p->socks[0].next_send) {
         int all = probes_all(p);
@@ -604,7 +631,9 @@ static void tick_cb(npf_loop *loop, void *arg)
             p->nom_next = now + NOM_IVL_MS;
         }
     }
-    schedule(p);
+    if (!p->finished)
+        schedule(p);
+    leave(p);
 }
 
 /* a spray due at t: when its interval is below a tick, it goes in batches
@@ -671,14 +700,32 @@ static void schedule(npf_punch *p)
  * and no say in the path; otherwise it is remembered */
 static int replayed(npf_punch *p, const uint8_t txid[NPF_TXID_SIZE])
 {
-    uint64_t v;
     int i;
-    memcpy(&v, txid, sizeof v);
     for (i = 0; i < SEEN_MAX; i++)
-        if (p->seen_tx[i] == v)
+        if (memcmp(p->seen_tx[i], txid, NPF_TXID_SIZE) == 0)
             return 1;
-    p->seen_tx[p->seen_at] = v;
+    memcpy(p->seen_tx[p->seen_at], txid, NPF_TXID_SIZE);
     p->seen_at = (p->seen_at + 1) % SEEN_MAX;
+    return 0;
+}
+
+/* security.md 11.1 inbound: do not answer or nominate a source the node
+ * would not probe (loopback, multicast, the platform's own endpoints, …) */
+static int from_allowed(const npf_punch *p, const struct sockaddr_storage *from)
+{
+    return !p->cfg.from_ok || p->cfg.from_ok(p->arg, from);
+}
+
+static int same_ip(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+    if (a->ss_family != b->ss_family)
+        return 0;
+    if (a->ss_family == AF_INET)
+        return ((const struct sockaddr_in *)a)->sin_addr.s_addr
+            == ((const struct sockaddr_in *)b)->sin_addr.s_addr;
+    if (a->ss_family == AF_INET6)
+        return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr,
+                      &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0;
     return 0;
 }
 
@@ -701,6 +748,10 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
         && (pkt.type == NPF_PKT_PROBE || pkt.type == NPF_PKT_PROBE_ACK)
         && pkt.body_len >= 10 && npf_rd64(pkt.body) == pl->session_id) {
         if (p->cfg.test_deaf || replayed(p, pkt.txid))
+            return 1;
+        /* a source this side would never probe: no ACK, no triggered probe,
+         * no path (security.md 11.1 inbound) */
+        if (!from_allowed(p, from))
             return 1;
         p->got_any = 1;
         if (from->ss_family == AF_INET) {      /* 7.8: what the peer's NAT showed */
@@ -754,9 +805,15 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
         && pkt.body_len >= 8 && npf_rd64(pkt.body) == pl->session_id) {
         if (replayed(p, pkt.txid))
             return 1;
+        if (!from_allowed(p, from))
+            return 1;
         p->got_any = 1;
         if (pkt.type == NPF_PKT_NOMINATE && pl->role == NPF_PUNCH_CONTROLLED) {
             uint8_t b[8];
+            /* only after a validated path, and only from that host (port may
+             * move): a forged source must not steer the AnLiu path */
+            if (!p->have_valid || !same_ip(&p->winner, from))
+                return 1;
             send_pkt(fd, &p->kn, pl->role, NPF_PKT_NOMINATE_ACK,
                      b, sid_body(b, pl->session_id), from);
             if (!p->finished) {
@@ -787,6 +844,7 @@ static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
             break;
     if (i >= p->nsock)
         return;
+    p->depth++;
     for (k = 0; k < 64; k++) {          /* a bounded batch (level-triggered) */
         uint8_t buf[512];
         struct sockaddr_storage from;
@@ -798,8 +856,9 @@ static void sock_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
             continue;
         handle(p, i, fd, buf, (size_t)r, &from);
         if (p->finished)
-            break;  /* the socket table changed */
+            break;  /* the socket table changed; free deferred until leave */
     }
+    leave(p);
 }
 
 /* a fresh UDP socket of the round's own (S2B's, S3 hard's), on any port and
@@ -879,9 +938,13 @@ npf_punch *npf_punch_new(npf_loop *loop, const npf_punch_cfg *cfg, int primary_f
 
 int npf_punch_input(npf_punch *p, int fd, const uint8_t *buf, size_t len, const struct sockaddr_storage *from)
 {
+    int r;
     if (!p || p->nsock == 0 || (fd != p->socks[0].fd && (p->cfg.fd6 < 0 || fd != p->cfg.fd6)))
         return 0;
-    return handle(p, 0, fd, buf, len, from);
+    p->depth++;
+    r = handle(p, 0, fd, buf, len, from);
+    leave(p);
+    return r;
 }
 
 int64_t npf_punch_ends_at(const npf_punch *p)
@@ -896,17 +959,11 @@ int npf_punch_finished(const npf_punch *p)
 
 void npf_punch_free(npf_punch *p)
 {
-    int i;
     if (!p)
         return;
-    npf_timer_cancel(p->loop, p->tick);
-    for (i = 0; i < p->nsock; i++) {
-        if (p->socks[i].owned && p->socks[i].fd >= 0) {
-            npf_loop_del(p->loop, p->socks[i].fd);
-            npf_sock_close(p->socks[i].fd);
-        }
+    if (p->depth > 0) {
+        p->free_me = 1;             /* sock_cb / input / tick still on the stack */
+        return;
     }
-    free(p->socks);
-    free(p->sent_to);
-    free(p);
+    punch_destroy(p);
 }

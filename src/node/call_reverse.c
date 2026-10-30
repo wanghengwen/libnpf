@@ -235,7 +235,8 @@ void call_reverse_request(npf_call *c, const m_env *e)
         npf_addr_parse(a, &ss);
     }
     fd = npf_socket(ss.ss_family, udp ? SOCK_DGRAM : SOCK_STREAM, 0, 0);
-    npf_sock_listen_opts(fd, udp ? SOCK_DGRAM : SOCK_STREAM);   /* a UDP port is not shared: no other listener's */
+    if (fd >= 0)
+        npf_sock_listen_opts(fd, udp ? SOCK_DGRAM : SOCK_STREAM);   /* a UDP port is not shared: no other listener's */
     if (fd >= 0 && strcmp(bind_addr, "::") == 0) {
         int zero = 0;                       /* "::": IPv4 too */
         setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&zero, sizeof zero);
@@ -255,7 +256,12 @@ void call_reverse_request(npf_call *c, const m_env *e)
     }
     l->lan = lan;
     l->want = (int)port;
-    npf_loop_add(c->n->loop, fd, NPF_EV_READ, udp ? rev_udp : rev_accept, l);
+    if (npf_loop_add(c->n->loop, fd, NPF_EV_READ, udp ? rev_udp : rev_accept, l) < 0) {
+        c->nrev--;                  /* not on the loop: drop the slot, close fd */
+        rev_free(c, l);
+        npf_call_ctl_reply(c, type, j, "error", "internal_error", NULL);
+        return;
+    }
     snprintf(reply, sizeof reply, "{\"listen_id\":%u,\"port\":%u}", l->id, npf_addr_port(&ss));
     npf_call_ctl_reply(c, type, j, "ok", NULL, reply);
     npf_log("call %s: reverse mapping%s %s -> caller %s:%d", c->call_id_s, udp ? " (UDP)" : "", reply, m.target_host,

@@ -309,8 +309,10 @@ void node_on_incoming(npf_node *n, const m_env *e, const void *msg)
         }
     }
     c = call_new(n, 0);
-    if (!c)
+    if (!c) {
+        callee_reply_error(n, req, "busy");
         return;
+    }
     c->number = n->cfg.number;
     if (strcmp(m->caller.kind, "node") == 0)
         c->caller_number = strtoull(m->caller.id, NULL, 10);
@@ -342,6 +344,7 @@ void node_on_incoming(npf_node *n, const m_env *e, const void *msg)
     npf_out_jend(&w);
     if (w.failed) {
         npf_out_free(&w);
+        callee_reply_error(n, req, "busy");
         call_free(c);
         return;
     }
