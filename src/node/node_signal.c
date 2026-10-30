@@ -15,7 +15,7 @@
 
 static void ends_flush(npf_node *n);
 static void sig_expect(npf_node *n, int ms, int probed);
-static void sig_down(npf_sig *s, const char *why, void *arg);
+static void sig_down(npf_sig *s, npf_sig_down code, const char *why, void *arg);
 static void sig_ready(npf_sig *s, void *arg);
 static void sig_msg(npf_sig *s, const npf_json *j, void *arg);
 static void idle_watch(npf_node *n);
@@ -324,7 +324,7 @@ void node_sig_abort(npf_node *n, const char *why)
     char d[300];
     race_drop(n);
     npf_logw("signaling: %s, reconnecting (%s)", why, npf_sig_diag(s, d, sizeof d));
-    sig_down(s, why, n);            /* n->sig = NULL, reconnect scheduled */
+    sig_down(s, NPF_SIG_DOWN_ERROR, why, n);    /* n->sig = NULL, reconnect scheduled */
     npf_sig_close(s);
 }
 
@@ -495,13 +495,13 @@ static void race_cb(npf_loop *loop, void *arg)
 /* a UDP attempt over before its login: it never answered (udp_bad once
  * the WebSocket logs in), or the server could not take the session (the
  * next attempt on the WebSocket) */
-static void udp_ended(npf_node *n, npf_sig *s, const char *why)
+static void udp_ended(npf_node *n, npf_sig *s, npf_sig_down code)
 {
     if (!is_udp(s))
         return;
     if (!npf_sig_last_rx(s))
         n->udp_silent = 1;
-    else if (strcmp(why, "closed: busy") == 0 && !n->udp_bad) {
+    else if (code == NPF_SIG_DOWN_BUSY && !n->udp_bad) {
         n->udp_bad = 1;
         npf_log("signaling: server %d busy over udp, using ws; udp again in 10 min", cur_id(n));
     }
@@ -1109,7 +1109,7 @@ static void sig_msg(npf_sig *s, const npf_json *j, void *arg)
     n->msg_sig = NULL;
 }
 
-static void sig_down(npf_sig *s, const char *why, void *arg)
+static void sig_down(npf_sig *s, npf_sig_down code, const char *why, void *arg)
 {
     npf_node *n = arg;
     int was_online = n->online && n->sig == s;
@@ -1134,7 +1134,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
     if (n->sig != s)
         return;
     if (!n->online)
-        udp_ended(n, s, why);
+        udp_ended(n, s, code);
     if (n->sig_move && n->move_taken) {
         /* the server closed the WebSocket it replaced by the UDP login,
          * whose welcome is late (lost, sent again): the move, no drop */
@@ -1205,7 +1205,7 @@ static void sig_down(npf_sig *s, const char *why, void *arg)
         snprintf(n->sig_error, sizeof n->sig_error, "server %d: %s", cur_id(n), why ? why : "?");
         n->sig_refused = 0;
     }
-    if (is_udp(s) && strncmp(why, "closed: ", 8) == 0)
+    if (code == NPF_SIG_DOWN_CLOSED || code == NPF_SIG_DOWN_BUSY)
         npf_log("signaling: udp session lost (%s)", why);
     else
         npf_log("signaling: disconnected (%s)", why);

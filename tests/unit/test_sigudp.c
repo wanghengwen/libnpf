@@ -53,23 +53,28 @@ static int cb_send(const void *p, size_t n, const struct sockaddr_in *to, void *
 
 /* ---- the client's callbacks ---- */
 
-static int ready, downs, msgs;
+static int ready, downs, msgs, close_on_msg;
+static npf_sig_down down_code;
 static char down_why[64], last_msg[256];
 
 static void cb_ready(npf_sig *s, void *arg) { (void)s, (void)arg; ready++; }
-static void cb_down(npf_sig *s, const char *why, void *arg)
+static void cb_down(npf_sig *s, npf_sig_down code, const char *why, void *arg)
 {
     npf_sig **h = arg;
     (void)s;
     downs++;
+    down_code = code;
     snprintf(down_why, sizeof down_why, "%s", why);
     if (h)
         *h = NULL;                      /* freed after this */
 }
 static void cb_msg(npf_sig *s, const npf_json *j, void *arg)
 {
-    (void)s, (void)arg;
     msgs++;
+    if (close_on_msg) {                 /* in its own callback: freed when that returns */
+        npf_sig_close(s);
+        *(npf_sig **)arg = NULL;
+    }
     snprintf(last_msg, sizeof last_msg, "%.*s", (int)j->tok[0].end - j->tok[0].start, j->s + j->tok[0].start);
 }
 static const npf_sig_cbs cbs = {cb_ready, cb_msg, cb_down};
@@ -695,7 +700,7 @@ static void t_close(npf_loop *loop)
     EXPECT(downs == 0 && cli);
     pt[0] = 2; memcpy(pt + 3, "shutdown", 8);
     tr_send(&v, pt, 11);
-    EXPECT(downs == 1 && strcmp(down_why, "closed: shutdown") == 0 && !cli);
+    EXPECT(downs == 1 && down_code == NPF_SIG_DOWN_CLOSED && strcmp(down_why, "closed: shutdown") == 0 && !cli);
     pump(&v, 0);
     EXPECT(v.closes == 0);              /* no CLOSE back */
     /* a CLOSE with no reason */
@@ -706,7 +711,21 @@ static void t_close(npf_loop *loop)
     pump(&v, 0);
     pt[0] = 2; npf_le16(pt + 1, 0);
     tr_send(&v, pt, 3);
-    EXPECT(downs == 1 && strcmp(down_why, "closed: ") == 0 && !cli);
+    EXPECT(downs == 1 && down_code == NPF_SIG_DOWN_CLOSED && strcmp(down_why, "closed: ") == 0 && !cli);
+    /* closed in its on_msg with a second message due in the same datagram's
+     * turn: CLOSE "closed", no callback after it */
+    srv_init(&v, 7);
+    REQUIRE_V(open_cli(loop, &v, NULL));
+    pump(&v, 0);
+    npf_sig_send(cli, "{}", 2);
+    pump(&v, 0);
+    close_on_msg = 1;
+    seg_to(&v, 1, (uint16_t)(v.snd_sn + 1), "{\"b\":1}", 7);     /* kept out of order */
+    seg_to(&v, 1, v.snd_sn, "{\"a\":1}", 7);
+    close_on_msg = 0;
+    EXPECT(msgs == 1 && downs == 0 && !cli);
+    pump(&v, 0);
+    EXPECT(v.closes == 1 && strcmp(v.close_reason, "closed") == 0);
     srv_free(&v);
 }
 
@@ -804,7 +823,7 @@ static void t_limits(npf_loop *loop)
         npf_sig_send(cli, "{}", 2);
     EXPECT(npf_sig_send(cli, "{}", 2) < 0 && downs == 0);
     RUN(loop, &v, 0, downs, 500);
-    EXPECT(downs == 1 && strstr(down_why, "queue full"));
+    EXPECT(downs == 1 && down_code == NPF_SIG_DOWN_ERROR && strstr(down_why, "queue full"));
     srv_free(&v);
 }
 
@@ -820,7 +839,7 @@ static void t_no_answer(npf_loop *loop)
     LOOP_UNTIL(loop, nq == 4, 4000);
     CHECK(nq == 4 && npf_mono_ms() - t0 >= 3400, "the fourth at 3.5 s");
     LOOP_UNTIL(loop, downs, 5000);
-    CHECK(downs == 1 && strcmp(down_why, "udp: no answer") == 0 && npf_mono_ms() - t0 >= 7400, "no answer: %s",
+    CHECK(downs == 1 && down_code == NPF_SIG_DOWN_NO_ANSWER && strcmp(down_why, "udp: no answer") == 0 && npf_mono_ms() - t0 >= 7400, "no answer: %s",
           down_why);
     EXPECT(nq == 4);
     {   /* the txid stayed, each hello's length its own */
