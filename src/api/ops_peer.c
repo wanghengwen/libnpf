@@ -243,7 +243,7 @@ static int peer_get_run(npf_t *n, void *arg)
     i.state = npf_peer_state(p, &i.needs, &i.retry_in_ms);
     why = npf_peer_last_why(p);
     if (i.state != NPF_PEER_CONNECTED) {
-        if (*why && strcmp(why, "starting") != 0)
+        if (*why)
             i.end_reason = end_code(why);
         snprintf(i.why, sizeof i.why, "%s", why);
     }

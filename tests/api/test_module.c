@@ -109,7 +109,7 @@ int main(void)
     static npf_module others[NPF_MOD_LIMIT];
     static char names[NPF_MOD_LIMIT][16];
     npf_t *n, *before;
-    int rc, i, ok;
+    int rc, i, ok, restart = -1;
     alarm(30);
     if (!mkdtemp(dir) || !mkdtemp(dir2))
         return 2;
@@ -132,14 +132,16 @@ int main(void)
     s = npf_status_json(n);
     check(s && strstr(s, "\"acme\":{\"calls\":1}") != NULL, "the module's key in the status");
     npf_free(s);
-    check(npf_config_set(n, "acme_mode", "maybe", 0, err, sizeof err) < 0 && strstr(err, "on or off"),
+    check(npf_config_set(n, "acme_mode", "maybe", 0, NULL, err, sizeof err) < 0 && strstr(err, "on or off"),
           "its key checked by its table");
-    rc = npf_config_set(n, "acme_mode", "on", 0, err, sizeof err);
-    check(rc >= 0 && npf_config_get(n, "acme_mode", val, sizeof val) == NPF_OK, "the module's key is known");
-    check(!acme_set[0] && npf_config_set(n, "peer_idle", "7", 0, err, sizeof err) >= 0 && strcmp(acme_set, "peer_idle=7") == 0,
-          "a live key set: the module hears it (conf_set), not its own key (not live)");
-    check(npf_config_set(n, "acme_live", "b", 0, err, sizeof err) == 0 && strcmp(acme_set, "acme_live=b") == 0
-          && npf_config_set(n, "acme_file", "x", 0, err, sizeof err) == NPF_EINVAL && strstr(err, "only in npf.conf"),
+    rc = npf_config_set(n, "acme_mode", "on", 0, &restart, err, sizeof err);
+    check(rc == NPF_OK && restart == 1 && npf_config_get(n, "acme_mode", val, sizeof val) == NPF_OK,
+          "the module's key is known, a start-up one: NPF_OK, restart 1");
+    check(!acme_set[0] && npf_config_set(n, "peer_idle", "7", 0, &restart, err, sizeof err) == NPF_OK && !restart
+          && strcmp(acme_set, "peer_idle=7") == 0,
+          "a live key set (restart 0): the module hears it (conf_set), not its own key (not live)");
+    check(npf_config_set(n, "acme_live", "b", 0, NULL, err, sizeof err) == 0 && strcmp(acme_set, "acme_live=b") == 0
+          && npf_config_set(n, "acme_file", "x", 0, NULL, err, sizeof err) == NPF_EINVAL && strstr(err, "only in npf.conf"),
           "its live key in effect at once, its file key refused");
     s = npf_config_json(n);
     check(s && strstr(s, "\"acme_live\":\"b\"") && !strstr(s, "acme_mode"), "its live key listed");

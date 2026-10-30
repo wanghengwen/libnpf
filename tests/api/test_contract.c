@@ -1,6 +1,7 @@
 /* The public API's contracts, on npf.h alone: the initialisers write only
  * the caller's size; a change in effect that cannot be saved says so
- * (NPF_ESAVE, exit code 3) and is written with the next change saved. */
+ * (NPF_ESAVE, exit code 3) and is written with the next change saved; a
+ * shared runtime's callback never waits for another thread. */
 #define _DEFAULT_SOURCE                     /* mkdtemp */
 #include <stddef.h>
 #include <stdlib.h>
@@ -57,7 +58,7 @@ static void unsaved(void)
     if (access(dir, W_OK) == 0) {
         printf("SKIP unsaved changes: the directory stays writable (root?)\n");
     } else {
-        rc = npf_config_set(n, "peer_idle", "30", 1, err, sizeof err);
+        rc = npf_config_set(n, "peer_idle", "30", 1, NULL, err, sizeof err);
         check(rc == NPF_ESAVE && strstr(err, "in effect now") && strstr(err, "cannot write"),
               "set: in effect, not written: NPF_ESAVE with the reason");
         check(npf_config_get(n, "peer_idle", val, sizeof val) == NPF_OK && strcmp(val, "30") == 0,
@@ -84,7 +85,7 @@ static void unsaved(void)
         file_text(dir, "local.json", js, sizeof js);
         check(!strstr(js, "ssh") && !strstr(js, "peer_idle") && !strstr(js, "punch_sockets"),
               "nothing of them in local.json yet");
-        check(npf_config_set(n, "max_calls", "20", 1, err, sizeof err) == NPF_OK, "a later change saved");
+        check(npf_config_set(n, "max_calls", "20", 1, NULL, err, sizeof err) == NPF_OK, "a later change saved");
         file_text(dir, "local.json", js, sizeof js);
         check(strstr(js, "max_calls") && strstr(js, "peer_idle") && strstr(js, "punch_sockets") && strstr(js, "ssh"),
               "the later save writes them too");
@@ -120,12 +121,12 @@ static void file_only(void)
     check(npf_config_get(n, "state", val, sizeof val) == NPF_OK && !strstr(val, "planted"), "local.json: state ignored");
     check(npf_config_get(n, "max_calls", val, sizeof val) == NPF_OK && strcmp(val, "32") == 0,
           "local.json: a value out of the key's range taken");
-    check(npf_config_set(n, "max_calls", "4097", 0, err, sizeof err) == NPF_EINVAL && strstr(err, "0 to 4096"),
+    check(npf_config_set(n, "max_calls", "4097", 0, NULL, err, sizeof err) == NPF_EINVAL && strstr(err, "0 to 4096"),
           "set max_calls 4097: taken");
-    check(npf_config_set(n, "root", "BBBB", 1, err, sizeof err) != NPF_OK && strstr(err, "npf.conf"),
+    check(npf_config_set(n, "root", "BBBB", 1, NULL, err, sizeof err) != NPF_OK && strstr(err, "npf.conf"),
           "set root: refused, only in npf.conf");
-    check(npf_config_set(n, "serverlist_saved", "/tmp/x", 0, err, sizeof err) != NPF_OK, "set serverlist_saved: refused");
-    check(npf_config_set(n, "direct_psk", "x", 0, err, sizeof err) != NPF_OK, "set direct_psk: refused");
+    check(npf_config_set(n, "serverlist_saved", "/tmp/x", 0, NULL, err, sizeof err) != NPF_OK, "set serverlist_saved: refused");
+    check(npf_config_set(n, "direct_psk", "x", 0, NULL, err, sizeof err) != NPF_OK, "set direct_psk: refused");
     npf_destroy(n);
     snprintf(path, sizeof path, "%s/planted.log", dir);
     check(access(path, F_OK) != 0, "the planted log path not written");
@@ -202,6 +203,53 @@ static void not_initialised(void)
     rm_dir(dir);
 }
 
+/* a shared runtime's callback never waits for another thread: a call for
+ * an instance there, and npf_destroy, are refused (else two such calls at
+ * once, each for the other's thread, would hang both) */
+static npf_t *rt_n[3];
+static int rt_rc[3];
+
+static void on_runtime(void *user, int code, const char *text)
+{
+    char v[32];
+    (void)user, (void)code, (void)text;
+    rt_rc[0] = npf_config_get(rt_n[1], "max_calls", v, sizeof v);     /* B: on the other thread */
+    rt_rc[1] = npf_config_get(rt_n[2], "max_calls", v, sizeof v);     /* C: on this one */
+    rt_rc[2] = npf_config_get(rt_n[0], "max_calls", v, sizeof v);     /* A itself */
+    npf_destroy(rt_n[1]);
+}
+
+static void runtime_guard(void)
+{
+    char dirs[3][32], err[300], v[32];
+    const char *set[] = {"set", "max_calls", "30", "--no-save"};
+    npf_runtime *rt = npf_runtime_new(2);
+    npf_options o;
+    int i, ok = rt != NULL;
+    for (i = 0; i < 3; i++) {               /* A and C on the first thread, B on the second */
+        snprintf(dirs[i], sizeof dirs[i], "/tmp/npf-contract-XXXXXX");
+        npf_options_init(&o);
+        o.conf_dir = mkdtemp(dirs[i]);
+        o.role = NPF_ROLE_DIRECT;
+        o.overrides = "udp_port = 0\n";
+        o.runtime = rt;
+        rt_n[i] = NULL;
+        ok = ok && o.conf_dir && npf_create(&o, &rt_n[i], err, sizeof err) == NPF_OK && npf_start(rt_n[i]) == NPF_OK;
+    }
+    check(ok, "three instances on a runtime of two threads");
+    if (ok) {
+        check(npf_command(rt_n[0], 4, set, on_runtime, NULL) == NPF_OK && rt_rc[0] == NPF_ESTATE,
+              "from a runtime's callback, a call for an instance on another thread: NPF_ESTATE, no wait");
+        check(rt_rc[1] == NPF_OK && rt_rc[2] == NPF_OK, "for one on the same thread, and its own: done");
+        check(npf_config_get(rt_n[1], "max_calls", v, sizeof v) == NPF_OK, "npf_destroy from there: refused");
+    }
+    for (i = 0; i < 3; i++) {
+        npf_destroy(rt_n[i]);
+        rm_dir(dirs[i]);
+    }
+    check(npf_runtime_free(rt) == NPF_OK, "the runtime freed");
+}
+
 int main(void)
 {
     alarm(30);
@@ -210,5 +258,6 @@ int main(void)
     unsaved();
     file_only();
     node_json();
+    runtime_guard();
     return fails != 0;
 }

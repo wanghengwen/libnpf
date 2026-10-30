@@ -222,7 +222,8 @@ static int state_save(npf_callee *d)
     }
     npf_out_jend(&w);
     npf_out_jend(&w);
-    if (w.failed || npf_file_write(d->state_path, w.p, w.len, 0600) < 0) {
+    d->unsaved = w.failed || npf_file_write(d->state_path, w.p, w.len, 0600) < 0;
+    if (d->unsaved) {
         npf_loge("state: cannot write %s: %s", d->state_path, strerror(errno));
         npf_out_free(&w);
         return -1;

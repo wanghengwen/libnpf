@@ -85,13 +85,14 @@ int  npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst);     /* N
 /* 1 when the address is in one of the n rules, whatever their ports (an allow_from list). */
 int  npf_policy_rules_match(const npf_policy_rule *r, int n, const struct sockaddr *a);
 
-/* The control interface of this process (the web console and its API)
- * listens on a: no sublink connects to that port on this host (a loopback
- * address, a's address, or any local one when a is the any address),
- * whatever the resources, a -R or a public mapping allow; such a CONNECT
- * fails with a warning in the log. Process-wide, up to 4 addresses; call it
- * before any instance runs (no lock). */
-void npf_guard_control(const struct sockaddr_storage *a);
+/* on 1: the control interface of this process (the web console and its
+ * API) listens on a: no sublink connects to that port on this host (a
+ * loopback address, a's address, or any local one when a is the any
+ * address), whatever the resources, a -R or a public mapping allow; such a
+ * CONNECT fails with a warning in the log. on 0: a no longer. Process-wide,
+ * from any thread at any time (the next CONNECT sees it). 0, or -1 when 4
+ * addresses are guarded already. */
+int  npf_guard_control(const struct sockaddr_storage *a, int on);
 int  npf_guard_blocked(const struct sockaddr *dst);     /* 1: dst is a guarded control interface */
 
 typedef struct npf_tunnel npf_tunnel;

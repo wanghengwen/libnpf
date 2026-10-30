@@ -3,6 +3,7 @@
 #include "npf/sys.h"
 #include <string.h>
 
+#include "npf/lock.h"
 #include "npf/platform.h"
 #include "npf/text.h"
 #include "npf/tunnel.h"
@@ -320,10 +321,12 @@ int npf_policy_allowed(npf_policy *p, const struct sockaddr *dst)
 
 /* the addresses the control interfaces of this process listen on (the web
  * console and its API: a forward to it would hand those connecting this
- * node's console, and through it every resource of it) */
+ * node's console, and through it every resource of it); set by the
+ * program's thread, read by every loop's */
 #define GUARDS 4
 static struct sockaddr_storage g_guard[GUARDS];
 static int g_nguard;
+static npf_mutex g_guard_mu = NPF_MUTEX_INIT;
 
 static int is_any(int fam, const uint8_t *a)
 {
@@ -335,25 +338,36 @@ static int is_loopback(int fam, const uint8_t *a)
     return fam == AF_INET ? a[0] == 127 || a[0] == 0 : memcmp(a, lo6, 16) == 0 || is_any(fam, a);
 }
 
-void npf_guard_control(const struct sockaddr_storage *a)
+int npf_guard_control(const struct sockaddr_storage *a, int on)
 {
-    int i;
-    for (i = 0; i < g_nguard; i++)
-        if (memcmp(&g_guard[i], a, sizeof *a) == 0)
-            return;
-    if (g_nguard < GUARDS)
+    int i, rc = 0;
+    npf_mutex_lock(&g_guard_mu);
+    for (i = 0; i < g_nguard && memcmp(&g_guard[i], a, sizeof *a) != 0; i++)
+        ;
+    if (!on && i < g_nguard)
+        g_guard[i] = g_guard[--g_nguard];
+    else if (on && i == g_nguard && g_nguard < GUARDS)
         g_guard[g_nguard++] = *a;
+    else if (on && i == g_nguard)
+        rc = -1;
+    npf_mutex_unlock(&g_guard_mu);
+    return rc;
 }
 
 int npf_guard_blocked(const struct sockaddr *dst)
 {
+    struct sockaddr_storage gs[GUARDS];
     uint8_t d[16], g[16];
-    int df, gf, i;
+    int df, gf, i, ng;
     uint16_t dp, gp;
-    if (!g_nguard || sa_parts(dst, 0, d, &df, &dp) < 0)
+    npf_mutex_lock(&g_guard_mu);            /* a copy: npf_if_has is slow */
+    ng = g_nguard;
+    memcpy(gs, g_guard, sizeof gs);
+    npf_mutex_unlock(&g_guard_mu);
+    if (!ng || sa_parts(dst, 0, d, &df, &dp) < 0)
         return 0;
-    for (i = 0; i < g_nguard; i++) {
-        if (sa_parts((const struct sockaddr *)&g_guard[i], 0, g, &gf, &gp) < 0 || gp != dp)
+    for (i = 0; i < ng; i++) {
+        if (sa_parts((const struct sockaddr *)&gs[i], 0, g, &gf, &gp) < 0 || gp != dp)
             continue;
         /* its port on this host: a loopback address (any of 127/8, the port
          * may be served there too), its own address, or any local one when

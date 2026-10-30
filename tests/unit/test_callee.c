@@ -5,6 +5,7 @@
  * - a reload of a file that does not parse keeps the state in force;
  * - at the start, a file that does not parse: its copy (.bak); both: safe
  *   mode (no default authorization), left by a repair or passwd NEW --clear;
+ * - a failed write: in force and unsaved until a later save writes it;
  * - an identity seed file that is there but unreadable is not replaced;
  * - a tmp file left in the way (a symlink) is not written through. */
 #define _GNU_SOURCE
@@ -121,6 +122,17 @@ int test_callee(void)
         CHECK(!first.damaged && strcmp(first.password, "repaired-pw1") == 0, "a repaired file ends safe mode (%s)",
               first.password);
     }
+
+    /* a write that fails: in force, unsaved until a later save (npf_save) */
+    chmod(dir, 0500);
+    if (access(dir, W_OK) != 0) {
+        CHECK(npf_callee_password_set(&d, "unsaved-pw-1") == -2 && d.unsaved && !strcmp(d.password, "unsaved-pw-1"),
+              "the state cannot be written: in force, unsaved");
+        chmod(dir, 0700);
+        CHECK(npf_callee_save(&d) == 0 && !d.unsaved && file_pw(path, pw, sizeof pw) == 0
+              && strcmp(pw, "unsaved-pw-1") == 0, "a later save writes it (%s)", pw);
+    }
+    chmod(dir, 0700);
 
     /* the identity seed: unreadable now, not replaced */
     snprintf(seedp, sizeof seedp, "%s/identity", dir);

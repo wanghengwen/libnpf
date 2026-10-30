@@ -51,6 +51,7 @@ typedef struct npf_callee {
     int        state_loaded;            /* read once: a later file that does not parse is not taken */
     int        damaged;                 /* safe mode: the file and its copy were unusable at the start;
                                            every call and pairing is refused and nothing is saved */
+    int        unsaved;                 /* 1 after a failed write, until one succeeds (npf_save retries) */
     npf_policy policy;
     npf_callee_ops ops;
     npf_node  *node;
@@ -67,7 +68,7 @@ typedef struct npf_callee {
 int  npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, const uint8_t seed[32],
                      const char *default_pw);
 /* Writes the state file (0600), then its copy: 0, -1 the file not written
- * (always in safe mode). */
+ * (unsaved set; always in safe mode, without unsaved). */
 int  npf_callee_save(npf_callee *d);
 /* Makes d n's callee (ops, certificate) and starts watching the state file. */
 void npf_callee_attach(npf_callee *d, npf_node *n);

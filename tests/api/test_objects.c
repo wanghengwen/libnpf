@@ -606,7 +606,7 @@ int main(void)
     check(c != NULL, "an instance with NPF_OPT_NO_SAVED_SETTINGS");
     if (c) {
         const char *set1[] = {"set", "log_level", "debug"}, *set2[] = {"set", "log_level", "debug", "--no-save"};
-        check(npf_config_set(c, "log_level", "debug", 1, err, sizeof err) == NPF_EUNAVAIL && cmd(c, 3, set1) == 1
+        check(npf_config_set(c, "log_level", "debug", 1, NULL, err, sizeof err) == NPF_EUNAVAIL && cmd(c, 3, set1) == 1
               && strstr(cmd_text, "not saved here") && cmd(c, 4, set2) == 0 && !file_has(dc, "debug"),
               "set with saving: refused (npf_config_set and the command), --no-save in effect");
         npf_destroy(c);
