@@ -36,9 +36,7 @@ static const why_end_row k_end[] = {
 static const why_end_row *end_find(const char *why)
 {
     size_t i;
-    if (!why)
-        why = "";
-    if (!*why)
+    if (!why || !*why)
         why = "closed";
     for (i = 0; i < sizeof k_end / sizeof k_end[0]; i++)
         if (strcmp(k_end[i].why, why) == 0)
@@ -139,10 +137,10 @@ static const why_text_row k_enroll_err[] = {
 const char *npf_why_enroll_text(const char *err, const char *reason)
 {
     const char *t = text_find(k_enroll_reason, sizeof k_enroll_reason / sizeof k_enroll_reason[0],
-                              reason ? reason : "");
+                              reason);
     if (t)
         return t;
-    t = text_find(k_enroll_err, sizeof k_enroll_err / sizeof k_enroll_err[0], err ? err : "");
+    t = text_find(k_enroll_err, sizeof k_enroll_err / sizeof k_enroll_err[0], err);
     return t ? t : "no reason given";
 }
 

@@ -150,7 +150,6 @@ void node_udp_close_idle(npf_node *n)
         return;                             /* sessions wait for its profile: they need it */
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
-    n->udp_waiters = 0;
     node_udp_close(n);
     npf_log("udp: closed until a session needs it");
 }

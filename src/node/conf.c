@@ -164,12 +164,9 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val)
 {
     size_t vl = strlen(val);
     char *v, **o;
-    int i;
-    for (i = 0; i < c->n && !npf_key_is(key, NPF_K_MULTI); i++)
-        if (strcmp(c->key[i], key) == 0)
-            break;
-    if (npf_key_is(key, NPF_K_MULTI))
-        i = c->n;
+    int i = npf_key_is(key, NPF_K_MULTI) ? c->n : 0;    /* a key that repeats: added */
+    while (i < c->n && strcmp(c->key[i], key) != 0)
+        i++;
     if (vl >= NPF_CONF_VAL_MAX) {
         if (!c->bad[0])
             snprintf(c->bad, sizeof c->bad, "%s", key);
@@ -330,11 +327,8 @@ const char *npf_conf_get_n(const npf_conf *c, const char *key, int n)
 
 const char *npf_conf_get(const npf_conf *c, const char *key, const char *def)
 {
-    int i;
-    for (i = 0; i < c->n; i++)
-        if (strcmp(c->key[i], key) == 0)
-            return c->val[i];
-    return def;
+    const char *v = npf_conf_get_n(c, key, 0);
+    return v ? v : def;
 }
 
 long npf_file_read(const char *path, char **out)
