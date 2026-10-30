@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "npf/natprobe.h"
+#include "npf/resources.h"
 #include "api_internal.h"
 
 /* the other side of a session: the callee's (or a calling node's) number,
@@ -319,7 +320,7 @@ void npf_status_out(npf_t *c, npf_out *o)
     npf_out_jkey(o, "lan_addrs");               /* where the LAN reaches a forward open to it */
     lan_addrs_out(o);
     npf_out_jkey(o, "resources");               /* what this node publishes (resources.h) */
-    npf_pub_json(c, o);
+    npf_res_json(o, c->res, c->nres);
     npf_mods_status_json(c, o);                 /* the modules' keys (npf/module.h) */
     npf_out_jkey(o, "peers");
     peers_out(c, o);

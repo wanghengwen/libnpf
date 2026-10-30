@@ -149,11 +149,6 @@ static void pub_push(npf_t *n)
     }
 }
 
-void npf_pub_json(npf_t *n, npf_out *o)
-{
-    npf_res_json(o, n->res, n->nres);
-}
-
 /* the ones of local.json (not npf.conf's) saved */
 static int pub_save(npf_t *n)
 {
@@ -301,8 +296,7 @@ void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d)
         npf_out_free(&o);
         return;
     }
-    for (p = npf_peers_first(n->peers); p && npf_peer_call(p) != c; p = npf_peer_next(p))
-        ;
+    p = npf_peer_of_call(n, c);
     if (p && npf_peer_resources_same(p, o.p)) {
         npf_out_free(&o);                   /* the same list again: no log, no event */
         return;

@@ -14,10 +14,10 @@
 
 #include "api_internal.h"
 
-/* a key set; *failed: the first that could not be (too long, no memory) */
+/* a key set (v NULL: left alone); *failed: the first that could not be (too long, no memory) */
 static void set(npf_conf *c, const char *k, const char *v, const char **failed)
 {
-    if (npf_conf_set(c, k, v) < 0 && !*failed)
+    if (v && npf_conf_set(c, k, v) < 0 && !*failed)
         *failed = k;
 }
 
@@ -29,9 +29,12 @@ static void set_b64(npf_conf *c, const char *k, const uint8_t key[32], const cha
     npf_wipe(b, sizeof b);              /* direct_psk */
 }
 
-static void set_int(npf_conf *c, const char *k, int v, const char **failed)
+/* v == skip: left alone */
+static void set_int(npf_conf *c, const char *k, int v, int skip, const char **failed)
 {
     char b[24];
+    if (v == skip)
+        return;
     snprintf(b, sizeof b, "%d", v);
     set(c, k, b, failed);
 }
@@ -79,7 +82,7 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
                 return -1;
             }
             set(c, "serverlist", path, &failed);
-        } else if (s.serverlist_file) {
+        } else {
             set(c, "serverlist", s.serverlist_file, &failed);
         }
         if (s.serverlist_saved)
@@ -90,8 +93,7 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
             set(c, "server", s.server_url, &failed);
             set_b64(c, "server_pub", s.server_pub, &failed);
         }
-        if (s.doh_servers)
-            set(c, "doh_servers", s.doh_servers, &failed);
+        set(c, "doh_servers", s.doh_servers, &failed);
     }
     /* the identity */
     if (s.cred && s.model_cred)
@@ -104,46 +106,33 @@ int npf_setup_conf(const npf_setup *us, int role, const char *data_dir, npf_conf
     }
     if (s.model_cred) {
         set(c, "model_cred", s.model_cred, &failed);
-        if (s.serial)
-            set(c, "serial", s.serial, &failed);
-        if (s.hw_info)
-            set(c, "hw_info", s.hw_info, &failed);
+        set(c, "serial", s.serial, &failed);
+        set(c, "hw_info", s.hw_info, &failed);
     }
-    if (s.model)
-        set(c, "model", s.model, &failed);
+    set(c, "model", s.model, &failed);
     /* direct connections */
     if (s.direct_port) {
         char d[300];
         if (!s.direct_psk)
             return bad(err, errcap, "direct_port needs direct_psk");
-        if (s.direct_host && strchr(s.direct_host, ':'))
-            snprintf(d, sizeof d, "[%s]:%u", s.direct_host, (unsigned)s.direct_port);
-        else if (s.direct_host)
-            snprintf(d, sizeof d, "%s:%u", s.direct_host, (unsigned)s.direct_port);
+        if (s.direct_host)
+            snprintf(d, sizeof d, strchr(s.direct_host, ':') ? "[%s]:%u" : "%s:%u", s.direct_host,
+                     (unsigned)s.direct_port);
         else
             snprintf(d, sizeof d, "%u", (unsigned)s.direct_port);
         set(c, "direct", d, &failed);
         set_b64(c, "direct_psk", s.direct_psk, &failed);
     }                                   /* none: a direct instance that only calls (its peers have their keys) */
     /* the network (its ranges: the keys', checked below) */
-    if (s.udp_port)
-        set_int(c, "udp_port", s.udp_port, &failed);
-    if (s.no_portmap)
-        set(c, "portmap", "0", &failed);
-    if (s.relays_only)
-        set(c, "connect_mode", "secure", &failed);
-    if (s.max_calls)
-        set_int(c, "max_calls", s.max_calls, &failed);
-    if (s.punch_lead_ms != -1)          /* -1: automatic, the key's default */
-        set_int(c, "punch_lead_ms", s.punch_lead_ms, &failed);
-    if (s.punch_sockets)
-        set_int(c, "punch_sockets", s.punch_sockets, &failed);
-    if (s.no_host_report)
-        set(c, "report_host", "0", &failed);
-    if (s.no_hosted_trust)
-        set(c, "hosted_trust", "0", &failed);
-    if (s.peer_idle_s)
-        set_int(c, "peer_idle", s.peer_idle_s, &failed);
+    set_int(c, "udp_port", s.udp_port, 0, &failed);
+    set(c, "portmap", s.no_portmap ? "0" : NULL, &failed);
+    set(c, "connect_mode", s.relays_only ? "secure" : NULL, &failed);
+    set_int(c, "max_calls", s.max_calls, 0, &failed);
+    set_int(c, "punch_lead_ms", s.punch_lead_ms, -1, &failed);  /* -1: automatic, the key's default */
+    set_int(c, "punch_sockets", s.punch_sockets, 0, &failed);
+    set(c, "report_host", s.no_host_report ? "0" : NULL, &failed);
+    set(c, "hosted_trust", s.no_hosted_trust ? "0" : NULL, &failed);
+    set_int(c, "peer_idle", s.peer_idle_s, 0, &failed);
     if (failed) {
         snprintf(err, errcap, "npf_setup: %s: too long, or no memory", failed);
         return -1;

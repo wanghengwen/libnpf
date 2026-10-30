@@ -135,7 +135,6 @@ int  npf_pub_load(npf_t *n, char *err, size_t errcap);
 int  npf_pub_apply(npf_t *n);
 void npf_pub_free(npf_t *n);
 void npf_pub_send(npf_t *n, npf_call *c);
-void npf_pub_json(npf_t *n, npf_out *o);
 void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d);
 /* the resources of a JSON text (an array): their number, *r (malloc'd,
  * NPF_RES_MAX of them, for the caller to free); NPF_ENOMEM or NPF_EFAIL with
