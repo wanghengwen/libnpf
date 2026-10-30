@@ -18,7 +18,7 @@
 #include "npf/loop.h"
 #include "npf/node.h"
 
-#include "msgs.h"
+#include "../node/msgs.h"
 
 /* ---- state file ---- */
 

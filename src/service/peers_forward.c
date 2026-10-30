@@ -8,7 +8,7 @@
 #include "npf.h"
 #include "npf/platform.h"
 #include "npf/why.h"
-#include "udpfwd.h"
+#include "../stream/udpfwd.h"
 
 #include "peers_internal.h"
 

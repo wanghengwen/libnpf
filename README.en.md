@@ -97,7 +97,11 @@ src/platform/          system layer, event loop, logging, asynchronous resolver,
 src/crypto/            Noise, CPace, certificates, SIV
 src/proto/ src/ws/     JSON, DNS, HTTP, signaling, WS relay; WebSocket, TLS
 src/ice/ src/punch/    NAT detection, candidates, PCP / NAT-PMP, hole punching
-src/node/ src/tunnel/  the node, sessions, AnLiu, relays, the tunnel, UDP forwards, media, peers, resources
+src/node/              the node: identity, signaling, servers, the NAT, port mapping, relay binds, the spare allocation
+src/call/              sessions: the handshake, punching, the paths, AnLiu, reverse mappings
+src/stream/            a session's AnLiu streams: media, UDP forwards
+src/service/           on top of the node: config, local state, resources, callee policy, peers (-L / -D / -R)
+src/tunnel/            the tunnel and its target policy
 third_party/           AnLiu, Monocypher, mbedTLS
 examples/              device.c, client.c: a device and a client on npf.h alone
 tests/                 unit tests, API tests, fuzzing

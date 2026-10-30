@@ -12,7 +12,7 @@
 #include "npf/loop.h"
 #include "npf/siv.h"
 #include "npf/wsrelay.h"
-#include "relay_bind.h"
+#include "../node/relay_bind.h"
 
 enum { PK_DIRECT, PK_UDP_RELAY, PK_WS_RELAY, PK_N };     /* kinds, by rank: direct > UDP relay > WS relay */
 /* health: NEW not proven yet (a UDP relay binding, a WS relay not paired),

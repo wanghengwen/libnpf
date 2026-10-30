@@ -838,7 +838,7 @@ mbedTLS 3.6 不支持 Ed25519，也没有 Elligator2，因此应用层密码学�
 | `third_party/monocypher/` | Monocypher 源码 |
 | `third_party/mbedtls/`、`mbedtls-config/` | mbedTLS 3.6 源码与 NPF 的精简配置 |
 | `src/crypto/` | `crypto.c`（KDF、AEAD、身份派生、Base64url）、`cert.c`（证书、服务器列表验签、grant、绑定声明）、`noise.c`（XK / IK / XXpsk3 / NNpsk0，设备 ↔ 服务器与 E2E 共用）、`cpace.c`、`siv.c` |
-| `src/node/` | `node.c`（服务器列表的选择与保存、登录、重连）、`setup.c`（身份种子文件 `identity`）、`callee.c`（默认口令与当前口令、授权列表、所有者、撤销，`state.json`）、`call.c`（E2E 握手、grant 校验、直连） |
+| `src/node/`、`src/service/`、`src/call/` | `node/node.c`（服务器列表的选择与保存、登录、重连）、`service/setup.c`（身份种子文件 `identity`）、`service/callee.c`（默认口令与当前口令、授权列表、所有者、撤销，`state.json`）、`call/call.c`（E2E 握手、grant 校验、直连） |
 | `src/ws/`、`src/node/sources.c` | WSS 客户端（7.1、7.2）；服务器列表的 DoH 与 HTTPS 外部渠道（7.5） |
 | `src/proto/sigudp.c`、`src/node/node_signal.c`、`src/node/sigconn.c` | UDP 承载（7.6）：握手、cookie、传输、防重放、可靠层；UDP 与 WSS 的选择 |
 

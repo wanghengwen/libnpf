@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "call_internal.h"
+#include "../call/call_internal.h"
 #include "home.h"
 #include "msgs.h"
 #include "node_internal.h"

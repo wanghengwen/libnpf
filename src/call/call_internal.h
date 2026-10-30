@@ -19,10 +19,10 @@
 #include "npf/siv.h"
 #include "npf/tunnel.h"
 #include "npf/wsrelay.h"
-#include "media.h"
-#include "udpfwd.h"
-#include "node_internal.h"
-#include "relay_bind.h"
+#include "../stream/media.h"
+#include "../stream/udpfwd.h"
+#include "../node/node_internal.h"
+#include "../node/relay_bind.h"
 #include "path.h"
 
 /* short names for npf_node.h's NPF_AUTH_* */

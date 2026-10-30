@@ -31,7 +31,7 @@ typedef struct npf_sess {
 typedef struct npf_med {
     uint32_t  id, session;
     npf_call *call;
-    uint32_t  lid;                  /* its number in the session (node/media.h) */
+    uint32_t  lid;                  /* its number in the session (stream/media.h) */
 } npf_med;
 
 /* the status object (npf_status_json) */

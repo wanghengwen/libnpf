@@ -8,7 +8,7 @@
 #include <string.h>
 
 #include "call_internal.h"
-#include "home.h"
+#include "../node/home.h"
 
 int call_relay_blocked(const npf_node *n, const char *what)
 {

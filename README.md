@@ -97,7 +97,11 @@ src/platform/          系统层、事件循环、日志、异步解析、VPN �
 src/crypto/            Noise、CPace、证书、SIV
 src/proto/ src/ws/     JSON、DNS、HTTP、信令、WS 中转；WebSocket、TLS
 src/ice/ src/punch/    NAT 探测、候选地址、PCP / NAT-PMP、打洞
-src/node/ src/tunnel/  节点、会话、AnLiu、中转、隧道、UDP 转发、媒体、对端、资源
+src/node/              节点：身份、信令、服务器列表、NAT、端口映射、中转的绑定与备用分配
+src/call/              会话：握手、打洞、路径、AnLiu、反向映射
+src/stream/            会话里的 AnLiu 流：媒体、UDP 转发
+src/service/           节点之上：配置、本地状态、资源、被叫策略、对端（-L / -D / -R）
+src/tunnel/            隧道及其目标策略
 third_party/           AnLiu、Monocypher、mbedTLS
 examples/              device.c、client.c：只用 npf.h 的设备与客户端
 tests/                 单元测试、API 测试、模糊测试

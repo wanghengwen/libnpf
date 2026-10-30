@@ -4,7 +4,7 @@
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
-#include "../../src/node/udpfwd.c"
+#include "../../src/stream/udpfwd.c"
 #include "test.h"
 
 static int g_units;                 /* CLOSEs sent: none, no flow gives way */

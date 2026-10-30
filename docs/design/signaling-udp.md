@@ -416,8 +416,8 @@ natlab 里主机的 TCP 不经 NAT，UDP 经过：有了 UDP 信令，现有用�
 | `src/proto/sigudp.c`（新） | 握手、cookie、传输、防重放、可靠层 |
 | `src/node/node_signal.c` | 槽 1 的 UDP、1 秒后的 WS、`udp_bad`、10 分钟的换回、不是当前连接的 `replaced`、3 秒的醒来 ping |
 | `include/npf/node.h`、`src/node/node_internal.h`、`msgs.h`、`msgs.c`、`node_servers.c` | 服务器列表的 `udp`、状态字段 |
-| `src/node/call.c` | `node_udp_input` 先比较信令服务器的地址 |
-| `src/node/node_network.c`、`src/node/conf.c`、`src/api/status.c` | 网络变化通知；`sig_udp = auto \| off`；`server_via`、`server_rtt_ms`、`udp_sig` |
+| `src/call/call.c` | `node_udp_input` 先比较信令服务器的地址 |
+| `src/node/node_network.c`、`src/service/conf.c`、`src/api/status.c` | 网络变化通知；`sig_udp = auto \| off`；`server_via`、`server_rtt_ms`、`udp_sig` |
 | `tests/unit/test_sigudp.c`、`tests/fuzz/fuzz_sigudp.c`、CMake（`NPF_SIG_UDP`） | 11.2、11.3 |
 | `docs/protocol/signaling.md`、`docs/design/security.md`、`architecture.md` | 线上格式与安全分析移入（实现之后） |
 

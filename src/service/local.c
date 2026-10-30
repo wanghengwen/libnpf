@@ -12,7 +12,7 @@
 #include "npf/platform.h"
 #include "npf/text.h"
 
-#include "msgs.h"
+#include "../node/msgs.h"
 
 int npf_name_valid(const char *s)
 {

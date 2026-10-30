@@ -34,6 +34,9 @@ else()
   set(NPF_LIB_TOP OFF)
 endif()
 set(NPF_LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+# the internal headers' directories, for the tests that reach into them
+set(NPF_LIB_INTERNAL_DIRS ${NPF_LIB_DIR}/src/node ${NPF_LIB_DIR}/src/call ${NPF_LIB_DIR}/src/stream
+    ${NPF_LIB_DIR}/src/service)
 
 # AnLiu: the vendored copy in third_party/anliu (see UPSTREAM.md there for the
 # upstream commit); NPF_ANLIU_DIR points elsewhere only for experiments.
@@ -136,10 +139,7 @@ add_library(npf_common STATIC
   src/ice/candidates.c
   src/punch/punch_ev.c
 
-  # sessions: the node, calls, the tunnel and its policy, UDP forwards, media, local state
-  src/node/conf.c
-  src/node/local.c
-  src/node/resources.c
+  # the node (src/node): identity, signaling, servers, the NAT, port mapping, the spare relay allocation
   src/node/node.c
   src/node/node_servers.c
   src/node/node_signal.c
@@ -151,21 +151,28 @@ add_library(npf_common STATIC
   src/node/relay_bind.c
   src/node/relay_data.c
   src/node/sources.c
-  src/node/setup.c
   src/node/why.c
-  src/node/callee.c
-  src/node/call.c
-  src/node/call_handshake.c
-  src/node/call_transport.c
-  src/node/path_mgr.c
-  src/node/path_direct.c
-  src/node/path_udp.c
-  src/node/path_ws.c
-  src/node/call_reverse.c
-  src/node/call_direct.c
-  src/node/call_punch.c
-  src/node/media.c
-  src/node/udpfwd.c
+  # calls (src/call): the handshake, punching, the paths, AnLiu, reverse mappings
+  src/call/call.c
+  src/call/call_handshake.c
+  src/call/call_transport.c
+  src/call/path_mgr.c
+  src/call/path_direct.c
+  src/call/path_udp.c
+  src/call/path_ws.c
+  src/call/call_reverse.c
+  src/call/call_direct.c
+  src/call/call_punch.c
+  # AnLiu streams of a call (src/stream): media, UDP forwards
+  src/stream/media.c
+  src/stream/udpfwd.c
+  # what the node offers on top (src/service; peers below): config, local state, resources, callee policy
+  src/service/conf.c
+  src/service/local.c
+  src/service/resources.c
+  src/service/setup.c
+  src/service/callee.c
+  # the tunnel and its policy
   src/tunnel/tunnel.c
   src/tunnel/tunnel_rate.c
   src/tunnel/tunnel_virt.c
@@ -223,12 +230,12 @@ endif()
 # the sessions this node starts to others (NPF_PEERS=OFF: none, a device that is only called)
 if(NPF_HAS_PEERS)
   target_sources(npf_common PRIVATE
-    src/node/peers.c
-    src/node/peers_forward.c
-    src/node/peers_demand.c
-    src/node/peers_connections.c)
+    src/service/peers.c
+    src/service/peers_forward.c
+    src/service/peers_demand.c
+    src/service/peers_connections.c)
 else()
-  target_sources(npf_common PRIVATE src/node/peers_none.c)
+  target_sources(npf_common PRIVATE src/service/peers_none.c)
   target_compile_definitions(npf_common PUBLIC NPF_NO_PEERS)
 endif()
 # src/api: libnpf's own (a program's modules have include/npf/module.h)

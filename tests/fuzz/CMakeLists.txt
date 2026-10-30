@@ -4,7 +4,7 @@
 #   clang -fsanitize=fuzzer,address -DNPF_LIBFUZZER -DNPF_FUZZ_TARGET='"json"' ...
 add_executable(npf_fuzz fuzz.c net.c fuzz_sigudp.c)
 target_link_libraries(npf_fuzz PRIVATE npf_common)
-target_include_directories(npf_fuzz PRIVATE ${NPF_LIB_DIR}/src/node)
+target_include_directories(npf_fuzz PRIVATE ${NPF_LIB_INTERNAL_DIRS})
 npf_target_options(npf_fuzz)
 
 foreach(target json msg control cert pkt http ws)

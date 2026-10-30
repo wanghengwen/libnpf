@@ -456,16 +456,16 @@ ANL = 3(1) | AnLiu 数据报        数据报就是 P2P、UDP 中转上同一个
 
 | 内容 | 源码入口 |
 |---|---|
-| 会话、AnLiu 流与直连握手 | [src/node/call.c](../../src/node/call.c)、[src/node/call_transport.c](../../src/node/call_transport.c)、[src/node/call_direct.c](../../src/node/call_direct.c) |
-| 路径对象与路径管理器（往哪发、路径名、路径切换） | [src/node/path.h](../../src/node/path.h)、[src/node/path_mgr.c](../../src/node/path_mgr.c) |
-| 直连路径、UDP 中转客户端 | [src/node/path_direct.c](../../src/node/path_direct.c)、[src/node/path_udp.c](../../src/node/path_udp.c) |
-| WS 中转作为 AnLiu 的载体 | [src/node/path_ws.c](../../src/node/path_ws.c) |
+| 会话、AnLiu 流与直连握手 | [src/call/call.c](../../src/call/call.c)、[src/call/call_transport.c](../../src/call/call_transport.c)、[src/call/call_direct.c](../../src/call/call_direct.c) |
+| 路径对象与路径管理器（往哪发、路径名、路径切换） | [src/call/path.h](../../src/call/path.h)、[src/call/path_mgr.c](../../src/call/path_mgr.c) |
+| 直连路径、UDP 中转客户端 | [src/call/path_direct.c](../../src/call/path_direct.c)、[src/call/path_udp.c](../../src/call/path_udp.c) |
+| WS 中转作为 AnLiu 的载体 | [src/call/path_ws.c](../../src/call/path_ws.c) |
 | TCP 子链路、SOCKS5、信用窗口与 `hello` | [src/tunnel/tunnel.c](../../src/tunnel/tunnel.c) |
 | 地址策略与控制接口登记 | [src/tunnel/policy.c](../../src/tunnel/policy.c) |
-| 资源定义与目标规则 | [src/node/resources.c](../../src/node/resources.c) |
+| 资源定义与目标规则 | [src/service/resources.c](../../src/service/resources.c) |
 | WSS 中转连接与消息 | [src/proto/wsrelay.c](../../src/proto/wsrelay.c)；绑定 [src/node/relay_bind.c](../../src/node/relay_bind.c) 的 `relay_ws_bind` |
-| 应用数据与媒体接口 | [include/npf.h](../../include/npf.h)、[src/node/media.c](../../src/node/media.c) |
-| UDP 正向与反向转发 | [src/node/udpfwd.c](../../src/node/udpfwd.c) |
+| 应用数据与媒体接口 | [include/npf.h](../../include/npf.h)、[src/stream/media.c](../../src/stream/media.c) |
+| UDP 正向与反向转发 | [src/stream/udpfwd.c](../../src/stream/udpfwd.c) |
 
 当前尚未实现或需要完善的行为：
 

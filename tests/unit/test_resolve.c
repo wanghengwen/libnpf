@@ -10,7 +10,7 @@
 
 #include "npf/resolve.h"
 #include "npf/crypto.h"
-#include "../../src/node/udpfwd.h"
+#include "../../src/stream/udpfwd.h"
 #include "test.h"
 
 /* shared with the workers: atomics (ThreadSanitizer) */

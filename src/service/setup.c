@@ -12,7 +12,7 @@
 #include "npf/platform.h"
 #include "npf/why.h"
 
-#include "msgs.h"
+#include "../node/msgs.h"
 
 int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
 {
