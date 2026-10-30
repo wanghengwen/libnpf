@@ -8,7 +8,6 @@
 
 #include "peers_internal.h"
 
-static void demand_tick(npf_loop *loop, void *arg);
 static void ready_wait(npf_peer *p);
 
 #define DEMAND_WAIT_MS     30000    /* how long one waits for it */
@@ -18,8 +17,8 @@ static void ready_wait(npf_peer *p);
 
 void peers_demand_timer(npf_peer *p)
 {
-    if (!p->t_demand)
-        p->t_demand = npf_timer_add(p->ps->n->loop, DEMAND_TICK_MS, demand_tick, p);
+    if (!p->demand_at)
+        peers_at(p, p->demand_at = npf_mono_ms() + DEMAND_TICK_MS);
 }
 
 /* the queues' room freed when nothing waits in them */
@@ -41,7 +40,7 @@ static void queues_trim(npf_peer *p)
  * coming; what waits goes in once it is ready, or after DEMAND_WAIT_MS */
 static void wait_start(npf_peer *p, const char *what, const pfwd *f)
 {
-    if (!p->call && !p->waiting) {
+    if (peer_startable(p)) {
         npf_log("%s: %s to %s:%d: starting the session", p->name, what, f->bind, f->port);
         if (peers_kick(p) < 0)
             return;
@@ -151,22 +150,16 @@ static void udp_queue_flush(npf_peer *p)
     dgrams_drop(p, -1, ALL);
 }
 
-static void ready_poll(npf_loop *loop, void *arg)
-{
-    npf_peer *p = arg;
-    (void)loop;
-    p->t_ready = NULL;
-    peers_ready(p);
-}
-
 /* the session is established but its tunnel cannot take a connection yet
- * (its transport not ready): what waits goes in as soon as it can, not at
- * the next state change (there may be none: the state stays established);
- * the waiting ones' deadline is demand_tick's */
+ * (its transport not ready): what waits goes in as soon as it can (the
+ * demand tick every READY_POLL_MS meanwhile), not at the next state change
+ * (there may be none: the state stays established) */
 static void ready_wait(npf_peer *p)
 {
-    if (!p->t_ready && (p->npend || p->nuq) && p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED)
-        p->t_ready = npf_timer_add(p->ps->n->loop, READY_POLL_MS, ready_poll, p);
+    int64_t at = npf_mono_ms() + READY_POLL_MS;
+    if ((p->npend || p->nuq) && p->call && npf_call_state(p->call) == NPF_CALL_ESTABLISHED
+        && (!p->demand_at || p->demand_at > at))
+        peers_at(p, p->demand_at = at);
 }
 
 void peers_ready(npf_peer *p)
@@ -199,14 +192,16 @@ void peers_demand_drop(npf_peer *p, const char *why)
     dgrams_drop(p, -1, ALL);
 }
 
-/* waiting connections past their time; a session without connections ends */
-static void demand_tick(npf_loop *loop, void *arg)
+/* what waits: into the session if it can take it now, or closed past its
+ * time; a session on demand without connections ends */
+void peers_demand_tick(npf_peer *p, int64_t now)
 {
-    npf_peer *p = arg;
-    int64_t now = npf_mono_ms();
     int n;
-    (void)loop;
-    p->t_demand = NULL;
+    if (!p->demand_at || p->demand_at > now)
+        return;                             /* (none for a removed peer) */
+    p->demand_at = 0;
+    if (p->npend || p->nuq)
+        peers_ready(p);                     /* (a refusal's callback may remove the peer: then nothing waits) */
     if ((n = conns_drop(p, -1, now - DEMAND_WAIT_MS, "no_session")))
         npf_logw("%s: %d connection(s) waited too long for the session, closed", p->name, n);
     dgrams_drop(p, -1, now - DEMAND_WAIT_MS);
@@ -225,6 +220,6 @@ static void demand_tick(npf_loop *loop, void *arg)
             return;
         }
     }
-    if (p->npend || p->nuq || (p->idle_ms && (p->call || p->waiting)))
+    if (p->npend || p->nuq || (p->idle_ms && (p->st == PS_CALL || p->st == PS_ASKING)))
         peers_demand_timer(p);
 }
