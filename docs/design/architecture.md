@@ -87,8 +87,8 @@
 | `npf_call` | `node/call_internal.h` | 握手（`hs`）、密钥、AnLiu 连接与数据流、隧道、媒体、UDP 流、打洞（`punch`、`pcfg`）、路径管理器 `pm` 与三条路径 `pd`、`pu`、`pw`、反向监听、控制请求 | `t_due`，排在 `call.c:call_due`：期限 `limit_at`、打洞 `punch_at`、直连重发 `direct_at`、`pm.check_at`、绑定器的 `pu.r.at`、WS 重连 `pw.re_at` 与 AnLiu 的 `tr_due` 的最小值；下一轮回调 `t_free`、`pw.t_flush` | `st`（`CS_*`，3.1）、`punch_st`（`PN_*`，3.2）、每条路径的 `health` 与 `role`（2.3）、管理器的 `tried`、`wait`、`need`（3.6）；另有 `keys_ready`、`secure`、`direct` |
 | `relay_c`（绑定器） | `node/relay_bind.h` | 一个中转分配：`relay_id`、密钥、最多 4 个地址、cookie、`kseq`、最近的 `RELAY_BIND` | 没有自己的：截止时间 `at` 由所有者排（呼叫的 `call_due`、备用分配的 `home_due`） | `state`（`RB_*`，3.3） |
 | 备用分配 `npf_home` | `node/home.c` | 一个 `relay_c`、中转看到的地址 R、学习状态 | `t_due`，排在 `home_due` | 没有分配时 `H_OFF`、`H_OPENING`、`H_TAKEN`，有分配时是绑定器的（3.4）；`backoff` |
-| `npf_peers` / `npf_peer` | `node/peers_internal.h` | 对端、转发（`pfwd`）、公开映射的连接、按需队列 | 对端 `t_retry`、`t_demand`、`t_ready`、`t_free`；转发 `t_retry`、`t_accept`；全体 `t_save`、`t_idle` | `waiting`、`renewing`、`finished`、`removed`、`call_pinned`、`pin_refused`、`by_account` |
-| `npf_tunnel` | `tunnel/tunnel_internal.h` | 子链路、控制通道、策略、速率组 | `t_rate`、`t_virt`；子链路 `t_gone`、`t_greet`，连接目标时 `t_connect`、`t_he` | 子链路的 `SL_*` |
+| `npf_peers` / `npf_peer` | `node/peers_internal.h` | 对端、转发（`pfwd`）、公开映射的连接、按需队列 | 每个对端一个 `t_due`（重试、按需、就绪、释放与各转发的截止时间，3.9）；全体 `t_save`、`t_idle` | 对端 `PS_*`、转发 `FS_*`（3.9）；另有 `renewing`、`call_pinned`、`pin_refused`、`by_account` |
+| `npf_tunnel` | `tunnel/tunnel_internal.h` | 子链路、控制通道、策略、速率组 | `t_rate`、`t_virt`；每条子链路一个 `t_due`（`at` 与 Happy Eyeballs 的 `he_at`，3.10） | 子链路的 `SL_*`，虚拟端的 `VE_*` |
 | `npf_media` | `node/media.c` | 一个会话的媒体流（各是 AnLiu 半可靠流） | 无 | — |
 | `npf_udpf` | `node/udpfwd.c` | 一个会话的 UDP 流 | `t_tick` | — |
 | `npf_punch` | `punch/punch_ev.c` | 一轮打洞的套接字与探测 | `tick`，排在 `next_due()` 算出的时刻 | `sprayed`、`nom_sent`、`have_valid`、`finished` |

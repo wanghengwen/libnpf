@@ -271,7 +271,7 @@ static int socks_connect(sublink *s, int atyp, const uint8_t *addr, size_t alen,
     return 0;
 }
 
-/* ---- the sublink's one timer (architecture.md 3.9) ---- */
+/* ---- the sublink's one timer (architecture.md 3.10) ---- */
 
 static void sub_timer(npf_loop *loop, void *arg)
 {

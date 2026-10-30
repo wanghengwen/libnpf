@@ -1,4 +1,4 @@
-/* The sublink's one timer (architecture.md 3.9): each state's deadline,
+/* The sublink's one timer (architecture.md 3.10): each state's deadline,
  * the timer at the earliest one, and what tunnel_sub_tick does at a given
  * time, called here with the times of the test's choosing (no waiting):
  * the peer's greeting, Happy Eyeballs' next address and the connection's

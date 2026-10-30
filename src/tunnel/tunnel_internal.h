@@ -62,7 +62,7 @@ typedef struct sublink {
     int      fwd_rep;           /* client (-D): the CONNECT reply goes to the application as it is */
     npf_resolve *resolve;       /* SL_RESOLVING: the pending lookup */
     /* the one timer, at the earliest of at (the state's deadline, mono ms,
-     * 0 none: architecture.md 3.9) and hs->he_at; due_at its time */
+     * 0 none: architecture.md 3.10) and hs->he_at; due_at its time */
     int64_t  at, due_at;
     npf_timer *t_due;
     /* flow control */
