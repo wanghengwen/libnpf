@@ -102,7 +102,7 @@ third_party/           AnLiu、Monocypher、mbedTLS
 examples/              device.c、client.c：只用 npf.h 的设备与客户端
 tests/                 单元测试、API 测试、模糊测试
 cmake/、scripts/       构建选项；更新内置 AnLiu 的脚本
-docs/                  信令协议、数据通道、NAT 穿透与安全设计，以及开发者指南（docs/design/libnpf.md）
+docs/                  信令协议、数据通道、NAT 穿透、UDP 信令与安全设计，以及开发者指南（docs/design/libnpf.md）
 ```
 
 ## 许可

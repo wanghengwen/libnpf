@@ -4,7 +4,7 @@
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
-本文以当前公开接口及其实现为准。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)；设计背景见 [NAT 穿透](nat-traversal.md)和[安全设计](security.md)。下文文件链接均为相对路径；构建命令默认在仓库根目录执行。
+本文以当前公开接口及其实现为准。协议细节见 [信令协议](../protocol/signaling.md)、[数据通道协议](../protocol/data-channel.md)；设计背景见 [NAT 穿透](nat-traversal.md)、[UDP 信令](signaling-udp.md)和[安全设计](security.md)。下文文件链接均为相对路径；构建命令默认在仓库根目录执行。
 
 ## 1. 基本概念
 
