@@ -17,18 +17,14 @@
 
 typedef struct q_arg {
     int     max, close;
+    void  (*put)(npf_t *n, npf_out *o);     /* put_run's */
     npf_out o;
 } q_arg;
 
-static int status_run(npf_t *n, void *arg)
+static int put_run(npf_t *n, void *arg)
 {
-    npf_status_out(n, &((q_arg *)arg)->o);
-    return NPF_OK;
-}
-
-static int config_run(npf_t *n, void *arg)
-{
-    npf_cmd_config_json(n, &((q_arg *)arg)->o);
+    q_arg *q = arg;
+    q->put(n, &q->o);
     return NPF_OK;
 }
 
@@ -46,12 +42,6 @@ static int log_run(npf_t *n, void *arg)
     return NPF_OK;
 }
 
-static int sessions_run(npf_t *n, void *arg)
-{
-    npf_sessions_out(n, &((q_arg *)arg)->o);
-    return NPF_OK;
-}
-
 static int public_run(npf_t *n, void *arg)
 {
     q_arg *q = arg;
@@ -62,7 +52,8 @@ static int public_run(npf_t *n, void *arg)
     return NPF_OK;
 }
 
-static char *query(npf_t *n, int (*fn)(npf_t *n, void *arg), int max, int close)
+/* fn's JSON, or put's (fn NULL) */
+static char *query(npf_t *n, int (*fn)(npf_t *n, void *arg), void (*put)(npf_t *n, npf_out *o), int max, int close)
 {
     q_arg q;
     int rc;
@@ -71,7 +62,8 @@ static char *query(npf_t *n, int (*fn)(npf_t *n, void *arg), int max, int close)
     if (q.max > NPF_LOG_RING)
         q.max = NPF_LOG_RING;               /* no query can return more bytes than the ring holds */
     q.close = close != 0;
-    rc = npf_api_op(n, fn, &q);
+    q.put = put;
+    rc = npf_api_op(n, fn ? fn : put_run, &q);
     npf_out_write(&q.o, "\n", 1);
     if (rc != NPF_OK || q.o.failed) {
         npf_out_free(&q.o);
@@ -80,11 +72,11 @@ static char *query(npf_t *n, int (*fn)(npf_t *n, void *arg), int max, int close)
     return q.o.p;                           /* npf_out's text: malloc'd, freed by npf_free */
 }
 
-char *npf_status_json(npf_t *n) { return query(n, status_run, 0, 0); }
-char *npf_config_json(npf_t *n) { return query(n, config_run, 0, 0); }
-char *npf_log_json(npf_t *n, int max) { return query(n, log_run, max, 0); }
-char *npf_sessions_json(npf_t *n) { return query(n, sessions_run, 0, 0); }
-char *npf_public_json(npf_t *n, int close) { return query(n, public_run, 0, close); }
+char *npf_status_json(npf_t *n) { return query(n, NULL, npf_status_out, 0, 0); }
+char *npf_config_json(npf_t *n) { return query(n, NULL, npf_cmd_config_json, 0, 0); }
+char *npf_log_json(npf_t *n, int max) { return query(n, log_run, NULL, max, 0); }
+char *npf_sessions_json(npf_t *n) { return query(n, NULL, npf_sessions_out, 0, 0); }
+char *npf_public_json(npf_t *n, int close) { return query(n, public_run, NULL, 0, close); }
 
 /* ---- settings ---- */
 

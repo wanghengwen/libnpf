@@ -30,11 +30,7 @@ static void add_cand(npf_node *n, const char *t, const struct sockaddr_storage *
 static void add_host6(npf_node *n, const struct in6_addr *ip)
 {
     struct sockaddr_storage ss;
-    struct sockaddr_in6 *a = (struct sockaddr_in6 *)&ss;
-    memset(&ss, 0, sizeof ss);
-    a->sin6_family = AF_INET6;
-    a->sin6_addr = *ip;
-    a->sin6_port = htons(n->udp6_port);
+    npf_addr_set(&ss, AF_INET6, ip, n->udp6_port);
     add_cand(n, "host6", &ss);
 }
 
@@ -79,11 +75,7 @@ static void gather(npf_node *n)
     c4 = npf_gather_host(AF_INET, v4, 8);
     for (i = 0; i < c4; i++) {
         struct sockaddr_storage ss;
-        struct sockaddr_in *a = (struct sockaddr_in *)&ss;
-        memset(&ss, 0, sizeof ss);
-        a->sin_family = AF_INET;
-        a->sin_addr = v4[i];
-        a->sin_port = htons(n->udp_port);
+        npf_addr_set(&ss, AF_INET, &v4[i], n->udp_port);
         add_cand(n, "host4", &ss);
     }
 }

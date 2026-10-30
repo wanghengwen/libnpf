@@ -870,6 +870,7 @@ void tr_info(const npf_call *c, npf_call_info *i)
     i->udp_in = us.dgrams_in;
     i->udp_dropped = us.dropped;
     i->udp_split = us.split;
+    memcpy(i->udp_ends, us.ends + NPF_UDP_R_REFUSED, sizeof i->udp_ends);
 }
 
 void npf_node_dump(npf_node *n)

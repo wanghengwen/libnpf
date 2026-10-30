@@ -438,7 +438,7 @@ typedef struct npf_forward_opt {
     size_t       size;                 /* set by npf_forward_opt_init */
     int          kind;                 /* NPF_FWD_* */
     int          proto;                /* NPF_PROTO_*; UDP: LOCAL and REMOTE only */
-    npf_endpoint listen;               /* -R: an IP address of the peer or "*"; NULL: 127.0.0.1 */
+    npf_endpoint listen;               /* an IP address (-R: of the peer), "localhost" or "*", not a name; NULL: 127.0.0.1 */
     npf_endpoint target;               /* NPF_FWD_SOCKS: none */
     int          flags;                /* NPF_PERSIST: saved with its peer, which must be NPF_PERSIST */
     void        *ctx;

@@ -56,12 +56,7 @@ static int udp_open(npf_node *n, int fam, uint16_t port, uint16_t *bound)
         return -1;
     if (fam == AF_INET6)
         setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&one, sizeof one);
-    memset(&a, 0, sizeof a);
-    a.ss_family = fam == AF_INET6 ? AF_INET6 : AF_INET;
-    if (fam == AF_INET6)
-        ((struct sockaddr_in6 *)&a)->sin6_port = htons(port);
-    else
-        ((struct sockaddr_in *)&a)->sin_port = htons(port);
+    npf_addr_set(&a, fam, (const uint8_t[16]){0}, port);    /* every address */
     /* AnLiu bursts at its pacing rate; a small receive buffer drops whole
      * flights while the loop is busy. The kernel caps this at rmem_max. */
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char *)&sz, sizeof sz);
@@ -155,7 +150,6 @@ void node_udp_close_idle(npf_node *n)
         return;                             /* sessions wait for its profile: they need it */
     npf_natprobe_cancel(n->probe);
     n->probe = NULL;
-    n->udp_waiters = 0;
     node_udp_close(n);
     npf_log("udp: closed until a session needs it");
 }

@@ -95,17 +95,13 @@ npf_peer *npf_peer_of_call(npf_t *n, npf_call *call)
 static uint32_t sess_add(npf_t *n, npf_call *call)
 {
     npf_peer *p = npf_peer_of_call(n, call);
-    npf_sess *s;
     /* an instance has a few at a time, a node up to the limit */
     if (n->nsess >= NPF_MAX_SESS || npf_grow(&n->sess, &n->capsess, (size_t)n->nsess + 1, sizeof *n->sess, 4) < 0)
         return 0;
     if (!++n->next_sess)
         n->next_sess = 1;
-    s = &n->sess[n->nsess++];
-    s->id = n->next_sess;
-    s->call = call;
-    s->peer = p ? npf_peer_id(p) : 0;
-    return s->id;
+    n->sess[n->nsess++] = (npf_sess){.id = n->next_sess, .call = call, .peer = p ? npf_peer_id(p) : 0};
+    return n->next_sess;
 }
 
 static void med_drop(npf_t *n, int i, int tell)
@@ -384,11 +380,7 @@ uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid)
     if (!++n->next_med)
         n->next_med = 1;
     id = n->next_med;
-    n->med[n->nmed].id = id;
-    n->med[n->nmed].session = session;
-    n->med[n->nmed].call = call;
-    n->med[n->nmed].lid = lid;
-    n->nmed++;
+    n->med[n->nmed++] = (npf_med){.id = id, .session = session, .call = call, .lid = lid};
     npf_api_unlock(n);
     return id;
 }
@@ -404,12 +396,9 @@ npf_med *npf_media_find(npf_t *n, uint32_t id)
 
 void npf_media_forget(npf_t *n, uint32_t id)
 {
-    int i;
-    for (i = 0; i < n->nmed; i++)
-        if (n->med[i].id == id) {
-            med_drop(n, i, 0);
-            return;
-        }
+    npf_med *m = npf_media_find(n, id);
+    if (m)
+        med_drop(n, (int)(m - n->med), 0);
 }
 
 /* ---- peers' hooks ---- */

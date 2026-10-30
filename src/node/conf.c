@@ -164,12 +164,9 @@ int npf_conf_set(npf_conf *c, const char *key, const char *val)
 {
     size_t vl = strlen(val);
     char *v, **o;
-    int i;
-    for (i = 0; i < c->n && !npf_key_is(key, NPF_K_MULTI); i++)
-        if (strcmp(c->key[i], key) == 0)
-            break;
-    if (npf_key_is(key, NPF_K_MULTI))
-        i = c->n;
+    int i = npf_key_is(key, NPF_K_MULTI) ? c->n : 0;    /* a key that repeats: added */
+    while (i < c->n && strcmp(c->key[i], key) != 0)
+        i++;
     if (vl >= NPF_CONF_VAL_MAX) {
         if (!c->bad[0])
             snprintf(c->bad, sizeof c->bad, "%s", key);
@@ -252,11 +249,7 @@ const char *npf_conf_get_path(const npf_conf *c, const char *key, const char *de
         snprintf(out, cap, "%s", v);
         return out;
     }
-    slash = strrchr(c->path, '/');
-#ifdef _WIN32
-    if (!slash || strrchr(c->path, '\\') > slash)
-        slash = strrchr(c->path, '\\');
-#endif
+    slash = npf_path_sep(c->path);
     if (!c->path[0] || !slash)
         snprintf(out, cap, "%s", def_name);
     else
@@ -272,11 +265,7 @@ void npf_conf_set_rel(npf_conf *c, const char *conf_path, const char *k, const c
         npf_conf_set(c, k, v);
         return;
     }
-    slash = strrchr(dir, '/');
-#ifdef _WIN32
-    if (!slash || strrchr(dir, '\\') > slash)
-        slash = strrchr(dir, '\\');
-#endif
+    slash = npf_path_sep(dir);
     if (!slash) {
         npf_conf_set(c, k, v);
         return;
@@ -330,11 +319,8 @@ const char *npf_conf_get_n(const npf_conf *c, const char *key, int n)
 
 const char *npf_conf_get(const npf_conf *c, const char *key, const char *def)
 {
-    int i;
-    for (i = 0; i < c->n; i++)
-        if (strcmp(c->key[i], key) == 0)
-            return c->val[i];
-    return def;
+    const char *v = npf_conf_get_n(c, key, 0);
+    return v ? v : def;
 }
 
 long npf_file_read(const char *path, char **out)

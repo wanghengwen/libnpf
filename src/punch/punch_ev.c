@@ -249,11 +249,7 @@ static void schedule(npf_punch *p);
  * instances on other threads do not share one) */
 static const struct sockaddr_storage *peer_at(npf_punch *p, uint16_t port, struct sockaddr_storage *to)
 {
-    struct sockaddr_in *t4 = (struct sockaddr_in *)to;
-    memset(to, 0, sizeof *to);
-    t4->sin_family = AF_INET;
-    t4->sin_addr = p->cfg.plan.peer_ip4;
-    t4->sin_port = htons(port);
+    npf_addr_set(to, AF_INET, &p->cfg.plan.peer_ip4, port);
     return to;
 }
 

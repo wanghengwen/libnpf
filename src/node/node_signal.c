@@ -1179,8 +1179,6 @@ static void wake_cb(npf_loop *loop, void *arg)
     npf_node_wake(n, "periodic refresh");
 }
 
-/* nothing needs the connection: no call, no request waiting for its
- * reply, no call end to report, and the application agrees */
 /* a request waits for its reply, or a call end for its report's */
 static int node_waiting(const npf_node *n)
 {
@@ -1194,6 +1192,8 @@ static int node_waiting(const npf_node *n)
     return 0;
 }
 
+/* something needs the connection: a call, a request waiting for its
+ * reply, a call end to report, or the application says so */
 static int node_busy(npf_node *n)
 {
     return n->calls || node_waiting(n) || (n->hooks.busy && n->hooks.busy(n, n->hook_arg));

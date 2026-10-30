@@ -139,24 +139,60 @@ const char *npf_addr_str(const void *sa, char *buf, size_t cap)
     return buf;
 }
 
+void npf_addr_set(struct sockaddr_storage *out, int family, const void *ip, uint16_t port)
+{
+    memset(out, 0, sizeof *out);
+    if (family == AF_INET6) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)out;
+        a->sin6_family = AF_INET6;
+        a->sin6_port = htons(port);
+        memcpy(&a->sin6_addr, ip, 16);
+    } else {
+        struct sockaddr_in *a = (struct sockaddr_in *)out;
+        a->sin_family = AF_INET;
+        a->sin_port = htons(port);
+        memcpy(&a->sin_addr, ip, 4);
+    }
+}
+
+int npf_addr_ip(const char *host, uint16_t port, struct sockaddr_storage *out)
+{
+    uint8_t b[16];
+    int f = inet_pton(AF_INET, host, b) == 1 ? AF_INET : inet_pton(AF_INET6, host, b) == 1 ? AF_INET6 : 0;
+    if (!f) {
+        memset(out, 0, sizeof *out);
+        return -1;
+    }
+    npf_addr_set(out, f, b, port);
+    return 0;
+}
+
+const char *npf_path_sep(const char *p)
+{
+    const char *s = strrchr(p, '/');
+#ifdef _WIN32
+    const char *b = strrchr(p, '\\');
+    if (!s || b > s)
+        s = b;
+#endif
+    return s;
+}
+
+void npf_dirname(const char *p, char *out, size_t cap)
+{
+    const char *s = npf_path_sep(p);
+    if (s)
+        snprintf(out, cap, "%.*s", (int)(s - p), p);
+    else
+        snprintf(out, cap, ".");
+}
+
 int npf_addr_parse(const char *s, struct sockaddr_storage *out)
 {
     char host[64];
     uint16_t port;
     memset(out, 0, sizeof *out);
-    if (npf_hostport(s, host, sizeof host, &port) < 0)
-        return -1;
-    if (strchr(host, ':')) {
-        struct sockaddr_in6 *a = (struct sockaddr_in6 *)out;
-        a->sin6_family = AF_INET6;
-        a->sin6_port = htons(port);
-        return inet_pton(AF_INET6, host, &a->sin6_addr) == 1 ? 0 : -1;
-    } else {
-        struct sockaddr_in *a = (struct sockaddr_in *)out;
-        a->sin_family = AF_INET;
-        a->sin_port = htons(port);
-        return inet_pton(AF_INET, host, &a->sin_addr) == 1 ? 0 : -1;
-    }
+    return npf_hostport(s, host, sizeof host, &port) < 0 ? -1 : npf_addr_ip(host, port, out);
 }
 
 int npf_if_has(int family, const void *addr)
@@ -249,7 +285,6 @@ typedef struct {
 
 static NPF_THREAD_LOCAL send_err t_send_err;
 
-
 /* 1 when this one is only counted */
 static int quiet(send_err *e, int err, int64_t now)
 {
@@ -262,15 +297,12 @@ static int quiet(send_err *e, int err, int64_t now)
 
 static void report(send_err *e, int level, int err, int64_t now, const struct sockaddr *to, const char *hint)
 {
-    char d[80];
+    char d[80], more[80] = "";
     npf_addr_str(to, d, sizeof d);
     if (e->more)
-        npf_log_at(level, __FILE__, __LINE__,
-                   "udp: sending to %s failed: %s%s (and %u more failures of this kind in the last minute)", d,
-                   npf_sock_strerror_code(err), hint, e->more);
-    else
-        npf_log_at(level, __FILE__, __LINE__, "udp: sending to %s failed: %s%s", d, npf_sock_strerror_code(err),
-                   hint);
+        snprintf(more, sizeof more, " (and %u more failures of this kind in the last minute)", e->more);
+    npf_log_at(level, __FILE__, __LINE__, "udp: sending to %s failed: %s%s%s", d, npf_sock_strerror_code(err), hint,
+               more);
     e->err = err;
     e->at = now;
     e->more = 0;
@@ -312,16 +344,15 @@ static void send_failed(const struct sockaddr *to, int err)
     /* macOS's local network privacy: a program without the permission (one
      * started over SSH, say) gets "No route to host" for every address of
      * the local network, while the internet works */
-    if (err == EHOSTUNREACH && t_lan_err.err == err && now - t_lan_err.at < SEND_ERR_QUIET_MS) {
-        t_lan_err.more++;               /* told a moment ago: no interface list for each datagram */
-        return;
-    }
-    if (err == EHOSTUNREACH && on_local_subnet(to)) {
-        if (!quiet(&t_lan_err, err, now))
+    if (err == EHOSTUNREACH) {
+        if (quiet(&t_lan_err, err, now))
+            return;                     /* told a moment ago: no interface list for each datagram */
+        if (on_local_subnet(to)) {
             report(&t_lan_err, NPF_LOG_WARN, err, now, to,
                    "; macOS blocks the local network for this program: allow npf under System Settings > "
                    "Privacy & Security > Local Network, or run it as a launchd daemon");
-        return;
+            return;
+        }
     }
 #endif
     /* punching tries every candidate of the peer: some are not routable

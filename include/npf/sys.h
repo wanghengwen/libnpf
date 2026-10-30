@@ -125,12 +125,17 @@ const char *npf_sock_strerror_code(int err);
  * npf_addr_port is in host order. npf_addr_eq: same family, address and port
  * (0 for any other family). npf_addr_str writes "1.2.3.4:5" or "[::1]:5"
  * ("-" for another family) into buf and returns buf. npf_addr_parse reads
- * that form back (a numeric address only, the port in digits): 0 or -1. */
+ * that form back (a numeric address only, the port in digits): 0 or -1.
+ * npf_addr_ip: an IPv4 or IPv6 address (no name, no brackets) and port: 0
+ * or -1. npf_addr_set: family's address (4 or 16 bytes, network order) and
+ * port, the rest zero. */
 socklen_t   npf_addr_len(const void *sa);
 uint16_t    npf_addr_port(const void *sa);
 int         npf_addr_eq(const void *a, const void *b);
 const char *npf_addr_str(const void *sa, char *buf, size_t cap);
 int         npf_addr_parse(const char *s, struct sockaddr_storage *out);
+int         npf_addr_ip(const char *host, uint16_t port, struct sockaddr_storage *out);
+void        npf_addr_set(struct sockaddr_storage *out, int family, const void *ip, uint16_t port);
 
 /* The addresses of the interfaces that are up, loopback included. */
 typedef struct npf_ifaddr {
@@ -231,6 +236,10 @@ int  npf_file_too_open(const char *path);
  * into out of cap bytes. 0, or -1 (an error, or it does not fit). */
 int  npf_abspath(const char *p, char *out, size_t cap);
 int  npf_path_is_abs(const char *p);
+/* p's last separator ('/', on Windows '\\' too), NULL: none; its directory
+ * into out ("." when it has none) */
+const char *npf_path_sep(const char *p);
+void        npf_dirname(const char *p, char *out, size_t cap);
 
 /* ======== scratch buffers ======== */
 

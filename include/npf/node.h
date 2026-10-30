@@ -549,6 +549,8 @@ typedef struct npf_call_info {
     int      udp_flows;             /* UDP forwards' flows (data-channel.md 15) */
     uint64_t udp_out, udp_in;       /* datagrams sent to / received from the peer */
     uint64_t udp_dropped, udp_split;/* not sent (backlog, no flow); sent in more than one AnLiu segment */
+    uint64_t udp_ends[4];           /* flows refused (not a resource / mapping), over a limit, failed (a socket),
+                                     * the target unreachable (no name, no route): CLOSEs sent or received */
     const char *app;                /* callee: the caller's program ("name ver"), "" unknown */
     int      hosted;                /* callee: the caller is a hosted client (a public mapping) */
 } npf_call_info;

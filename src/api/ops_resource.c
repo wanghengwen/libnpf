@@ -15,11 +15,6 @@
 /* npf.h's NPF_RES_TCP .. NPF_RES_REVERSE (1 .. 5) by their names in the resources */
 static const char *const res_types[] = {NULL, "tcp", "udp", "net", "socks", "reverse"};
 
-static const char *res_type_name(int t)
-{
-    return t > 0 && t < 6 ? res_types[t] : NULL;
-}
-
 static int res_type_code(const char *t)
 {
     int i;
@@ -33,7 +28,7 @@ static int res_put_run(npf_t *n, void *arg)
 {
     op_arg *x = arg;
     const npf_resource *u = x->in;
-    const char *type = res_type_name(u->type);
+    const char *type = u->type > 0 && u->type < 6 ? res_types[u->type] : NULL;
     /* udp: one service (service.host), or "*" / networks as a rule */
     int service = u->type == NPF_RES_TCP || (u->type == NPF_RES_UDP && !(u->rule && *u->rule && !u->service.host)), l;
     npf_res r;

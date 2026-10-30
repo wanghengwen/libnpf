@@ -13,21 +13,6 @@
 
 /* ---- configuration ---- */
 
-static void dir_of(const char *path, char *out, size_t cap)
-{
-    char *slash;
-    snprintf(out, cap, "%s", path);
-    slash = strrchr(out, '/');
-#ifdef _WIN32
-    if (!slash || strrchr(out, '\\') > slash)
-        slash = strrchr(out, '\\');
-#endif
-    if (slash)
-        *slash = 0;
-    else
-        snprintf(out, cap, ".");
-}
-
 /* the configurations, and the paths made from them */
 void npf_engine_config_free(npf_t *n)
 {
@@ -89,20 +74,12 @@ static void conf_text(npf_conf *c, const char *text)
     }
 }
 
-/* the configuration in effect: npf.conf, then the overrides, then local.json's settings */
-static void conf_merge(npf_conf *dst, const npf_conf *src)
-{
-    int i;
-    for (i = 0; i < src->n; i++)
-        npf_conf_set(dst, src->key[i], src->val[i]);
-}
-
 /* the configuration in effect and the paths made from it: ro (npf.conf or
  * the setup) and ov (the overrides) read, merged into n->conf */
 static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *ov, char *err, size_t errcap)
 {
     char conf_path[1100];
-    int have_conf;
+    int have_conf, i;
 
     /* the read-only configuration: npf.conf, or the application's fields */
     if (o->setup) {
@@ -135,7 +112,7 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
     }
     {
         char d[1100];
-        dir_of(ro->path, d, sizeof d);
+        npf_dirname(ro->path, d, sizeof d);
         if (path_set(&n->conf_dir, "%s", d) < 0) {
             snprintf(err, errcap, "no memory");
             return NPF_EFAIL;
@@ -154,7 +131,6 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
     }
     {   /* each source's values as the key table says; a key of npf_setup's fields from it alone */
         char why[96];
-        int i;
         if (npf_conf_check(ro, why, sizeof why) < 0) {
             snprintf(err, errcap, "%s: %s", conf_path, why);
             return NPF_EINVAL;
@@ -184,9 +160,9 @@ static int config_load(npf_t *n, const npf_options *o, npf_conf *ro, npf_conf *o
         snprintf(err, errcap, "no memory");
         return NPF_EFAIL;
     }
-    conf_merge(&n->conf, ov);
+    for (i = 0; i < ov->n; i++)             /* in effect: npf.conf, then the overrides, then local.json's settings */
+        npf_conf_set(&n->conf, ov->key[i], ov->val[i]);
     if (!(n->opt_flags & NPF_OPT_NO_SAVED_SETTINGS)) {   /* local.json: its settings over the others */
-        int i;
         for (i = 0; i < n->lc.settings.n; i++) {
             const char *k = n->lc.settings.key[i], *v = n->lc.settings.val[i];
             const npf_key *key = npf_key_find(k);
