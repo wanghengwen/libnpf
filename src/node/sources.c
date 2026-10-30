@@ -59,9 +59,7 @@ static int doh_list(const npf_node *n, struct sockaddr_storage *addr, char host[
         return k;
     }
     for (; k < (int)(sizeof k_doh / sizeof k_doh[0]) && k < max; k++) {
-        char spec[64];
-        snprintf(spec, sizeof spec, "%s:443", k_doh[k].ip);
-        npf_addr_parse(spec, &addr[k]);
+        npf_addr_ip(k_doh[k].ip, 443, &addr[k]);
         snprintf(host[k], 128, "%s", k_doh[k].host);
     }
     return k;

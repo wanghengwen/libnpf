@@ -217,12 +217,8 @@ void node_portmap_write(const npf_node *n, npf_out *w)
 
 int node_portmap_cand(const npf_node *n, struct sockaddr_storage *out)
 {
-    struct sockaddr_in *a = (struct sockaddr_in *)out;
     if (!n->pm_ok)
         return 0;
-    memset(out, 0, sizeof *out);
-    a->sin_family = AF_INET;
-    memcpy(&a->sin_addr, n->pm.external_ip, 4);
-    a->sin_port = htons(n->pm.external_port);
+    npf_addr_set(out, AF_INET, n->pm.external_ip, n->pm.external_port);
     return 1;
 }

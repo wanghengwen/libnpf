@@ -139,20 +139,31 @@ const char *npf_addr_str(const void *sa, char *buf, size_t cap)
     return buf;
 }
 
+void npf_addr_set(struct sockaddr_storage *out, int family, const void *ip, uint16_t port)
+{
+    memset(out, 0, sizeof *out);
+    if (family == AF_INET6) {
+        struct sockaddr_in6 *a = (struct sockaddr_in6 *)out;
+        a->sin6_family = AF_INET6;
+        a->sin6_port = htons(port);
+        memcpy(&a->sin6_addr, ip, 16);
+    } else {
+        struct sockaddr_in *a = (struct sockaddr_in *)out;
+        a->sin_family = AF_INET;
+        a->sin_port = htons(port);
+        memcpy(&a->sin_addr, ip, 4);
+    }
+}
+
 int npf_addr_ip(const char *host, uint16_t port, struct sockaddr_storage *out)
 {
-    struct sockaddr_in *a4 = (struct sockaddr_in *)out;
-    struct sockaddr_in6 *a6 = (struct sockaddr_in6 *)out;
-    memset(out, 0, sizeof *out);
-    if (inet_pton(AF_INET, host, &a4->sin_addr) == 1) {
-        a4->sin_family = AF_INET;
-        a4->sin_port = htons(port);
-    } else if (inet_pton(AF_INET6, host, &a6->sin6_addr) == 1) {
-        a6->sin6_family = AF_INET6;
-        a6->sin6_port = htons(port);
-    } else {
+    uint8_t b[16];
+    int f = inet_pton(AF_INET, host, b) == 1 ? AF_INET : inet_pton(AF_INET6, host, b) == 1 ? AF_INET6 : 0;
+    if (!f) {
+        memset(out, 0, sizeof *out);
         return -1;
     }
+    npf_addr_set(out, f, b, port);
     return 0;
 }
 

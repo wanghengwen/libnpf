@@ -13,13 +13,10 @@
 /* family(1) | port(2) | addr(4): IPv4 only; the bytes after it, or NULL */
 static const uint8_t *addr_parse(const uint8_t *b, size_t len, struct sockaddr_storage *ss)
 {
-    struct sockaddr_in *a = (struct sockaddr_in *)ss;
     memset(ss, 0, sizeof *ss);
     if (len < 7 || b[0] != 4)
         return NULL;
-    a->sin_family = AF_INET;
-    a->sin_port = htons(npf_rd16(b + 1));
-    memcpy(&a->sin_addr, b + 3, 4);
+    npf_addr_set(ss, AF_INET, b + 3, npf_rd16(b + 1));
     return b + 7;
 }
 

@@ -86,18 +86,7 @@ int npf_bind_resp_parse(const npf_pkt *pkt, npf_bind_resp *resp)
     alen = b[0] == 4 ? 4 : 16;
     if (pkt->body_len < 1 + 2 + alen + 8)
         return -1;
-    memset(&resp->mapped, 0, sizeof resp->mapped);
-    if (b[0] == 4) {
-        struct sockaddr_in *a = (struct sockaddr_in *)&resp->mapped;
-        a->sin_family = AF_INET;
-        a->sin_port = htons(npf_rd16(b + 1));
-        memcpy(&a->sin_addr, b + 3, 4);
-    } else {
-        struct sockaddr_in6 *a = (struct sockaddr_in6 *)&resp->mapped;
-        a->sin6_family = AF_INET6;
-        a->sin6_port = htons(npf_rd16(b + 1));
-        memcpy(&a->sin6_addr, b + 3, 16);
-    }
+    npf_addr_set(&resp->mapped, b[0] == 4 ? AF_INET : AF_INET6, b + 3, npf_rd16(b + 1));
     resp->srv_time_ms = npf_rd64(b + 3 + alen);
     return 0;
 }
