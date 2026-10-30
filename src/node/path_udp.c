@@ -24,7 +24,7 @@ int call_relay_addr_blocked(const npf_node *n, const struct sockaddr_storage *a)
 
 /* RELAY_DATA (relay_data.c) to the address in use (cur): a 16-byte header
  * before the AnLiu datagram */
-static void udp_send(npf_path *p, const uint8_t *dgram, size_t len)
+void path_udp_tx(npf_path *p, const uint8_t *dgram, size_t len)
 {
     npf_call *c = CALL_OF(p, pu.p);
     uint8_t buf[2048];
@@ -84,8 +84,9 @@ void call_relay_rebind(npf_call *c)
 /* silent while relied on (the node's UDP blocked, the relay's address
  * unreachable): probed with binds from the address in use, the data staying
  * on it until another one answers (architecture.md 3.3, Q2); an answer
- * keeps it, none gives it up (pm_decide) */
-static void udp_suspect(npf_path *p, int64_t quiet)
+ * keeps it, none gives it up (pm_decide). Its probe is a bind and its
+ * verdict the binder's: none by time (pm_tick). */
+void path_udp_suspect(npf_path *p, int64_t quiet)
 {
     npf_call *c = CALL_OF(p, pu.p);
     npf_logw("call %s: the UDP relay silent for %lld ms while the session relies on it: probing it, %s first",
@@ -93,9 +94,6 @@ static void udp_suspect(npf_path *p, int64_t quiet)
     bind_run(c, 1);
     node_sig_udp_check(c->n);
 }
-
-/* its probe is a bind and its verdict the binder's: none by time */
-const npf_path_ops path_udp_ops = {udp_send, udp_suspect, NULL, NULL};
 
 /* the relay works (a BIND_ACK, or the peer's data through it): bound, the
  * binding kept fresh from now on */

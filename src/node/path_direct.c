@@ -23,7 +23,7 @@ int call_p2p_cut(const npf_call *c)
     return !port || npf_addr_port(&c->pd.addr) == port;
 }
 
-static void direct_send(npf_path *p, const uint8_t *dgram, size_t len)
+void path_direct_tx(npf_path *p, const uint8_t *dgram, size_t len)
 {
     npf_call *c = CALL_OF(p, pd.p);
     if (!call_p2p_cut(c))
@@ -109,7 +109,7 @@ void path_direct_check(npf_call *c)
     npf_random(&c->pd.nonce, sizeof c->pd.nonce);
 }
 
-static void direct_probe(npf_path *p)
+void path_direct_probe(npf_path *p)
 {
     npf_call *c = CALL_OF(p, pd.p);
     path_send(c, PKT_PATH_CHECK, c->pd.nonce);
@@ -126,7 +126,7 @@ static void direct_doubt(npf_call *c, const char *why)
 
 /* silent (a loaded uplink's queue can hold packets for seconds: silence
  * alone is no verdict, nat-traversal.md 10.3) */
-static void direct_suspect(npf_path *p, int64_t quiet)
+void path_direct_suspect(npf_path *p, int64_t quiet)
 {
     npf_call *c = CALL_OF(p, pd.p);
     char why[80];
@@ -139,15 +139,13 @@ static void direct_suspect(npf_path *p, int64_t quiet)
 }
 
 /* in doubt 10 s, no echo: lost (pm_decide drops it) */
-static void direct_lost(npf_path *p)
+void path_direct_dead(npf_path *p)
 {
     npf_call *c = CALL_OF(p, pd.p);
     npf_logw("call %s: direct path lost%s", c->call_id_s,
              call_has_relay(c) && c->pu.r.state == RB_BOUND ? ", staying on the relay"
              : call_has_relay(c) && c->pu.r.at ? ", the UDP relay still binding" : "");
 }
-
-const npf_path_ops path_direct_ops = {direct_send, direct_suspect, direct_probe, direct_lost};
 
 /* the direct path given up (lost, the session on the WS relay, its socket gone), its own socket closed */
 void call_p2p_drop(npf_call *c)

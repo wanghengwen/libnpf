@@ -23,10 +23,11 @@ typedef struct fake {
 static fake f[PK_N];
 static npf_pm m;
 
-static void fake_tx(npf_path *p, const uint8_t *d, size_t len)
-{
-    (void)p, (void)d, (void)len;
-}
+/* path_mgr.c: when set, pm_tick calls these instead of the real path (the
+ * fakes are not embedded in a call) */
+extern void (*pm_hook_suspect)(npf_path *p, int64_t quiet);
+extern void (*pm_hook_probe)(npf_path *p);
+extern void (*pm_hook_dead)(npf_path *p);
 
 static void fake_suspect(npf_path *p, int64_t quiet)
 {
@@ -46,16 +47,16 @@ static void fake_dead(npf_path *p)
     ((fake *)(void *)p)->deads++;
 }
 
-static const npf_path_ops fake_ops = {fake_tx, fake_suspect, fake_probe, fake_dead};
-
 /* every path new and gone, the manager empty; the kinds given UP from t0 */
 static void start(int kinds, int64_t t0)
 {
     int k;
     memset(&m, 0, sizeof m);
     memset(f, 0, sizeof f);
+    pm_hook_suspect = fake_suspect;
+    pm_hook_probe = fake_probe;
+    pm_hook_dead = fake_dead;
     for (k = 0; k < PK_N; k++) {
-        f[k].p.ops = &fake_ops;
         f[k].p.kind = (uint8_t)k;
         if (kinds & 1 << k) {
             f[k].p.health = PH_UP;
@@ -277,5 +278,8 @@ int test_path_health(void)
     }
     relied();
     probed();
+    pm_hook_suspect = NULL;
+    pm_hook_probe = NULL;
+    pm_hook_dead = NULL;
     return fails;
 }

@@ -31,7 +31,7 @@ static void ws_flush_timer(npf_loop *loop, void *arg)
 /* AnLiu's output on the WS relay: queued, written once this turn of the
  * loop is over (one write and TLS record for what a flush sends). Nothing
  * goes before both sides are bound (AnLiu sends it again) */
-static void ws_send(npf_path *p, const uint8_t *dgram, size_t len)
+void path_ws_tx(npf_path *p, const uint8_t *dgram, size_t len)
 {
     npf_call *c = CALL_OF(p, pw.p);
     if (!c->pw.wsr || npf_wsr_pending(c->pw.wsr) > WS_QUEUE_MAX || npf_wsr_queue(c->pw.wsr, dgram, len) < 0)
@@ -144,8 +144,9 @@ void path_ws_tick(npf_call *c)
 
 /* nothing from the relay for 30 s (pm_tick): the TCP connection is
  * half-open (lost on the way without a word, the relay restarted): closed,
- * connected again at once */
-static void ws_suspect(npf_path *p, int64_t quiet)
+ * connected again at once. Its probe is a new connection, its verdict
+ * WS_RECONNECTS of them that did not pair (not by pm_tick's clock). */
+void path_ws_suspect(npf_path *p, int64_t quiet)
 {
     npf_call *c = CALL_OF(p, pw.p);
     npf_logw("call %s: nothing from the WS relay for %lld s: its connection is half-open", c->call_id_s,
@@ -154,9 +155,6 @@ static void ws_suspect(npf_path *p, int64_t quiet)
     call_ws_leave_conn(c);
     ws_reconnect(c);
 }
-
-/* its probe is a new connection, its verdict WS_RECONNECTS of them that did not pair */
-const npf_path_ops path_ws_ops = {ws_send, ws_suspect, NULL, NULL};
 
 /* The WS relay failed (architecture.md 3.5, Q5). Before it ever worked, or
  * WS_RECONNECTS times in a row after: DEAD (pm_decide: the caller asks for

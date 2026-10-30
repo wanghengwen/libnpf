@@ -22,20 +22,18 @@ enum { PR_IDLE, PR_PRIMARY, PR_SECOND, PR_STANDBY };     /* the role the manager
 
 typedef struct npf_path npf_path;
 
-/* tx: one AnLiu datagram, the hot path: no allocation, no lookup (Windows'
- * headers make send a macro). The health rules' events (pm_tick), the path
- * SUSPECT or DEAD already: silent for quiet ms while relied on (busy_since
- * set: with data in flight), a probe due, the verdict's time up; NULL for a
- * kind whose rules have no such time (pm_rules) */
-typedef struct npf_path_ops {
-    void (*tx)(npf_path *p, const uint8_t *dgram, size_t len);
-    void (*suspect)(npf_path *p, int64_t quiet);
-    void (*probe)(npf_path *p);
-    void (*dead)(npf_path *p);
-} npf_path_ops;
+/* tx / health events: by kind (path_direct_*, path_udp_*, path_ws_*), not a
+ * vtable; the three kinds are fixed. Windows' headers make send a macro. */
+void path_direct_tx(npf_path *p, const uint8_t *dgram, size_t len);
+void path_udp_tx(npf_path *p, const uint8_t *dgram, size_t len);
+void path_ws_tx(npf_path *p, const uint8_t *dgram, size_t len);
+void path_direct_suspect(npf_path *p, int64_t quiet);
+void path_udp_suspect(npf_path *p, int64_t quiet);
+void path_ws_suspect(npf_path *p, int64_t quiet);
+void path_direct_probe(npf_path *p);
+void path_direct_dead(npf_path *p);
 
 struct npf_path {                   /* the times: monotonic ms */
-    const npf_path_ops *ops;
     uint8_t  kind, health, role;
     int64_t  since;                 /* up since */
     int64_t  last_rx;               /* the peer last heard on it (the UDP relay: its answers too; the WS relay: any frame) */
@@ -148,10 +146,16 @@ static inline int pm_relied(const npf_pm *m, const npf_path *p)
 
 static inline void pm_send(const npf_pm *m, const uint8_t *dgram, size_t len)
 {
-    if (m->primary)
-        m->primary->ops->tx(m->primary, dgram, len);
-    if (m->second)
-        m->second->ops->tx(m->second, dgram, len);
+    npf_path *p;
+    if ((p = m->primary)) {
+        switch (p->kind) {
+        case PK_DIRECT:    path_direct_tx(p, dgram, len); break;
+        case PK_UDP_RELAY: path_udp_tx(p, dgram, len); break;
+        case PK_WS_RELAY:  path_ws_tx(p, dgram, len); break;
+        }
+    }
+    if ((p = m->second))
+        path_udp_tx(p, dgram, len);     /* second is only the UDP relay */
 }
 
 /* the path in use: precisely ("p2p", "relay", "relay (binding)", "ws
@@ -160,7 +164,5 @@ static inline void pm_send(const npf_pm *m, const uint8_t *dgram, size_t len)
 const char *pm_name(const npf_pm *m);
 const char *pm_label(const npf_pm *m);
 int pm_code(const npf_pm *m);
-
-extern const npf_path_ops path_direct_ops, path_udp_ops, path_ws_ops;
 
 #endif

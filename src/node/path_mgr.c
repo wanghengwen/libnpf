@@ -31,6 +31,46 @@ static int64_t min64(int64_t a, int64_t b)
     return a < b ? a : b;
 }
 
+/* Unit tests of the rules (test_path_health): when set, these run instead of
+ * the path's reaction (fake paths are not embedded in a call). Production
+ * never sets them; not on the datagram path. */
+void (*pm_hook_suspect)(npf_path *p, int64_t quiet);
+void (*pm_hook_probe)(npf_path *p);
+void (*pm_hook_dead)(npf_path *p);
+
+static void path_do_suspect(npf_path *p, int64_t quiet)
+{
+    if (pm_hook_suspect) {
+        pm_hook_suspect(p, quiet);
+        return;
+    }
+    switch (p->kind) {
+    case PK_DIRECT:    path_direct_suspect(p, quiet); break;
+    case PK_UDP_RELAY: path_udp_suspect(p, quiet); break;
+    case PK_WS_RELAY:  path_ws_suspect(p, quiet); break;
+    }
+}
+
+static void path_do_probe(npf_path *p)
+{
+    if (pm_hook_probe) {
+        pm_hook_probe(p);
+        return;
+    }
+    if (p->kind == PK_DIRECT)
+        path_direct_probe(p);
+}
+
+static void path_do_dead(npf_path *p)
+{
+    if (pm_hook_dead) {
+        pm_hook_dead(p);
+        return;
+    }
+    if (p->kind == PK_DIRECT)
+        path_direct_dead(p);
+}
+
 /* the roles from the paths in use and their health (path.h npf_pm); a
  * direct path given up carries nothing */
 static void pm_route(npf_pm *m)
@@ -116,7 +156,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             } else {
                 if (now >= p->probe_at) {
                     p->probe_at = now + r->t_probe;
-                    p->ops->probe(p);
+                    path_do_probe(p);
                     if (m->p[k] != p || p->health != PH_UP)
                         continue;
                 }
@@ -149,7 +189,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
                 continue;
             }
             pm_suspect(m, p, now);
-            p->ops->suspect(p, quiet);
+            path_do_suspect(p, quiet);
             if (m->p[k] != p || p->health != PH_SUSPECT)
                 continue;                   /* gone, or proven already */
         }
@@ -157,12 +197,12 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             continue;
         if (r->t_verdict && now - p->suspect_at >= r->t_verdict) {
             pm_health(m, p, PH_DEAD);
-            p->ops->dead(p);
+            path_do_dead(p);
             continue;
         }
         if (r->t_probe && now >= p->probe_at) {
             p->probe_at = now + r->t_probe;
-            p->ops->probe(p);
+            path_do_probe(p);
             if (m->p[k] != p || p->health != PH_SUSPECT)
                 continue;
         }
@@ -266,12 +306,9 @@ int pm_code(const npf_pm *m)
 /* a new call's paths: none in use */
 void call_paths_init(npf_call *c)
 {
-    c->pd.p.ops = &path_direct_ops;
     c->pd.p.kind = PK_DIRECT;
     c->pd.fd = -1;
-    c->pu.p.ops = &path_udp_ops;
     c->pu.p.kind = PK_UDP_RELAY;
-    c->pw.p.ops = &path_ws_ops;
     c->pw.p.kind = PK_WS_RELAY;
     c->pm.udp_again = c->n->th.udp_again_ms ? c->n->th.udp_again_ms : PM_UDP_AGAIN_MS;
     c->pm.heard_at = -1;
