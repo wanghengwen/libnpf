@@ -33,6 +33,7 @@
 #define NPF_LOCAL_MAX_FWD   16
 #define NPF_LOCAL_MAX_START 32
 #define NPF_LOCAL_MAX_EXT   8       /* the modules' keys, per device */
+#define NPF_LOCAL_EXT_KEY   47      /* bytes of a module's key, at most */
 #define NPF_NICK_MAX        128     /* bytes of UTF-8 (the platform takes 128) */
 
 /* a saved forward */
@@ -114,7 +115,7 @@ void npf_local_fwd_clear(npf_ldev *d);
  * value as JSON text, NULL when unset; valid until the key is set again.
  * npf_local_ext_set copies json, which must be valid JSON (it is written to
  * the file unchecked); NULL removes the key. 0, or -1: NPF_LOCAL_MAX_EXT
- * keys, or no memory. */
+ * keys, a key longer than NPF_LOCAL_EXT_KEY, or no memory. */
 const char *npf_local_ext(const npf_ldev *d, const char *key);
 int  npf_local_ext_set(npf_ldev *d, const char *key, const char *json);
 

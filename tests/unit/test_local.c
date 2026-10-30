@@ -68,6 +68,9 @@ int test_local(void)
           && npf_local_ext_set(d, "apps", "[{\"name\": \"管理 \\\"页面\\\"\", \"forward\": \"-L 28290:127.0.0.1:28290\"}]") == 0
           && npf_local_ext_set(d, "gone", "1") == 0 && npf_local_ext_set(d, "gone", NULL) == 0
           && !npf_local_ext(d, "gone"), "module keys set");
+    CHECK(npf_local_ext_set(d, "k23456789012345678901234567890123456789012345678", "1") < 0
+          && npf_local_ext_set(d, "k2345678901234567890123456789012345678901234567", "2") == 0,
+          "a key over NPF_LOCAL_EXT_KEY bytes refused, one of that many kept");
     d->has_key = 1;
     memset(d->key, 7, 32);
     d = npf_local_dev(&l, "203.0.113.5:9850", 1);
@@ -85,7 +88,8 @@ int test_local(void)
           "the device record back (forwards as records, port 0 kept, a module's kind in its form)");
     CHECK(d && d->on_demand && d->idle_ms == 60000, "a saved peer on demand");
     CHECK(npf_local_by_name(&m, "dev") == d && !npf_local_by_name(&m, "nas"), "by name");
-    CHECK(d->next == 2 && npf_local_ext(d, "nick_synced") && strcmp(npf_local_ext(d, "nick_synced"), "\"\"") == 0
+    CHECK(d->next == 3 && npf_local_ext(d, "k2345678901234567890123456789012345678901234567")
+          && npf_local_ext(d, "nick_synced") && strcmp(npf_local_ext(d, "nick_synced"), "\"\"") == 0
           && npf_local_ext(d, "apps")
           && strcmp(npf_local_ext(d, "apps"),
                     "[{\"name\": \"管理 \\\"页面\\\"\", \"forward\": \"-L 28290:127.0.0.1:28290\"}]") == 0,
