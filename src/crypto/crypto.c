@@ -38,7 +38,7 @@ void npf_kdf2(uint8_t out[32], const void *key, size_t key_len,
 }
 
 #ifndef NPF_USE_OPENSSL
-static const uint8_t zero16[16];
+static const uint8_t zero16[16] = {0};
 
 static void poly_tag(uint8_t tag[16], const uint8_t key[32], const uint8_t nonce[12],
                      const uint8_t *ad, size_t ad_len, const uint8_t *ct, size_t len)
@@ -202,7 +202,7 @@ int npf_verify2(const uint8_t sig[64], const uint8_t pub[32],
 
 int npf_x25519(uint8_t shared[32], const uint8_t sk[32], const uint8_t pk[32])
 {
-    static const uint8_t zero[32];
+    static const uint8_t zero[32] = {0};
 #ifdef NPF_USE_OPENSSL
     if (ossl_dh(shared, sk, pk) < 0) return -1;
 #else

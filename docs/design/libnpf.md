@@ -25,7 +25,7 @@
 
 ## 2. 构建与集成
 
-需要 CMake 3.16 或更新版本、GCC 或 Clang（C99 加上 `__atomic` 内建函数与 `__thread`；Windows 上用 MinGW-w64，不支持 MSVC）和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher 和 mbedTLS；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
+需要 CMake 3.16 或更新版本、一个 C99 编译器（GCC、Clang，或 Windows 上的 MinGW-w64 与 MSVC：Visual Studio 2019 起，x64；单元测试只在 POSIX 系统上编译，MSVC 版由 `scripts/msvc-check.sh` 编译并跑 `tests/msvc/smoke.c`）和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher 和 mbedTLS；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib
@@ -52,7 +52,7 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 
 **产物**
 
-- 共享库：`libnpf.so.1`（Linux）、`libnpf.dylib`（macOS）、`libnpf.dll` 与导入库（Windows / MinGW）；
+- 共享库：`libnpf.so.1`（Linux）、`libnpf.dylib`（macOS）、`libnpf.dll` 与导入库（Windows / MinGW）、`npf.dll` 与 `npf.lib`（MSVC）；
 - 静态库：Linux 上的 `libnpf.a` 是一个可重定位目标，除 npf.h 的函数外全部符号都是局部的，内置的 AnLiu、Monocypher、mbedTLS 不会和应用自己的同名库冲突。macOS、Windows 暂不做这一步；
 - 所有目标文件都以隐藏可见性编译，导出的只有 npf.h 的 `npf_*` 函数；Windows DLL 的导出表是 `src/api/npf.def`，`npf.h` 加函数时一起加（ctest 的 `exports` 对照）；
 - `npf.pc` 的 `Libs.private`：POSIX 上 `-lpthread`，Windows 上 `npf_common` 链接的系统库（`ws2_32`、`iphlpapi`、`bcrypt`、`winmm`、`advapi32`）。

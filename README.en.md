@@ -20,7 +20,7 @@ It is the core of the "Chuanshanjia" (pangolin) remote access service. Its trans
 
 ## Building
 
-CMake 3.16 or later and GCC or Clang (C99 with the `__atomic` builtins and `__thread`; MinGW-w64 on Windows, not MSVC).
+CMake 3.16 or later and a C99 compiler: GCC, Clang, or on Windows MinGW-w64 and MSVC (Visual Studio 2019 or later, x64; `scripts/msvc-check.sh` builds with MSVC from WSL and runs a smoke test). The unit tests build on POSIX systems only.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "npf/lock.h"
+#include "npf/atomic.h"
 #include "npf/log.h"
 #include "npf/out.h"
 #include "npf/platform.h"
@@ -24,9 +25,6 @@ void npf_log_unlock(void) { npf_mutex_unlock(&g_lock); }
 static void (*g_writer)(const char *line, size_t len);     /* NULL: stderr */
 static int   g_level = NPF_LOG_INFO;     /* the process's; atomic */
 static NPF_THREAD_LOCAL npf_log_ctx *t_ctx;
-
-#define LOAD(v)     __atomic_load_n(&(v), __ATOMIC_RELAXED)
-#define STORE(v, x) __atomic_store_n(&(v), (x), __ATOMIC_RELAXED)
 
 #define RING NPF_LOG_RING             /* recent lines for the log command */
 static char   g_ring[RING];
@@ -100,7 +98,7 @@ npf_log_ctx *npf_log_ctx_swap(npf_log_ctx *c)
 
 static int level_now(void)
 {
-    return t_ctx ? t_ctx->level : LOAD(g_level);
+    return t_ctx ? t_ctx->level : npf_atomic_get(&g_level);
 }
 
 void npf_log_at(int level, const char *file, int line, const char *fmt, ...)
@@ -140,7 +138,7 @@ void npf_log_set_level(int level)
     if (t_ctx)
         t_ctx->level = level;
     else
-        STORE(g_level, level);
+        npf_atomic_set(&g_level, level);
 }
 
 int npf_log_get_level(void)

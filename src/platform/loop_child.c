@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include "npf/out.h"
+#include "npf/atomic.h"
 #include "npf/platform.h"
 
 #include "loop_int.h"
@@ -59,7 +60,7 @@ int npf_loop_attach(npf_loop *c, const npf_child_fns *fns, void *arg)
 int64_t loop_child_due(npf_loop *c)
 {
     int64_t d = c->nheap > 0 ? c->heap[0]->due : INT64_MAX;
-    if (__atomic_load_n(&c->woken, __ATOMIC_ACQUIRE) || (__atomic_load_n(&c->stop, __ATOMIC_ACQUIRE) && !c->ending))
+    if (npf_atomic_get(&c->woken) || (npf_atomic_get(&c->stop) && !c->ending))
         return 0;
     if (c->ending && c->end_due < d)
         d = c->end_due;
@@ -72,9 +73,9 @@ void loop_run_kids(npf_loop *l)
     int k;
     for (k = 0; k < l->nkids; k++) {
         npf_loop *c = l->kids[k];
-        int woken = __atomic_load_n(&c->woken, __ATOMIC_ACQUIRE);
+        int woken = npf_atomic_get(&c->woken);
         int timers = c->nheap > 0 && c->heap[0]->due <= l->now;
-        int stop = __atomic_load_n(&c->stop, __ATOMIC_ACQUIRE);
+        int stop = npf_atomic_get(&c->stop);
         npf_log_ctx *prev;
         if (!woken && !timers && !stop)
             continue;

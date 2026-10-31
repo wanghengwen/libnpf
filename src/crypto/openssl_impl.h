@@ -8,16 +8,16 @@
 #include <openssl/evp.h>
 #include <openssl/core_names.h>
 #include <openssl/crypto.h>
+#include "npf/atomic.h"
 
 #define OSSL_FETCHED(T, fn, fetch, release)                                                        \
     static T *fn(void)                                                                             \
     {                                                                                              \
-        static T *cached;                                                                          \
-        T *p = __atomic_load_n(&cached, __ATOMIC_ACQUIRE), *none = NULL;                           \
-        if (!p && (p = fetch) != NULL                                                              \
-            && !__atomic_compare_exchange_n(&cached, &none, p, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) { \
+        static void *cached;                                                                       \
+        T *p = npf_atomic_getp(&cached);                                                           \
+        if (!p && (p = fetch) != NULL && !npf_atomic_initp(&cached, p)) {                          \
             release(p);                                                                            \
-            p = none;                                                                              \
+            p = npf_atomic_getp(&cached);                                                          \
         }                                                                                          \
         return p;                                                                                  \
     }

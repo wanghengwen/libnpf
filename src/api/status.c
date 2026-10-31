@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
+#include "npf/atomic.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -16,7 +17,7 @@
  * or the caller's key fingerprint; "-" before the handshake */
 const char *npf_who(const npf_call_info *i, char *buf, size_t cap)
 {
-    static const uint8_t zero[32];
+    static const uint8_t zero[32] = {0};
     if (i->number)
         snprintf(buf, cap, "%llu", (unsigned long long)i->number);
     else if (memcmp(i->peer_pub, zero, 32) != 0)
@@ -129,14 +130,14 @@ static void host_out(npf_out *o)
 {
     static npf_host_info hi;
     static int got, lock;
-    if (!__atomic_load_n(&got, __ATOMIC_ACQUIRE)) {
-        while (__atomic_exchange_n(&lock, 1, __ATOMIC_ACQUIRE))
+    if (!npf_atomic_get(&got)) {
+        while (npf_atomic_swap(&lock, 1))
             ;
         if (!got) {
             npf_host_info_get(&hi);
-            __atomic_store_n(&got, 1, __ATOMIC_RELEASE);
+            npf_atomic_set(&got, 1);
         }
-        __atomic_store_n(&lock, 0, __ATOMIC_RELEASE);
+        npf_atomic_set(&lock, 0);
     }
     npf_out_jobj(o);
     npf_out_kstr(o, "os", hi.os);

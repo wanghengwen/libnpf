@@ -20,7 +20,7 @@ libnpf：一个 C99 写的 P2P 网络库，让 NAT 后面的设备打洞直连�
 
 ## 构建
 
-需要 CMake 3.16 起和 GCC 或 Clang（C99 加上 `__atomic` 内建函数与 `__thread`；Windows 上用 MinGW-w64，不支持 MSVC）。
+需要 CMake 3.16 起和一个 C99 编译器：GCC、Clang，或 Windows 上的 MinGW-w64 与 MSVC（Visual Studio 2019 起，x64；`scripts/msvc-check.sh` 从 WSL 用 MSVC 编译并跑一个冒烟测试）。单元测试只在 POSIX 系统上编译。
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

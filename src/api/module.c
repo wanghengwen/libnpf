@@ -69,8 +69,10 @@ int npf_register_module(const npf_module *m)
 
 void npf_mods_take(npf_t *n)
 {
+    int i;
     MODS_LOCK();
-    memcpy(n->mods, g_mods, sizeof n->mods);
+    for (i = 0; i <= NPF_MOD_MAX; i++)
+        n->mods[i] = g_mods[i];
     MODS_UNLOCK();
 }
 

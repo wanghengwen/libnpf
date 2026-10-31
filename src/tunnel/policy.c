@@ -10,7 +10,7 @@
 
 #define REFRESH_MS 30000
 
-static const uint8_t lo6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, zero[16];  /* ::1, :: */
+static const uint8_t lo6[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}, zero[16] = {0};  /* ::1, :: */
 
 static int prefix_match(const uint8_t *a, const uint8_t *b, int bits)
 {

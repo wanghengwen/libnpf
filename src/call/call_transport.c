@@ -760,7 +760,7 @@ void call_key_shares_free(npf_node *n)
 npf_tunnel *call_tunnel_new(npf_call *c)
 {
     npf_tunnel *t = npf_tunnel_new(c->n->loop, c->caller, &tun_io, c, call_policy(c));
-    static const uint8_t zero[32];
+    static const uint8_t zero[32] = {0};
     if (!t)
         return NULL;
     if (c->n->budget)

@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "npf/out.h"
+#include "npf/atomic.h"
 #include "npf/platform.h"
 
 #include "loop_int.h"
@@ -278,7 +279,7 @@ static void run_posted(npf_loop *l)
 void loop_run_woken(npf_loop *l)
 {
     /* other threads and signal handlers set it: an atomic exchange */
-    if (__atomic_exchange_n(&l->woken, 0, __ATOMIC_ACQ_REL)) {
+    if (npf_atomic_swap(&l->woken, 0)) {
         if (l->wake_fn)
             l->wake_fn(l, l->wake_arg);
     }
@@ -775,7 +776,7 @@ void npf_loop_once(npf_loop *l, int max_ms)
  * signal handler; write() and send() are async-signal-safe */
 void npf_loop_wake(npf_loop *l)
 {
-    __atomic_store_n(&l->woken, 1, __ATOMIC_RELEASE);
+    npf_atomic_set(&l->woken, 1);
     if (l->host) {
         npf_loop_wake(l->host);
         return;
@@ -793,7 +794,7 @@ void npf_loop_wake(npf_loop *l)
 
 void npf_loop_stop(npf_loop *l)
 {
-    __atomic_store_n(&l->stop, 1, __ATOMIC_RELEASE);
+    npf_atomic_set(&l->stop, 1);
     npf_loop_wake(l);
 }
 
@@ -848,7 +849,7 @@ void npf_timer_cancel(npf_loop *l, npf_timer *t)
 /* a stop requested before run (an early service stop) is kept */
 void npf_loop_run(npf_loop *l)
 {
-    while (!__atomic_load_n(&l->stop, __ATOMIC_ACQUIRE)) {
+    while (!npf_atomic_get(&l->stop)) {
         loop_run_woken(l);          /* a signal that arrived during a callback */
         npf_loop_once(l, -1);
     }

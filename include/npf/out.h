@@ -39,8 +39,10 @@ typedef struct npf_out {
 
 #ifdef __MINGW32__
 void npf_out_printf(npf_out *o, const char *fmt, ...) __attribute__((format(gnu_printf, 2, 3)));
-#else
+#elif defined(__GNUC__)
 void npf_out_printf(npf_out *o, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+#else
+void npf_out_printf(npf_out *o, const char *fmt, ...);
 #endif
 void npf_out_vprintf(npf_out *o, const char *fmt, va_list ap);
 /* Appending to a failed npf_out does nothing. */

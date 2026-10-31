@@ -19,11 +19,14 @@
 
 enum { NPF_LOG_TRACE, NPF_LOG_DEBUG, NPF_LOG_INFO, NPF_LOG_WARN, NPF_LOG_ERROR };
 
-/* MinGW: checked against the C99 formats (%zu, %lld) its own printf has */
+/* MinGW: checked against the C99 formats (%zu, %lld) its own printf has;
+ * MSVC: not checked */
 #ifdef __MINGW32__
 #define NPF_LOG_FORMAT __attribute__((format(gnu_printf, 4, 5)))
-#else
+#elif defined(__GNUC__)
 #define NPF_LOG_FORMAT __attribute__((format(printf, 4, 5)))
+#else
+#define NPF_LOG_FORMAT
 #endif
 /* Writes a line when level is at or above the current level. Messages are
  * cut at 2 KB. */

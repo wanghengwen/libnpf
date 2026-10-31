@@ -11,7 +11,9 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "npf/atomic.h"
 #include "npf/crypto.h"
+#include "npf/lock.h"
 #include "npf/log.h"
 #include "npf/platform.h"
 #include "npf/sys.h"
@@ -461,29 +463,42 @@ int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
 
 /* ---- the node's UDP sockets (sys.h) ---- */
 
+static npf_mutex g_udp_hook_mu = NPF_MUTEX_INIT;   /* the hook and its arg, set together */
 static npf_udp_hook_fn g_udp_hook;
 static void *g_udp_hook_arg;
-static int g_udp_hook_failed;               /* the last one failed: said once until one works */
+static int g_udp_hook_failed;               /* atomic: the last one failed, said once until one works */
 
 void npf_udp_hook_set(npf_udp_hook_fn fn, void *arg)
 {
-    __atomic_store_n(&g_udp_hook_arg, arg, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_udp_hook, fn, __ATOMIC_RELEASE);
+    npf_mutex_lock(&g_udp_hook_mu);
+    g_udp_hook = fn;
+    g_udp_hook_arg = arg;
+    npf_mutex_unlock(&g_udp_hook_mu);
+}
+
+static npf_udp_hook_fn udp_hook(void **arg)
+{
+    npf_udp_hook_fn fn;
+    npf_mutex_lock(&g_udp_hook_mu);
+    fn = g_udp_hook;
+    *arg = g_udp_hook_arg;
+    npf_mutex_unlock(&g_udp_hook_mu);
+    return fn;
 }
 
 int npf_net_bypass(int fd, int family)
 {
-    npf_udp_hook_fn fn = __atomic_load_n(&g_udp_hook, __ATOMIC_ACQUIRE);
+    void *arg;
+    npf_udp_hook_fn fn = udp_hook(&arg);
     if (fd < 0)
         return 0;
-    if (!fn)
-        fn = npf_vpn_bypass;
-    return fn(fd, family, __atomic_load_n(&g_udp_hook_arg, __ATOMIC_ACQUIRE));
+    return (fn ? fn : npf_vpn_bypass)(fd, family, arg);
 }
 
 int npf_net_bypass_active(void)
 {
-    return __atomic_load_n(&g_udp_hook, __ATOMIC_ACQUIRE) != NULL || npf_vpn_in_way();
+    void *arg;
+    return udp_hook(&arg) != NULL || npf_vpn_in_way();
 }
 
 int npf_udp_socket(int family, int blocking, int bypass)
@@ -492,9 +507,9 @@ int npf_udp_socket(int family, int blocking, int bypass)
     if (fd < 0 || !bypass)
         return fd;
     r = npf_net_bypass(fd, family);
-    if (r < 0 && !__atomic_exchange_n(&g_udp_hook_failed, 1, __ATOMIC_RELAXED))
+    if (r < 0 && !npf_atomic_swap(&g_udp_hook_failed, 1))
         npf_logw("udp: the socket stays on the default route (the platform could not bind it: %d)", r);
     else if (r >= 0)
-        __atomic_store_n(&g_udp_hook_failed, 0, __ATOMIC_RELAXED);
+        npf_atomic_set(&g_udp_hook_failed, 0);
     return fd;
 }

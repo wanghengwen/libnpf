@@ -21,6 +21,10 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <sys/types.h>
+#ifdef _MSC_VER                 /* what MinGW's headers have and MSVC's do not */
+typedef SSIZE_T ssize_t;
+#define strtok_r strtok_s
+#endif
 
 #ifndef MSG_DONTWAIT
 #define MSG_DONTWAIT 0          /* npf sockets are non-blocking already */

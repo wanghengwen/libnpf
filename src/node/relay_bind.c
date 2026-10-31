@@ -110,7 +110,7 @@ static int relay_bind_pack(relay_c *r, npf_node *n, int flags, uint32_t ping_id,
 
 int relay_ws_bind(npf_node *n, const npf_siv_keys *k, const uint8_t id[8], uint64_t kseq, uint8_t *wire)
 {
-    static const uint8_t none[RELAY_COOKIE_SIZE];
+    static const uint8_t none[RELAY_COOKIE_SIZE] = {0};
     uint8_t txid[NPF_TXID_SIZE];
     int w;
     memcpy(wire, id, 8);
@@ -216,7 +216,7 @@ int relay_bind_open(relay_c *r, const uint8_t *buf, size_t len, const struct soc
 
 int relay_bind_ack(relay_c *r, npf_node *n, const uint8_t *plain, size_t pl, relay_ack *a)
 {
-    static const uint8_t none[NPF_TXID_SIZE];
+    static const uint8_t none[NPF_TXID_SIZE] = {0};
     const uint8_t *txid = plain + 4;
     uint32_t ts;
     int64_t now = npf_mono_ms(), d;

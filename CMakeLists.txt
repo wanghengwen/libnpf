@@ -3,6 +3,8 @@
 # program's settings then. A program's modules (include/npf/module.h) are its
 # own code: they link npf_common and are registered at npf_create.
 cmake_minimum_required(VERSION 3.16)
+# the sources are UTF-8 (MSVC reads them in the system's code page otherwise)
+add_compile_options($<$<C_COMPILER_ID:MSVC>:/utf-8>)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   project(libnpf VERSION 0.1.4 LANGUAGES C)
   set(npf_VERSION ${libnpf_VERSION})
@@ -54,6 +56,9 @@ message(STATUS "AnLiu: ${NPF_ANLIU_DIR}")
 add_library(anliu STATIC "${NPF_ANLIU_DIR}/anliu.c")
 target_include_directories(anliu PUBLIC "${NPF_ANLIU_DIR}")
 npf_target_options(anliu)
+if(MSVC)
+  target_compile_options(anliu PRIVATE /wd4018)   # upstream's: a signed and unsigned comparison GCC does not flag
+endif()
 
 # Server builds can use OpenSSL without the process-wide mbedTLS lock.
 option(NPF_USE_OPENSSL "Use OpenSSL 3 for TLS and application crypto" OFF)

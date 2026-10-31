@@ -53,7 +53,7 @@ const char *npf_cmd_get(npf_t *n, const char *k, char *buf, size_t cap);
 struct npf_api_sync {
     npf_mutex mu;
     npf_cond  cv;
-    unsigned calls;                 /* public calls in progress: npf_destroy waits for them */
+    int      calls;                 /* public calls in progress (atomic): npf_destroy waits for them */
     int destroying;
 };
 

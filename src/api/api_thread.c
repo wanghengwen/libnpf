@@ -5,6 +5,7 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
+#include "npf/atomic.h"
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,11 +51,11 @@ int api_enter(npf_t *n)
     int ok;
     if (!n)
         return 0;
-    __atomic_add_fetch(&n->sync->calls, 1, __ATOMIC_SEQ_CST);
+    npf_atomic_add(&n->sync->calls, 1);
     LOCK();
     ok = !n->sync->destroying;
     if (!ok) {
-        __atomic_sub_fetch(&n->sync->calls, 1, __ATOMIC_SEQ_CST);
+        npf_atomic_add(&n->sync->calls, -1);
         WAKE();
     }
     UNLOCK();
@@ -64,7 +65,7 @@ int api_enter(npf_t *n)
 void api_leave(npf_t *n)
 {
     LOCK();
-    __atomic_sub_fetch(&n->sync->calls, 1, __ATOMIC_SEQ_CST);
+    npf_atomic_add(&n->sync->calls, -1);
     WAKE();
     UNLOCK();
 }
@@ -284,7 +285,8 @@ static int begin_run(npf_t *n, unsigned long tid)
 typedef struct rt_thread {
     npf_loop *host;
     void     *th;
-    unsigned long tid;
+    unsigned long tid;                  /* set before up */
+    int       up;                       /* atomic: the thread runs, tid is set */
     int       count;                    /* instances created on it, not destroyed yet */
 } rt_thread;
 
@@ -300,7 +302,8 @@ struct npf_runtime {
 static void rt_main(rt_thread *t)
 {
     on_runtime = 1;
-    __atomic_store_n(&t->tid, self_tid(), __ATOMIC_RELEASE);
+    t->tid = self_tid();
+    npf_atomic_set(&t->up, 1);
     npf_loop_run(t->host);
     npf_scratch_trim();                     /* this thread's (sys.h) */
 }
@@ -361,7 +364,7 @@ npf_runtime *npf_runtime_new(int threads)
         }
     }
     for (i = 0; i < rt->nthreads; i++)      /* the threads' ids: their instances' calls run there directly */
-        while (!__atomic_load_n(&rt->t[i].tid, __ATOMIC_ACQUIRE))
+        while (!npf_atomic_get(&rt->t[i].up))
             npf_sleep_ms(1);
     return rt;
 }
@@ -538,7 +541,7 @@ void npf_destroy(npf_t *n)
     n->sync->destroying = 1;
     n->stopping = 1;
     npf_loop_stop(n->loop);
-    while (__atomic_load_n(&n->sync->calls, __ATOMIC_SEQ_CST) || n->running || n->exec_busy)
+    while (npf_atomic_get(&n->sync->calls) || n->running || n->exec_busy)
         WAIT();
     th = n->thread;
     n->thread = NULL;

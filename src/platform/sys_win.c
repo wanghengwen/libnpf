@@ -151,7 +151,7 @@ int npf_firewall_lead_ms(void)
 int npf_default_gw4(uint32_t *gw)
 {
     MIB_IPFORWARDROW row;
-    if (GetBestRoute(inet_addr("8.8.8.8"), 0, &row) != NO_ERROR || row.dwForwardNextHop == 0)
+    if (GetBestRoute(htonl(0x08080808), 0, &row) != NO_ERROR || row.dwForwardNextHop == 0)
         return -1;
     *gw = row.dwForwardNextHop;             /* network order */
     return 0;

@@ -56,8 +56,8 @@ struct npf_loop {
     size_t     capheap;
     uint64_t   tseq;
     int64_t    now;
-    volatile int stop;
-    volatile int woken;
+    int stop;                   /* atomic (npf/atomic.h) */
+    int woken;                  /* atomic */
     void     (*wake_fn)(npf_loop *l, void *arg);
     void      *wake_arg;
     npf_mutex  post_mu;         /* guards the posted list (other threads append) */
