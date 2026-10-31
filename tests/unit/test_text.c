@@ -74,5 +74,11 @@ int test_text(void)
         EXPECT(npf_http_status(num) < 0);
     }
 
+    EXPECT(npf_prefix_nocase("content-LENGTH: 5", "Content-Length:"));
+    EXPECT(npf_prefix_nocase("abc", "") && npf_prefix_nocase("", ""));
+    EXPECT(!npf_prefix_nocase("Content-Lengt", "Content-Length:"));    /* shorter: no read past it */
+    EXPECT(!npf_prefix_nocase("Content_Length:", "Content-Length:"));
+    EXPECT(!npf_prefix_nocase("\xc3\x89t", "\xe9t"));
+
     return fails;
 }

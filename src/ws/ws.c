@@ -2,7 +2,6 @@
 #ifndef _WIN32
 #define _GNU_SOURCE         /* struct addrinfo (resolve.h) */
 #endif
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +10,7 @@
 #include "npf/out.h"
 #include "npf/platform.h"
 #include "npf/tcp.h"
+#include "npf/text.h"
 #include "npf/ws.h"
 
 enum { ST_CONNECTING, ST_UPGRADE, ST_OPEN, ST_DEAD };     /* ST_CONNECTING: npf_tcp (TLS too) */
@@ -223,13 +223,9 @@ static char *find_mem(const void *h, size_t hl, const char *n, size_t nl)
 
 static char *find_nocase(const char *h, const char *n)
 {
-    size_t nl = strlen(n), i;
-    for (; *h; h++) {
-        for (i = 0; i < nl && h[i] && tolower((unsigned char)h[i]) == tolower((unsigned char)n[i]); i++)
-            ;
-        if (i == nl)
+    for (; *h; h++)
+        if (npf_prefix_nocase(h, n))
             return (char *)h;
-    }
     return NULL;
 }
 

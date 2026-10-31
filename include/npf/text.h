@@ -43,4 +43,7 @@ int npf_hostport(const char *s, char *host, size_t cap, uint16_t *port);
 /* The status code (100..999) of an HTTP/1.x status line, or -1. */
 int npf_http_status(const char *s);
 
+/* s begins with p, ASCII letters in either case: 1, else 0 */
+int npf_prefix_nocase(const char *s, const char *p);
+
 #endif

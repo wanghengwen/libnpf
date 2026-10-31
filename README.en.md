@@ -20,7 +20,7 @@ It is the core of the "Chuanshanjia" (pangolin) remote access service. Its trans
 
 ## Building
 
-CMake 3.16 or later and a C99 compiler.
+CMake 3.16 or later and GCC or Clang (C99 with the `__atomic` builtins and `__thread`; MinGW-w64 on Windows, not MSVC).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -34,7 +34,7 @@ The installed `npf.pc` finds the library and the header relative to where it is,
 | Option | Default | |
 | --- | --- | --- |
 | `NPF_BUILD_LIB` | ON | the shared library (a DLL on Windows) and, on Linux, the static `libnpf.a` |
-| `NPF_BUILD_TESTS` | ON | unit tests, API tests, fuzzing |
+| `NPF_BUILD_TESTS` | ON (OFF on Windows) | unit tests, API tests, fuzzing (POSIX programs: not built on Windows) |
 | `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`, `examples/client.c` (needs `NPF_BUILD_LIB`; not on Windows) |
 | `NPF_PEERS` | ON | sessions this node starts to other nodes; off for a device that is only called, a smaller program |
 | `NPF_PORTMAP` | ON | the router's port mapping (PCP, NAT-PMP) for a node behind a home router; off for a program on a public server (such as the hosted service): the `portmap` setting then does nothing |

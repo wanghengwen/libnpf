@@ -7,10 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
 #include "api_internal.h"
 
 /* ---- account certificate (data_dir/account.cert) ---- */
@@ -43,7 +39,7 @@ void npf_engine_account_load(npf_t *n)
 
 void npf_forget_account(npf_t *n)
 {
-    unlink(n->cert_path);
+    remove(n->cert_path);
     n->node.account_cert_len = 0;
     n->node.account_id = 0;
     n->account_login[0] = 0;

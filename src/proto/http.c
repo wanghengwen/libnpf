@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "npf/http.h"
 #include "npf/out.h"
@@ -117,10 +116,10 @@ static int h_head(npf_http *h)
         return -1;
     for (line = strstr(s, "\r\n") + 2; line < end; line = strstr(line, "\r\n") + 2) {
         char *eol = strstr(line, "\r\n");
-        if (strncasecmp(line, "Transfer-Encoding:", 18) == 0) {
+        if (npf_prefix_nocase(line, "Transfer-Encoding:")) {
             char *v = strstr(line + 18, "chunked");
             h->chunked = v && v < eol;
-        } else if (strncasecmp(line, "Content-Length:", 15) == 0) {
+        } else if (npf_prefix_nocase(line, "Content-Length:")) {
             char *p = line + 15;
             size_t value = 0;
             while (p < eol && (*p == ' ' || *p == '\t')) p++;

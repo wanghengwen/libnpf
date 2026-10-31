@@ -20,7 +20,7 @@ libnpf：一个 C99 写的 P2P 网络库，让 NAT 后面的设备打洞直连�
 
 ## 构建
 
-需要 CMake 3.16 起和 C99 编译器。
+需要 CMake 3.16 起和 GCC 或 Clang（C99 加上 `__atomic` 内建函数与 `__thread`；Windows 上用 MinGW-w64，不支持 MSVC）。
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -34,7 +34,7 @@ cmake --install build --prefix install     # npf.h、共享库、Linux 上另有
 | 选项 | 默认 | 说明 |
 | --- | --- | --- |
 | `NPF_BUILD_LIB` | ON | 共享库（Windows 上是 DLL）与 Linux 上的静态库 `libnpf.a` |
-| `NPF_BUILD_TESTS` | ON | 单元测试、API 测试、模糊测试 |
+| `NPF_BUILD_TESTS` | ON（Windows 上 OFF） | 单元测试、API 测试、模糊测试（POSIX 程序，Windows 上不构建） |
 | `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`、`examples/client.c`（要 `NPF_BUILD_LIB`，Windows 上不构建） |
 | `NPF_PEERS` | ON | 本节点主动连接别的节点；只被连接的设备可以关掉，程序更小 |
 | `NPF_PORTMAP` | ON | 路由器端口映射（PCP、NAT-PMP），给家庭路由器后面的节点用；公网服务器上的程序（如托管服务）可以关掉，关掉后配置项 `portmap` 不起作用 |

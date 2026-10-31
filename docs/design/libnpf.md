@@ -25,7 +25,7 @@
 
 ## 2. 构建与集成
 
-需要 CMake 3.16 或更新版本、C99 编译器和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher 和 mbedTLS；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
+需要 CMake 3.16 或更新版本、GCC 或 Clang（C99 加上 `__atomic` 内建函数与 `__thread`；Windows 上用 MinGW-w64，不支持 MSVC）和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher 和 mbedTLS；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib
@@ -41,7 +41,7 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 | 选项 | 默认 | 说明 |
 |---|---|---|
 | `NPF_BUILD_LIB` | ON | 构建共享库；Linux 上另生成静态库 `libnpf.a`（需要链接器和 objcopy，`NPF_SANITIZE` 时不生成）。可执行文件链接选项带 `-static` 时关闭 |
-| `NPF_BUILD_TESTS` | ON | 单元测试、API 测试、模糊测试 |
+| `NPF_BUILD_TESTS` | ON（Windows 上 OFF） | 单元测试、API 测试、模糊测试（POSIX 程序，Windows 上不构建）；Linux 上另有 `exports`：共享库的导出与 `src/api/npf.def` 一致 |
 | `NPF_BUILD_EXAMPLES` | ON | `examples/device.c`、`examples/client.c`（要 `NPF_BUILD_LIB`，Windows 上不构建） |
 | `NPF_PEERS` | ON | 本节点主动连接别的节点；只被连接的设备可以关掉，程序更小 |
 | `NPF_PORTMAP` | ON | 路由器端口映射（PCP、NAT-PMP），给家庭路由器后面的节点用；公网服务器上的程序（如托管服务）可以关掉，关掉后配置项 `portmap` 不起作用 |
@@ -54,7 +54,8 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 
 - 共享库：`libnpf.so.1`（Linux）、`libnpf.dylib`（macOS）、`libnpf.dll` 与导入库（Windows / MinGW）；
 - 静态库：Linux 上的 `libnpf.a` 是一个可重定位目标，除 npf.h 的函数外全部符号都是局部的，内置的 AnLiu、Monocypher、mbedTLS 不会和应用自己的同名库冲突。macOS、Windows 暂不做这一步；
-- 所有目标文件都以隐藏可见性编译，导出的只有 npf.h 的 `npf_*` 函数。
+- 所有目标文件都以隐藏可见性编译，导出的只有 npf.h 的 `npf_*` 函数；Windows DLL 的导出表是 `src/api/npf.def`，`npf.h` 加函数时一起加（ctest 的 `exports` 对照）；
+- `npf.pc` 的 `Libs.private`：POSIX 上 `-lpthread`，Windows 上 `npf_common` 链接的系统库（`ws2_32`、`iphlpapi`、`bcrypt`、`winmm`、`advapi32`）。
 
 **平台与交叉编译**：代码包含 POSIX 与 Windows 平台适配；Windows 构建以 Windows 10 为最低目标。交叉编译通过 CMake 工具链文件选择目标系统和架构。当前构建脚本只在 Linux 上生成供安装的 `libnpf.a`；iOS 等需要静态库的平台还需补充打包步骤，不能直接套用 Linux 安装产物。移动端应用应自行选择可写的 `data_dir`，并按目标平台验证构建和运行行为。
 

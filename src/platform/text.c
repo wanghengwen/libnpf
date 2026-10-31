@@ -128,3 +128,11 @@ int npf_http_status(const char *s)
     }
     return code >= 100 && (*s == ' ' || *s == '\r' || *s == '\n') ? code : -1;
 }
+
+int npf_prefix_nocase(const char *s, const char *p)
+{
+    for (; *p; s++, p++)
+        if (tolower((unsigned char)*s) != tolower((unsigned char)*p))
+            return 0;
+    return 1;
+}
