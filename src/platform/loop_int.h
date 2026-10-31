@@ -37,6 +37,7 @@ typedef struct handler {
     unsigned  events;
     unsigned  gen;              /* its registration (npf_loop_add): a pfd entry taken from another is stale */
     ep_reg   *reg;              /* in the host's queue (NPF_EVQ) */
+    int64_t   parked;           /* WSAPoll: out of it until then (wait_io) */
 } handler;
 
 #define FREE_HOOKS 4

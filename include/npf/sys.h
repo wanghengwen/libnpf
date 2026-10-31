@@ -225,6 +225,26 @@ int  npf_default_gw4(uint32_t *gw);
 
 /* ======== files and their permissions ======== */
 
+/* Paths are UTF-8 (npf.h). Windows' narrow calls take the ANSI code page,
+ * so there they go through the wide ones: npf_fopen, npf_stat, npf_remove
+ * instead of fopen, stat, remove; npf_wpath for the Win32 calls (0, or -1
+ * with errno: EINVAL not UTF-8, ENAMETOOLONG). */
+#ifdef _WIN32
+#include <stdio.h>
+#include <sys/stat.h>
+typedef struct _stat64 npf_stat_t;
+int   npf_wpath(const char *path, wchar_t *out, size_t cap);
+FILE *npf_fopen(const char *path, const char *mode);
+int   npf_stat(const char *path, npf_stat_t *st);
+int   npf_remove(const char *path);
+#else
+#include <sys/stat.h>
+typedef struct stat npf_stat_t;
+#define npf_fopen  fopen
+#define npf_stat   stat
+#define npf_remove remove
+#endif
+
 /* Makes path and its parents (mode 0700 on POSIX). 0 when it exists after,
  * -1 on error or a path of 1024 bytes or more. */
 int  npf_mkdir_p(const char *path);

@@ -11,7 +11,8 @@
  * the files it names). It writes data_dir: the identity, the number, the
  * pairing state, pinned peer keys, the account certificate, the saved
  * server list, and local.json (settings, peers, forwards and resources saved
- * at run time; its settings override npf.conf's).
+ * at run time; its settings override npf.conf's). Every path given to the
+ * library is UTF-8, on Windows too (not the ANSI code page).
  *
  * Lifecycle: npf_create, then npf_start or npf_run (once, never after
  * npf_stop), npf_stop, and npf_destroy. The run ends with the event

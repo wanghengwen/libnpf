@@ -39,7 +39,7 @@ void npf_engine_account_load(npf_t *n)
 
 void npf_forget_account(npf_t *n)
 {
-    remove(n->cert_path);
+    npf_remove(n->cert_path);
     n->node.account_cert_len = 0;
     n->node.account_id = 0;
     n->account_login[0] = 0;

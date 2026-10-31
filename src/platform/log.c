@@ -58,7 +58,7 @@ static int make_line(int lv, const char *file, int ln, const char *msg, char *li
 #endif
     strftime(tb, sizeof tb, "%Y-%m-%d %H:%M:%S", &tm);
     if (lv <= NPF_LOG_DEBUG) {
-        const char *f = strrchr(file, '/');
+        const char *f = npf_path_sep(file);
         n = snprintf(line, cap, "%s.%03d %s %s (%s:%d)\n", tb, (int)(ms % 1000), tags[lv], msg, f ? f + 1 : file, ln);
     } else {
         n = snprintf(line, cap, "%s.%03d %s %s\n", tb, (int)(ms % 1000), tags[lv], msg);

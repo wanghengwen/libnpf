@@ -35,8 +35,8 @@
 /* the state file as it is now (read or written by us) */
 static void stamp(npf_callee *d, const char *buf, size_t n)
 {
-    struct stat st;
-    if (stat(d->state_path, &st) == 0) {
+    npf_stat_t st;
+    if (npf_stat(d->state_path, &st) == 0) {
         d->state_mtime = st.st_mtime;
         d->state_mtime_ns = MTIME_NS(st);
         d->state_size = (int64_t)st.st_size;
@@ -53,12 +53,12 @@ static void stamp(npf_callee *d, const char *buf, size_t n)
  * after that second was over, still matched */
 static int state_changed(npf_callee *d)
 {
-    struct stat st;
+    npf_stat_t st;
     char *s;
     long n;
     uint8_t h[32];
     int changed;
-    if (stat(d->state_path, &st) != 0)
+    if (npf_stat(d->state_path, &st) != 0)
         return 0;
     if (st.st_mtime != d->state_mtime || MTIME_NS(st) != d->state_mtime_ns || (int64_t)st.st_size != d->state_size)
         return 1;
@@ -80,11 +80,11 @@ static int state_changed(npf_callee *d)
  * be read (*missing: it is not there at all) or parsed */
 static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_json *j, int *missing)
 {
-    struct stat st;
+    npf_stat_t st;
     *tok = NULL;
     *missing = 0;
     if ((*n = npf_file_read(path, s)) < 0) {
-        *missing = stat(path, &st) != 0 && errno == ENOENT;
+        *missing = npf_stat(path, &st) != 0 && errno == ENOENT;
         if (!*missing)
             npf_loge("state: cannot read %s", path);
         return -1;

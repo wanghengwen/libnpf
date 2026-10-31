@@ -88,7 +88,7 @@ int npf_seed_file(const char *path, uint8_t seed[32], int create)
 {
     char *s;
     long n = npf_file_read(path, &s);
-    struct stat st;
+    npf_stat_t st;
     if (n >= 0) {
         int r;
         long len = n;
@@ -100,7 +100,7 @@ int npf_seed_file(const char *path, uint8_t seed[32], int create)
     }
     /* made only when there is none: a key that cannot be read now (its
      * permissions, no descriptors left, an I/O error) is never replaced */
-    if (stat(path, &st) == 0 || errno != ENOENT) {
+    if (npf_stat(path, &st) == 0 || errno != ENOENT) {
         npf_loge("cannot read %s: %s", path, strerror(errno));
         return -1;
     }

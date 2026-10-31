@@ -95,12 +95,12 @@ int npf_plat_request(npf_t *c, const char *type, const char *data, int proof, np
     }
     if (proof && (!(buf = malloc(NPF_JSON_MAX_SIZE))
                   || add_key_proof(&c->node, data && *data ? data : "{}", buf, NPF_JSON_MAX_SIZE) < 0)) {
-        free(buf);
+        npf_wipe_free(buf, NPF_JSON_MAX_SIZE);
         npf_out_printf(err, "bad request data\n");
         return NPF_EINVAL;
     }
     if (!(r = calloc(1, sizeof *r))) {
-        free(buf);
+        npf_wipe_free(buf, NPF_JSON_MAX_SIZE);
         return NPF_ENOMEM;
     }
     r->cb = cb;

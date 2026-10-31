@@ -2,7 +2,8 @@
 # libnpf with MSVC (cl.exe), from WSL: the working tree copied to a Windows
 # directory, built there with CMake and Ninja in the Visual Studio
 # environment (/W4 /WX: a warning fails it), then tests/msvc/smoke.c built
-# against npf.dll and run.
+# against npf.dll and run, and tests/msvc/loop_hup.c (the event loop on
+# WSAPoll) against npf_common.
 #   scripts/msvc-check.sh            (in libnpf's tree)
 # NPF_VCVARS: the vcvars64.bat to use (default: the newest Visual Studio with
 # the C++ tools, by vswhere); NPF_MSVC_DIR: the Windows directory (default
@@ -36,7 +37,9 @@ cmake --build build -- -k 0 || exit /b 1
 cl /nologo /W4 /WX /utf-8 /Isrc\\include src\\tests\\msvc\\smoke.c /Febuild\\smoke.exe /Fobuild\\ build\\npf.lib || exit /b 1
 copy /y build\\bin\\npf.dll build\\ > nul
 dumpbin /nologo /exports build\\bin\\npf.dll > build\\exports.txt || exit /b 1
-build\\smoke.exe
+build\\smoke.exe || exit /b 1
+cl /nologo /MD /W4 /WX /utf-8 /Isrc\\include src\\tests\\msvc\\loop_hup.c /Febuild\\loop_hup.exe /Fobuild\\ build\\npf_common.lib build\\monocypher.lib build\\npf_mbedtls.lib build\\anliu.lib ws2_32.lib iphlpapi.lib bcrypt.lib winmm.lib advapi32.lib || exit /b 1
+build\\loop_hup.exe
 EOF
 printf 'msvc-check: %s, in %s\n' "$vcvars" "$win"
 (cd "$dst" && cmd.exe /c check.bat) > "$dst/check.log" 2>&1

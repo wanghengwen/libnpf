@@ -277,7 +277,7 @@ void npf_conf_set_rel(npf_conf *c, const char *conf_path, const char *k, const c
 int npf_conf_load(npf_conf *c, const char *path)
 {
     char line[4096];
-    FILE *f = fopen(path, "r");
+    FILE *f = npf_fopen(path, "r");
     if (!f)
         return -1;
     if (npf_abspath(path, c->path, sizeof c->path) < 0)
@@ -325,7 +325,7 @@ const char *npf_conf_get(const npf_conf *c, const char *key, const char *def)
 
 long npf_file_read(const char *path, char **out)
 {
-    FILE *f = fopen(path, "rb");
+    FILE *f = npf_fopen(path, "rb");
     long n;
     char *b;
     if (!f)
@@ -348,11 +348,11 @@ long npf_file_read(const char *path, char **out)
 
 int npf_file_unreadable(const char *path)
 {
-    struct stat st;
+    npf_stat_t st;
     FILE *f;
-    if (stat(path, &st) != 0)
+    if (npf_stat(path, &st) != 0)
         return errno == ENOENT ? 0 : errno;
-    if (!(f = fopen(path, "rb")))
+    if (!(f = npf_fopen(path, "rb")))
         return errno ? errno : EACCES;
     fclose(f);
     return EIO;
@@ -368,7 +368,9 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
     HANDLE h;
     DWORD wrote = 0;
     BOOL ok;
-    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp)
+    wchar_t wtmp[1024], wpath[1024];
+    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp || npf_wpath(tmp, wtmp, 1024) < 0
+        || npf_wpath(path, wpath, 1024) < 0)
         return -1;
     memset(&sa, 0, sizeof sa);
     sa.nLength = sizeof sa;
@@ -378,8 +380,8 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
         psa = &sa;
     /* CREATE_ALWAYS on a tmp file someone else made keeps its DACL (and
      * MoveFileEx then the file's): removed, then made new with ours */
-    DeleteFileA(tmp);
-    h = CreateFileA(tmp, GENERIC_WRITE, 0, psa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+    DeleteFileW(wtmp);
+    h = CreateFileW(wtmp, GENERIC_WRITE, 0, psa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (psa)
         LocalFree(sa.lpSecurityDescriptor);
     if (h == INVALID_HANDLE_VALUE)
@@ -387,10 +389,10 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
     ok = (len == 0 || (WriteFile(h, data, (DWORD)len, &wrote, NULL) && wrote == len)) && FlushFileBuffers(h);
     CloseHandle(h);
     if (!ok) {
-        DeleteFileA(tmp);
+        DeleteFileW(wtmp);
         return -1;
     }
-    return MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+    return MoveFileExW(wtmp, wpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
 #else
     int fd;
     if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp)

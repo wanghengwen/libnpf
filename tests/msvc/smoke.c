@@ -1,6 +1,8 @@
 /* The MSVC build's smoke test (scripts/msvc-check.sh), on npf.h alone: two
  * direct instances on this machine, B's session to A, application data
- * there and back (A echoes), then both stopped. The unit tests are POSIX
+ * there and back (A echoes), then both stopped. A's directory has a name
+ * outside the ANSI code page, given as UTF-8: the library makes it and
+ * writes there. The unit tests are POSIX
  * programs; this is what runs on Windows. 0: passed. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,7 +49,6 @@ static npf_t *make(const char *dir, const char *ov, npf_callbacks *cb)
     npf_options o;
     npf_t *n = NULL;
     char err[256] = "";
-    CreateDirectoryA(dir, NULL);
     npf_options_init(&o);
     o.conf_dir = dir;
     o.data_dir = dir;
@@ -72,7 +73,11 @@ static int wait_for(volatile LONG *flag, int ms)
 int main(void)
 {
     static const uint8_t key[32] = {1, 2, 3};
-    char tmp[MAX_PATH], da[MAX_PATH + 16], db[MAX_PATH + 16], ov[160], *st;
+    wchar_t wtmp[MAX_PATH], wa[MAX_PATH + 32];
+    char tmp[3 * MAX_PATH], da[3 * MAX_PATH + 32], db[3 * MAX_PATH + 32], ov[160], *st;
+    WIN32_FIND_DATAW fd;
+    HANDLE fh;
+    int files = 0;
     npf_callbacks ca, cbb;
     npf_peer_opt po;
     npf_t *a, *b = NULL;
@@ -80,8 +85,9 @@ int main(void)
     int port = 27990 + (int)(GetCurrentProcessId() % 9), ok = 0;
 
     printf("libnpf %s, API %d\n", npf_version(), npf_api_version());
-    GetTempPathA(sizeof tmp, tmp);
-    snprintf(da, sizeof da, "%snpf-smoke-a", tmp);
+    GetTempPathW(MAX_PATH, wtmp);
+    WideCharToMultiByte(CP_UTF8, 0, wtmp, -1, tmp, sizeof tmp, NULL, NULL);
+    snprintf(da, sizeof da, "%snpf-smoke-\xce\xb1\xe4\xb8\xad-a", tmp);    /* alpha, zhong (UTF-8) */
     snprintf(db, sizeof db, "%snpf-smoke-b", tmp);
     snprintf(ov, sizeof ov, "udp_port = 0\ndirect = 127.0.0.1:%d\ndirect_psk = AQIDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n", port);
 
@@ -121,6 +127,15 @@ int main(void)
     npf_stop(a);
     npf_destroy(b);
     npf_destroy(a);
+    swprintf(wa, MAX_PATH + 32, L"%lsnpf-smoke-\x03b1\x4e2d-a\\*", wtmp);
+    if ((fh = FindFirstFileW(wa, &fd)) != INVALID_HANDLE_VALUE) {
+        do
+            files += !(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY);
+        while (FindNextFileW(fh, &fd));
+        FindClose(fh);
+    }
+    printf("%s %d files in the UTF-8 directory %s\n", files ? "PASS" : "FAIL", files, da);
+    ok = ok && files;
     printf("%s\n", ok ? "smoke: passed" : "smoke: FAILED");
     return ok ? 0 : 1;
 }

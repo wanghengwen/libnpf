@@ -25,7 +25,8 @@
 static int npf_mkdir(const char *path)
 {
 #ifdef _WIN32
-    int r = _mkdir(path);
+    wchar_t w[1024];
+    int r = npf_wpath(path, w, 1024) < 0 ? -1 : _wmkdir(w);
 #else
     int r = mkdir(path, 0700);
 #endif

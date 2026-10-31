@@ -25,7 +25,7 @@
 
 ## 2. 构建与集成
 
-需要 CMake 3.16 或更新版本、一个 C99 编译器（GCC、Clang，或 Windows 上的 MinGW-w64 与 MSVC：Visual Studio 2019 起，x64；单元测试只在 POSIX 系统上编译，MSVC 版由 `scripts/msvc-check.sh` 编译并跑 `tests/msvc/smoke.c`）和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher 和 mbedTLS；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
+需要 CMake 3.16 或更新版本、一个 C99 编译器（GCC、Clang，或 Windows 上的 MinGW-w64 与 MSVC：Visual Studio 2019 起，x64；单元测试只在 POSIX 系统上编译，MSVC 版由 `scripts/msvc-check.sh` 编译并跑 `tests/msvc/` 的两个程序；Windows 建议 Windows 10 2004 起：更早的版本上 `WSAPoll` 不报告被拒绝的非阻塞 `connect`，只能等连接超时）和平台线程库。默认使用 `third_party/` 中的 AnLiu、Monocypher 和 mbedTLS；启用 `NPF_USE_OPENSSL` 时还需要 OpenSSL 3 的开发文件。下面以 Linux 和 `pkg-config` 为例，固定安装库目录为 `lib`：
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib
@@ -220,6 +220,8 @@ npf_destroy(cli);
 - **配置文件**：`conf_dir` 里的 `npf.conf`（或 `conf_file`），每行 `key = value`。
 
 `npf_setup` 的字段会转换为内部配置键，再进入相同的初始化流程；`npf_config_get` 仍按键查询。秘密键 `password`、`cred`、`model_cred`、`direct_psk` 返回 `(hidden)`。两种入口的区别主要在参数来源、默认值和文件路径处理。
+
+所有路径（目录、`conf_file`、服务器列表、`psk_file` 等）都是 UTF-8，Windows 上也一样：库在 Windows 上把它们转成 UTF-16 再调用宽字符的文件 API，不经过 ANSI 代码页。所以宿主程序不需要 UTF-8 代码页清单（npf 程序自己有这个清单，它的命令行参数和环境变量本来就是 UTF-8）。
 
 没有对应字段的配置键，例如其他 `hosted_*` 键、`sig_idle_s`、`resource` 行和模块配置，可以写入 `npf_options.overrides`，格式为多行 `key = value`。使用 `npf_setup` 时，`overrides` 不能再包含下表对应的键，即使对应字段保持默认值也不行；冲突返回 `NPF_EINVAL`。`serial_file`、`direct_psk_file` 也不能通过该方式传入，应使用 `serial`、`direct_psk` 字段。配置文件入口没有这一字段冲突限制。
 

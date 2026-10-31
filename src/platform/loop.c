@@ -617,6 +617,7 @@ int npf_loop_add(npf_loop *l, int fd, unsigned events, npf_io_fn fn, void *arg)
     h->active = 1;
     h->gen = ++l->gen;
     h->reg = NULL;
+    h->parked = 0;
     idx_put(l, fd, i);
     l->hfree = i + 1;
     if (ep_add(l, h) < 0) {             /* it would never be called: the caller hears it */
@@ -634,6 +635,7 @@ int npf_loop_mod(npf_loop *l, int fd, unsigned events)
     if (h->events == events)
         return 0;                       /* nothing to tell the queue (a system call each) */
     h->events = events;
+    h->parked = 0;
     ep_mod(l, h);
     return 0;
 }
@@ -709,6 +711,13 @@ static int pfd_room(npf_loop *l, size_t need)
     return npf_grow(&l->own, &l->npfd, need, sizeof *l->own, 64);
 }
 
+/* WSAPoll reports POLLHUP whatever was asked: a socket watched for writing
+ * whose peer sent its FIN, with its send buffer full, polls ready at once
+ * until the peer reads. Such a hang-up is handed on as before (NPF_EV_READ),
+ * then the socket waits out of the poll for HUP_PARK_MS: a check every
+ * HUP_PARK_MS instead of a spin. */
+#define HUP_PARK_MS 20
+
 static void wait_io(npf_loop *l, int wait)
 {
     int i, k, n = 0, total = l->nh + 1;
@@ -725,6 +734,10 @@ static void wait_io(npf_loop *l, int wait)
         for (i = 0; i < c->nh; i++) {
             if (!c->h[i].active)
                 continue;
+            if (c->h[i].parked > l->now) {
+                wait = wait_until(wait, c->h[i].parked, l->now);
+                continue;
+            }
             l->pfd[n].fd = c->h[i].fd;
             l->pfd[n].events = (short)(((c->h[i].events & NPF_EV_READ) ? POLLRDNORM : 0)
                                        | ((c->h[i].events & NPF_EV_WRITE) ? POLLWRNORM : 0));
@@ -751,8 +764,11 @@ static void wait_io(npf_loop *l, int wait)
         /* the handler may have been removed or replaced by an earlier
          * callback, or its fd closed and reused meanwhile */
         h = find_h(c, (int)l->pfd[i].fd);
-        if (h && h->fn && h->gen == l->pgen[i])
-            dispatch(l, c, h, e);
+        if (!h || !h->fn || h->gen != l->pgen[i])
+            continue;
+        if (r == POLLHUP && !(h->events & NPF_EV_READ))
+            h->parked = l->now + HUP_PARK_MS;
+        dispatch(l, c, h, e);
     }
 }
 #endif

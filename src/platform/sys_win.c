@@ -1,5 +1,6 @@
 /* The system layer (npf/sys.h) on Windows: Winsock, the IP helper API,
- * file ACLs. The portable rest is in sys.c. */
+ * UTF-8 paths, file ACLs. The portable rest is in sys.c. */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,13 +158,46 @@ int npf_default_gw4(uint32_t *gw)
     return 0;
 }
 
+/* ---- UTF-8 paths (sys.h): the wide-character calls ---- */
+
+#define WPATH 1024
+
+int npf_wpath(const char *path, wchar_t *out, size_t cap)
+{
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, out, (int)cap) > 0)
+        return 0;
+    errno = GetLastError() == ERROR_INSUFFICIENT_BUFFER ? ENAMETOOLONG : EINVAL;
+    return -1;
+}
+
+FILE *npf_fopen(const char *path, const char *mode)
+{
+    wchar_t w[WPATH], m[8];
+    return npf_wpath(path, w, WPATH) < 0 || npf_wpath(mode, m, 8) < 0 ? NULL : _wfopen(w, m);
+}
+
+int npf_stat(const char *path, npf_stat_t *st)
+{
+    wchar_t w[WPATH];
+    return npf_wpath(path, w, WPATH) < 0 ? -1 : _wstat64(w, st);
+}
+
+int npf_remove(const char *path)
+{
+    wchar_t w[WPATH];
+    return npf_wpath(path, w, WPATH) < 0 ? -1 : _wremove(w);
+}
+
 int npf_file_private(const char *path)
 {
+    wchar_t w[WPATH];
     /* SYSTEM, Administrators and the file's owner; inherited entries removed */
     PSECURITY_DESCRIPTOR sd = NULL;
     PACL dacl = NULL;
     BOOL present = FALSE, defaulted = FALSE;
     DWORD r;
+    if (npf_wpath(path, w, WPATH) < 0)
+        return -1;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorA("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)",
                                                               SDDL_REVISION_1, &sd, NULL))
         return -1;
@@ -171,9 +205,8 @@ int npf_file_private(const char *path)
         LocalFree(sd);
         return -1;
     }
-    r = SetNamedSecurityInfoA((char *)path, SE_FILE_OBJECT,
-                              DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, NULL, NULL, dacl,
-                              NULL);
+    r = SetNamedSecurityInfoW(w, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, NULL,
+                              NULL, dacl, NULL);
     LocalFree(sd);
     return r == ERROR_SUCCESS ? 0 : -1;
 }
@@ -191,8 +224,12 @@ int npf_path_is_abs(const char *p)
 
 int npf_abspath(const char *p, char *out, size_t cap)
 {
-    DWORD r = GetFullPathNameA(p, (DWORD)cap, out, NULL);
-    return r > 0 && r < cap ? 0 : -1;
+    wchar_t w[WPATH], full[WPATH];
+    DWORD r;
+    if (npf_wpath(p, w, WPATH) < 0)
+        return -1;
+    r = GetFullPathNameW(w, WPATH, full, NULL);
+    return r > 0 && r < WPATH && WideCharToMultiByte(CP_UTF8, 0, full, -1, out, (int)cap, NULL, NULL) > 0 ? 0 : -1;
 }
 
 /* no tcp_info here */

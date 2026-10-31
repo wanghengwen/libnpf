@@ -148,7 +148,7 @@ static int try_map(int method, const struct sockaddr_in *gw, int bypass, uint16_
     uint8_t nonce[12], req[60], buf[128];
     int fd = udp_connect(gw, bypass, &local), i, ok = -1, pcp = method == NPF_PORTMAP_PCP;
     size_t rl;
-    struct pollfd pfd;
+    struct pollfd pfd = {0};
     if (fd < 0)
         return -1;
     pfd.fd = fd;

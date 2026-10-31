@@ -144,10 +144,14 @@ static void public_keepalive(int fd)
 {
     int one = 1;
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, (const char *)&one, sizeof one);
-#ifdef TCP_KEEPIDLE
+#if defined(TCP_KEEPIDLE) || defined(TCP_KEEPALIVE)
     {
         int idle = 120, intvl = 30, cnt = 4;
+#ifdef TCP_KEEPIDLE
         setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, (const char *)&idle, sizeof idle);
+#else
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, (const char *)&idle, sizeof idle);  /* Darwin's name */
+#endif
         setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, (const char *)&intvl, sizeof intvl);
         setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, (const char *)&cnt, sizeof cnt);
     }

@@ -6,6 +6,7 @@
 #endif
 #include "npf/sys.h"
 #include "npf/atomic.h"
+#include "npf/lock.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -125,19 +126,20 @@ static void lan_addrs_out(npf_out *o)
 }
 
 /* the system it runs on, read once (it does not change while running;
- * instances on threads of their own may ask at once) */
+ * instances on threads of their own may ask at once: reading it is file
+ * and registry I/O, waited for on a lock, not in a spin) */
 static void host_out(npf_out *o)
 {
     static npf_host_info hi;
-    static int got, lock;
+    static int got;
+    static npf_mutex mu = NPF_MUTEX_INIT;
     if (!npf_atomic_get(&got)) {
-        while (npf_atomic_swap(&lock, 1))
-            ;
+        npf_mutex_lock(&mu);
         if (!got) {
             npf_host_info_get(&hi);
             npf_atomic_set(&got, 1);
         }
-        npf_atomic_set(&lock, 0);
+        npf_mutex_unlock(&mu);
     }
     npf_out_jobj(o);
     npf_out_kstr(o, "os", hi.os);

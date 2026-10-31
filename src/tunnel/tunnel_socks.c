@@ -101,8 +101,12 @@ static int connect_next(sublink *s, int64_t now)
             npf_sock_close(fd);
             continue;
         }
+        if (npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s) < 0) {
+            h->last_err = NPF_SE(NOBUFS);
+            npf_sock_close(fd);
+            continue;
+        }
         h->cfd[h->ncfd++] = fd;
-        npf_loop_add(s->t->loop, fd, NPF_EV_WRITE, conn_cb, s);
         if (h->icand < h->ncand && !h->he_at)
             h->he_at = now + HE_DELAY_MS;
         break;
