@@ -48,7 +48,6 @@ struct npf_home {
     int64_t       bound_ms, since;          /* mono, Unix s: bound first */
     uint64_t      keepalives, moved, drops, taken; /* pings answered, R changes, watchdog rebinds, calls */
     npf_udp_watch w;
-    int           watch_fd;
 };
 
 static void home_open_send(struct npf_home *h);
@@ -75,11 +74,8 @@ static int home_allowed(const npf_node *n)
 static void watch_sync(struct npf_home *h)
 {
     npf_node *n = h->n;
-    if (h->watch_fd != n->udp_fd) {
-        npf_udp_watch_on(h->watch_fd, NULL);
-        npf_udp_watch_on(n->udp_fd, &h->w);
-        h->watch_fd = n->udp_fd;
-    }
+    if (h->w.fd != n->udp_fd)
+        npf_udp_watch_on(&h->w, n->udp_fd);
     if (h->r.naddr) {           /* the binds' address (a probe from the one in use tries the others) */
         const struct sockaddr_in *a = (const void *)RELAY_BIND_DST(&h->r);
         h->w.relay_ip = a->sin_addr.s_addr;
@@ -261,7 +257,7 @@ static struct npf_home *home_new(npf_node *n)
     if (h || !(h = calloc(1, sizeof *h)))
         return h;
     h->n = n;
-    h->watch_fd = -1;
+    h->w.fd = -1;
     n->home = h;
     return h;
 }
@@ -339,6 +335,12 @@ void node_home_close(npf_node *n)
     spare_drop(h, H_OFF, 0);
 }
 
+void node_home_udp_closed(npf_node *n)
+{
+    if (n->home)
+        npf_udp_watch_on(&n->home->w, -1);
+}
+
 void node_home_stop(npf_node *n)
 {
     struct npf_home *h = n->home;
@@ -347,7 +349,7 @@ void node_home_stop(npf_node *n)
     node_home_close(n);
     npf_timer_stop(n->loop, &h->t_due);
     npf_node_cancel_requests(n, h);
-    npf_udp_watch_on(h->watch_fd, NULL);
+    npf_udp_watch_on(&h->w, -1);
     npf_wipe_free(h, sizeof *h);
     n->home = NULL;
 }

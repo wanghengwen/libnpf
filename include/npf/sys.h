@@ -172,11 +172,13 @@ typedef struct npf_udp_watch {
     uint16_t relay_port;                        /* network order */
     int      mode;                              /* NPF_WATCH_* */
     int64_t  other;                             /* npf_mono_ms of the last such datagram, 0: none */
+    int      fd;                                /* watched; -1: none (set it so before the first call) */
+    struct npf_udp_watch *next;                 /* the thread's watches */
 } npf_udp_watch;
-/* From now on npf_udp_send on this thread notes into w.other the datagrams
- * on fd that count. Per thread, at most 4 at once (more are ignored); w NULL
- * stops it for fd. w must stay valid until then. */
-void npf_udp_watch_on(int fd, npf_udp_watch *w);
+/* From now on npf_udp_send on this thread notes into w->other the datagrams
+ * on fd that count; fd -1 stops w. w must stay valid until stopped, on this
+ * thread: stop it before fd is closed (the number may be reused). */
+void npf_udp_watch_on(npf_udp_watch *w, int fd);
 
 /* The node's UDP sockets (main, punching, NAT probing, port mapping; not
  * the loop's wake-up or a direct listener) come from npf_udp_socket:
@@ -237,6 +239,8 @@ int   npf_wpath(const char *path, wchar_t *out, size_t cap);
 FILE *npf_fopen(const char *path, const char *mode);
 int   npf_stat(const char *path, npf_stat_t *st);
 int   npf_remove(const char *path);
+/* a Win32 error (GetLastError) as the errno that says the same, EIO: other */
+int   npf_win_errno(unsigned long err);
 #else
 #include <sys/stat.h>
 typedef struct stat npf_stat_t;

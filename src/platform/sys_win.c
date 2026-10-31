@@ -188,6 +188,34 @@ int npf_remove(const char *path)
     return npf_wpath(path, w, WPATH) < 0 ? -1 : _wremove(w);
 }
 
+int npf_win_errno(unsigned long err)
+{
+    switch (err) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        return ENOENT;
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+        return EACCES;
+    case ERROR_FILE_EXISTS:
+    case ERROR_ALREADY_EXISTS:
+        return EEXIST;
+    case ERROR_DISK_FULL:
+    case ERROR_HANDLE_DISK_FULL:
+        return ENOSPC;
+    case ERROR_WRITE_PROTECT:
+        return EROFS;
+    case ERROR_FILENAME_EXCED_RANGE:
+        return ENAMETOOLONG;
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_OUTOFMEMORY:
+        return ENOMEM;
+    default:
+        return EIO;
+    }
+}
+
 int npf_file_private(const char *path)
 {
     wchar_t w[WPATH];

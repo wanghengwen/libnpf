@@ -17,6 +17,8 @@ void node_home_net_change(npf_node *n);
 void node_home_udp_ok(npf_node *n);
 /* shutting down: home_close (best effort), no more keepalives */
 void node_home_close(npf_node *n);
+/* the main socket is about to close: its sends no longer watched */
+void node_home_udp_closed(npf_node *n);
 /* stopping: home_close if not yet, everything freed */
 void node_home_stop(npf_node *n);
 /* a datagram on the main socket: 1 when it was the spare's */

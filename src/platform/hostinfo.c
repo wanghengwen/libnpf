@@ -94,8 +94,13 @@ static void hostinfo_win(npf_host_info *h)
              : si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 ? "arm64"
              : si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL ? "x86"
                                                                          : "other");
-    sz = sizeof h->hostname;
-    GetComputerNameExA(ComputerNameDnsHostname, h->hostname, &sz);
+    {   /* UTF-8 (it goes into JSON), not the ANSI code page */
+        wchar_t w[128];
+        sz = sizeof w / sizeof w[0];
+        if (!GetComputerNameExW(ComputerNameDnsHostname, w, &sz)
+            || !WideCharToMultiByte(CP_UTF8, 0, w, -1, h->hostname, sizeof h->hostname, NULL, NULL))
+            h->hostname[0] = 0;
+    }
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Cryptography", 0, KEY_READ | KEY_WOW64_64KEY, &k) == 0) {
         DWORD type, len = sizeof h->machine_id - 1;
         if (RegQueryValueExA(k, "MachineGuid", NULL, &type, (BYTE *)h->machine_id, &len) != 0 || type != REG_SZ)

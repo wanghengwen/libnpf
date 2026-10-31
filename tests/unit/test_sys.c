@@ -2,7 +2,8 @@
  * one while it is on, none when off or for other sockets; a failing hook
  * leaves a working socket. Without one, the built-in VPN bypass: no VPN here,
  * nothing bound; tunnel interface names known; a listening UDP port is
- * never shared (npf_sock_listen_opts). The test switches (npf/testhooks.h):
+ * never shared (npf_sock_listen_opts); the main sockets' send watches
+ * (npf_udp_watch). The test switches (npf/testhooks.h):
  * unset, empty and 0 are off. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
@@ -48,12 +49,59 @@ static void tcp_diag(void)
 }
 #endif
 
+/* npf_udp_watch: six on one thread (a shared runtime's nodes), each sees
+ * its own socket's sends only; stopped, it sees none; one stopped again
+ * after its socket's number went to another's does not stop that one */
+static void udp_watch(void)
+{
+    npf_udp_watch w[6];
+    struct sockaddr_in to;
+    int fd[6], i, ok = 1, fresh;
+    memset(w, 0, sizeof w);
+    memset(&to, 0, sizeof to);
+    to.sin_family = AF_INET;
+    to.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    to.sin_port = htons(9);
+    for (i = 0; i < 6; i++) {
+        fd[i] = socket(AF_INET, SOCK_DGRAM, 0);
+        w[i].fd = -1;
+        w[i].mode = NPF_WATCH_ANY;
+        npf_udp_watch_on(&w[i], fd[i]);
+    }
+    npf_udp_send(fd[5], "x", 1, &to);
+    for (i = 0; i < 6; i++)
+        ok = ok && (i == 5) == (w[i].other != 0);
+    CHECK(ok, "six watches on a thread: the sending socket's only");
+    for (i = 0; i < 6; i++)
+        npf_udp_send(fd[i], "x", 1, &to);
+    for (i = 0; i < 6; i++)
+        ok = ok && w[i].other != 0;
+    CHECK(ok, "every one of them sees its socket");
+    npf_udp_watch_on(&w[0], -1);
+    w[0].other = 0;
+    npf_udp_send(fd[0], "x", 1, &to);
+    CHECK(w[0].other == 0 && w[0].fd == -1, "a stopped watch sees nothing");
+    npf_sock_close(fd[0]);
+    fresh = socket(AF_INET, SOCK_DGRAM, 0);          /* most likely fd[0]'s number */
+    npf_udp_watch_on(&w[1], fresh);
+    npf_udp_watch_on(&w[0], -1);                     /* stopped again (the old node's stop) */
+    w[1].other = 0;
+    npf_udp_send(fresh, "x", 1, &to);
+    CHECK(w[1].other != 0, "stopping one again leaves the watch of another on its old number");
+    for (i = 0; i < 6; i++)
+        npf_udp_watch_on(&w[i], -1);
+    npf_sock_close(fresh);
+    for (i = 1; i < 6; i++)
+        npf_sock_close(fd[i]);
+}
+
 int test_sys(void)
 {
     int arg = 0, fd;
 #ifdef __linux__
     tcp_diag();
 #endif
+    udp_watch();
     fd = npf_udp_socket(AF_INET, 0, 1);             /* no hook yet */
     CHECK(fd >= 0 && seen == 0, "a socket without a hook");
     npf_sock_close(fd);

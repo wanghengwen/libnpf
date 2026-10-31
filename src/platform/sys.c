@@ -406,24 +406,21 @@ static int sendto_loopback(int fd, const void *buf, size_t len, const struct soc
 
 /* ---- the main sockets' sends (npf_udp_watch) ---- */
 
-#define UDP_WATCH_MAX 4
-static NPF_THREAD_LOCAL struct {
-    int              fd;
-    npf_udp_watch   *w;
-} t_watch[UDP_WATCH_MAX];
-static NPF_THREAD_LOCAL int t_nwatch;
+static NPF_THREAD_LOCAL npf_udp_watch *t_watch;
 
-void npf_udp_watch_on(int fd, npf_udp_watch *w)
+void npf_udp_watch_on(npf_udp_watch *w, int fd)
 {
-    int i;
-    for (i = 0; i < t_nwatch; i++)
-        if (t_watch[i].fd == fd || t_watch[i].w == w) {
-            t_watch[i] = t_watch[--t_nwatch];
-            i--;
-        }
-    if (w && fd >= 0 && t_nwatch < UDP_WATCH_MAX) {
-        t_watch[t_nwatch].fd = fd;
-        t_watch[t_nwatch++].w = w;
+    npf_udp_watch **p;
+    if (w->fd >= 0)
+        for (p = &t_watch; *p; p = &(*p)->next)
+            if (*p == w) {
+                *p = w->next;
+                break;
+            }
+    w->fd = fd;
+    if (fd >= 0) {
+        w->next = t_watch;
+        t_watch = w;
     }
 }
 
@@ -441,12 +438,10 @@ int npf_udp_send(int fd, const void *buf, size_t len, const void *to)
 {
     const struct sockaddr *sa = to;
     int err;
-    if (t_nwatch) {
-        int i;
-        for (i = 0; i < t_nwatch; i++)
-            if (t_watch[i].fd == fd)
-                udp_watch_note(t_watch[i].w, sa);
-    }
+    npf_udp_watch *w;
+    for (w = t_watch; w; w = w->next)
+        if (w->fd == fd)
+            udp_watch_note(w, sa);
 #ifdef _WIN32
     if (is_loopback(sa)) {
         if (sendto_loopback(fd, buf, len, sa) >= 0)

@@ -85,6 +85,7 @@ int node_udp_open(npf_node *n)
 void node_udp_close(npf_node *n)
 {
     if (n->udp_fd >= 0) {
+        node_home_udp_closed(n);
         npf_loop_del(n->loop, n->udp_fd);
         npf_sock_close(n->udp_fd);
     }

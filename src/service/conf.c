@@ -361,16 +361,19 @@ int npf_file_unreadable(const char *path)
 int npf_file_write(const char *path, const void *data, size_t len, int mode)
 {
     char tmp[1024];
+    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
 #ifdef _WIN32
     /* secrets (mode & 077 == 0) are created with a protected DACL from the
      * start: SYSTEM, Administrators and the owner; nothing is inherited */
     SECURITY_ATTRIBUTES sa, *psa = NULL;
     HANDLE h;
-    DWORD wrote = 0;
+    DWORD wrote = 0, err = 0;
     BOOL ok;
     wchar_t wtmp[1024], wpath[1024];
-    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp || npf_wpath(tmp, wtmp, 1024) < 0
-        || npf_wpath(path, wpath, 1024) < 0)
+    if (npf_wpath(tmp, wtmp, 1024) < 0 || npf_wpath(path, wpath, 1024) < 0)
         return -1;
     memset(&sa, 0, sizeof sa);
     sa.nLength = sizeof sa;
@@ -384,28 +387,38 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
     h = CreateFileW(wtmp, GENERIC_WRITE, 0, psa, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (psa)
         LocalFree(sa.lpSecurityDescriptor);
-    if (h == INVALID_HANDLE_VALUE)
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = npf_win_errno(GetLastError());
         return -1;
+    }
     ok = (len == 0 || (WriteFile(h, data, (DWORD)len, &wrote, NULL) && wrote == len)) && FlushFileBuffers(h);
+    if (!ok)
+        err = wrote < len && GetLastError() == 0 ? ERROR_DISK_FULL : GetLastError();
     CloseHandle(h);
     if (!ok) {
         DeleteFileW(wtmp);
+        errno = npf_win_errno(err);
         return -1;
     }
-    return MoveFileExW(wtmp, wpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ? 0 : -1;
+    if (!MoveFileExW(wtmp, wpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        errno = npf_win_errno(GetLastError());
+        return -1;
+    }
+    return 0;
 #else
     int fd;
-    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp)
-        return -1;
+    ssize_t w;
     /* a tmp file someone else left (with its own owner, mode or a symlink)
      * is not written into: removed, then made new */
     unlink(tmp);
     fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode);
     if (fd < 0)
         return -1;
-    if (write(fd, data, len) != (ssize_t)len || fsync(fd) < 0) {
+    if ((w = write(fd, data, len)) != (ssize_t)len || fsync(fd) < 0) {
+        int e = w >= 0 && w != (ssize_t)len ? ENOSPC : errno;     /* short: the disk is full */
         close(fd);
         unlink(tmp);
+        errno = e;
         return -1;
     }
     close(fd);
