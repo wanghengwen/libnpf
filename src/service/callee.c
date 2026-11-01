@@ -661,6 +661,9 @@ int npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, cons
     d->number = number;
     memcpy(d->seed, seed, 32);
     snprintf(d->default_pw, sizeof d->default_pw, "%s", default_pw);
+    if (npf_share_parse(default_pw, NULL, NULL) == 0)  /* a caller would send it as a share code */
+        npf_loge("pairing: the default password has a share code's form: nobody can pair with it; "
+                 "set another one (npf passwd)");
     d->hosted_trust = 1;
     npf_policy_refresh(&d->policy);
     if (state_load(d) < 0 && !d->damaged)

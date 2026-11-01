@@ -1127,7 +1127,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | `grant_update` | 主叫（托管客户端）→ 被叫 | 请求 | `grant`：要求是同一公钥、同一账户的托管 `grant`，经默认被叫验证后，`issued` 不早于当前记录值即可更新目标列表（相等也接受），更新时记录新的 `issued`（列表与当前相同时只记 `issued`，不重新分配、不记日志：重放同一个 `grant` 不能刷日志）。成功应答 `{}`，校验失败 `forbidden`，目标列表分配失败 `internal_error`；默认时间校验容许 5 分钟时钟偏差 |
 | `resources` | 被叫 → 主叫 | 事件 | `{"resources": [...]}`：API 层在会话建立及资源变更时发送当前发布列表，字段见数据通道协议第 7.2 节；主叫更新本地资源信息 |
 | `admin_get` | 主叫 → 被叫 | 请求 | `offset`（默认 0）。管理员得到 `{"role": "admin", "members": [{"key", "since", "role", "self"}]（每页 100 个）, "total", "shares": [{"locator", "uses", "expires"}]}`（有效的分享码，没有秘密）；成员只得到 `{"role": "member"}` |
-| `admin_unpair` | 主叫 → 被叫 | 请求 | `key`（Base64url 公钥）：解除这个成员，它的会话随即结束；管理员 `forbidden`（只能在本地解除），未知 `not_found`；应答 `{}` |
+| `admin_unpair` | 主叫 → 被叫 | 请求 | `key`（Base64url 公钥，必填）：解除这个成员，它的会话随即结束；管理员 `forbidden`（只能在本地解除），未知 `not_found`；应答 `{}` |
 | `admin_share_new` | 主叫 → 被叫 | 请求 | `uses`（1 到 100，默认 1）、`ttl_s`（1 到 2592000，默认 86400）；被叫向平台 `share_new` 后应答 `{"code", "locator", "uses", "expires"}`（`code` 是完整的分享码，只在这个应答里出现）；没有所有者 `no_owner`，离线 `offline`，16 个已满 `rate_limited`。平台应答前会话已结束时，被叫作废这个码 |
 | `admin_share_del` | 主叫 → 被叫 | 请求 | `locator`：删除这个码（并告诉平台）；未知 `not_found`；应答 `{}` |
 | `admin_res_put` | 主叫 → 被叫 | 请求 | `resource`：发布或替换一个资源（数据通道协议第 7.2 节的写法，校验同本地 `npf resource add`）；`npf.conf` 固定的同名资源 `forbidden`；应答 `{}` |

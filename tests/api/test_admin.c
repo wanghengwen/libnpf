@@ -134,8 +134,9 @@ int main(void)
           "GRANT and DIRECT sessions with an admin's key: forbidden (a grant, a hosted client, a psk)");
     check(is(req(n, NPF_AUTH_IK, 0, "admin_set", kj, out, sizeof out), "unsupported_type")
               && is(req(n, NPF_AUTH_IK, 0, "admin_transfer", kj, out, sizeof out), "unsupported_type")
-              && is(req(n, NPF_AUTH_IK, 0, "admin_unpair", "{\"key\":\"short\"}", out, sizeof out), "bad_request"),
-          "no role changes (admin_set, admin_transfer unknown); a bad key");
+              && is(req(n, NPF_AUTH_IK, 0, "admin_unpair", "{\"key\":\"short\"}", out, sizeof out), "bad_request")
+              && is(req(n, NPF_AUTH_IK, 0, "admin_unpair", "{}", out, sizeof out), "bad_request"),
+          "no role changes (admin_set, admin_transfer unknown); a bad key, none");
 
     /* unpair: members only */
     keyjson(0, kj);
