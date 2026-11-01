@@ -160,8 +160,8 @@ struct npf_peers {
     size_t        capconns;
     uint64_t      conn_seq;
     ipent        *ips;
-    int           lim_mapping, lim_address, lim_rate;
-    npf_timer    *t_idle;           /* idle public connections end (PUBLIC_IDLE_MS) */
+    int           lim_mapping, lim_address, lim_rate, lim_account, lim_total;
+    npf_timer    *t_idle;           /* idle public connections end (PUBLIC_IDLE_MS, PUBLIC_HELLO_MS) */
     int           closing;          /* npf_peers_public_json(close): public ports stay closed */
     int           default_idle_ms;  /* npf_peers_set_idle: on-demand peers made without an idle time */
     int           no_cache;         /* local.json keeps no peer's resources (NPF_OPT_NO_SAVED_OBJECTS) */
@@ -225,5 +225,6 @@ uint64_t peers_public_admit(pfwd *f, int fd);
 void peers_conn_gone(npf_peers *ps, uint64_t cid, const char *why);
 void peers_subs_call_gone(npf_peers *ps, npf_call *c);
 void peers_conn_open(pfwd *f, int fd, uint64_t cid);
+void peers_conns_free(npf_peers *ps);     /* (npf_peers_free) */
 
 #endif

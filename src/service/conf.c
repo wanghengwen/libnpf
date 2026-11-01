@@ -64,7 +64,9 @@ const npf_key npf_keys[] = {
     /* npf-hosted (security.md 8.4) */
     B("hosted_service", F, "0"), S("hosted_exec", F),
     I("hosted_max_conns", L | H, 0, 100000, "128"), I("hosted_ip_conns", L | H, 0, 100000, "32"),
-    I("hosted_ip_rate", L | H, 0, 100000, "120"), I("sig_idle_s", 0, 0, 86400, "0"), I("sig_wake_s", 0, 0, 86400, "600"),
+    I("hosted_ip_rate", L | H, 0, 100000, "120"), I("hosted_acct_conns", L | H, 0, 1000000, "512"),
+    I("hosted_total_conns", L | H, 0, 1000000, "0"), I("sig_idle_s", 0, 0, 86400, "0"),
+    I("sig_wake_s", 0, 0, 86400, "600"),
     B("udp_on_demand", 0, "0"), B("udp_public", 0, "0"), NPF_KEY_END,
 };
 #undef S

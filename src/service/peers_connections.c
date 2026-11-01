@@ -5,14 +5,23 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/atomic.h"
 #include "npf/out.h"
 #include "npf/platform.h"
 
 #include "peers_internal.h"
 
-#define PUBLIC_IDLE_MS (30 * 60 * 1000)    /* a public connection with no byte either way ends */
-#define IDLE_CHECK_MS  60000
+/* a public connection with no byte either way for this long ends; before
+ * its visitor has sent a byte, sooner (a visitor holding a mapping's
+ * connections without using them: every protocol's client speaks within
+ * seconds) */
+#define PUBLIC_IDLE_MS  (10 * 60 * 1000)
+#define PUBLIC_HELLO_MS 20000
+#define IDLE_CHECK_MS   5000
+#define SOURCE_SHARE    16          /* a source holds at most 1/16 of a mapping's connections */
 #define IP_SLOTS 1024               /* source addresses tracked at once (the least recently seen give way) */
+
+static int g_open;                  /* public connections open in the process (npf-hosted: all its instances) */
 
 /* ---- public connections: who, how many, how long, how much ---- */
 
@@ -74,41 +83,55 @@ static int ip_get(npf_peers *ps, const struct sockaddr_storage *from)
     return k;
 }
 
+/* the connections of mapping fid from the source of entry ip */
+static int source_conns(const npf_peers *ps, int fid, int ip)
+{
+    int k, n = 0;
+    for (k = 0; k < ps->nconns; k++)
+        n += ps->conns[k].fid == fid && ps->conns[k].ip == ip;
+    return n;
+}
+
 /* NULL and the counts taken, or why it is refused */
 static const char *conn_admit(pfwd *f, const struct sockaddr_storage *from, int *ip)
 {
     npf_peers *ps = f->p->ps;
-    ipent *e;
-    int64_t now = npf_mono_ms();
+    int share = (ps->lim_mapping + SOURCE_SHARE - 1) / SOURCE_SHARE;     /* 0: no mapping limit */
     *ip = -1;
     if (ps->lim_mapping > 0 && f->nconns >= ps->lim_mapping)
         return "mapping_full";
-    if (ps->lim_address <= 0 && ps->lim_rate <= 0) {
-        f->nconns++;
-        return NULL;
+    if (ps->lim_account > 0 && ps->nconns >= ps->lim_account)
+        return "account_full";
+    if (ps->lim_total > 0 && npf_atomic_get(&g_open) >= ps->lim_total)
+        return "service_full";              /* (other threads' instances may pass it by one each) */
+    if (ps->lim_address > 0 || ps->lim_rate > 0 || share > 0) {
+        ipent *e;
+        int64_t now = npf_mono_ms();
+        if ((*ip = ip_get(ps, from)) < 0)
+            return "address_full";          /* as many sources with connections as tracked: no more */
+        e = &ps->ips[*ip];
+        if (ps->lim_rate > 0) {
+            double burst = ps->lim_rate > 1 ? ps->lim_rate / 2.0 : 1;
+            e->tokens += (double)(now - e->at) * ps->lim_rate / 60000.0;
+            if (e->tokens > burst)
+                e->tokens = burst;
+        }
+        e->at = now;
+        if ((ps->lim_address > 0 && e->conns >= ps->lim_address)
+            || (share > 0 && source_conns(ps, f->id, *ip) >= share)) {
+            *ip = -1;
+            return "address_full";
+        }
+        if (ps->lim_rate > 0 && e->tokens < 1) {
+            *ip = -1;
+            return "address_rate";
+        }
+        if (ps->lim_rate > 0)
+            e->tokens -= 1;
+        e->conns++;
     }
-    if ((*ip = ip_get(ps, from)) < 0)
-        return "address_full";              /* as many sources with connections as tracked: no more */
-    e = &ps->ips[*ip];
-    if (ps->lim_rate > 0) {
-        double burst = ps->lim_rate > 1 ? ps->lim_rate / 2.0 : 1;
-        e->tokens += (double)(now - e->at) * ps->lim_rate / 60000.0;
-        if (e->tokens > burst)
-            e->tokens = burst;
-    }
-    e->at = now;
-    if (ps->lim_address > 0 && e->conns >= ps->lim_address) {
-        *ip = -1;
-        return "address_full";
-    }
-    if (ps->lim_rate > 0 && e->tokens < 1) {
-        *ip = -1;
-        return "address_rate";
-    }
-    if (ps->lim_rate > 0)
-        e->tokens -= 1;
-    e->conns++;
     f->nconns++;
+    npf_atomic_add(&g_open, 1);
     return NULL;
 }
 
@@ -118,6 +141,7 @@ static uint64_t conn_add(pfwd *f, const struct sockaddr_storage *from, int ip)
     pconn *c;
     if (npf_grow(&ps->conns, &ps->capconns, (size_t)ps->nconns + 1, sizeof *ps->conns, 32) < 0) {
         f->nconns--;                        /* not recorded: nor counted (it would never be uncounted) */
+        npf_atomic_add(&g_open, -1);
         if (ip >= 0)
             ps->ips[ip].conns--;
         return 0;
@@ -195,6 +219,7 @@ static void conn_end(npf_peers *ps, int k, const npf_sublink_stats *st, const ch
     pconn c = ps->conns[k];
     pfwd *f = peers_fwd_by_id(ps, c.fid);   /* NULL: gone (a removed peer is not listed) */
     ps->conns[k] = ps->conns[--ps->nconns];
+    npf_atomic_add(&g_open, -1);
     if (f && f->nconns > 0)
         f->nconns--;
     if (c.ip >= 0 && ps->ips[c.ip].conns > 0)
@@ -278,8 +303,8 @@ void peers_subs_call_gone(npf_peers *ps, npf_call *c)
             k++;
 }
 
-/* the open public connections whose bytes did not move for PUBLIC_IDLE_MS
- * end (a visitor holding a mapping's connections without using them) */
+/* the open public connections whose bytes did not move for PUBLIC_IDLE_MS,
+ * or PUBLIC_HELLO_MS while nothing came from the visitor, end */
 static void idle_check(npf_loop *loop, void *arg)
 {
     npf_peers *ps = arg;
@@ -293,10 +318,10 @@ static void idle_check(npf_loop *loop, void *arg)
         if (!c->call || npf_call_sub_bytes(c->call, c->sid, &in, &out) < 0)
             continue;
         open++;
-        if (in + out != c->bytes || !c->active) {
+        if (in + out != c->bytes) {
             c->bytes = in + out;
             c->active = now;
-        } else if (now - c->active >= PUBLIC_IDLE_MS && n < (int)(sizeof idle / sizeof idle[0])) {
+        } else if (now - c->active >= (in ? PUBLIC_IDLE_MS : PUBLIC_HELLO_MS) && n < (int)(sizeof idle / sizeof *idle)) {
             idle[n].call = c->call;
             idle[n].sid = c->sid;
             n++;
@@ -306,7 +331,8 @@ static void idle_check(npf_loop *loop, void *arg)
     for (k = 0; k < n; k++)
         npf_call_sub_reset(idle[k].call, idle[k].sid, "idle");
     if (n)
-        npf_log("public ports: %d idle connection(s) ended (no data for %d min)", n, PUBLIC_IDLE_MS / 60000);
+        npf_log("public ports: %d idle connection(s) ended (nothing from the visitor for %d s, or no data for %d min)",
+                n, PUBLIC_HELLO_MS / 1000, PUBLIC_IDLE_MS / 60000);
     if (open)
         ps->t_idle = npf_timer_add(loop, IDLE_CHECK_MS, idle_check, ps);
 }
@@ -341,6 +367,7 @@ void peers_conn_open(pfwd *f, int fd, uint64_t cid)
         if (p->ps->conns[k].id == cid) {
             p->ps->conns[k].call = p->call;
             p->ps->conns[k].sid = (uint32_t)sid;
+            p->ps->conns[k].active = npf_mono_ms();     /* (the idle check's start) */
             if (!p->ps->t_idle)
                 p->ps->t_idle = npf_timer_add(p->ps->n->loop, IDLE_CHECK_MS, idle_check, p->ps);
             break;
@@ -372,9 +399,19 @@ void npf_peers_public_json(npf_peers *ps, int close, npf_out *o)
     npf_out_printf(o, "]}");
 }
 
-void npf_peers_set_limits(npf_peers *ps, int per_mapping, int per_address, int per_address_minute)
+void npf_peers_set_limits(npf_peers *ps, int per_mapping, int per_address, int per_address_minute, int per_account,
+                          int total)
 {
     ps->lim_mapping = per_mapping > 0 ? per_mapping : 0;
     ps->lim_address = per_address > 0 ? per_address : 0;
     ps->lim_rate = per_address_minute > 0 ? per_address_minute : 0;
+    ps->lim_account = per_account > 0 ? per_account : 0;
+    ps->lim_total = total > 0 ? total : 0;
+}
+
+void peers_conns_free(npf_peers *ps)
+{
+    npf_atomic_add(&g_open, -ps->nconns);  /* the instance goes with connections open: the process's count back */
+    free(ps->conns);
+    free(ps->ips);
 }

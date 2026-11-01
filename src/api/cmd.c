@@ -44,7 +44,9 @@ static void apply_setting(npf_t *c, const char *k, const char *v)
 void npf_hosted_limits(npf_t *n)
 {
     npf_peers_set_limits(n->peers, (int)npf_conf_int(&n->conf, "hosted_max_conns"),
-                         (int)npf_conf_int(&n->conf, "hosted_ip_conns"), (int)npf_conf_int(&n->conf, "hosted_ip_rate"));
+                         (int)npf_conf_int(&n->conf, "hosted_ip_conns"), (int)npf_conf_int(&n->conf, "hosted_ip_rate"),
+                         (int)npf_conf_int(&n->conf, "hosted_acct_conns"),
+                         (int)npf_conf_int(&n->conf, "hosted_total_conns"));
 }
 
 const char *npf_cmd_get(npf_t *c, const char *k, char *buf, size_t cap)

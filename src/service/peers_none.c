@@ -77,7 +77,8 @@ void npf_peers_set_idle(npf_peers *ps, int idle_ms) { ps->idle_ms = idle_ms; }
 int npf_peers_idle(const npf_peers *ps) { return ps->idle_ms; }
 int npf_peers_add_kind(npf_peers *ps, const npf_fwd_kind *k, void *arg) { return -1; }
 npf_call *npf_peers_fwd_call(npf_peers *ps, int id) { return NULL; }
-void npf_peers_set_limits(npf_peers *ps, int per_mapping, int per_address, int per_address_minute) {}
+void npf_peers_set_limits(npf_peers *ps, int per_mapping, int per_address, int per_address_minute, int per_account,
+                          int total) {}
 void npf_peers_no_cache(npf_peers *ps) {}
 
 /* no npf_peer exists: the rest is never called */

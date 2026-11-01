@@ -37,7 +37,7 @@ static void key_table(void)
         n++;
         CHECK(k->def && (k->type == NPF_K_STR || npf_key_check(k, k->def, e2, sizeof e2) == 0), "%s: its default", k->name);
     }
-    CHECK(n == 44, "%d keys", n);
+    CHECK(n == 46, "%d keys", n);
 #ifdef NPF_SIG_UDP
     CHECK(npf_key_check(npf_key_find("sig_udp"), "auto", err, sizeof err) == 0, "sig_udp auto");
 #else

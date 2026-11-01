@@ -236,9 +236,11 @@ int         npf_peer_forward_set_public(npf_peer *p, int i, const char *const *a
 int         npf_peer_forward_drain(npf_peer *p, int i, int on);
 int         npf_peer_forward_drained(npf_peer *p, int i);
 /* Limits on public connections over all peers (0: none): open ones per
- * mapping, open ones per source address, new ones per source address a
- * minute (bursts of half that). */
-void        npf_peers_set_limits(npf_peers *ps, int per_mapping, int per_address, int per_address_minute);
+ * mapping (a source address at most 1/16 of them), open ones per source
+ * address, new ones per source address a minute (bursts of half that), open
+ * ones of this instance, open ones of all instances in the process. */
+void        npf_peers_set_limits(npf_peers *ps, int per_mapping, int per_address, int per_address_minute,
+                                 int per_account, int total);
 /* Writes the public mappings to o: {"open": connections open (waiting ones
  * too), "closing": bool, "mappings": [{"mapping_id", "port", "listening",
  * "conns"}]}. close: every public port closes now and stays closed; the

@@ -69,7 +69,7 @@
 | `callee.c` | 671 | 被叫的本地状态（口令、配对、锁定、所有者、吊销，state.json） | 身份 |
 | `peers.c` | 961 | 对端对象、主动会话、重连 | 对端（SDK 服务） |
 | `peers_forward.c` | 775 | 转发规则、监听、重试 | 对端（SDK 服务） |
-| `peers_connections.c` | 376 | 公开映射的连接准入与计数 | 对端（SDK 服务） |
+| `peers_connections.c` | 417 | 公开映射的连接准入与计数（每个映射、来源占映射的 1/16、来源、账户即实例、进程内全部实例，空闲 20 秒 / 10 分钟） | 对端（SDK 服务） |
 | `peers_demand.c` | 230 | 按需会话的等待队列、空闲 | 对端（SDK 服务） |
 | `peers_none.c` | 134 | `NPF_PEERS=OFF` 时的空实现 | 对端（SDK 服务） |
 | `local.c` | 468 | local.json | 持久化 |
