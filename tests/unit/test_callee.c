@@ -25,7 +25,9 @@
 #include <unistd.h>
 
 #include "npf/callee.h"
+#include "npf/cert.h"
 #include "npf/conf.h"
+#include "npf/crypto.h"
 #include "npf/loop.h"
 #include "npf/node.h"
 #include "npf/out.h"
@@ -184,6 +186,71 @@ static void roles_shares(const char *dir)
     npf_loop_free(loop);
 }
 
+static void le16(uint8_t *p, unsigned v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+static void le32(uint8_t *p, uint32_t v) { le16(p, v & 0xffff); le16(p + 2, v >> 16); }
+
+/* a grant of account for caller to callee 123, signed by iss */
+static size_t grant_of(uint8_t g[128], const npf_identity *iss, uint64_t account, const uint8_t caller[32])
+{
+    uint8_t sig[64];
+    memset(g, 0, 128);
+    g[0] = 1, g[1] = NPF_GRANT_ACCOUNT;
+    npf_le64(g + 2, 123);
+    memcpy(g + 10, caller, 32);
+    npf_le64(g + 42, account);
+    le32(g + 50, (uint32_t)time(NULL));
+    le32(g + 54, (uint32_t)time(NULL) + 600);
+    le32(g + 60, (uint32_t)npf_fp(iss->sign_pub));
+    npf_sign2(sig, iss->sign_sk, "npf-grant-v1", 12, g, 64);
+    memcpy(g + 64, sig, 64);
+    return 128;
+}
+
+/* the platform's grants admit the owner's clients only (lib-core audit 2,
+ * 6): another account's grant is refused, an owner reset cuts the old
+ * owner off at once and asks the platform (owner_reset_pending), and so
+ * does a fresh state leaving safe mode */
+static void owner_grants(const char *dir)
+{
+    static npf_callee d;
+    static npf_node node;
+    static const char st[] = "{\"password\":\"pw-123456\",\"owner\":\"77\"}";
+    npf_loop *loop = npf_loop_new();
+    npf_identity iss;
+    uint8_t seed[32] = {9}, nseed[32] = {3}, g[128], caller[32] = {0x11};
+    char path[256];
+    uint64_t acct = 0;
+    npf_grant gr;
+    size_t gl;
+    snprintf(path, sizeof path, "%s/owner-state.json", dir);
+    npf_file_write(path, st, sizeof st - 1, 0600);
+    CHECK(loop && offline_node(&node, loop, NULL, NULL) == 0 && npf_callee_init(&d, path, 123, nseed, "default-pw-0") == 0
+              && d.owner == 77, "owner: init");
+    npf_callee_attach(&d, &node);
+    /* the intermediate (as the login gives it): may sign grants */
+    npf_identity_from_seed(&iss, seed);
+    memset(node.cert, 0, 164);
+    node.cert[0] = 1, node.cert[1] = NPF_CERT_INTERMEDIATE;
+    le32(node.cert + 26, 0xffffffffu);
+    le16(node.cert + 30, 4);
+    node.cert[32] = 5, node.cert[33] = 2, le16(node.cert + 34, NPF_PERM_GRANT);
+    memcpy(node.cert + 36, iss.sign_pub, 32);
+    node.cert_len = 164;
+    gl = grant_of(g, &iss, 77, caller);
+    CHECK(d.ops.grant_check(&node, g, gl, caller, &acct, &gr, &d) == 0 && acct == 77, "the owner's grant taken");
+    gl = grant_of(g, &iss, 555, caller);
+    CHECK(d.ops.grant_check(&node, g, gl, caller, &acct, &gr, &d) < 0, "another account's grant refused");
+    CHECK(npf_callee_owner_reset(&d) == 0 && d.owner == 0 && d.owner_reset_pending && !d.owner_reset_asked,
+          "an owner reset: pending, offline (asked once online)");
+    gl = grant_of(g, &iss, 77, caller);
+    CHECK(d.ops.grant_check(&node, g, gl, caller, &acct, &gr, &d) < 0, "the old owner's grant refused after the reset");
+    d.owner_reset_pending = 0;
+    d.damaged = 1;
+    CHECK(npf_callee_fresh(&d, "fresh-pw-123") == 0 && d.owner_reset_pending, "a fresh state: the platform asked to forget the owner");
+    npf_node_stop(&node);
+    npf_loop_free(loop);
+}
+
 int test_callee(void)
 {
     static npf_callee d;
@@ -301,6 +368,7 @@ int test_callee(void)
     CHECK(file_pw(path, pw, sizeof pw) == 0 && strcmp(pw, "after-link1") == 0, "the file written (%s)", pw);
 
     roles_shares(dir);
+    owner_grants(dir);
     rm_dir(dir);
     return fails;
 }

@@ -301,7 +301,7 @@ npf_destroy(cli);
 
 **重建设备身份**：先停止并销毁实例，再由应用决定是否清空 `data_dir`。这会同时移除保存的设置、资源、配对和账户状态；若目录里还放着应用提供的服务器列表等文件，也要安排重新提供。型号凭证设备下次启动会生成新身份并重新申请编号；是否取回原编号由平台的序列号、硬件和离线时间规则决定，见[注册协议](../protocol/signaling.md)。一机一密设备仍从同一凭证派生身份，编号、密钥和默认口令不变，但删除的配对等本地状态不会自动回来。
 
-**配对与所有者**（设备一侧）：`npf_pairing_password_get` / `npf_pairing_password_set`（8–127 字节）读写配对口令；`npf_pairing_list` 列出已配对的一方（公钥、时间与角色 `admin`：用口令配对的是管理员，用分享码配对的是成员，security.md 8.6），`npf_pairing_remove` 取消一个或全部；`npf_owner_reset` 忘记所有者账户，下次登录时告诉平台。没有编号时这些函数返回 `NPF_ESTATE`；安全模式（`state.json` 与副本都不能用，`npf_status_json` 的 `state_damaged`）下也是：什么都不读、不改，设口令的说明写明安全模式（原来设口令、删除配对、忘记所有者返回 `NPF_ESAVE`，像是"已生效、没写进去"；读口令与列表照常返回）。文件修好后下一次调用就读入它。
+**配对与所有者**（设备一侧）：`npf_pairing_password_get` / `npf_pairing_password_set`（8–127 字节）读写配对口令；`npf_pairing_list` 列出已配对的一方（公钥、时间与角色 `admin`：用口令配对的是管理员，用分享码配对的是成员，security.md 8.6），`npf_pairing_remove` 取消一个或全部；`npf_owner_reset` 忘记所有者账户：它经平台授权（`grant`）的会话立即结束，平台随即被请求忘记它，直到应答（离线时登录后再请求）。没有编号时这些函数返回 `NPF_ESTATE`；安全模式（`state.json` 与副本都不能用，`npf_status_json` 的 `state_damaged`）下也是：什么都不读、不改，设口令的说明写明安全模式（原来设口令、删除配对、忘记所有者返回 `NPF_ESAVE`，像是"已生效、没写进去"；读口令与列表照常返回）。文件修好后下一次调用就读入它。
 
 `npf_pairing_remove(n, NULL)` 删除全部配对；`npf_owner_reset` 不删除配对和角色，但删除全部分享码（这里与平台上的）。口令不能是分享码的样子（12 个分享码字符加上 `-` 或空格）；默认口令是这个样子时 `npf_create` 记一条错误（主叫会把它当分享码发，谁也不能用它配对），节点照常运行，要用 `npf_pairing_password_set` 换一个。分享码由程序的模块（`npf share`）经内部接口生成与删除；管理员在会话中的远程管理（`admin_*`，signaling.md"隧道内控制消息"）由库的被叫控制处理器处理，本地配置键 `remote_admin`（`on`、`members`、`off`，即时生效）限制它。这里修改的是设备的 `state.json`：写入失败时返回 `NPF_ESAVE`，修改已生效，`npf_node_info.unsaved` 置位；`npf_save` 重写 local.json，并在 state.json 上次写入失败时也重写它（先读入本机命令行在此期间对文件的修改，不覆盖）。来电配对、锁定计数、证书等库自己的写入失败同样置 `unsaved`，由 `npf_save` 或下一次成功的写入补上。
 

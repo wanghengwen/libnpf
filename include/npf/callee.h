@@ -53,7 +53,8 @@ typedef struct npf_callee {
     npf_share  shares[NPF_MAX_SHARES];
     int        nshares;
     int        share_reqs;              /* share_new requests unanswered */
-    int        owner_reset_pending;     /* owner_reset is sent at the next login */
+    int        owner_reset_pending;     /* owner_reset asked of the platform until it answers */
+    int        owner_reset_asked;       /* ... its request unanswered */
     struct { uint64_t account; int64_t before; } revokes[NPF_MAX_REVOKES];
     int        nrevokes;
     int        hosted_trust;            /* platform grants accepted (default 1) */
@@ -89,14 +90,13 @@ int  npf_callee_init(npf_callee *d, const char *state_path, uint64_t number, con
 int  npf_callee_save(npf_callee *d);
 /* Makes d n's callee (ops, certificate) and starts watching the state file. */
 void npf_callee_attach(npf_callee *d, npf_node *n);
-/* After each login: sends the paired fingerprints, lock and pending owner reset. */
+/* After each login: sends the paired fingerprints and lock, asks a pending owner reset. */
 void npf_callee_on_login(npf_callee *d);
 /* Reads the state file again if it changed; call it before a change so a local edit is kept. */
 void npf_callee_refresh(npf_callee *d);
 /* Leaves safe mode with a fresh state: this password, nobody paired, no
- * owner, no lock, no revocations (grants issued before a lost revocation
- * work again until they expire). 0, -1 password not 8..127 bytes, -2 not
- * saved. */
+ * owner (the platform asked to forget it, as npf_callee_owner_reset), no
+ * lock, no revocations. 0, -1 password not 8..127 bytes, -2 not saved. */
 int  npf_callee_fresh(npf_callee *d, const char *password);
 /* Sets the pairing password (8..127 bytes, not a share code's form) and
  * clears the lock. 0, -1 bad, -2 not saved (or safe mode). */
@@ -104,8 +104,9 @@ int  npf_callee_password_set(npf_callee *d, const char *password);
 /* Unpairs the caller with this key (NULL: everyone), admin or not; its
  * sessions end. 0, -1 not paired, -2 not saved (or safe mode). */
 int  npf_callee_unpair_key(npf_callee *d, const uint8_t *key);
-/* Forgets the owner, and so the share codes; the platform is told at the
- * next login. 0, -2 not saved (or safe mode). */
+/* Forgets the owner, and so the share codes; its grant sessions end. The
+ * platform is asked to forget it (owner_reset) until it answers. 0, -2 not
+ * saved (or safe mode). */
 int  npf_callee_owner_reset(npf_callee *d);
 /* 1 when pub is paired as an admin (security.md D25) */
 int  npf_callee_is_admin(const npf_callee *d, const uint8_t pub[32]);

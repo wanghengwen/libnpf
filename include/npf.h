@@ -552,8 +552,9 @@ NPF_API int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t size, size_
 #define npf_pairing_list(n, out, cap, count) npf_pairing_list_size((n), (out), sizeof *(out), (cap), (count))
 /* key NULL: all of them; NPF_ENOENT: that key is not paired */
 NPF_API int npf_pairing_remove(npf_t *n, const uint8_t key[32]);
-/* Forgets the owner account here, and so the share codes; the platform is
- * told at the next login. The pairings and their roles stay. */
+/* Forgets the owner account here, and so the share codes; its grant
+ * sessions end and the platform is asked to forget it until it answers.
+ * The pairings and their roles stay. */
 NPF_API int npf_owner_reset(npf_t *n);
 
 /* ---- this node, sessions, the network ---- */

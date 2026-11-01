@@ -320,6 +320,7 @@ int npf_callee_save(npf_callee *d)
 }
 
 static void report_lock(npf_callee *d);
+static void owner_reset_ask(npf_callee *d);
 
 /* reload when the local command line changed the file */
 void npf_callee_refresh(npf_callee *d)
@@ -344,6 +345,7 @@ static void state_watch(npf_loop *loop, void *arg)
     npf_callee *d = arg;
     d->t_watch = npf_timer_add(loop, 5000, state_watch, d);
     npf_callee_refresh(d);
+    owner_reset_ask(d);
 }
 
 static void state_watch_start(npf_callee *d)
@@ -400,8 +402,9 @@ static int revoked(const npf_callee *d, uint64_t account, int64_t issued)
 static int drop_caller(const npf_caller *w, void *arg)
 {
     npf_callee *d = arg;
-    if (w->auth == NPF_AUTH_GRANT)          /* as op_grant_check: trust off, or the account's grants revoked */
-        return !d->hosted_trust || revoked(d, w->grant_account, (int64_t)w->grant_issued);
+    if (w->auth == NPF_AUTH_GRANT)          /* as op_grant_check: trust off, not the owner's, or revoked */
+        return !d->hosted_trust || !d->owner || w->grant_account != d->owner
+               || revoked(d, w->grant_account, (int64_t)w->grant_issued);
     return (w->auth == NPF_AUTH_IK || w->auth == NPF_AUTH_PAKE) && paired_at(d, w->pub) < 0;
 }
 
@@ -527,7 +530,8 @@ static void op_pair_failed(npf_node *n, const char *code, void *arg)
 
 /* hosted trust (security.md 8.2): the grant is signed by the platform's
  * intermediate (the issuer of our own certificate), names us and this caller
- * key, is unexpired and not older than a revocation of its account */
+ * key, is the owner's (no owner: nobody's), unexpired and not older than a
+ * revocation of its account */
 static int op_grant_check(npf_node *n, const uint8_t *g, size_t len, const uint8_t pub[32], uint64_t *account,
                           npf_grant *out, void *arg)
 {
@@ -548,7 +552,7 @@ static int op_grant_check(npf_node *n, const uint8_t *g, size_t len, const uint8
         return -1;
     if ((int64_t)gr.expires + 300 < now || (int64_t)gr.issued > now + 300)   /* 5 minutes of clock skew */
         return -1;
-    if (revoked(d, gr.account, (int64_t)gr.issued))
+    if (!d->owner || gr.account != d->owner || revoked(d, gr.account, (int64_t)gr.issued))
         return -1;
     *account = gr.account;
     *out = gr;
@@ -695,6 +699,34 @@ void npf_callee_attach(npf_callee *d, npf_node *n)
     state_watch_start(d);
 }
 
+/* owner_reset asked of the platform until it answers (signaling.md
+ * owner_reset): now, at each login, and every 5 s (state_watch) after an
+ * error; the flag is cleared only by the answer */
+static void owner_reset_done(npf_node *n, const npf_env *e, int ok, void *arg)
+{
+    npf_callee *d = arg;
+    (void)n;
+    d->owner_reset_asked = 0;
+    if (!ok) {
+        if (e)
+            npf_logw("owner_reset refused (%s): asked again", e->error);
+        return;
+    }
+    npf_callee_refresh(d);                   /* a local change first: not saved over */
+    if (d->owner_reset_pending) {
+        d->owner_reset_pending = 0;
+        npf_callee_save(d);
+    }
+    npf_log("owner_reset: the platform forgot the owner");
+}
+
+static void owner_reset_ask(npf_callee *d)
+{
+    if (d->owner_reset_pending && !d->owner_reset_asked && !d->damaged && d->node && d->node->online
+        && npf_node_request(d->node, "owner_reset", NULL, owner_reset_done, d) == 0)
+        d->owner_reset_asked = 1;
+}
+
 void npf_callee_on_login(npf_callee *d)
 {
     npf_callee_refresh(d);                   /* a local change first: not saved over */
@@ -704,11 +736,7 @@ void npf_callee_on_login(npf_callee *d)
     report_lock(d);
     share_sync(d);
     state_watch_start(d);
-    if (d->owner_reset_pending) {
-        npf_node_send(d->node, "owner_reset", 0, NULL);
-        d->owner_reset_pending = 0;
-        npf_callee_save(d);
-    }
+    owner_reset_ask(d);
 }
 
 /* safe mode left by writing a fresh state: this password, nobody paired,
@@ -730,9 +758,12 @@ int npf_callee_fresh(npf_callee *d, const char *np)
     d->owner = 0;
     shares_drop(d);
     d->nrevokes = 0;
-    d->owner_reset_pending = 0;
+    d->owner_reset_pending = 1;             /* the platform forgets the owner it may still know */
     npf_callee_changed(d);
-    return npf_callee_save(d) < 0 ? -2 : 0;
+    if (npf_callee_save(d) < 0)
+        return -2;
+    owner_reset_ask(d);
+    return 0;
 }
 
 int npf_callee_password_set(npf_callee *d, const char *np)
@@ -776,7 +807,11 @@ int npf_callee_owner_reset(npf_callee *d)
     d->owner = 0;
     shares_drop(d);
     d->owner_reset_pending = 1;
-    return npf_callee_save(d) < 0 ? -2 : 0;
+    npf_callee_changed(d);                  /* the old owner's grant sessions end */
+    if (npf_callee_save(d) < 0)
+        return -2;
+    owner_reset_ask(d);
+    return 0;
 }
 
 int npf_callee_is_admin(const npf_callee *d, const uint8_t pub[32])
