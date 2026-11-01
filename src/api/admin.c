@@ -71,15 +71,23 @@ static const char *share_err(int rc)
 
 /* admin_share_new answered when the platform gave the locator */
 typedef struct later {
-    npf_t *n;
-    char   call[32], id[24];
-    unsigned long long who;
+    npf_t  *n;
+    char    call[32], id[24];
+    uint8_t pub[32];                        /* the admin that asked */
 } later;
+
+npf_call *npf_admin_session_again(npf_t *n, const char *call_id, const uint8_t pub[32])
+{
+    npf_call *c = npf_node_call(&n->node, call_id);
+    return c && npf_callee_admin_session(n->callee, npf_call_auth(c), npf_call_peer_pub(c))
+               && npf_ct_eq(npf_call_peer_pub(c), pub, 32) == 0 ? c : NULL;
+}
 
 static void share_made(void *arg, int rc, const char *code, const npf_share *v)
 {
     later *l = arg;
-    npf_call *c = npf_node_call(&l->n->node, l->call);
+    npf_call *c = npf_admin_session_again(l->n, l->call, l->pub);
+    unsigned long long who = (unsigned long long)npf_fp(l->pub);
     npf_out o = {.secret = 1};              /* the code: to this admin only, never in the log */
     npf_out_jobj(&o);
     if (rc == 0) {
@@ -87,8 +95,8 @@ static void share_made(void *arg, int rc, const char *code, const npf_share *v)
         npf_out_kstr(&o, "locator", v->id);
         npf_out_kint(&o, "uses", v->uses);
         npf_out_kint(&o, "expires", v->expires);
-        npf_log("admin %016llx: share code %s made (%lld uses)%s", l->who, v->id, (long long)v->uses,
-                c ? "" : ", revoked: the session ended first");
+        npf_log("admin %016llx: share code %s made (%lld uses)%s", who, v->id, (long long)v->uses,
+                c ? "" : ", revoked: that admin's session ended first");
         if (!c)
             npf_callee_share_del(l->n->callee, v->id);  /* nobody has it */
     }
@@ -114,7 +122,8 @@ static const char *member_op(npf_t *n, npf_call *c, const npf_env *e, const uint
         const m_admin_share_new *m = msg;
         if (!(l = calloc(1, sizeof *l)))
             return "internal_error";
-        *l = (later){.n = n, .who = who};
+        *l = (later){.n = n};
+        memcpy(l->pub, pub, 32);
         snprintf(l->call, sizeof l->call, "%s", c ? npf_call_id(c) : "");
         snprintf(l->id, sizeof l->id, "%s", e->id);
         if ((rc = npf_callee_share_new(d, (int)m->uses, m->ttl_s, share_made, l)) < 0)

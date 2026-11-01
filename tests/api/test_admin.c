@@ -8,12 +8,14 @@
  * not an admin (itself or another); unknown keys, names and locators are
  * not_found, a resource of npf.conf cannot be replaced or removed, a bad
  * resource says why; a share code needs the platform (offline) and an owner
- * (no_owner), its uses and ttl bounded; there are no role changes. */
+ * (no_owner), its uses and ttl bounded, and the code made later goes only
+ * to the session of the admin that asked; there are no role changes. */
 #define _DEFAULT_SOURCE                     /* mkdtemp */
 #include <stdlib.h>
 
 #include "api_test.h"
 #include "api_internal.h"
+#include "call_internal.h"
 #include "msgs.h"
 
 static void key_of(int i, uint8_t k[32])
@@ -172,6 +174,31 @@ int main(void)
     check(is(req(n, NPF_AUTH_IK, 0, "admin_share_del", "{\"locator\":\"ZZZZ\"}", out, sizeof out), "not_found")
               && ok(req(n, NPF_AUTH_IK, 0, "admin_share_del", "{\"locator\":\"K7Q2\"}", out, sizeof out))
               && n->callee->nshares == 0, "admin_share_del: revoked; an unknown locator not_found");
+
+    /* the code made later goes to the admin's session that asked only: not
+     * to another session with that call id (the platform names it) */
+    {
+        npf_call *c = calloc(1, sizeof *c);
+        uint8_t k0[32], k1[32], k2[32];
+        key_of(0, k0), key_of(1, k1), key_of(2, k2);
+        snprintf(c->call_id_s, sizeof c->call_id_s, "call-1");
+        c->st = CS_UP;
+        c->next = n->node.calls;
+        n->node.calls = c;
+        c->auth = NPF_AUTH_IK, memcpy(c->peer_pub, k0, 32);
+        check(npf_admin_session_again(n, "call-1", k0) == c && !npf_admin_session_again(n, "call-2", k0),
+              "the admin's session that asked: found again by its id");
+        c->auth = NPF_AUTH_GRANT;
+        check(!npf_admin_session_again(n, "call-1", k0), "the id now a GRANT session with that key: not that admin's");
+        c->auth = NPF_AUTH_IK, memcpy(c->peer_pub, k1, 32);
+        check(!npf_admin_session_again(n, "call-1", k0), "the id now another admin's session: not the one that asked");
+        memcpy(c->peer_pub, k2, 32);
+        check(!npf_admin_session_again(n, "call-1", k2), "a member's: never");
+        c->st = CS_CLOSED, memcpy(c->peer_pub, k0, 32);
+        check(!npf_admin_session_again(n, "call-1", k0), "ended: nobody");
+        n->node.calls = c->next;
+        free(c);
+    }
 
     /* remote_admin */
     npf_conf_set(&n->conf, "remote_admin", "members");
