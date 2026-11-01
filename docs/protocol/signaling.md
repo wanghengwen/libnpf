@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.72。更新日期：2026-11-01。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.73。更新日期：2026-11-02。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -1251,6 +1251,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-11-02 | 0.73 | 安全评审：UDP 承载的第 3 条消息每次尝试占来源的令牌、缓存的第 2 条消息至多重发 3 次、`SIG_COOKIE` 按 /24 限速；`handshake` 只转发主叫的、`handshake_done` 之前、每个呼叫至多 8 条、每条至多 512 字节；"流量额度"：免费开头每个账户每分钟 30 秒、每天 1800 秒，不计费的字节每台服务器每天 4 MB，套餐没读到时慢速、记账、新呼叫没有中转；`share_resolve` 对未知定位符也读节点记录 |
 | 2026-11-01 | 0.72 | 去掉账户之间的分享：`share_create`、`share_accept`、`share_list`、`share_set`、`share_revoke`、`share_leave` 与访问者；设备视图去掉 `role`、`permissions`；`grant_get` 与托管 `grant` 只对所有者签发；映射去掉 `not_publisher`（不是所有者的设备回 `not_found`） |
 | 2026-11-01 | 0.71 | `call` 的 `share`：分享码的配对不受被叫口令锁定的平台闸门限制（原来口令被人试错锁定后，所有分享码也配对不了） |
 | 2026-11-01 | 0.70 | 新增分享码：节点的 `share_new`、`share_del`、`share_sync`，客户端的 `share_resolve`（限速，匿名可用）；XXpsk3 消息 1 的载荷选择口令（空或定位符）；隧道内控制消息新增 `admin_get`、`admin_unpair`、`admin_share_new`、`admin_share_del`、`admin_res_put`、`admin_res_del`（只限管理员的 IK / PAKE 会话，`remote_admin`）；`bind_approve` 只接受管理员（安全 8.6，D25） |
