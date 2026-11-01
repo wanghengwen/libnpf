@@ -151,10 +151,18 @@ static void emb_alloc_cb(npf_loop *l, void *arg)
     *(int *)arg = ++emb_n;
 }
 
+static int missed;
+static void missed_cancel(void *user, int level, const char *line)
+{
+    (void)user;
+    missed += level == NPF_LOG_ERROR && strstr(line, "embedded timer pending") != NULL;
+}
+
 static void test_embedded(void)
 {
     npf_loop *l = npf_loop_new();
     emb a, b, c, *z = calloc(1, sizeof *z);
+    npf_log_ctx lc, *prev;
     int i, alloc_seq = 0;
     npf_timer_init(&a.t, emb_cb, &a);
     npf_timer_init(&b.t, emb_cb, &b);
@@ -191,8 +199,14 @@ static void test_embedded(void)
     npf_timer_set(l, &z->t, 100000);
     npf_timer_cancel(l, &z->t);
     free(z);                                    /* the owner goes once it is cancelled */
+    memset(&lc, 0, sizeof lc);
+    lc.hook = missed_cancel;
+    lc.level = NPF_LOG_ERROR;
+    prev = npf_log_ctx_swap(&lc);
     npf_loop_free(l);
-    CHECK(!npf_timer_pending(&b.t), "not pending once its loop is freed");
+    npf_log_ctx_swap(prev);
+    CHECK(!npf_timer_pending(&b.t) && missed == 1, "not pending once its loop is freed, the missed cancel logged (%d)",
+          missed);
 }
 
 /* a standalone loop's callbacks run in the thread's log context (the

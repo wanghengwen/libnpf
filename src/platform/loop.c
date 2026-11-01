@@ -487,8 +487,11 @@ void npf_loop_free(npf_loop *l)
     for (i = 0; i < l->nheap; i++)
         if (l->heap[i]->owned)
             free(l->heap[i]);
-        else
-            l->heap[i]->pos = 0;    /* its owner's, alive: cancelled before an owner goes */
+        else {                          /* its owner's: it missed the cancel (named as TIMED does) */
+            npf_loge("loop: freed with an embedded timer pending (%#lx; npf_loop_new %#lx)",
+                     (unsigned long)(uintptr_t)l->heap[i]->fn, (unsigned long)(uintptr_t)npf_loop_new);
+            l->heap[i]->pos = 0;
+        }
     free(l->heap);
     free_posted(l);
     npf_mutex_free(&l->post_mu);
