@@ -70,6 +70,19 @@ static int share_at(npf_callee *d, const char *id)
     return k;
 }
 
+/* the active share code with this secret (password() gave it for a
+ * locator: this code, not a newer one with that locator), or -1 */
+static int share_of(npf_callee *d, const char *code)
+{
+    size_t l = strlen(code);
+    int i, k = -1;
+    share_at(d, NULL);
+    for (i = 0; i < d->nshares; i++)
+        if (strlen(d->shares[i].secret) == l && npf_ct_eq(d->shares[i].secret, code, l) == 0)
+            k = i;
+    return k;
+}
+
 static void share_sync(npf_callee *d);
 
 /* unbound: the share codes go (the platform drops their locators itself) */
@@ -442,21 +455,27 @@ static int op_locked(npf_node *n, void *arg)
 
 /* a pairing: with the password an admin, with a share code a member (an
  * admin stays one), a use of the code gone */
-static int op_paired(npf_node *n, const uint8_t pub[32], const char *share, void *arg)
+static int op_paired(npf_node *n, const uint8_t pub[32], const char *code, void *arg)
 {
     npf_callee *d = arg;
     unsigned long long fp = (unsigned long long)npf_fp(pub);
     int k;
     (void)n;
     npf_callee_refresh(d);                   /* a local change first: not saved over */
-    if (share) {
-        if ((k = share_at(d, share)) < 0) {
-            npf_logw("pairing of %016llx refused: share code %s used up or expired meanwhile", fp, share);
+    if (code) {
+        if ((k = share_of(d, code)) < 0) {
+            npf_logw("pairing of %016llx refused: its share code used up, expired or deleted meanwhile", fp);
             return -1;
+        }
+        if (paired_at(d, pub) < 0 && d->npaired >= NPF_MAX_PAIRED) {
+            npf_logw("pairing of %016llx by share code %s refused: %d callers paired already", fp, d->shares[k].id,
+                     NPF_MAX_PAIRED);
+            return -1;                      /* (before a use goes) */
         }
         d->shares[k].uses--;
         d->shares[k].fails = 0;
-        npf_log("paired %016llx by share code %s (%lld uses left): a member", fp, share, (long long)d->shares[k].uses);
+        npf_log("paired %016llx by share code %s (%lld uses left): a member", fp, d->shares[k].id,
+                (long long)d->shares[k].uses);
         share_at(d, NULL);
     } else {
         d->fails = 0;
@@ -469,7 +488,7 @@ static int op_paired(npf_node *n, const uint8_t pub[32], const char *share, void
         d->paired[k].added = time(NULL);
         snprintf(d->paired[k].role, sizeof d->paired[k].role, "member");
     }
-    if (k >= 0 && !share)
+    if (k >= 0 && !code)
         snprintf(d->paired[k].role, sizeof d->paired[k].role, "admin");
     npf_callee_save(d);
     sync_paired(d);
@@ -480,15 +499,15 @@ static int op_paired(npf_node *n, const uint8_t pub[32], const char *share, void
  * doubles it, up to 24 hours (security.md 8.3); a pairing or a new password
  * starts the count again. A share code counts its own: 5 revoke it, the
  * password (the admins') is not locked by them (D25). */
-static void op_pair_failed(npf_node *n, const char *share, void *arg)
+static void op_pair_failed(npf_node *n, const char *code, void *arg)
 {
     npf_callee *d = arg;
     int k;
     (void)n;
     npf_callee_refresh(d);                   /* a local change first: not saved over */
-    if (share) {
-        if ((k = share_at(d, share)) >= 0 && ++d->shares[k].fails >= 5) {
-            npf_logw("share code %s revoked after 5 wrong secrets", share);
+    if (code) {
+        if ((k = share_of(d, code)) >= 0 && ++d->shares[k].fails >= 5) {
+            npf_logw("share code %s revoked after 5 wrong secrets", d->shares[k].id);
             share_at(d, NULL);
         }
         npf_callee_save(d);

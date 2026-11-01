@@ -112,11 +112,18 @@ static void roles_shares(const char *dir)
     CHECK((pw = d.ops.password(&node, "K7Q2", &d)) && strcmp(pw, s1) == 0 && !d.ops.password(&node, "ZZZZ", &d)
               && strcmp(d.ops.password(&node, NULL, &d), "the-pw-123") == 0,
           "the pairing secret by locator: the code's, none for another, the password without");
-    CHECK(d.ops.paired(&node, kb, "K7Q2", &d) == 0 && !npf_callee_is_admin(&d, kb) && d.shares[0].uses == 1,
+    d.ops.pair_failed(&node, s2, &d);
+    CHECK(d.ops.paired(&node, kb, s2, &d) == -1 && d.shares[0].uses == 2 && d.shares[0].fails == 0 && d.npaired == 1,
+          "another code with that locator (a newer one): not this code, nothing spent or counted");
+    i = d.npaired;
+    d.npaired = NPF_MAX_PAIRED;
+    CHECK(d.ops.paired(&node, kb, s1, &d) == -1 && d.shares[0].uses == 2, "the paired list full: refused before a use goes");
+    d.npaired = i;
+    CHECK(d.ops.paired(&node, kb, s1, &d) == 0 && !npf_callee_is_admin(&d, kb) && d.shares[0].uses == 1,
           "paired by the code: a member, a use gone");
-    CHECK(d.ops.paired(&node, ka, "K7Q2", &d) == 0 && npf_callee_is_admin(&d, ka) && d.nshares == 0,
+    CHECK(d.ops.paired(&node, ka, s1, &d) == 0 && npf_callee_is_admin(&d, ka) && d.nshares == 0,
           "an admin by a code: still an admin; the last use: the code gone");
-    CHECK(d.ops.paired(&node, kc, "K7Q2", &d) == -1 && d.npaired == 2, "used up: refused");
+    CHECK(d.ops.paired(&node, kc, s1, &d) == -1 && d.npaired == 2, "used up: refused");
     CHECK(d.ops.paired(&node, kb, NULL, &d) == 0 && npf_callee_is_admin(&d, kb), "a member pairing with the password: an admin");
     CHECK(npf_callee_password_set(&d, "the-pw-456") == 0 && npf_callee_is_admin(&d, ka) && npf_callee_is_admin(&d, kb),
           "a new password: the admins stay");
@@ -126,7 +133,7 @@ static void roles_shares(const char *dir)
     d.ops.paired(&node, kc, NULL, &d);
     roles_state(path, ka, code, 1, time(NULL) + 3600);  /* kc a member again (another process wrote it) */
     npf_callee_refresh(&d);
-    d.ops.paired(&node, kc, "K7Q2", &d);
+    d.ops.paired(&node, kc, s1, &d);
     CHECK(!npf_callee_admin_session(&d, NPF_AUTH_IK, kc) && !npf_callee_admin_session(&d, NPF_AUTH_PAKE, kc),
           "a member's session may not bind");
     CHECK(npf_callee_init(&again, path, 123, seed, "default-pw") == 0 && npf_callee_is_admin(&again, ka)
@@ -136,9 +143,9 @@ static void roles_shares(const char *dir)
     roles_state(path, ka, code, 5, time(NULL) + 3600);
     npf_callee_refresh(&d);
     for (i = 0; i < 4; i++)
-        d.ops.pair_failed(&node, "K7Q2", &d);
+        d.ops.pair_failed(&node, s1, &d);
     CHECK(d.nshares == 1 && d.fails == 0 && !d.ops.locked(&node, &d), "4 wrong secrets: the code stays, no password lock");
-    d.ops.pair_failed(&node, "K7Q2", &d);
+    d.ops.pair_failed(&node, s1, &d);
     CHECK(d.nshares == 0 && !d.ops.password(&node, "K7Q2", &d) && !d.ops.locked(&node, &d),
           "the fifth: the code revoked, the password still unlocked");
     roles_state(path, ka, code, 5, time(NULL) + 3600);
