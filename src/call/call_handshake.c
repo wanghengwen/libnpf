@@ -134,6 +134,8 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
         npf_out_kb64(&w, "grant", c->hs->grant, c->hs->grant_len);
     if (c->auth == AUTH_PAKE)
         npf_out_kb64(&w, "cpace", cmsg, 32);
+    if (c->hs->share[0])
+        npf_out_kbool(&w, "share", 1);      /* not held by the password lock (security.md 8.6) */
     npf_node_write_nat(n, &w);
     npf_node_write_cands(n, &w);
     npf_out_jend(&w);
