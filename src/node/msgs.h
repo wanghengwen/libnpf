@@ -146,7 +146,7 @@ NODE_MSG(m_bind_approve, M_BIND_APPROVE)
 /* the admin devices' requests (security.md D25) */
 #define M_ADMIN_GET(T) F_INT(T, offset, F_STRICT, 0, NPF_MAX_PAIRED, 0)
 NODE_MSG(m_admin_get, M_ADMIN_GET)
-#define M_ADMIN_KEY(T) F_B64X(T, key, 32, 0)                    /* admin_unpair */
+#define M_ADMIN_KEY(T) F_B64X(T, key, 32, F_REQ)                /* admin_unpair */
 NODE_MSG(m_admin_key, M_ADMIN_KEY)
 #define M_ADMIN_SHARE_NEW(T) F_INT(T, uses, F_STRICT, 1, NPF_SHARE_USES_MAX, 1) \
     F_INT(T, ttl_s, F_STRICT, 1, NPF_SHARE_TTL_MAX, NPF_SHARE_TTL)

@@ -147,6 +147,9 @@ int  npf_pub_res_text(const char *json, struct npf_res **r, char *err, size_t er
  * npf_admin_control is the callee's ops.control: admin_* here, the rest to
  * npf_callee_control */
 const char *npf_admin_do(npf_t *n, npf_call *c, int auth, const uint8_t pub[32], const npf_env *e, npf_out *o);
+/* the session call_id if it is still an admin's paired session with the key
+ * pub (the one that asked): admin_share_new's code goes to nobody else */
+npf_call *npf_admin_session_again(npf_t *n, const char *call_id, const uint8_t pub[32]);
 void npf_admin_control(npf_node *node, npf_call *c, const npf_json *j, void *arg);
 /* platform.c: npf_request on the instance's thread */
 int  npf_plat_request(npf_t *n, const char *type, const char *data, int proof, npf_reply_cb cb, void *user,

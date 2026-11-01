@@ -95,11 +95,13 @@ typedef struct npf_callee_ops {
     const char *(*password)(npf_node *n, const char *share, void *arg);
     /* nonzero while password pairing is locked */
     int  (*locked)(npf_node *n, void *arg);
-    /* a pairing (by the share code with this locator, or NULL) succeeded;
-     * -1 refuses it (the code used up or expired meanwhile) */
-    int  (*paired)(npf_node *n, const uint8_t caller_pub[32], const char *share, void *arg);
-    /* a wrong password, or a wrong secret for that share code */
-    void (*pair_failed)(npf_node *n, const char *share, void *arg);
+    /* a pairing succeeded: by the password (code NULL) or by the share code
+     * whose secret password() gave (code: that secret, which names the code
+     * itself, not a newer one with its locator); -1 refuses it (the code
+     * gone meanwhile, or no room for one more caller) */
+    int  (*paired)(npf_node *n, const uint8_t caller_pub[32], const char *code, void *arg);
+    /* a wrong password (code NULL), or a wrong secret for that code */
+    void (*pair_failed)(npf_node *n, const char *code, void *arg);
     /* hosted trust: 0 when grant is valid (not revoked) for caller_pub, with its account
      * and contents (out's targets point into grant); -1 refused */
     int  (*grant_check)(npf_node *n, const uint8_t *grant, size_t len, const uint8_t caller_pub[32],
