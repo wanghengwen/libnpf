@@ -21,6 +21,7 @@ int test_why(void)
     EXPECT(npf_why_end("auth_failed") == NPF_END_REFUSED);
     EXPECT(npf_why_end("unauthorized") == NPF_END_REFUSED);
     EXPECT(npf_why_end("wrong_password") == NPF_END_REFUSED);
+    EXPECT(npf_why_end("wrong_share_code") == NPF_END_REFUSED);
     EXPECT(npf_why_end("not_paired") == NPF_END_REFUSED);
     EXPECT(npf_why_end("pairing_lost") == NPF_END_REFUSED);
     EXPECT(npf_why_end("no_account") == NPF_END_REFUSED);
@@ -40,6 +41,7 @@ int test_why(void)
     /* pairing / account needs from the same why strings */
     EXPECT(npf_why_needs("not_paired") == NPF_NEED_PASSWORD);
     EXPECT(npf_why_needs("wrong_password") == (NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG));
+    EXPECT(npf_why_needs("wrong_share_code") == (NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG));
     EXPECT(npf_why_needs("pairing_lost") == (NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST));
     EXPECT(npf_why_needs("no_account") == NPF_NEED_ACCOUNT);
     EXPECT(npf_why_needs("closed") == 0);

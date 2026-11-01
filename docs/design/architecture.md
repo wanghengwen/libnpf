@@ -582,7 +582,7 @@ struct npf_path {
 | `PS_START` / `PS_RETRY` | `retry_at` 到；`peers_kick`（连接、数据报、模块的转发在等）；`npf_peers_retry_now`（非按需） | `PS_IDLE` → 同上 | — |
 | `PS_ASKING` | `grant` 到、名字解析出 | `PS_CALL` | — |
 | `PS_ASKING` | 拒绝、无应答、解析不出 | `PS_RETRY`（`unavailable`：`PS_ENDED`） | `retry_at` |
-| `PS_CALL` | 会话结束 | `wrong_password`、`pairing_lost`、`ONCE`：`PS_ENDED`；按需：`PS_IDLE`；其余 `PS_RETRY` | 退避 1 s 起翻倍至 120 s，±25 %；会话稳定 60 s 后从 1 s 重来 |
+| `PS_CALL` | 会话结束 | `wrong_password`、`wrong_share_code`、`pairing_lost`、`ONCE`：`PS_ENDED`；按需：`PS_IDLE`；其余 `PS_RETRY` | 退避 1 s 起翻倍至 120 s，±25 %；会话稳定 60 s 后从 1 s 重来 |
 | `PS_START` / `PS_RETRY` | 改为 `ONCE`（没有会话） | `PS_ENDED`（`done`） | 无 |
 | `PS_START` / `PS_RETRY` | 改为按需 | `PS_IDLE` | 无 |
 | `PS_ENDED` | 给口令、唤醒、改回 `KEEP`、账户会话（`no_account`、`not_paired` 的平台对端） | `PS_IDLE` → 开始 | — |

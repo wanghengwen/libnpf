@@ -18,6 +18,7 @@ static const why_end_row k_end[] = {
     {"auth_failed", NPF_END_REFUSED, 0},
     {"unauthorized", NPF_END_REFUSED, 0},
     {"wrong_password", NPF_END_REFUSED, NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG},
+    {"wrong_share_code", NPF_END_REFUSED, NPF_NEED_PASSWORD | NPF_NEED_PASSWORD_WRONG},
     {"not_paired", NPF_END_REFUSED, NPF_NEED_PASSWORD},
     {"pairing_lost", NPF_END_REFUSED, NPF_NEED_PASSWORD | NPF_NEED_PAIRING_LOST},
     {"no_account", NPF_END_REFUSED, NPF_NEED_ACCOUNT},

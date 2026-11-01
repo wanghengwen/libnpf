@@ -176,7 +176,7 @@ static void session(npf_peer *p, npf_call *c)
  * (the console says the password was wrong) until another is given */
 static const char *unpaired_why(const npf_peer *p)
 {
-    return strcmp(p->last_why, "wrong_password") == 0 ? "wrong_password" : "not_paired";
+    return npf_why_needs(p->last_why) & NPF_NEED_PASSWORD_WRONG ? p->last_why : "not_paired";
 }
 
 static void grant_got(npf_node *n, const npf_env *e, int ok, void *arg)
@@ -781,17 +781,21 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         p->st = PS_IDLE;
         peers_subs_call_gone(p->ps, c);
         if (why && strcmp(why, "auth_failed") == 0 && p->password[0] && !p->up_since) {
-            /* the device refused the password: not tried again (each try counts
-             * against it there, security.md 8.3); the user gives it anew */
-            npf_logw("%s: the password was not accepted: give it again (-p)", p->name);
+            /* the device refused the password or the share code's secret (the
+             * same auth_failed on the wire: the share code is ours to know):
+             * not tried again (each try counts against it there, security.md
+             * 8.3); the user gives it anew */
+            int share = npf_share_parse(p->password, NULL, NULL) == 0;
+            npf_logw(share ? "%s: the share code's secret is wrong: check the code, or ask for a new one"
+                           : "%s: the password was not accepted: give it again (-p)", p->name);
             npf_wipe(p->password, sizeof p->password);
-            why = "wrong_password";
+            why = share ? "wrong_share_code" : "wrong_password";
         }
         if (why && strcmp(why, "unauthorized") == 0 && npf_share_parse(p->password, NULL, NULL) == 0) {
             /* a share code the device does not know (used up, expired or deleted): never again */
             npf_logw("%s: the share code is used up, expired or deleted there: ask for a new one", p->name);
             npf_wipe(p->password, sizeof p->password);
-            why = "wrong_password";
+            why = "wrong_share_code";
         }
         if (why && strcmp(why, "unauthorized") == 0 && p->call_pinned) {
             /* the device does not know the pairing any more (reset or
@@ -810,7 +814,7 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         if (p->up_since && npf_mono_ms() - p->up_since >= STABLE_MS)
             p->backoff = 0;             /* it was up long enough: start from 1 s again */
         p->up_since = 0;
-        if (strcmp(why ? why : "", "wrong_password") == 0 || strcmp(why ? why : "", "pairing_lost") == 0) {
+        if (npf_why_needs(why) & (NPF_NEED_PASSWORD_WRONG | NPF_NEED_PAIRING_LOST)) {
             finish(p, why);                 /* a new password tries again */
             return 1;
         }
