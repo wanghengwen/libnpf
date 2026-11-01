@@ -1,6 +1,7 @@
 /* Callee-side local state shared by the NAS device and console nodes
- * (security.md 5.5, 8.2, 8.3, D20, D21): current / default password,
- * paired callers, password lock, owner, revocations, hosted trust.
+ * (security.md 5.5, 8.2, 8.3, D20, D21, D25): current / default password,
+ * paired callers and their roles, share codes, password lock, owner,
+ * revocations, hosted trust.
  * Kept in a JSON state file; only local commands change it. */
 #define _GNU_SOURCE
 #include <errno.h>
@@ -17,12 +18,65 @@
 #include "npf/json.h"
 #include "npf/loop.h"
 #include "npf/node.h"
+#include "npf/platform.h"
 
 #include "../node/msgs.h"
 
 /* ---- state file ---- */
 
 #define STATE_MAX 32768     /* the largest is about 25 KB (256 paired, 64 revocations, a cert) */
+
+/* the index of a paired key, or -1 */
+static int paired_at(const npf_callee *d, const uint8_t pub[32])
+{
+    int i;
+    for (i = 0; i < d->npaired; i++)
+        if (npf_ct_eq(d->paired[i].pub, pub, 32) == 0)
+            return i;
+    return -1;
+}
+
+/* admin: paired with the password, or a file of before the roles (security.md D25) */
+static int is_admin(const npf_paired *p)
+{
+    return strcmp(p->role, "member") != 0;
+}
+
+/* the platform forgets a locator (signaling.md share_del; offline: share_sync at the login) */
+static void share_tell_del(npf_callee *d, const char *id)
+{
+    char data[40];
+    snprintf(data, sizeof data, "{\"locator\":\"%s\"}", id);
+    if (d->node && d->node->online)
+        npf_node_send(d->node, "share_del", 1, data);
+}
+
+/* the active share code with this locator, or -1; the expired, used up
+ * and revoked dropped first */
+static int share_at(npf_callee *d, const char *id)
+{
+    int i, k = -1;
+    for (i = d->nshares - 1; i >= 0; i--)
+        if (d->shares[i].expires <= (int64_t)time(NULL) || d->shares[i].uses <= 0 || d->shares[i].fails >= 5) {
+            share_tell_del(d, d->shares[i].id);
+            npf_wipe(&d->shares[i], sizeof d->shares[i]);
+            memmove(&d->shares[i], &d->shares[i + 1], (size_t)(d->nshares - i - 1) * sizeof d->shares[0]);
+            d->nshares--;
+        }
+    for (i = 0; id && i < d->nshares; i++)
+        if (strcmp(d->shares[i].id, id) == 0)
+            k = i;
+    return k;
+}
+
+static void share_sync(npf_callee *d);
+
+/* unbound: the share codes go (the platform drops their locators itself) */
+static void shares_drop(npf_callee *d)
+{
+    npf_wipe(d->shares, sizeof d->shares);
+    d->nshares = 0;
+}
 
 #if defined(__APPLE__)
 #define MTIME_NS(st) ((long)(st).st_mtimespec.tv_nsec)
@@ -158,6 +212,8 @@ static int state_load(npf_callee *d)
         snprintf(d->password, sizeof d->password, "%s", d->default_pw);
     memcpy(d->paired, m->paired, (size_t)m->npaired * sizeof *d->paired);
     d->npaired = m->npaired;
+    memcpy(d->shares, m->shares, (size_t)m->nshares * sizeof *d->shares);
+    d->nshares = m->nshares;
     d->fails = (int)m->fails;
     d->locked_until = m->locked_until;
     d->lock_secs = m->lock_secs;
@@ -194,6 +250,19 @@ int npf_callee_save(npf_callee *d)
         npf_out_jobj(&w);
         npf_out_kb64(&w, "pub", d->paired[i].pub, 32);
         npf_out_kint(&w, "added", d->paired[i].added);
+        npf_out_kstr(&w, "role", is_admin(&d->paired[i]) ? "admin" : "member");
+        npf_out_jend(&w);
+    }
+    npf_out_jend(&w);
+    npf_out_jkey(&w, "shares");
+    npf_out_jarr(&w);
+    for (i = 0; i < d->nshares; i++) {
+        npf_out_jobj(&w);
+        npf_out_kstr(&w, "id", d->shares[i].id);
+        npf_out_kstr(&w, "secret", d->shares[i].secret);
+        npf_out_kint(&w, "uses", d->shares[i].uses);
+        npf_out_kint(&w, "expires", d->shares[i].expires);
+        npf_out_kint(&w, "fails", d->shares[i].fails);
         npf_out_jend(&w);
     }
     npf_out_jend(&w);
@@ -301,16 +370,6 @@ static void report_lock(npf_callee *d)
     npf_node_send(d->node, "lock_report", 0, data);
 }
 
-/* the index of a paired key, or -1 */
-static int paired_at(const npf_callee *d, const uint8_t pub[32])
-{
-    int i;
-    for (i = 0; i < d->npaired; i++)
-        if (npf_ct_eq(d->paired[i].pub, pub, 32) == 0)
-            return i;
-    return -1;
-}
-
 /* the account's grants issued before a revocation of it are void */
 static int revoked(const npf_callee *d, uint64_t account, int64_t issued)
 {
@@ -361,12 +420,15 @@ static int op_authorized(npf_node *n, const uint8_t pub[32], void *arg)
     return !d->damaged && paired_at(d, pub) >= 0;   /* safe mode: who is paired is not known */
 }
 
-static const char *op_password(npf_node *n, void *arg)
+static const char *op_password(npf_node *n, const char *share, void *arg)
 {
     npf_callee *d = arg;
+    int i;
     (void)n;
     npf_callee_refresh(d);
-    return d->damaged ? NULL : d->password;    /* safe mode: no pairing (never the default password) */
+    if (d->damaged)
+        return NULL;                        /* safe mode: no pairing (never the default password) */
+    return !share ? d->password : (i = share_at(d, share)) < 0 ? NULL : d->shares[i].secret;
 }
 
 /* 1 while password pairing is locked (on the local clock, as it was set) */
@@ -377,30 +439,60 @@ static int op_locked(npf_node *n, void *arg)
     return d->damaged || d->locked_until > (int64_t)time(NULL);
 }
 
-static void op_paired(npf_node *n, const uint8_t pub[32], void *arg)
+/* a pairing: with the password an admin, with a share code a member (an
+ * admin stays one), a use of the code gone */
+static int op_paired(npf_node *n, const uint8_t pub[32], const char *share, void *arg)
 {
     npf_callee *d = arg;
+    unsigned long long fp = (unsigned long long)npf_fp(pub);
+    int k;
     (void)n;
     npf_callee_refresh(d);                   /* a local change first: not saved over */
-    d->fails = 0;
-    d->lock_secs = 0;
-    if (paired_at(d, pub) < 0 && d->npaired < NPF_MAX_PAIRED) {
-        memcpy(d->paired[d->npaired].pub, pub, 32);
-        d->paired[d->npaired].added = time(NULL);
-        d->npaired++;
+    if (share) {
+        if ((k = share_at(d, share)) < 0) {
+            npf_logw("pairing of %016llx refused: share code %s used up or expired meanwhile", fp, share);
+            return -1;
+        }
+        d->shares[k].uses--;
+        d->shares[k].fails = 0;
+        npf_log("paired %016llx by share code %s (%lld uses left): a member", fp, share, (long long)d->shares[k].uses);
+        share_at(d, NULL);
+    } else {
+        d->fails = 0;
+        d->lock_secs = 0;
     }
+    if ((k = paired_at(d, pub)) < 0 && d->npaired < NPF_MAX_PAIRED) {
+        k = d->npaired++;
+        memset(&d->paired[k], 0, sizeof d->paired[k]);
+        memcpy(d->paired[k].pub, pub, 32);
+        d->paired[k].added = time(NULL);
+        snprintf(d->paired[k].role, sizeof d->paired[k].role, "member");
+    }
+    if (k >= 0 && !share)
+        snprintf(d->paired[k].role, sizeof d->paired[k].role, "admin");
     npf_callee_save(d);
     sync_paired(d);
+    return 0;
 }
 
-/* 5 failures in a row lock 15 minutes, each failure after that doubles
- * it, up to 24 hours (security.md 8.3); a pairing or a new password starts
- * the count again */
-static void op_pair_failed(npf_node *n, void *arg)
+/* 5 wrong passwords in a row lock 15 minutes, each failure after that
+ * doubles it, up to 24 hours (security.md 8.3); a pairing or a new password
+ * starts the count again. A share code counts its own: 5 revoke it, the
+ * password (the admins') is not locked by them (D25). */
+static void op_pair_failed(npf_node *n, const char *share, void *arg)
 {
     npf_callee *d = arg;
+    int k;
     (void)n;
     npf_callee_refresh(d);                   /* a local change first: not saved over */
+    if (share) {
+        if ((k = share_at(d, share)) >= 0 && ++d->shares[k].fails >= 5) {
+            npf_logw("share code %s revoked after 5 wrong secrets", share);
+            share_at(d, NULL);
+        }
+        npf_callee_save(d);
+        return;
+    }
     d->fails++;
     if (d->fails >= 5) {
         d->lock_secs = d->lock_secs >= 12 * 3600 ? 24 * 3600
@@ -462,8 +554,10 @@ static void op_revoke(npf_node *n, uint64_t account, int64_t before, int owner, 
     }
     d->revokes[i].account = account;
     d->revokes[i].before = before;
-    if (owner && d->owner == account)
+    if (owner && d->owner == account) {
         d->owner = 0;
+        shares_drop(d);
+    }
     npf_log("revoked account %llu%s", (unsigned long long)account, owner ? " (owner)" : "");
     npf_callee_save(d);
     npf_callee_changed(d);                  /* grant sessions the revocation covers end (also by a local change) */
@@ -483,7 +577,7 @@ static void op_bind_committed(npf_node *n, uint64_t account, const uint8_t op[16
 }
 
 /* bind_approve inside the tunnel (signaling.md "隧道内控制消息") */
-static void op_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
+void npf_callee_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
 {
     npf_callee *d = arg;
     char reply[256];
@@ -499,7 +593,7 @@ static void op_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
         return;
     }
     npf_callee_refresh(d);
-    if (npf_call_auth(c) != NPF_AUTH_IK && npf_call_auth(c) != NPF_AUTH_PAKE) {   /* paired callers only */
+    if (!npf_callee_admin_session(d, npf_call_auth(c), npf_call_peer_pub(c))) {  /* a member binds it to no account */
         npf_call_ctl_reply(c, e.type, j, "error", "forbidden", NULL);
         return;
     }
@@ -565,7 +659,7 @@ void npf_callee_attach(npf_callee *d, npf_node *n)
     d->ops.grant_check = op_grant_check;
     d->ops.revoke = op_revoke;
     d->ops.bind_committed = op_bind_committed;
-    d->ops.control = op_control;
+    d->ops.control = npf_callee_control;
     d->ops.policy = &d->policy;
     n->callee = &d->ops;
     n->callee_arg = d;
@@ -585,6 +679,7 @@ void npf_callee_on_login(npf_callee *d)
         npf_loge("state: %s damaged: online, but every call and pairing refused (safe mode)", d->state_path);
     sync_paired(d);
     report_lock(d);
+    share_sync(d);
     state_watch_start(d);
     if (d->owner_reset_pending) {
         npf_node_send(d->node, "owner_reset", 0, NULL);
@@ -598,8 +693,8 @@ void npf_callee_on_login(npf_callee *d)
  * work again until they expire) */
 int npf_callee_fresh(npf_callee *d, const char *np)
 {
-    if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
-        return -1;
+    if (strlen(np) < 8 || strlen(np) >= sizeof d->password || npf_share_parse(np, NULL, NULL) == 0)
+        return -1;                      /* a share code's form would be taken for one */
     npf_logw("state: %s written afresh (safe mode over): a new password, no paired callers", d->state_path);
     d->damaged = 0;
     d->state_loaded = 1;
@@ -610,6 +705,7 @@ int npf_callee_fresh(npf_callee *d, const char *np)
     d->lock_secs = 0;
     d->cert_len = 0;
     d->owner = 0;
+    shares_drop(d);
     d->nrevokes = 0;
     d->owner_reset_pending = 0;
     npf_callee_changed(d);
@@ -618,8 +714,8 @@ int npf_callee_fresh(npf_callee *d, const char *np)
 
 int npf_callee_password_set(npf_callee *d, const char *np)
 {
-    if (strlen(np) < 8 || strlen(np) >= sizeof d->password)
-        return -1;
+    if (strlen(np) < 8 || strlen(np) >= sizeof d->password || npf_share_parse(np, NULL, NULL) == 0)
+        return -1;                      /* a share code's form would be taken for one */
     npf_callee_refresh(d);
     if (d->damaged)
         return -2;                      /* safe mode: npf_callee_fresh writes a fresh state */
@@ -655,6 +751,161 @@ int npf_callee_owner_reset(npf_callee *d)
     if (d->damaged)
         return -2;
     d->owner = 0;
+    shares_drop(d);
     d->owner_reset_pending = 1;
+    return npf_callee_save(d) < 0 ? -2 : 0;
+}
+
+int npf_callee_is_admin(const npf_callee *d, const uint8_t pub[32])
+{
+    int i = paired_at(d, pub);
+    return !d->damaged && i >= 0 && is_admin(&d->paired[i]);
+}
+
+int npf_callee_admin_session(const npf_callee *d, int auth, const uint8_t pub[32])
+{
+    return (auth == NPF_AUTH_IK || auth == NPF_AUTH_PAKE) && npf_callee_is_admin(d, pub);
+}
+
+/* n random characters of the alphabet */
+static void share_rand(char *out, int n)
+{
+    uint8_t r;
+    int i;
+    for (i = 0; i < n; i++) {
+        do                                  /* uniform: 248 = 8 * 31 */
+            npf_random(&r, 1);
+        while (r >= 248);
+        out[i] = NPF_SHARE_ABC[r % 31];
+    }
+    r = 0;
+}
+
+/* the platform kept these of our locators: the others' codes go (it lost them, or they expired there) */
+static void share_synced(npf_node *n, const npf_env *e, int ok, void *arg)
+{
+    npf_callee *d = arg;
+    char id[8];
+    int a, i, k, kept;
+    (void)n;
+    if (!e || !ok || (a = npf_json_get(e->j, e->data, "locators")) < 0 || e->j->tok[a].type != NPF_JT_ARRAY)
+        return;
+    for (k = 0; k < d->nshares; k++) {
+        for (i = 0, kept = 0; i < e->j->tok[a].size && !kept; i++)
+            kept = npf_json_str(e->j, npf_json_item(e->j, a, i), id, sizeof id) > 0 && strcmp(id, d->shares[k].id) == 0;
+        if (!kept) {
+            npf_logw("share code %s revoked: the platform no longer has it", d->shares[k].id);
+            d->shares[k].uses = 0;
+        }
+    }
+    share_at(d, NULL);
+    npf_callee_save(d);
+}
+
+/* at the login: our active locators; the platform drops its others and answers those it kept */
+static void share_sync(npf_callee *d)
+{
+    npf_out w = {0};
+    int i;
+    if (d->damaged || !d->owner)
+        return;                             /* unbound: the platform dropped them */
+    share_at(d, NULL);
+    npf_out_jobj(&w);
+    npf_out_jkey(&w, "locators");
+    npf_out_jarr(&w);
+    for (i = 0; i < d->nshares; i++)
+        npf_out_jstr(&w, d->shares[i].id);
+    npf_out_jend(&w);
+    npf_out_jend(&w);
+    if (!w.failed)
+        npf_node_request(d->node, "share_sync", w.p, share_synced, d);
+    npf_out_free(&w);
+}
+
+typedef struct share_req {
+    npf_callee  *d;
+    int          uses;
+    npf_share_fn fn;
+    void        *arg;
+} share_req;
+
+/* the platform's locator for a new code: the secret made here, the code
+ * kept (never the code itself), and fn told */
+static void share_made(npf_node *n, const npf_env *e, int ok, void *arg)
+{
+    share_req *q = arg;
+    npf_callee *d = q->d;
+    char loc[8] = "", k[16], code[NPF_SHARE_LEN] = "";
+    int64_t exp = 0;
+    npf_share v;
+    int rc = -3;
+    (void)n;
+    memset(&v, 0, sizeof v);
+    d->share_reqs--;
+    if (e && !ok)
+        rc = strcmp(e->error, "no_owner") == 0 ? -4 : strcmp(e->error, "rate_limited") == 0 ? -1 : -5;
+    if (e && ok && npf_json_get_str(e->j, e->data, "locator", loc, sizeof loc) == NPF_SHARE_ID
+        && strspn(loc, NPF_SHARE_ABC) == NPF_SHARE_ID && npf_json_get_int(e->j, e->data, "expires", 0, INT64_MAX, &exp) == 0) {
+        npf_callee_refresh(d);
+        share_at(d, NULL);
+        memcpy(k, loc, NPF_SHARE_ID);
+        share_rand(k + NPF_SHARE_ID, 8);
+        snprintf(code, sizeof code, "%.4s-%.4s-%.4s", k, k + 4, k + 8);
+        npf_wipe(k, sizeof k);
+        npf_share_parse(code, v.id, v.secret);
+        v.uses = q->uses;
+        v.expires = exp;
+        rc = d->damaged || !d->owner || d->nshares >= NPF_MAX_SHARES ? -5 : 0;
+        if (rc == 0) {
+            d->shares[d->nshares++] = v;
+            npf_callee_save(d);
+        } else {
+            share_tell_del(d, loc);         /* not kept: the platform forgets it too */
+        }
+    }
+    q->fn(q->arg, rc, rc ? NULL : code, rc ? NULL : &v);
+    npf_wipe(code, sizeof code);
+    npf_wipe(&v, sizeof v);
+    free(q);
+}
+
+int npf_callee_share_new(npf_callee *d, int uses, int64_t ttl_s, npf_share_fn fn, void *arg)
+{
+    char data[64];
+    share_req *q;
+    npf_callee_refresh(d);
+    if (d->damaged)
+        return -2;
+    if (!d->owner)
+        return -4;
+    share_at(d, NULL);
+    if (d->nshares + d->share_reqs >= NPF_MAX_SHARES)
+        return -1;
+    if (!d->node || !d->node->online)
+        return -3;
+    if (!(q = calloc(1, sizeof *q)))
+        return -5;
+    q->d = d;
+    q->uses = uses < 1 || uses > NPF_SHARE_USES_MAX ? 1 : uses;
+    q->fn = fn;
+    q->arg = arg;
+    snprintf(data, sizeof data, "{\"ttl_s\":%lld,\"uses\":%d}",
+             (long long)(ttl_s < 1 || ttl_s > NPF_SHARE_TTL_MAX ? NPF_SHARE_TTL : ttl_s), q->uses);
+    if (npf_node_request(d->node, "share_new", data, share_made, q) < 0) {
+        free(q);
+        return -3;
+    }
+    d->share_reqs++;
+    return 0;
+}
+
+int npf_callee_share_del(npf_callee *d, const char *id)
+{
+    int i;
+    npf_callee_refresh(d);
+    if ((i = share_at(d, id)) < 0)
+        return -1;
+    d->shares[i].uses = 0;
+    share_at(d, NULL);
     return npf_callee_save(d) < 0 ? -2 : 0;
 }

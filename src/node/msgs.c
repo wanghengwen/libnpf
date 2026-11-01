@@ -73,10 +73,17 @@ TABLE(m_listen_id, M_LISTEN_ID)
 TABLE(m_listening, M_LISTENING)
 TABLE(m_grant_update, M_GRANT_UPDATE)
 TABLE(m_bind_approve, M_BIND_APPROVE)
+TABLE(m_admin_get, M_ADMIN_GET)
+TABLE(m_admin_key, M_ADMIN_KEY)
+TABLE(m_admin_share_new, M_ADMIN_SHARE_NEW)
+TABLE(m_admin_share_del, M_ADMIN_SHARE_DEL)
+TABLE(m_admin_res_put, M_ADMIN_RES_PUT)
+TABLE(m_admin_res_del, M_ADMIN_RES_DEL)
 TABLE(m_server, M_SERVER)
 TABLE(m_sources, M_SOURCES)
 TABLE(m_list, M_LIST)
 TABLE(m_paired, M_PAIRED)
+TABLE(m_share, M_SHARE)
 TABLE(m_revoked, M_REVOKED)
 TABLE(m_state, M_STATE)
 TABLE(m_forward, M_FORWARD)
@@ -93,7 +100,8 @@ const npf_msgdesc *const node_msgdescs[] = {
     &m_relay_spare_d, &m_home_open_d, &m_revoke_d, &m_bind_committed_d, &m_incoming_d, &m_call_reply_d,
     &m_call_accepted_d, &m_call_rejected_d, &m_handshake_d, &m_punch_start_d, &m_punch_info_d, &m_relay_switch_d,
     &m_call_ended_d, &m_close_d, &m_reverse_listen_d, &m_listen_id_d, &m_listening_d, &m_grant_update_d,
-    &m_bind_approve_d, NULL,
+    &m_bind_approve_d, &m_admin_get_d, &m_admin_key_d, &m_admin_share_new_d, &m_admin_share_del_d, &m_admin_res_put_d,
+    &m_admin_res_del_d, NULL,
 };
 const npf_msgdesc *const node_filedescs[] = {&m_list_d, &m_state_d, &m_device_d, NULL};
 

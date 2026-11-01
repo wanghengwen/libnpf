@@ -376,7 +376,7 @@ static int callee_lock(npf_loop *loop)
     d.node = NULL;
     d.fails = 4;
     d.lock_secs = INT64_MAX;                 /* a syntactically valid local state value */
-    d.ops.pair_failed(&node, &d);
+    d.ops.pair_failed(&node, NULL, &d);
     REQUIRE(d.lock_secs == 86400 && d.locked_until > time(NULL));
     rm_dir(dir);
     return 0;

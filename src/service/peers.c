@@ -787,6 +787,12 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
             npf_wipe(p->password, sizeof p->password);
             why = "wrong_password";
         }
+        if (why && strcmp(why, "unauthorized") == 0 && npf_share_parse(p->password, NULL, NULL) == 0) {
+            /* a share code the device does not know (used up, expired or deleted): never again */
+            npf_logw("%s: the share code is used up, expired or deleted there: ask for a new one", p->name);
+            npf_wipe(p->password, sizeof p->password);
+            why = "wrong_password";
+        }
         if (why && strcmp(why, "unauthorized") == 0 && p->call_pinned) {
             /* the device does not know the pairing any more (reset or
              * reinstalled: new keys, or the pairing revoked): trying again

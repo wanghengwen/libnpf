@@ -90,12 +90,16 @@ typedef void (*npf_ctl_fn)(npf_call *c, const npf_env *e, int ok, void *arg);   
 /* The callee side's operations (npf/callee.h installs them). */
 typedef struct npf_callee_ops {
     int  (*authorized)(npf_node *n, const uint8_t caller_pub[32], void *arg);
-    /* the pairing password, NULL: pairing disabled */
-    const char *(*password)(npf_node *n, void *arg);
+    /* the pairing secret: the password (share NULL) or that of the share
+     * code with this locator (NULL none); NULL: pairing disabled */
+    const char *(*password)(npf_node *n, const char *share, void *arg);
     /* nonzero while password pairing is locked */
     int  (*locked)(npf_node *n, void *arg);
-    void (*paired)(npf_node *n, const uint8_t caller_pub[32], void *arg);
-    void (*pair_failed)(npf_node *n, void *arg);
+    /* a pairing (by the share code with this locator, or NULL) succeeded;
+     * -1 refuses it (the code used up or expired meanwhile) */
+    int  (*paired)(npf_node *n, const uint8_t caller_pub[32], const char *share, void *arg);
+    /* a wrong password, or a wrong secret for that share code */
+    void (*pair_failed)(npf_node *n, const char *share, void *arg);
     /* hosted trust: 0 when grant is valid (not revoked) for caller_pub, with its account
      * and contents (out's targets point into grant); -1 refused */
     int  (*grant_check)(npf_node *n, const uint8_t *grant, size_t len, const uint8_t caller_pub[32],
@@ -401,10 +405,20 @@ struct npf_node {
 
 /* ---- calls ---- */
 
-/* Caller: calls number. With password: the first pairing (CPace + XXpsk3);
- * else IK to pinned, the key pinned at pairing. States come through
+/* Caller: calls number. With password: the first pairing (CPace + XXpsk3),
+ * by a share code when password is one (npf_share_parse); else IK to
+ * pinned, the key pinned at pairing. States come through
  * hooks.on_call_state. NULL: not logged in, or the call cannot start. */
 npf_call *npf_call_start(npf_node *n, uint64_t number, const char *password, const uint8_t pinned[32]);
+/* A share code (security.md D25): XXXX-XXXX-XXXX of NPF_SHARE_ABC (no 0 O
+ * 1 I L; any case, "-" and spaces skipped, those five refused). 0 with its
+ * locator (the first group) and the secret both sides run CPace with (a
+ * hash of the code), -1 not a code. */
+#define NPF_SHARE_ABC    "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+#define NPF_SHARE_LEN    15
+#define NPF_SHARE_ID     4
+#define NPF_SHARE_SECRET 44
+int npf_share_parse(const char *code, char id[NPF_SHARE_ID + 1], char secret[NPF_SHARE_SECRET]);
 /* Caller with hosted trust: IK to the key of chain's leaf, which must verify
  * against the roots and be number's node certificate; grant goes with the
  * call (both copied). NULL when they do not verify or the call cannot start. */
@@ -450,6 +464,9 @@ int      npf_call_media_close(npf_call *c, uint32_t media);
  * and data_json: 0, or -1 when req has no id or it cannot be sent. */
 int  npf_call_ctl_reply(npf_call *c, const char *type, const npf_json *req, const char *status, const char *error,
                         const char *data_json);
+/* the same to the request with this id (a reply that comes later) */
+int  npf_call_ctl_reply_to(npf_call *c, const char *type, const char *id, const char *status, const char *error,
+                           const char *data_json);
 enum { NPF_AUTH_IK = 1, NPF_AUTH_PAKE, NPF_AUTH_GRANT, NPF_AUTH_DIRECT };
 
 /* ---- direct connections (no platform): Noise_NNpsk0 over UDP with a
@@ -478,8 +495,12 @@ int  npf_call_reverse(npf_call *c, const char *bind_addr, int port, const char *
                       npf_rev_fn fn, void *arg);
 /* Caller: ends a reverse mapping; the callee closes its listener. */
 void npf_call_reverse_close(npf_call *c, uint32_t listen_id);
-/* how the session was admitted: NPF_AUTH_* */
+/* how the session was admitted: NPF_AUTH_*; the peer's static key its handshake verified (zero before) */
 int  npf_call_auth(const npf_call *c);
+const uint8_t *npf_call_peer_pub(const npf_call *c);
+/* the session's id; npf_node_call finds it again (NULL: ended) */
+const char *npf_call_id(const npf_call *c);
+npf_call  *npf_node_call(npf_node *n, const char *id);
 /* Ends the call: close to the peer, call_end to the platform, the state
  * NPF_CALL_CLOSED at once; c is freed on a later loop turn. */
 void npf_call_end(npf_call *c, const char *reason);

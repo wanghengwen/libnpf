@@ -140,6 +140,14 @@ void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d);
  * NPF_RES_MAX of them, for the caller to free); NPF_ENOMEM or NPF_EFAIL with
  * err and *r NULL */
 int  npf_pub_res_text(const char *json, struct npf_res **r, char *err, size_t errcap);
+/* admin.c (security.md D25): the admin request in e from the session c
+ * (NULL in tests) admitted by auth with the verified key pub: NULL done,
+ * "" answered later (admin_share_new, to c), else the error code; its
+ * data's members go into o, an object left open (the caller ends it).
+ * npf_admin_control is the callee's ops.control: admin_* here, the rest to
+ * npf_callee_control */
+const char *npf_admin_do(npf_t *n, npf_call *c, int auth, const uint8_t pub[32], const npf_env *e, npf_out *o);
+void npf_admin_control(npf_node *node, npf_call *c, const npf_json *j, void *arg);
 /* platform.c: npf_request on the instance's thread */
 int  npf_plat_request(npf_t *n, const char *type, const char *data, int proof, npf_reply_cb cb, void *user,
                       npf_out *err);

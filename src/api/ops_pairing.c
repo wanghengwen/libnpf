@@ -1,5 +1,5 @@
 /* libnpf: a device's pairing (npf_pairing_* and npf_owner_reset): its
- * password, the keys paired, the owner reset. Without a number (no callee
+ * password, the keys paired and their roles, the owner reset. Without a number (no callee
  * state yet) or in safe mode: NPF_ESTATE. */
 #ifndef _WIN32
 #define _GNU_SOURCE
@@ -56,7 +56,7 @@ static int pw_set_run(npf_t *n, void *arg)
         return n->has_number ? op_fail(x, NPF_ESTATE, "not changed: the device's state file is damaged (safe mode)")
                              : NPF_ESTATE;
     if ((r = npf_callee_password_set(c, x->in)) == -1)
-        return op_fail(x, NPF_EINVAL, "the password needs 8 to 127 bytes");
+        return op_fail(x, NPF_EINVAL, "the password needs 8 to 127 bytes and must not look like a share code");
     if (r == -2)
         return op_fail(x, NPF_ESAVE, "in effect, but the device's state could not be written");
     return callee_rc(r);
@@ -82,6 +82,7 @@ static int pairing_list_run(npf_t *n, void *arg)
         memset(&pr, 0, sizeof pr);
         memcpy(pr.key, c->paired[k].pub, 32);
         pr.since = c->paired[k].added;
+        pr.admin = npf_callee_is_admin(c, pr.key);
         list_put(arg, &pr, sizeof pr);
     }
     return NPF_OK;

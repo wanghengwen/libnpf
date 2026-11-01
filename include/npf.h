@@ -545,13 +545,15 @@ NPF_API int npf_pairing_password_set(npf_t *n, const char *password, char *err, 
 typedef struct npf_pairing {
     uint8_t key[32];                   /* the caller's public key */
     int64_t since;                     /* Unix time it paired */
+    int     admin;                     /* 1: an admin (paired with the password: it may configure this
+                                          node in a session, security.md D25), 0 a member (a share code) */
 } npf_pairing;
 NPF_API int npf_pairing_list_size(npf_t *n, npf_pairing *out, size_t size, size_t cap, size_t *count);
 #define npf_pairing_list(n, out, cap, count) npf_pairing_list_size((n), (out), sizeof *(out), (cap), (count))
 /* key NULL: all of them; NPF_ENOENT: that key is not paired */
 NPF_API int npf_pairing_remove(npf_t *n, const uint8_t key[32]);
-/* Forgets the owner account here; the platform is told at the next login.
- * The pairings stay. */
+/* Forgets the owner account here, and so the share codes; the platform is
+ * told at the next login. The pairings and their roles stay. */
 NPF_API int npf_owner_reset(npf_t *n);
 
 /* ---- this node, sessions, the network ---- */

@@ -59,7 +59,7 @@ const npf_key npf_keys[] = {
     E("sig_udp", 0, "off", "off"),      /* built without it */
 #endif
     /* sessions; the log (its values in the order of NPF_LOG_*) */
-    B("hosted_trust", L | U, "1"), I("peer_idle", L | U, 0, 86400, "0"),
+    B("hosted_trust", L | U, "1"), E("remote_admin", L, "on", "on|members|off"), I("peer_idle", L | U, 0, 86400, "0"),
     E("log_level", L, "info", "trace|debug|info|warn|error"), S("node", F | M), S("resource", F | M),
     /* npf-hosted (security.md 8.4) */
     B("hosted_service", F, "0"), S("hosted_exec", F),

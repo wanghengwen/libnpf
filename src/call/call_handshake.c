@@ -58,6 +58,32 @@ static int call_finish_handshake(npf_call *c)
 
 /* ---- caller ---- */
 
+int npf_share_parse(const char *code, char id[NPF_SHARE_ID + 1], char secret[NPF_SHARE_SECRET])
+{
+    char k[12];
+    uint8_t h[64];
+    int n = 0;
+    for (; *code; code++) {
+        char ch = *code >= 'a' && *code <= 'z' ? (char)(*code - 32) : *code;
+        if (ch == '-' || ch == ' ')
+            continue;
+        if (n == 12 || !strchr(NPF_SHARE_ABC, ch) || !ch)
+            return -1;
+        k[n++] = ch;
+    }
+    if (n != 12)
+        return -1;
+    if (id)
+        memcpy(id, k, NPF_SHARE_ID), id[NPF_SHARE_ID] = 0;
+    if (secret) {
+        npf_hash2(h, "npf-share-v1", 12, k, 12);
+        npf_b64url_encode(h, 32, secret);
+        npf_wipe(h, sizeof h);
+    }
+    npf_wipe(k, sizeof k);
+    return 0;
+}
+
 /* a call as auth says: PAKE with the password, IK to the pinned key, the
  * account's grant with IK to the certified key (grant, grant_len) */
 static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *password, const uint8_t pinned[32],
@@ -84,7 +110,9 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
     }
     prologue(c, pro, &pl);
     if (auth == AUTH_PAKE) {
-        snprintf(c->hs->password, sizeof c->hs->password, "%s", password);
+        /* a share code: CPace with its secret, its locator in message 1 (security.md 9.3) */
+        if (npf_share_parse(password, c->hs->share, c->hs->password) < 0)
+            snprintf(c->hs->password, sizeof c->hs->password, "%s", password);
         sid_of(c, sid);
         if (npf_cpace_start(&c->hs->cp, c->hs->password, strlen(c->hs->password), sid, sizeof sid, cmsg) < 0
             || npf_noise_init(&c->hs->noise, NPF_NOISE_XXPSK3, 1, pro, pl, n->id.dh_sk, NULL, NULL) < 0)
@@ -93,7 +121,7 @@ static npf_call *call_start(npf_node *n, uint64_t number, int auth, const char *
         if (npf_noise_init(&c->hs->noise, NPF_NOISE_IK, 1, pro, pl, n->id.dh_sk, pinned, NULL) < 0)
             goto fail;
     }
-    len = npf_noise_write(&c->hs->noise, NULL, 0, msg, sizeof msg);
+    len = npf_noise_write(&c->hs->noise, (const uint8_t *)c->hs->share, strlen(c->hs->share), msg, sizeof msg);
     if (len < 0)
         goto fail;
     snprintf(num, sizeof num, "%llu", (unsigned long long)number);
@@ -208,28 +236,37 @@ static void callee_reply_error(npf_node *n, const char *req, const char *err)
     npf_node_reply(n, "incoming", req, "error", err, NULL);
 }
 
-/* an incoming pairing (CPace, then Noise XXpsk3 with its key): the answer
- * in out (*ol bytes), the CPace message in ymsg; NULL, or the error to reply */
+/* an incoming pairing (CPace, then Noise XXpsk3 with its key): message 1
+ * names a share code's locator, or nothing (the password, which a lock may
+ * hold); the answer in out (*ol bytes), the CPace message in ymsg; NULL,
+ * or the error to reply */
 static const char *incoming_pake(npf_call *c, const m_incoming *m, uint8_t *out, size_t outcap, int *ol,
                                  uint8_t ymsg[32])
 {
     npf_node *n = c->n;
-    const char *pw = n->callee->password ? n->callee->password(n, n->callee_arg) : NULL;
+    const char *pw;
     uint8_t p[64], pro[64], sid[24], isk[32];
     size_t pl;
-    int ok;
+    int ok, il;
     c->auth = AUTH_PAKE;
-    if (n->callee->locked && n->callee->locked(n, n->callee_arg))
-        return "locked";
-    if (!pw || !*pw || !m->cpace_len)
-        return "unauthorized";
     prologue(c, pro, &pl);
+    if (!m->cpace_len || npf_noise_init(&c->hs->noise, NPF_NOISE_XXPSK3, 0, pro, pl, n->id.dh_sk, NULL, NULL) < 0
+        || (il = npf_noise_read(&c->hs->noise, m->hs, (size_t)m->hs_len, p, sizeof p)) < 0
+        || (il != 0 && il != NPF_SHARE_ID))
+        return "unauthorized";
+    memcpy(c->hs->share, p, (size_t)il);
+    c->hs->share[il] = 0;
+    if (!il && n->callee->locked && n->callee->locked(n, n->callee_arg))
+        return "locked";
+    pw = n->callee->password ? n->callee->password(n, il ? c->hs->share : NULL, n->callee_arg) : NULL;
+    if (!pw || !*pw)
+        return "unauthorized";
     sid_of(c, sid);
     ok = npf_cpace_start(&c->hs->cp, pw, strlen(pw), sid, sizeof sid, ymsg) >= 0
-         && npf_cpace_finish(&c->hs->cp, m->cpace, 0, isk) >= 0
-         && npf_noise_init(&c->hs->noise, NPF_NOISE_XXPSK3, 0, pro, pl, n->id.dh_sk, NULL, isk) >= 0
-         && npf_noise_read(&c->hs->noise, m->hs, (size_t)m->hs_len, p, sizeof p) >= 0
-         && (*ol = npf_noise_write(&c->hs->noise, NULL, 0, out, outcap)) >= 0;
+         && npf_cpace_finish(&c->hs->cp, m->cpace, 0, isk) >= 0;
+    if (ok)
+        npf_noise_set_psk(&c->hs->noise, isk);
+    ok = ok && (*ol = npf_noise_write(&c->hs->noise, NULL, 0, out, outcap)) >= 0;
     npf_wipe(isk, 32);
     return ok ? NULL : "unauthorized";
 }
@@ -360,19 +397,21 @@ void call_on_handshake(npf_call *c, const void *msg)
 {
     const m_handshake *m = msg;
     uint8_t p[64];
+    char sh[NPF_SHARE_ID + 1];
     if (c->caller || c->auth != AUTH_PAKE || c->keys_ready)
         return;
+    snprintf(sh, sizeof sh, "%s", c->hs->share);
     /* locked while this pairing was under way (other guesses in parallel
      * failed): no guess for it either (security.md 8.3) */
-    if (c->n->callee->locked && c->n->callee->locked(c->n, c->n->callee_arg)) {
+    if (!sh[0] && c->n->callee->locked && c->n->callee->locked(c->n, c->n->callee_arg)) {
         npf_call_end(c, "locked");
         return;
     }
     if (npf_noise_read(&c->hs->noise, m->msg, (size_t)m->msg_len, p, sizeof p) < 0) {
-        /* wrong password: count it (security.md 8.3) */
-        npf_logw("call %s: pairing failed (wrong password)", c->call_id_s);
+        /* wrong password or share secret: count it (security.md 8.3) */
+        npf_logw("call %s: pairing failed (wrong %s)", c->call_id_s, sh[0] ? "share code" : "password");
         if (c->n->callee->pair_failed)
-            c->n->callee->pair_failed(c->n, c->n->callee_arg);
+            c->n->callee->pair_failed(c->n, sh[0] ? sh : NULL, c->n->callee_arg);
         npf_call_end(c, "auth_failed");
         return;
     }
@@ -387,10 +426,13 @@ void call_on_handshake(npf_call *c, const void *msg)
         npf_call_end(c, "error");
         return;
     }
-    /* msg 3 depends on our fresh ephemeral key: not a replay, the caller knows the password */
-    if (c->n->callee->paired)
-        c->n->callee->paired(c->n, c->peer_pub, c->n->callee_arg);
-    npf_log("call %s: paired", c->call_id_s);
+    /* msg 3 depends on our fresh ephemeral key: not a replay, the caller
+     * knows the password (or the share code) */
+    if (c->n->callee->paired && c->n->callee->paired(c->n, c->peer_pub, sh[0] ? sh : NULL, c->n->callee_arg) < 0) {
+        npf_call_end(c, "auth_failed");
+        return;
+    }
+    npf_log("call %s: paired%s%s", c->call_id_s, sh[0] ? " by share code " : "", sh);
     /* the platform plans no punching round before this (signaling.md
      * handshake_done, security.md 8.3) */
     call_tell(c, "handshake_done");

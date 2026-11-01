@@ -18,6 +18,16 @@
 #define CALL_LIMIT_MS      25000  /* to be established, from the start and again from the accept */
 
 int npf_call_auth(const npf_call *c) { return c->auth; }
+const uint8_t *npf_call_peer_pub(const npf_call *c) { return c->peer_pub; }
+const char *npf_call_id(const npf_call *c) { return c->call_id_s; }
+
+npf_call *npf_node_call(npf_node *n, const char *id)
+{
+    npf_call *c;
+    for (c = n->calls; c && strcmp(c->call_id_s, id) != 0; c = c->next)
+        ;
+    return c && !call_over(c) ? c : NULL;
+}
 
 /* ---- state (architecture.md 3.1) ---- */
 

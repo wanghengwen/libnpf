@@ -55,11 +55,14 @@ int  npf_res_from_line(npf_res *r, const char *line, char *err, size_t errcap);
 
 /* 0 when every field of r is valid, else -1 with the reason in err. */
 int  npf_res_check(const npf_res *r, char *err, size_t errcap);
-/* Reads the JSON array at token arr into out: each resource checked, names
- * unique, type "tcp" when missing; "fixed" is not read. The count, or -1 with
- * err (also for more than max). */
+/* Reads the JSON object at token e into r, checked, type "tcp" when
+ * missing; "fixed" is not read. 0, or -1 with err. */
+int  npf_res_obj(const npf_json *j, int e, npf_res *r, char *err, size_t errcap);
+/* Reads the JSON array at token arr into out (each as npf_res_obj, names
+ * unique). The count, or -1 with err (also for more than max). */
 int  npf_res_parse(const npf_json *j, int arr, npf_res *out, int max, char *err, size_t errcap);
-/* Writes n resources as a JSON array (fixed ones with "fixed": true). */
+/* Writes one resource as a JSON object, n as an array (fixed ones with "fixed": true). */
+void npf_res_json1(npf_out *o, const npf_res *r);
 void npf_res_json(npf_out *o, const npf_res *r, int n);
 /* Makes p allow what the resources cover, and nothing else; localhost
  * stands for 127.0.0.1 and ::1. 0, or -1 when one does not fit (p unchanged). */

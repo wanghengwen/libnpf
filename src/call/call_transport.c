@@ -389,6 +389,12 @@ int npf_call_ctl_reply(npf_call *c, const char *type, const npf_json *req, const
     char id[24];
     if (npf_json_get_str(req, 0, "id", id, sizeof id) <= 0)
         return -1;
+    return npf_call_ctl_reply_to(c, type, id, status, error, data_json);
+}
+
+int npf_call_ctl_reply_to(npf_call *c, const char *type, const char *id, const char *status, const char *error,
+                          const char *data_json)
+{
     return ctl_send(c, type, "reply_to", id, status, error, data_json);
 }
 

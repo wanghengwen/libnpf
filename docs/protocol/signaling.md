@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.69。更新日期：2026-10-30。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.70。更新日期：2026-11-01。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -623,6 +623,19 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 用邀请码而不是按邮箱或手机号查找对方，平台不会泄露某个账户是否存在。邀请码只能被接受一次；所有者可以随时撤销。
 
+### 分享码（2026-11-01）
+
+节点的管理员邀请别人成为**成员**（security.md 8.6，D25），与上面平台账户的分享无关。分享码 `XXXX-XXXX-XXXX`：前 4 位是平台分配的定位符（字母表 `23456789ABCDEFGHJKMNPQRSTUVWXYZ`），后 8 位是 PAKE 的秘密，只在节点和成员之间，不经过平台。平台只保存定位符 → 节点、所有者、到期时间与次数（次数由节点计，平台只记录）；节点换了所有者或解绑（带 `owner` 的 `revoke`）时，它的定位符全部作废。
+
+| 类型 | 方向 | 内容 |
+|---|---|---|
+| `share_new` | 节点到平台 | `ttl_s`（1 到 2592000，默认 86400）、`uses`（1 到 100，默认 1）；返回 `{"locator", "expires"}`（平台时间，Unix 秒）。没有所有者 `no_owner`，节点已有 16 个有效的 `rate_limited`，不是节点的连接 `forbidden`，字段越界 `bad_request` |
+| `share_del` | 节点到平台 | `locator`：作废（未知的、已过期的也回成功）；节点在码用完、过期、删除或连续错 5 次时发 |
+| `share_sync` | 节点到平台 | `locators`：节点登录后发它保存的有效定位符（有所有者时）；平台删掉这个节点的其他定位符，返回保留的 `{"locators"}`，节点删掉平台不再有的码 |
+| `share_resolve` | 客户端到平台 | `locator`；返回 `{"node": "<编号>"}`。未知、过期和节点所有者变了都回同一个 `not_found`；每条连接每分钟 10 次（可突发 5 次）、每个源 IP 每分钟 10 次，超出 `rate_limited`；匿名客户端也可以用（也可以经应用请求的封装） |
+
+主叫（`npf connect CODE`）先规范化分享码（大写，忽略 `-` 与空格，拒绝 0 O 1 I L），用定位符 `share_resolve` 得到节点编号，再以 `auth = pake` 呼叫它，CPace 的口令由整个分享码派生，XXpsk3 消息 1 的载荷是定位符（见"握手的承载"）。配对成功后主叫是成员，以后用 IK 连接。
+
 ### 删除与解绑
 
 关联需求：R33。"删除设备"就是**解绑**：`device_unbind` 携带 `device_id`、`expected_revision` 和 `operation_key`。
@@ -894,7 +907,8 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `pake` | `call` 带 CPace 消息 a + XXpsk3 消息 1 → `incoming` 应答带 CPace 消息 b + XXpsk3 消息 2 → `handshake` 带 XXpsk3 消息 3 | 1.5 |
 
 - CPace 只需一轮：被叫收到消息 a 时就能算出共享密钥 K，主叫收到消息 b 时算出 K；XXpsk3 直到消息 3 才混入 K，因此 CPace 与 XX 的前两条消息可以合并发送；
-- `handshake`：`data = {"call_id", "step", "msg"}`，当前仅使用 `step = 3`，由主叫发送 XXpsk3 消息 3。口令错误时被叫解不开消息 3，向平台发送 `call_end{reason: "auth_failed"}` 并计入口令失败次数（安全 8.3）；
+- XXpsk3 消息 1 的载荷选择口令（2026-11-01，安全 9.3）：空是节点口令，4 个字符是分享码的定位符。被叫先读消息 1，按它取口令再算 CPace；未知或已作废的定位符在 `incoming` 应答 `unauthorized`，主叫不再重试；
+- `handshake`：`data = {"call_id", "step", "msg"}`，当前仅使用 `step = 3`，由主叫发送 XXpsk3 消息 3。口令错误时被叫解不开消息 3，向平台发送 `call_end{reason: "auth_failed"}` 并计入口令失败次数（安全 8.3；分享码的错误计入这个码自己的次数）；
 - `handshake_done`（2026-10-26）：`data = {"call_id"}`，被叫解开消息 3（口令正确、配对成功）后发给平台。`auth = pake` 的呼叫在它到来之前平台不发 `punch_start`、不处理主叫的 `punch_request`（口令错误的主叫不能让设备打洞，安全 8.3）；只认被叫发来的、呼叫已接受时的第一条；`ik` / `grant` 的呼叫不用它，接受时就开始打洞；
 - **数据通道就绪**：IK 主叫收到消息 2 后完成握手，被叫与主叫有路径时各自发送 `hello`；IK、托管信任与直连的主叫发出自己的 `hello` 即报告 `established`（被叫已由消息 2 认证），被叫收齐双方的 `hello` 后报告 `established` 并向平台发送 `call_established{call_id}`。XXpsk3 主叫发送消息 3 后，还需收到被叫通过认证的 `hello` 才进入就绪（它证明被叫接受了口令）。当前隧道可在收到对方 `hello` 前分发其他控制 JSON，接收子链路数据检查的是本端已发送 `hello`；不能把就绪通知解释为所有接收操作的统一前置检查；
 - 节点端每条握手消息解码缓冲区为 512 字节；当前流程为 IK 的 2 条或 XXpsk3 的 3 条。每个会话最多转发 8 条属于平台限额，节点没有独立的 8 条计数器；
@@ -1106,9 +1120,17 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | 类型 | 方向 | 形式 | `data` |
 |---|---|---|---|
 | `close` | 任一方 → 另一方 | 事件 | `reason`，取值同 `call_end`。当前实现仅在隧道 ready 时尝试发送，并对 AnLiu 立即 flush，随后报告 `call_end`、设置 closed 并安排释放；没有等待 2 秒排空 `FIN` 的阶段，也不保证 `close` 到达 |
-| `bind_approve` | 主叫 → 被叫 | 请求 | `operation_id`、`account_id`、`challenge`（Base64url）、`expires`。当前默认被叫实现只接受 IK 或 PAKE 会话；已有所有者时 `conflict`，其他认证方式 `forbidden`，字段或节点证书无法解析时 `bad_request`。通过后记录待确认所有者并应答 `{"proof": "<Base64url>", "key_gen"}`；没有独立的“关闭绑定”开关 |
+| `bind_approve` | 主叫 → 被叫 | 请求 | `operation_id`、`account_id`、`challenge`（Base64url）、`expires`。当前默认被叫实现只接受管理员（安全 8.6）的 IK 或 PAKE 会话；已有所有者时 `conflict`，其他认证方式或成员 `forbidden`，字段或节点证书无法解析时 `bad_request`。通过后记录待确认所有者并应答 `{"proof": "<Base64url>", "key_gen"}`；没有独立的“关闭绑定”开关 |
 | `grant_update` | 主叫（托管客户端）→ 被叫 | 请求 | `grant`：要求是同一公钥、同一账户的托管 `grant`，经默认被叫验证后，`issued` 不早于当前记录值即可更新目标列表（相等也接受），更新时记录新的 `issued`（列表与当前相同时只记 `issued`，不重新分配、不记日志：重放同一个 `grant` 不能刷日志）。成功应答 `{}`，校验失败 `forbidden`，目标列表分配失败 `internal_error`；默认时间校验容许 5 分钟时钟偏差 |
 | `resources` | 被叫 → 主叫 | 事件 | `{"resources": [...]}`：API 层在会话建立及资源变更时发送当前发布列表，字段见数据通道协议第 7.2 节；主叫更新本地资源信息 |
+| `admin_get` | 主叫 → 被叫 | 请求 | `offset`（默认 0）。管理员得到 `{"role": "admin", "members": [{"key", "since", "role", "self"}]（每页 100 个）, "total", "shares": [{"locator", "uses", "expires"}]}`（有效的分享码，没有秘密）；成员只得到 `{"role": "member"}` |
+| `admin_unpair` | 主叫 → 被叫 | 请求 | `key`（Base64url 公钥）：解除这个成员，它的会话随即结束；管理员 `forbidden`（只能在本地解除），未知 `not_found`；应答 `{}` |
+| `admin_share_new` | 主叫 → 被叫 | 请求 | `uses`（1 到 100，默认 1）、`ttl_s`（1 到 2592000，默认 86400）；被叫向平台 `share_new` 后应答 `{"code", "locator", "uses", "expires"}`（`code` 是完整的分享码，只在这个应答里出现）；没有所有者 `no_owner`，离线 `offline`，16 个已满 `rate_limited`。平台应答前会话已结束时，被叫作废这个码 |
+| `admin_share_del` | 主叫 → 被叫 | 请求 | `locator`：删除这个码（并告诉平台）；未知 `not_found`；应答 `{}` |
+| `admin_res_put` | 主叫 → 被叫 | 请求 | `resource`：发布或替换一个资源（数据通道协议第 7.2 节的写法，校验同本地 `npf resource add`）；`npf.conf` 固定的同名资源 `forbidden`；应答 `{}` |
+| `admin_res_del` | 主叫 → 被叫 | 请求 | `name`：删除这个资源；`npf.conf` 固定的 `forbidden`，未知 `not_found`；应答 `{}` |
+
+`admin_*` 只接受授权列表中角色为管理员的公钥的 IK 或 PAKE 会话（安全 8.6）：`grant`、直连与托管客户端的会话 `forbidden`；成员除 `admin_get` 外 `forbidden`；被叫的 `remote_admin = members` 拒绝 `admin_res_*`，`off` 全部拒绝（`forbidden`），状态文件损坏的安全模式下也拒绝；字段错误 `bad_request`，其他类型 `unsupported_type`。
 
 默认被叫实现只保存一份节点级的待确认绑定记录，新请求会覆盖旧记录；`bind_committed` 必须在记录产生后 10 分钟内到达并匹配账户与操作号才会生效。记录不随会话结束自动清除，也不持久化；过期是在收到提交通知时检查，进程重启后不能恢复待确认操作。
 
@@ -1243,6 +1265,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-11-01 | 0.70 | 新增分享码：节点的 `share_new`、`share_del`、`share_sync`，客户端的 `share_resolve`（限速，匿名可用）；XXpsk3 消息 1 的载荷选择口令（空或定位符）；隧道内控制消息新增 `admin_get`、`admin_unpair`、`admin_share_new`、`admin_share_del`、`admin_res_put`、`admin_res_del`（只限管理员的 IK / PAKE 会话，`remote_admin`）；`bind_approve` 只接受管理员（安全 8.6，D25） |
 | 2026-10-30 | 0.69 | 匿名主叫的呼叫（没有中转）打洞放弃而没有直连路径时，平台立即以 `no_path` 结束（`call_ended`），同额度用完的；呼叫的中转在另一台服务器上时（M4），那台服务器发两侧分配的 R（服务器之间的 `caller_r` 改名 `relay_r`，带分配的 id）；R 来了而计划已经用着同一个地址时不发 `punch_info`；`conn_report` 的 `result` 按实际发生的事细分（`target_refused`、`peer_failed`、`request_unsupported`、`protocol_error`，architecture.md） |
 | 2026-10-30 | 0.68 | 额度用完的呼叫（没有中转）打洞放弃而没有直连路径时，平台立即以 `quota` 结束（`call_ended`），不再等双方超时 |
 | 2026-10-30 | 0.67 | 主叫在另一台服务器上时，平台先用它在呼叫所在服务器上绑好的中转分配的 R，再用它的服务器说的；它的服务器在新的备用分配绑好时也发 `caller_r`（原来只在移动时发；nat-traversal.md 4.5） |

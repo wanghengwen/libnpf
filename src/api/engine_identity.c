@@ -359,6 +359,7 @@ void npf_engine_callee_attach(npf_t *n)
 {
     n->callee->hosted_trust = (int)npf_conf_int(&n->conf, "hosted_trust");
     npf_callee_attach(n->callee, &n->node);
+    n->callee->ops.control = npf_admin_control;  /* the admin device's requests first */
 }
 
 /* a number for this identity (one key per model, or node_enroll): node.json,

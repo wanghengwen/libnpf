@@ -12,6 +12,7 @@
 #include "npf/local.h"
 #include "npf/msg.h"
 #include "npf/node.h"
+#include "npf/resources.h"
 
 #define F_REQ    NPF_F_REQ
 #define F_SECRET NPF_F_SECRET
@@ -142,6 +143,20 @@ NODE_MSG(m_grant_update, M_GRANT_UPDATE)
 #define M_BIND_APPROVE(T) F_STR(T, account_id, 24, F_REQ) F_B64X(T, operation_id, 16, 0) F_B64X(T, challenge, 16, 0) \
     F_INT(T, expires, F_REQ, 0, INT64_MAX, 0)
 NODE_MSG(m_bind_approve, M_BIND_APPROVE)
+/* the admin devices' requests (security.md D25) */
+#define M_ADMIN_GET(T) F_INT(T, offset, F_STRICT, 0, NPF_MAX_PAIRED, 0)
+NODE_MSG(m_admin_get, M_ADMIN_GET)
+#define M_ADMIN_KEY(T) F_B64X(T, key, 32, 0)                    /* admin_unpair */
+NODE_MSG(m_admin_key, M_ADMIN_KEY)
+#define M_ADMIN_SHARE_NEW(T) F_INT(T, uses, F_STRICT, 1, NPF_SHARE_USES_MAX, 1) \
+    F_INT(T, ttl_s, F_STRICT, 1, NPF_SHARE_TTL_MAX, NPF_SHARE_TTL)
+NODE_MSG(m_admin_share_new, M_ADMIN_SHARE_NEW)
+#define M_ADMIN_SHARE_DEL(T) F_STR(T, locator, NPF_SHARE_ID + 1, F_REQ)
+NODE_MSG(m_admin_share_del, M_ADMIN_SHARE_DEL)
+#define M_ADMIN_RES_PUT(T) F_TOK(T, resource, F_REQ, NPF_JT_OBJECT)
+NODE_MSG(m_admin_res_put, M_ADMIN_RES_PUT)
+#define M_ADMIN_RES_DEL(T) F_STR(T, name, NPF_RES_NAME_MAX + 1, F_REQ)
+NODE_MSG(m_admin_res_del, M_ADMIN_RES_DEL)
 
 /* ---- the server list (signaling.md "服务器列表") and the node's files ---- */
 
@@ -155,17 +170,24 @@ NODE_MSG(m_sources, M_SOURCES)
 NODE_FILE(m_list, M_LIST)
 
 /* state.json (callee.c; password: its token, any string) */
-#define M_PAIRED(T) F_B64X(T, pub, 32, 0) F_INT(T, added, 0, 0, INT64_MAX, 0)
+#define M_PAIRED(T) F_B64X(T, pub, 32, 0) F_INT(T, added, 0, 0, INT64_MAX, 0) F_STR(T, role, 8, 0)
 typedef npf_paired m_paired;            /* callee.h's, read into place */
 typedef struct { M_PAIRED(x) } m_paired_as_listed;
 typedef char m_paired_same[sizeof(m_paired_as_listed) == sizeof(npf_paired) ? 1 : -1];
 extern const npf_msgdesc m_paired_d;
+#define M_SHARE(T) F_STR(T, id, NPF_SHARE_ID + 1, F_REQ) F_STR(T, secret, NPF_SHARE_SECRET, F_REQ) \
+    F_INT(T, uses, 0, 0, NPF_SHARE_USES_MAX, 0) F_INT(T, expires, 0, 0, INT64_MAX, 0) F_INT(T, fails, 0, 0, 5, 0)
+typedef npf_share m_share;              /* callee.h's, read into place */
+typedef struct { M_SHARE(x) } m_share_as_listed;
+typedef char m_share_same[sizeof(m_share_as_listed) == sizeof(npf_share) ? 1 : -1];
+extern const npf_msgdesc m_share_d;
 #define M_REVOKED(T) F_STR(T, account, 32, F_REQ) F_INT(T, before, F_REQ, 0, INT64_MAX, 0)
 NODE_MSG(m_revoked, M_REVOKED)
 #define M_STATE(T) F_TOK(T, password, 0, NPF_JT_STRING) F_ARR(T, paired, m_paired, NPF_MAX_PAIRED, F_SKIP) \
     F_INT(T, fails, 0, 0, 1000000, 0) F_INT(T, locked_until, 0, 0, INT64_MAX, 0) F_INT(T, lock_secs, 0, 0, INT64_MAX, 0) \
-    F_B64(T, cert, 1024, 0, 1) F_STR(T, owner, 32, 0) F_INT(T, owner_reset_pending, 0, 0, 1, 0) \
-    F_ARR(T, revokes, m_revoked, NPF_MAX_REVOKES, F_SKIP)
+    F_B64(T, cert, 1024, 0, 1) F_STR(T, owner, 32, 0) \
+    F_INT(T, owner_reset_pending, 0, 0, 1, 0) F_ARR(T, revokes, m_revoked, NPF_MAX_REVOKES, F_SKIP) \
+    F_ARR(T, shares, m_share, NPF_MAX_SHARES, F_SKIP)
 NODE_FILE(m_state, M_STATE)
 
 /* a device's record in local.json (local.c, local.h); the other keys are the modules' */

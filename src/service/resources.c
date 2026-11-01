@@ -169,9 +169,33 @@ int npf_res_from_line(npf_res *r, const char *line, char *err, size_t errcap)
     return npf_res_check(r, err, errcap);
 }
 
+int npf_res_obj(const npf_json *j, int e, npf_res *r, char *err, size_t errcap)
+{
+    memset(r, 0, sizeof *r);
+    if (e < 0 || j->tok[e].type != NPF_JT_OBJECT || npf_json_get_str(j, e, "name", r->name, sizeof r->name) <= 0
+        || npf_json_get_str(j, e, "target", r->target, sizeof r->target) <= 0) {
+        snprintf(err, errcap, "a resource needs a name and a target");
+        return -1;
+    }
+    if (npf_json_get(j, e, "type") < 0)
+        strcpy(r->type, "tcp");
+    else if (npf_json_get_str(j, e, "type", r->type, sizeof r->type) <= 0) {
+        snprintf(err, errcap, "%s: the type is tcp, udp, net, socks or reverse (a web page: tcp/http)", r->name);
+        return -1;
+    }
+    if ((npf_json_get(j, e, "desc") >= 0 && npf_json_get_str(j, e, "desc", r->desc, sizeof r->desc) < 0)
+        || (npf_json_get(j, e, "path") >= 0 && npf_json_get_str(j, e, "path", r->path, sizeof r->path) < 0)
+        || (npf_json_get(j, e, "svc") >= 0 && npf_json_get_str(j, e, "svc", r->svc, sizeof r->svc) <= 0)) {
+        snprintf(err, errcap, "%s: a description of up to %d bytes, a path of up to %d, a service of up to %d",
+                 r->name, NPF_RES_DESC_MAX, NPF_RES_PATH_MAX, NPF_RES_SVC_MAX);
+        return -1;
+    }
+    return npf_res_check(r, err, errcap);
+}
+
 int npf_res_parse(const npf_json *j, int arr, npf_res *out, int max, char *err, size_t errcap)
 {
-    int i, k, n = 0;
+    int i, k;
     if (arr < 0 || j->tok[arr].type != NPF_JT_ARRAY) {
         snprintf(err, errcap, "not a list of resources");
         return -1;
@@ -181,37 +205,15 @@ int npf_res_parse(const npf_json *j, int arr, npf_res *out, int max, char *err, 
         return -1;
     }
     for (i = 0; i < j->tok[arr].size; i++) {
-        int e = npf_json_item(j, arr, i);
-        npf_res *r = &out[n];
-        memset(r, 0, sizeof *r);
-        if (e < 0 || j->tok[e].type != NPF_JT_OBJECT || npf_json_get_str(j, e, "name", r->name, sizeof r->name) <= 0
-            || npf_json_get_str(j, e, "target", r->target, sizeof r->target) <= 0) {
-            snprintf(err, errcap, "resource %d: a name and a target", i + 1);
+        if (npf_res_obj(j, npf_json_item(j, arr, i), &out[i], err, errcap) < 0)
             return -1;
-        }
-        if (npf_json_get(j, e, "type") < 0)
-            strcpy(r->type, "tcp");
-        else if (npf_json_get_str(j, e, "type", r->type, sizeof r->type) <= 0) {
-            snprintf(err, errcap, "%s: the type is tcp, udp, net, socks or reverse (a web page: tcp/http)", r->name);
-            return -1;
-        }
-        if ((npf_json_get(j, e, "desc") >= 0 && npf_json_get_str(j, e, "desc", r->desc, sizeof r->desc) < 0)
-            || (npf_json_get(j, e, "path") >= 0 && npf_json_get_str(j, e, "path", r->path, sizeof r->path) < 0)
-            || (npf_json_get(j, e, "svc") >= 0 && npf_json_get_str(j, e, "svc", r->svc, sizeof r->svc) <= 0)) {
-            snprintf(err, errcap, "%s: a description of up to %d bytes, a path of up to %d, a service of up to %d",
-                     r->name, NPF_RES_DESC_MAX, NPF_RES_PATH_MAX, NPF_RES_SVC_MAX);
-            return -1;
-        }
-        if (npf_res_check(r, err, errcap) < 0)
-            return -1;
-        for (k = 0; k < n; k++)
-            if (strcmp(out[k].name, r->name) == 0) {
-                snprintf(err, errcap, "%s: two resources of that name", r->name);
+        for (k = 0; k < i; k++)
+            if (strcmp(out[k].name, out[i].name) == 0) {
+                snprintf(err, errcap, "%s: two resources of that name", out[i].name);
                 return -1;
             }
-        n++;
     }
-    return n;
+    return i;
 }
 
 static void kv(npf_out *o, const char *k, const char *v, int first)
@@ -220,24 +222,30 @@ static void kv(npf_out *o, const char *k, const char *v, int first)
     npf_out_json_str(o, v, strlen(v));
 }
 
+void npf_res_json1(npf_out *o, const npf_res *r)
+{
+    npf_out_printf(o, "{");
+    kv(o, "name", r->name, 1);
+    kv(o, "target", r->target, 0);
+    kv(o, "type", r->type, 0);
+    if (r->svc[0])
+        kv(o, "svc", r->svc, 0);
+    if (r->desc[0])
+        kv(o, "desc", r->desc, 0);
+    if (r->path[0])
+        kv(o, "path", r->path, 0);
+    if (r->fixed)
+        npf_out_printf(o, ",\"fixed\":true");
+    npf_out_printf(o, "}");
+}
+
 void npf_res_json(npf_out *o, const npf_res *r, int n)
 {
     int i;
     npf_out_printf(o, "[");
     for (i = 0; i < n; i++) {
-        npf_out_printf(o, "%s{", i ? "," : "");
-        kv(o, "name", r[i].name, 1);
-        kv(o, "target", r[i].target, 0);
-        kv(o, "type", r[i].type, 0);
-        if (r[i].svc[0])
-            kv(o, "svc", r[i].svc, 0);
-        if (r[i].desc[0])
-            kv(o, "desc", r[i].desc, 0);
-        if (r[i].path[0])
-            kv(o, "path", r[i].path, 0);
-        if (r[i].fixed)
-            npf_out_printf(o, ",\"fixed\":true");
-        npf_out_printf(o, "}");
+        npf_out_printf(o, "%s", i ? "," : "");
+        npf_res_json1(o, &r[i]);
     }
     npf_out_printf(o, "]");
 }

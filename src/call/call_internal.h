@@ -131,6 +131,7 @@ typedef struct call_hs {
     npf_cpace   cp;
     uint8_t     k12[64];            /* k1 | k2 (security.md 9.5): the session's keys come from it */
     char        password[128];
+    char        share[NPF_SHARE_ID + 1];    /* a pairing by a share code: its locator ("" the password) */
     uint8_t     grant[512];         /* caller: hosted-trust grant to present */
     size_t      grant_len;
     uint8_t     dmsg1[256];         /* direct initiator: handshake message 1 for retransmission */

@@ -205,6 +205,7 @@ add_library(npf_common STATIC
   src/api/ops_forward.c
   src/api/ops_resource.c
   src/api/ops_pairing.c
+  src/api/admin.c
   src/api/setup.c
   src/api/api.c
   src/api/api_thread.c

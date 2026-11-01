@@ -7,7 +7,16 @@
  *   mode (no default authorization), left by a repair or passwd NEW --clear;
  * - a failed write: in force and unsaved until a later save writes it;
  * - an identity seed file that is there but unreadable is not replaced;
- * - a tmp file left in the way (a symlink) is not written through. */
+ * - a tmp file left in the way (a symlink) is not written through;
+ * - roles and share codes (security.md D25): entries of before the roles
+ *   are admins; the password pairs an admin (a member too), a share code a
+ *   member (an admin stays one); the code's form (any case, dashes and
+ *   spaces, no 0 O 1 I L) and its secret; a code's uses, expiry, revocation
+ *   (by hand, by 5 wrong secrets: the password lock untouched, and the
+ *   password's lock leaves the codes), its secret never in state.json; no
+ *   code without an owner account or offline, 16 at most; an owner reset,
+ *   the owner's revocation and a fresh state drop them; only an admin's
+ *   paired session may bind. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +26,7 @@
 
 #include "npf/callee.h"
 #include "npf/conf.h"
+#include "npf/loop.h"
 #include "npf/node.h"
 #include "npf/out.h"
 #include "npf/sys.h"
@@ -48,6 +58,120 @@ static void write_pw(const char *path, const char *pw)
     int n = snprintf(b, sizeof b, "{\"password\":\"%s\",\"paired\":[],\"fails\":0,\"locked_until\":0,"
                                   "\"lock_secs\":0,\"owner_reset_pending\":0,\"revokes\":[]}", pw);
     npf_file_write(path, b, (size_t)n, 0600);
+}
+
+/* a state with the paired keys ka (no role: of before the roles), and the share code */
+static void roles_state(const char *path, const uint8_t ka[32], const char *code, int64_t uses, int64_t expires)
+{
+    char b[600], k[NPF_B64_LEN(32)], id[8], sec[NPF_SHARE_SECRET];
+    int n;
+    npf_b64url_encode(ka, 32, k);
+    npf_share_parse(code, id, sec);
+    n = snprintf(b, sizeof b, "{\"password\":\"the-pw-123\",\"owner\":\"77\",\"paired\":[{\"pub\":\"%s\",\"added\":5}],"
+                              "\"shares\":[{\"id\":\"%s\",\"secret\":\"%s\",\"uses\":%lld,\"expires\":%lld}]}",
+                 k, id, sec, (long long)uses, (long long)expires);
+    npf_file_write(path, b, (size_t)n, 0600);
+}
+
+static void roles_shares(const char *dir)
+{
+    static npf_callee d, again;
+    npf_loop *loop = npf_loop_new();
+    npf_node node;
+    char path[256], id[8], s1[NPF_SHARE_SECRET], s2[NPF_SHARE_SECRET], *f = NULL;
+    uint8_t seed[32] = {2}, ka[32] = {1}, kb[32] = {2}, kc[32] = {3};
+    const char *code = "K7Q2-ABCD-EFGH";
+    const char *pw;
+    int i;
+    snprintf(path, sizeof path, "%s/roles-state.json", dir);
+    memset(&node, 0, sizeof node);
+    node.loop = loop;
+    roles_state(path, ka, code, 2, time(NULL) + 3600);
+    CHECK(loop && npf_callee_init(&d, path, 123, seed, "default-pw") == 0, "init");
+    npf_callee_attach(&d, &node);
+    npf_timer_cancel(loop, d.t_watch);
+    d.t_watch = NULL;                       /* (a node offline: nothing goes to the platform) */
+    CHECK(npf_callee_is_admin(&d, ka) && d.nshares == 1, "an entry of before the roles: an admin");
+
+    /* the code's form */
+    CHECK(npf_share_parse(code, id, s1) == 0 && strcmp(id, "K7Q2") == 0 && npf_share_parse("k7q2abcd efgh", NULL, s2) == 0
+              && strcmp(s1, s2) == 0, "a share code: any case, without dashes, with spaces; its locator");
+    CHECK(npf_share_parse("K7Q2-ABCD-EFG0", NULL, NULL) < 0 && npf_share_parse("K7Q2-ABCD-EFGO", NULL, NULL) < 0
+              && npf_share_parse("K7Q2-ABCD-EFG1", NULL, NULL) < 0 && npf_share_parse("K7Q2-ABCD-EFGI", NULL, NULL) < 0
+              && npf_share_parse("K7Q2-ABCD-EFGL", NULL, NULL) < 0 && npf_share_parse("K7Q2-ABCD-EFG", NULL, NULL) < 0
+              && npf_share_parse("K7Q2-ABCD-EFGHJ", NULL, NULL) < 0, "0 O 1 I L, 11 or 13 characters: not a code");
+    CHECK(npf_share_parse("K7Q2-ABCD-EFGJ", NULL, s2) == 0 && strcmp(s1, s2) != 0, "another secret, another hash");
+    CHECK(npf_callee_password_set(&d, "k7q2-abcd-efgh") == -1, "a password in a code's form is refused");
+    CHECK(npf_file_read(path, &f) > 0 && !strstr(f, "ABCD-EFGH") && !strstr(f, "ABCDEFGH"), "state.json: never the code");
+    free(f);
+
+    /* roles */
+    CHECK((pw = d.ops.password(&node, "K7Q2", &d)) && strcmp(pw, s1) == 0 && !d.ops.password(&node, "ZZZZ", &d)
+              && strcmp(d.ops.password(&node, NULL, &d), "the-pw-123") == 0,
+          "the pairing secret by locator: the code's, none for another, the password without");
+    CHECK(d.ops.paired(&node, kb, "K7Q2", &d) == 0 && !npf_callee_is_admin(&d, kb) && d.shares[0].uses == 1,
+          "paired by the code: a member, a use gone");
+    CHECK(d.ops.paired(&node, ka, "K7Q2", &d) == 0 && npf_callee_is_admin(&d, ka) && d.nshares == 0,
+          "an admin by a code: still an admin; the last use: the code gone");
+    CHECK(d.ops.paired(&node, kc, "K7Q2", &d) == -1 && d.npaired == 2, "used up: refused");
+    CHECK(d.ops.paired(&node, kb, NULL, &d) == 0 && npf_callee_is_admin(&d, kb), "a member pairing with the password: an admin");
+    CHECK(npf_callee_password_set(&d, "the-pw-456") == 0 && npf_callee_is_admin(&d, ka) && npf_callee_is_admin(&d, kb),
+          "a new password: the admins stay");
+    CHECK(npf_callee_admin_session(&d, NPF_AUTH_IK, ka) && npf_callee_admin_session(&d, NPF_AUTH_PAKE, ka)
+              && !npf_callee_admin_session(&d, NPF_AUTH_GRANT, ka) && !npf_callee_admin_session(&d, NPF_AUTH_DIRECT, ka),
+          "an admin's IK or PAKE session may bind, not a grant or a direct one");
+    d.ops.paired(&node, kc, NULL, &d);
+    roles_state(path, ka, code, 1, time(NULL) + 3600);  /* kc a member again (another process wrote it) */
+    npf_callee_refresh(&d);
+    d.ops.paired(&node, kc, "K7Q2", &d);
+    CHECK(!npf_callee_admin_session(&d, NPF_AUTH_IK, kc) && !npf_callee_admin_session(&d, NPF_AUTH_PAKE, kc),
+          "a member's session may not bind");
+    CHECK(npf_callee_init(&again, path, 123, seed, "default-pw") == 0 && npf_callee_is_admin(&again, ka)
+              && !npf_callee_is_admin(&again, kc), "the roles read again after a restart");
+
+    /* the locks apart */
+    roles_state(path, ka, code, 5, time(NULL) + 3600);
+    npf_callee_refresh(&d);
+    for (i = 0; i < 4; i++)
+        d.ops.pair_failed(&node, "K7Q2", &d);
+    CHECK(d.nshares == 1 && d.fails == 0 && !d.ops.locked(&node, &d), "4 wrong secrets: the code stays, no password lock");
+    d.ops.pair_failed(&node, "K7Q2", &d);
+    CHECK(d.nshares == 0 && !d.ops.password(&node, "K7Q2", &d) && !d.ops.locked(&node, &d),
+          "the fifth: the code revoked, the password still unlocked");
+    roles_state(path, ka, code, 5, time(NULL) + 3600);
+    npf_callee_refresh(&d);
+    for (i = 0; i < 5; i++)
+        d.ops.pair_failed(&node, NULL, &d);
+    CHECK(d.ops.locked(&node, &d) && d.ops.password(&node, "K7Q2", &d), "5 wrong passwords: locked, the code still offered");
+
+    /* expiry, revocation, the limits, unbinding */
+    roles_state(path, ka, code, 5, time(NULL) - 1);
+    npf_callee_refresh(&d);
+    CHECK(!d.ops.password(&node, "K7Q2", &d) && d.nshares == 0, "expired: gone");
+    roles_state(path, ka, code, 5, time(NULL) + 3600);
+    npf_callee_refresh(&d);
+    CHECK(npf_callee_share_del(&d, "ZZZZ") == -1 && npf_callee_share_del(&d, "K7Q2") == 0 && d.nshares == 0,
+          "revoked by hand; an unknown locator: -1");
+    CHECK(npf_callee_share_new(&d, 1, 3600, NULL, NULL) == -3, "offline: no new code (the platform gives the locator)");
+    d.nshares = NPF_MAX_SHARES;
+    for (i = 0; i < NPF_MAX_SHARES; i++)
+        d.shares[i] = (npf_share){.id = "AAAA", .uses = 1, .expires = time(NULL) + 60};
+    CHECK(npf_callee_share_new(&d, 1, 3600, NULL, NULL) == -1, "16 active: no more");
+    CHECK(npf_callee_owner_reset(&d) == 0 && d.nshares == 0 && npf_callee_share_new(&d, 1, 3600, NULL, NULL) == -4,
+          "an owner reset drops them; no owner: no new code");
+    roles_state(path, ka, code, 5, time(NULL) + 3600);
+    npf_callee_refresh(&d);
+    d.ops.revoke(&node, 78, 1000, 1, &d);
+    CHECK(d.nshares == 1, "another account's revocation: the codes stay");
+    d.ops.revoke(&node, 77, 1000, 1, &d);
+    CHECK(d.nshares == 0 && npf_callee_is_admin(&d, ka), "the owner's revocation: the codes gone, the roles stay");
+    roles_state(path, ka, code, 5, time(NULL) + 3600);
+    npf_callee_refresh(&d);
+    d.damaged = 1;
+    CHECK(!npf_callee_is_admin(&d, ka) && !d.ops.password(&node, "K7Q2", &d) && npf_callee_share_new(&d, 1, 60, NULL, NULL) == -2,
+          "safe mode: nobody is admin, no code taken or made");
+    CHECK(npf_callee_fresh(&d, "fresh-pw-123") == 0 && d.nshares == 0 && d.npaired == 0, "a fresh state: no codes");
+    npf_loop_free(loop);
 }
 
 int test_callee(void)
@@ -166,6 +290,7 @@ int test_callee(void)
     }
     CHECK(file_pw(path, pw, sizeof pw) == 0 && strcmp(pw, "after-link1") == 0, "the file written (%s)", pw);
 
+    roles_shares(dir);
     rm_dir(dir);
     return fails;
 }

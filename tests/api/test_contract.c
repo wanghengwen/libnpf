@@ -2,7 +2,8 @@
  * the caller's size; a change in effect that cannot be saved says so
  * (NPF_ESAVE, exit code 3) and is written with the next change saved; a
  * change refused in safe mode says that instead; a shared runtime's
- * callback never waits for another thread. */
+ * callback never waits for another thread; the admin device in the
+ * pairing list and npf_pairing_admin_set. */
 #define _DEFAULT_SOURCE                     /* mkdtemp */
 #include <stddef.h>
 #include <stdlib.h>
@@ -199,6 +200,47 @@ static void safe_mode(void)
     rm_dir(dir);
 }
 
+/* roles (security.md D25): npf_pairing_list marks the admins (an entry of
+ * before the roles is one), a member is none, an older, smaller
+ * npf_pairing is still listed; an owner reset keeps the roles */
+static void roles(void)
+{
+    char dir[] = "/tmp/npf-contract-XXXXXX", err[300] = "";
+    /* keys 0x01.. and 0x02.. (Base64url of 32 bytes) */
+    const char *ka = "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", *kb = "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    uint8_t b[32] = {2};
+    npf_pairing pr[4];
+    struct { uint8_t key[32]; int64_t since; } old[4];     /* npf_pairing before admin */
+    char st[400];
+    size_t count = 0;
+    npf_t *n;
+    if (!mkdtemp(dir)) {
+        check(0, "a directory");
+        return;
+    }
+    put_file(dir, "npf.conf", "root = nvwgWTOBpFl_zXsDesOy2N9KGi56wOLQRngcgZkD_xM\nserver = wss://127.0.0.1:1/v1/ws\n"
+                              "server_pub = nvwgWTOBpFl_zXsDesOy2N9KGi56wOLQRngcgZkD_xM\n");
+    put_file(dir, "node.json", "{\"number\":\"123456789\",\"password\":\"ABCD-EFGH\"}\n");
+    snprintf(st, sizeof st, "{\"password\":\"pw-123456\",\"owner\":\"77\",\"paired\":[{\"pub\":\"%s\"},"
+             "{\"pub\":\"%s\",\"role\":\"member\"}]}", ka, kb);
+    put_file(dir, "state.json", st);
+    if (!(n = instance(dir, NPF_ROLE_NODE, "udp_port = 0\n", NULL, err, sizeof err))) {
+        printf("     (%s)\n", err);
+        check(0, "a node with a number");
+        rm_dir(dir);
+        return;
+    }
+    check(npf_pairing_list(n, pr, 4, &count) == NPF_OK && count == 2 && pr[0].admin && !pr[1].admin,
+          "pairing list: the admin (no role: of before the roles) marked, the member not");
+    check(npf_pairing_list_size(n, (npf_pairing *)(void *)old, sizeof old[0], 4, &count) == NPF_OK && count == 2
+              && memcmp(old[1].key, b, 32) == 0, "an older npf_pairing (no admin member) is listed as before");
+    check(npf_owner_reset(n) == NPF_OK && npf_pairing_list(n, pr, 4, &count) == NPF_OK && pr[0].admin && !pr[1].admin
+              && strstr(file_text(dir, "state.json", st, sizeof st), "\"role\":\"admin\""),
+          "an owner reset keeps the roles; state.json writes them");
+    npf_destroy(n);
+    rm_dir(dir);
+}
+
 /* a structure not initialised (no _init: its size 0) or NULL: NPF_EINVAL
  * naming the _init, the number out 0, nothing made */
 static void not_initialised(void)
@@ -300,6 +342,7 @@ int main(void)
     file_only();
     node_json();
     safe_mode();
+    roles();
     runtime_guard();
     return fails != 0;
 }
