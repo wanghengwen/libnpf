@@ -278,6 +278,32 @@ static void role_values(const char *dir)
           "no role key (before the roles): an admin");
 }
 
+/* an existing state.json without a usable password (a key mistyped, null,
+ * "", a number) is damaged, not a first run: never the default password
+ * with the pairings kept (lib-core audit 4); its copy when that has one */
+static void password_damaged(const char *dir)
+{
+    static npf_callee d;
+    static const char *const pws[] = {"\"passwore\":\"changed-pw-1\"", "\"password\":null", "\"password\":\"\"",
+                                      "\"password\":12345678", "\"password\":[\"changed-pw-1\"]"};
+    char path[256], bak[300], b[300];
+    uint8_t seed[32] = {1};
+    size_t i;
+    int n;
+    snprintf(path, sizeof path, "%s/pw-state.json", dir);
+    snprintf(bak, sizeof bak, "%s.bak", path);
+    for (i = 0; i < sizeof pws / sizeof pws[0]; i++) {
+        n = snprintf(b, sizeof b, "{%s,\"paired\":[],\"owner\":\"77\"}", pws[i]);
+        npf_file_write(path, b, (size_t)n, 0600);
+        remove(bak);
+        CHECK(npf_callee_init(&d, path, 123, seed, "default-pw-0") == 0 && d.damaged && !d.password[0],
+              "%s: safe mode, not the default password", pws[i]);
+        write_pw(bak, "copy-pw-123");
+        CHECK(npf_callee_init(&d, path, 123, seed, "default-pw-0") == 0 && !d.damaged
+                  && strcmp(d.password, "copy-pw-123") == 0, "%s: its copy taken", pws[i]);
+    }
+}
+
 int test_callee(void)
 {
     static npf_callee d;
@@ -397,6 +423,7 @@ int test_callee(void)
     roles_shares(dir);
     owner_grants(dir);
     role_values(dir);
+    password_damaged(dir);
     rm_dir(dir);
     return fails;
 }

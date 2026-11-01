@@ -156,9 +156,11 @@ static int role_given(const npf_json *j, const uint8_t pub[32])
     return 0;
 }
 
-/* a state file's text and its JSON (tok on the heap): 0; -1 when it cannot
- * be read (*missing: it is not there at all) or parsed */
-static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_json *j, int *missing)
+/* a state file's text, its JSON (tok on the heap) and its password: 0; -1
+ * when it cannot be read (*missing: it is not there at all), parsed, or has
+ * no password (a damaged file never brings the default one back) */
+static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_json *j, int *missing,
+                      char *pw, size_t cap)
 {
     npf_stat_t st;
     *tok = NULL;
@@ -170,8 +172,8 @@ static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_j
         return -1;
     }
     if (!(*tok = malloc(2048 * sizeof **tok)) || npf_json_parse(j, *s, (size_t)*n, *tok, 2048) < 0
-        || (*tok)[0].type != NPF_JT_OBJECT) {
-        npf_loge("state: %s cannot be parsed", path);
+        || (*tok)[0].type != NPF_JT_OBJECT || npf_json_get_str(j, 0, "password", pw, cap) <= 0) {
+        npf_loge("state: %s cannot be parsed, or has no password", path);
         free(*tok);
         *tok = NULL;
         return -1;
@@ -182,12 +184,12 @@ static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_j
 static int state_load(npf_callee *d)
 {
     npf_jtok *tok = NULL;
-    char *s = NULL, bak[1100];
+    char *s = NULL, bak[1100], pw[sizeof d->password];
     long n;
     npf_json j;
     m_state *m;
     int i, missing, from_bak = 0;
-    if (state_read(d->state_path, &s, &n, &tok, &j, &missing) < 0) {
+    if (state_read(d->state_path, &s, &n, &tok, &j, &missing, pw, sizeof pw) < 0) {
         if (missing) {
             n = -1;                         /* only a missing file means first run */
         } else if (d->state_loaded) {
@@ -205,7 +207,7 @@ static int state_load(npf_callee *d)
             if (n >= 0)
                 npf_wipe_free(s, (size_t)n);
             snprintf(bak, sizeof bak, "%s.bak", d->state_path);
-            if (state_read(bak, &s, &n, &tok, &j, &bm) < 0) {
+            if (state_read(bak, &s, &n, &tok, &j, &bm, pw, sizeof pw) < 0) {
                 if (n >= 0)
                     npf_wipe_free(s, (size_t)n);
                 if (!d->damaged)
@@ -233,9 +235,9 @@ static int state_load(npf_callee *d)
     if (n >= 0 && !from_bak)
         stamp(d, s, (size_t)n);
     if (n < 0 || npf_msg_parse(&m_state_d, &j, 0, m, NULL, 0) < 0)
-        memset(m, 0, sizeof *m);            /* a first run: the defaults */
-    if (n < 0 || m->password < 0 || npf_json_str(&j, m->password, d->password, sizeof d->password) <= 0)
-        snprintf(d->password, sizeof d->password, "%s", d->default_pw);
+        memset(m, 0, sizeof *m);            /* a first run: the defaults (an object always parses) */
+    snprintf(d->password, sizeof d->password, "%s", n < 0 ? d->default_pw : pw);
+    npf_wipe(pw, sizeof pw);
     memcpy(d->paired, m->paired, (size_t)m->npaired * sizeof *d->paired);
     d->npaired = m->npaired;
     for (i = 0; n >= 0 && i < d->npaired; i++)    /* a role there but not valid: a member's (only none is an admin's) */

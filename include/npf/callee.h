@@ -79,7 +79,8 @@ typedef struct npf_callee {
 } npf_callee;
 
 /* Loads state_path (the defaults when it is missing). A file that cannot be
- * read or parsed is replaced by its copy STATE.bak (written after each save);
+ * read or parsed, or has no password string, is replaced by its copy
+ * STATE.bak (written after each save);
  * if both are unusable, d is in safe mode (damaged). A repaired file is
  * taken within 5 s; npf_callee_fresh writes a new one. 0 (loaded, first
  * run, or safe mode), -1 out of memory. Copies seed; state_path must
