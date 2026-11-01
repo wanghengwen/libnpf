@@ -78,6 +78,7 @@ int test_text(void)
     EXPECT(npf_prefix_nocase("abc", "") && npf_prefix_nocase("", ""));
     EXPECT(!npf_prefix_nocase("Content-Lengt", "Content-Length:"));    /* shorter: no read past it */
     EXPECT(!npf_prefix_nocase("Content_Length:", "Content-Length:"));
+    EXPECT(!npf_prefix_nocase("\xc4", "\xe4") && !npf_prefix_nocase("@[", "`{"));    /* ASCII letters only */
     EXPECT(!npf_prefix_nocase("\xc3\x89t", "\xe9t"));
 
     return fails;
