@@ -71,6 +71,8 @@ typedef struct npf_callee {
     int        damaged;                 /* safe mode: the file and its copy were unusable at the start;
                                            every call and pairing is refused and nothing is saved */
     int        unsaved;                 /* 1 after a failed write, until one succeeds (npf_save retries) */
+    int64_t    alog_at;                 /* npf_callee_admin_log: the minute's start and its lines */
+    int        alog_n;
     npf_policy policy;
     npf_callee_ops ops;
     npf_node  *node;
@@ -116,6 +118,9 @@ int  npf_callee_is_admin(const npf_callee *d, const uint8_t pub[32]);
  * platform could make, a direct session or a hosted client. It may bind the
  * node and configure it (src/api/admin.c). */
 int  npf_callee_admin_session(const npf_callee *d, int auth, const uint8_t pub[32]);
+/* One line for a remote admin request, done (err NULL) or refused, with the caller's fingerprint;
+ * at most 30 a minute, the rest counted (security.md 8.6). */
+void npf_callee_admin_log(npf_callee *d, const uint8_t pub[32], const char *type, const char *err, const char *what);
 /* A share code for uses pairings (1..100) within ttl_s seconds (1..30
  * days), as a member: the platform gives its locator (share_new), the
  * secret is made here. 0: fn comes once with rc 0, the code (NPF_SHARE_LEN)

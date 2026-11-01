@@ -617,37 +617,43 @@ static void op_bind_committed(npf_node *n, uint64_t account, const uint8_t op[16
     npf_log("owner is now account %llu", (unsigned long long)account);
 }
 
-/* bind_approve inside the tunnel (signaling.md "隧道内控制消息") */
-void npf_callee_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
+#define ADMIN_LOG_MAX 30       /* lines a minute at most: sessions cannot flood the log (the rest counted) */
+
+void npf_callee_admin_log(npf_callee *d, const uint8_t pub[32], const char *type, const char *err, const char *what)
 {
-    npf_callee *d = arg;
-    char reply[256];
+    unsigned long long who = (unsigned long long)npf_fp(pub);
+    int64_t now = npf_mono_ms();
+    if (!d->alog_at || now - d->alog_at >= 60000) {
+        if (d->alog_n > ADMIN_LOG_MAX)
+            npf_logw("admin: %d more requests in that minute not logged", d->alog_n - ADMIN_LOG_MAX);
+        d->alog_at = now;
+        d->alog_n = 0;
+    }
+    if (d->alog_n++ >= ADMIN_LOG_MAX)
+        return;
+    if (err)
+        npf_log("admin %016llx: %s refused (%s)", who, type, what && *what ? what : err);
+    else
+        npf_log("admin %016llx: %s (%s)", who, what && *what ? what : "done", type);
+}
+
+/* bind_approve inside the tunnel (signaling.md "隧道内控制消息") */
+static const char *bind_approve(npf_callee *d, npf_node *n, npf_call *c, const npf_json *j, const m_env *e)
+{
+    char reply[256], b[NPF_B64_LEN(64)];
     uint8_t msg[64], sig[64];
     npf_cert inter, leaf;
     npf_identity id;
-    m_env e;
     m_bind_approve m;
-    if (node_env(j, &e) < 0)
-        return;
-    if (strcmp(e.type, "bind_approve") != 0) {
-        npf_call_ctl_reply(c, e.type, j, "error", "unsupported_type", NULL);
-        return;
-    }
     npf_callee_refresh(d);
-    if (!npf_callee_admin_session(d, npf_call_auth(c), npf_call_peer_pub(c))) {  /* a member binds it to no account */
-        npf_call_ctl_reply(c, e.type, j, "error", "forbidden", NULL);
-        return;
-    }
-    if (d->owner) {
-        npf_call_ctl_reply(c, e.type, j, "error", "conflict", NULL);
-        return;
-    }
-    if (npf_msg_parse(&m_bind_approve_d, j, e.data, &m, NULL, 0) < 0
+    if (!npf_callee_admin_session(d, npf_call_auth(c), npf_call_peer_pub(c)))
+        return "forbidden";                 /* a member binds it to no account */
+    if (d->owner)
+        return "conflict";
+    if (npf_msg_parse(&m_bind_approve_d, j, e->data, &m, NULL, 0) < 0
         || npf_cert_chain_parse((const uint8_t (*)[32])n->cfg.roots, n->cfg.nroots, n->cert, n->cert_len, &inter,
-                                &leaf, 0) < 0) {
-        npf_call_ctl_reply(c, e.type, j, "error", "bad_request", NULL);
-        return;
-    }
+                                &leaf, 0) < 0)
+        return "bad_request";
     d->pending_owner = strtoull(m.account_id, NULL, 10);
     memcpy(d->pending_op, m.operation_id, 16);
     d->pending_until = time(NULL) + 600;
@@ -655,13 +661,29 @@ void npf_callee_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
     npf_identity_from_seed(&id, d->seed);
     npf_sign2(sig, id.sign_sk, "npf-bind-v1", 11, msg, 60);
     npf_identity_wipe(&id);
-    {
-        char b[NPF_B64_LEN(64)];
-        npf_b64url_encode(sig, 64, b);
-        snprintf(reply, sizeof reply, "{\"proof\":\"%s\",\"key_gen\":%u}", b, leaf.key_gen);
+    npf_b64url_encode(sig, 64, b);
+    snprintf(reply, sizeof reply, "{\"proof\":\"%s\",\"key_gen\":%u}", b, leaf.key_gen);
+    npf_call_ctl_reply(c, e->type, j, "ok", NULL, reply);
+    return NULL;
+}
+
+void npf_callee_control(npf_node *n, npf_call *c, const npf_json *j, void *arg)
+{
+    npf_callee *d = arg;
+    const char *err;
+    char what[64];
+    m_env e;
+    if (node_env(j, &e) < 0)
+        return;
+    if (strcmp(e.type, "bind_approve") != 0) {
+        npf_call_ctl_reply(c, e.type, j, "error", "unsupported_type", NULL);
+        return;
     }
-    npf_call_ctl_reply(c, e.type, j, "ok", NULL, reply);
-    npf_log("bind requested for account %s", m.account_id);
+    if ((err = bind_approve(d, n, c, j, &e)))
+        npf_call_ctl_reply(c, e.type, j, "error", err, NULL);
+    snprintf(what, sizeof what, "bind requested for account %llu", (unsigned long long)d->pending_owner);
+    npf_callee_admin_log(d, npf_call_peer_pub(c), e.type, err,
+                         err && strcmp(err, "forbidden") == 0 ? "not an admin" : err ? err : what);
 }
 
 static void on_cert(npf_node *n, void *arg)

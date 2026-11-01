@@ -9,7 +9,8 @@
  * not_found, a resource of npf.conf cannot be replaced or removed, a bad
  * resource says why; a share code needs the platform (offline) and an owner
  * (no_owner), its uses and ttl bounded, and the code made later goes only
- * to the session of the admin that asked; there are no role changes. */
+ * to the session of the admin that asked; there are no role changes; each
+ * request is logged with the caller's fingerprint, at most 30 lines a minute. */
 #define _DEFAULT_SOURCE                     /* mkdtemp */
 #include <stdlib.h>
 
@@ -199,6 +200,30 @@ int main(void)
         check(!npf_admin_session_again(n, "call-1", k0), "ended: nobody");
         n->node.calls = c->next;
         free(c);
+    }
+
+    /* the log: a line a request, refused ones too, with the caller's
+     * fingerprint; 30 a minute, the rest counted in the next minute's first */
+    {
+        static char lg[NPF_LOG_RING];
+        char want[96];
+        const char *p;
+        uint8_t k3[32];
+        key_of(3, k3);
+        n->callee->alog_at = 0;
+        req(n, NPF_AUTH_IK, 3, "admin_unpair", kj, out, sizeof out);
+        for (i = 0; i < 34; i++)
+            req(n, NPF_AUTH_IK, 0, "admin_get", "{}", out, sizeof out);
+        npf_log_recent(lg, sizeof lg);
+        snprintf(want, sizeof want, "admin %016llx: admin_unpair refused (not an admin)",
+                 (unsigned long long)npf_fp(k3));
+        check((p = strstr(lg, want)) && count(p, "(admin_get)") == 29,
+              "the log: a member's refused request with its fingerprint; 30 lines a minute");
+        n->callee->alog_at -= 60000;
+        req(n, NPF_AUTH_IK, 0, "admin_get", "{}", out, sizeof out);
+        npf_log_recent(lg, sizeof lg);
+        check(p && (p = strstr(lg, "admin: 5 more requests in that minute not logged")) && count(p, "(admin_get)") == 1,
+              "the next minute: how many were not logged, then the lines again");
     }
 
     /* remote_admin */

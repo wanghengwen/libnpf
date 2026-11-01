@@ -87,19 +87,20 @@ static void share_made(void *arg, int rc, const char *code, const npf_share *v)
 {
     later *l = arg;
     npf_call *c = npf_admin_session_again(l->n, l->call, l->pub);
-    unsigned long long who = (unsigned long long)npf_fp(l->pub);
     npf_out o = {.secret = 1};              /* the code: to this admin only, never in the log */
+    char what[96] = "";
     npf_out_jobj(&o);
     if (rc == 0) {
         npf_out_kstr(&o, "code", code);
         npf_out_kstr(&o, "locator", v->id);
         npf_out_kint(&o, "uses", v->uses);
         npf_out_kint(&o, "expires", v->expires);
-        npf_log("admin %016llx: share code %s made (%lld uses)%s", who, v->id, (long long)v->uses,
-                c ? "" : ", revoked: that admin's session ended first");
+        snprintf(what, sizeof what, "share code %s made (%lld uses)%s", v->id, (long long)v->uses,
+                 c ? "" : ", revoked: that admin's session ended first");
         if (!c)
             npf_callee_share_del(l->n->callee, v->id);  /* nobody has it */
     }
+    npf_callee_admin_log(l->n->callee, l->pub, "admin_share_new", rc ? share_err(rc) : NULL, what);
     npf_out_jend(&o);
     if (c)
         npf_call_ctl_reply_to(c, "admin_share_new", l->id, rc ? "error" : "ok", rc ? share_err(rc) : NULL,
@@ -111,11 +112,12 @@ static void share_made(void *arg, int rc, const char *code, const npf_share *v)
 /* the members' requests: unpair, share codes; LATER: the reply comes later */
 static const char LATER[] = "";
 
-static const char *member_op(npf_t *n, npf_call *c, const npf_env *e, const uint8_t pub[32], const void *msg)
+static const char *member_op(npf_t *n, npf_call *c, const npf_env *e, const uint8_t pub[32], const void *msg,
+                             char *what, size_t cap)
 {
     npf_callee *d = n->callee;
     const m_admin_key *k = msg;
-    unsigned long long who = (unsigned long long)npf_fp(pub), fp;
+    unsigned long long fp;
     later *l;
     int rc;
     if (strcmp(e->type, "admin_share_new") == 0) {
@@ -132,27 +134,25 @@ static const char *member_op(npf_t *n, npf_call *c, const npf_env *e, const uint
     }
     if (strcmp(e->type, "admin_share_del") == 0) {
         const m_admin_share_del *m = msg;
-        if (npf_callee_share_del(d, m->locator) == -1)
-            return "not_found";
-        npf_log("admin %016llx: share code %s revoked", who, m->locator);
-        return NULL;
+        int gone = npf_callee_share_del(d, m->locator) != -1;
+        snprintf(what, cap, "share code %s %s", m->locator, gone ? "revoked" : "unknown");
+        return gone ? NULL : "not_found";
     }
     fp = (unsigned long long)npf_fp(k->key);    /* admin_unpair: its sessions end (the recheck) */
     if (npf_callee_is_admin(d, k->key)) {
-        npf_log("admin %016llx: unpairing %016llx refused (an admin: locally only)", who, fp);
+        snprintf(what, cap, "%016llx is an admin: unpaired locally only", fp);
         return "forbidden";
     }
-    if (npf_callee_unpair_key(d, k->key) == -1)
-        return "not_found";
-    npf_log("admin %016llx: unpaired %016llx", who, fp);
-    return NULL;
+    rc = npf_callee_unpair_key(d, k->key) != -1;
+    snprintf(what, cap, "%s %016llx", rc ? "unpaired" : "not paired:", fp);
+    return rc ? NULL : "not_found";
 }
 
-const char *npf_admin_do(npf_t *n, npf_call *c, int auth, const uint8_t pub[32], const npf_env *e, npf_out *o)
+static const char *admin_op(npf_t *n, npf_call *c, int auth, const uint8_t pub[32], const npf_env *e, npf_out *o,
+                            char *what, size_t cap)
 {
     npf_callee *d = n->callee;
     int mode = (int)npf_conf_int(&n->conf, "remote_admin"), rc;
-    unsigned long long who = (unsigned long long)npf_fp(pub);
     union { m_admin_get g; m_admin_key k; m_admin_share_new sn; m_admin_share_del sd; m_admin_res_put p; m_admin_res_del r; } u;
     static const struct { const char *type; const npf_msgdesc *md; } reqs[] = {
         {"admin_get", &m_admin_get_d}, {"admin_unpair", &m_admin_key_d},
@@ -169,32 +169,34 @@ const char *npf_admin_do(npf_t *n, npf_call *c, int auth, const uint8_t pub[32],
             md = reqs[i].md;
     if (!md)
         return "unsupported_type";
-    if (npf_msg_parse(md, e->j, e->data, &u, err, sizeof err) < 0)
+    if (npf_msg_parse(md, e->j, e->data, &u, what, cap) < 0)
         return "bad_request";
     npf_callee_refresh(d);
     /* a paired key only: never a grant (the platform could make one), a
      * direct session or a hosted client */
     if ((auth != NPF_AUTH_IK && auth != NPF_AUTH_PAKE) || mode == RA_OFF || d->damaged) {
-        npf_log("admin: %s from %016llx refused (%s)", e->type, who,
-                mode == RA_OFF ? "remote_admin off" : d->damaged ? "the state is damaged" : "not a paired session");
+        snprintf(what, cap, "%s", mode == RA_OFF ? "remote_admin off" : d->damaged ? "the state is damaged"
+                                                                                   : "not a paired session");
         return "forbidden";
     }
     if (!npf_callee_is_admin(d, pub)) {
         if (md == &m_admin_get_d) {
             npf_out_kstr(o, "role", "member");  /* members do not see each other */
+            snprintf(what, cap, "a member: its role");
             return NULL;
         }
-        npf_log("admin: %s from %016llx refused (not an admin)", e->type, who);
+        snprintf(what, cap, "not an admin");
         return "forbidden";
     }
     if (md == &m_admin_get_d) {
         members(d, pub, u.g.offset, o);
+        snprintf(what, cap, "the members from %lld", (long long)u.g.offset);
         return NULL;
     }
     if (md != &m_admin_res_put_d && md != &m_admin_res_del_d)
-        return member_op(n, c, e, pub, &u);
+        return member_op(n, c, e, pub, &u, what, cap);
     if (mode == RA_MEMBERS) {
-        npf_log("admin: %s from %016llx refused (remote_admin members)", e->type, who);
+        snprintf(what, cap, "remote_admin members");
         return "forbidden";
     }
     if (md == &m_admin_res_put_d) {
@@ -209,12 +211,23 @@ const char *npf_admin_do(npf_t *n, npf_call *c, int auth, const uint8_t pub[32],
     }
     if (res_err(rc)) {
         npf_out_kstr(o, "message", err);
-        npf_log("admin %016llx: %s refused: %s", who, e->type, err);
+        snprintf(what, cap, "%s", err);
         return res_err(rc);
     }
-    npf_log("admin %016llx: resource %s %s", who, md == &m_admin_res_put_d ? r.name : u.r.name,
-            md == &m_admin_res_put_d ? "published" : "deleted");
+    snprintf(what, cap, "resource %s %s", md == &m_admin_res_put_d ? r.name : u.r.name,
+             md == &m_admin_res_put_d ? "published" : "deleted");
     return NULL;
+}
+
+/* each request, done or refused, one line in the log with the caller's
+ * fingerprint (security.md 8.6); admin_share_new's when the code comes */
+const char *npf_admin_do(npf_t *n, npf_call *c, int auth, const uint8_t pub[32], const npf_env *e, npf_out *o)
+{
+    char what[256] = "";
+    const char *err = admin_op(n, c, auth, pub, e, o, what, sizeof what);
+    if (err != LATER)
+        npf_callee_admin_log(n->callee, pub, e->type, err, what);
+    return err;
 }
 
 void npf_admin_control(npf_node *node, npf_call *c, const npf_json *j, void *arg)
