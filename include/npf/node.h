@@ -356,7 +356,7 @@ struct npf_node {
     uint16_t      pred_port;        /* sequential allocation: the next mapping's port ("pred" candidate) */
     /* the router's port mapping */
     struct npf_portmap pm;
-    int           pm_ok, pm_tried;
+    int           pm_ok, pm_tried, pm_bypass; /* pm_bypass: the mapping's, for its removal */
     int           pm_gw, pm_m;      /* what the gateway did (PM_GW_*), the method that answered */
     void         *pm_job;
     uint64_t      pm_net;           /* npf_portmap_net at the last start */

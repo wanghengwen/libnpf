@@ -81,6 +81,7 @@ static void pm_deliver(npf_loop *loop, void *arg)
             j->res.lifetime = PM_MAX_S;
         n->pm = j->res;
         n->pm_ok = 1;
+        n->pm_bypass = j->bypass;
         n->pm_gw = PM_GW_MAP;
         n->pm_m = j->res.method;
         if (!had)
@@ -175,7 +176,7 @@ void node_portmap_stop(npf_node *n)
 {
     pm_forget(n);
     if (n->pm_ok) {                         /* one short try: a gateway gone silent does not hold up the stop */
-        npf_portmap_remove(n->th.portmap_gw, !n->cfg.secure, n->udp_port, n->pm.method);
+        npf_portmap_remove(n->th.portmap_gw, n->pm_bypass, n->udp_port, n->pm.method);
         n->pm_ok = 0;
     }
 }
