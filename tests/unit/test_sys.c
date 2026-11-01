@@ -7,10 +7,13 @@
  * unset, empty and 0 are off. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/log.h"
+#include "npf/node.h"
 #include "npf/testhooks.h"
 #include "test.h"
 
@@ -88,6 +91,20 @@ static void udp_watch(void)
     w[1].other = 0;
     npf_udp_send(fresh, "x", 1, &to);
     CHECK(w[1].other != 0, "stopping one again leaves the watch of another on its old number");
+    {   /* on (fd set) but not on this thread's list: another thread's */
+        npf_udp_watch alien;
+        npf_log_ctx lc, *old;
+        memset(&alien, 0, sizeof alien);
+        alien.fd = fd[2];
+        old = log_capture(&lc);
+        log_clear();
+        npf_udp_watch_on(&alien, fd[3]);
+        npf_log_ctx_swap(old);
+        w[3].other = 0;
+        npf_udp_send(fd[3], "x", 1, &to);
+        CHECK(strstr(logged, "not its own") && alien.fd == fd[2] && w[3].other != 0,
+              "a watch of another thread: an error logged, nothing changed");
+    }
     for (i = 0; i < 6; i++)
         npf_udp_watch_on(&w[i], -1);
     npf_sock_close(fresh);
@@ -102,6 +119,13 @@ int test_sys(void)
     tcp_diag();
 #endif
     udp_watch();
+    {   /* npf_abspath: out empty when it does not fit */
+        char out[8];
+        errno = 0;
+        CHECK(npf_abspath("/a/rather/long/path", out, sizeof out) < 0 && out[0] == 0 && errno == ENAMETOOLONG,
+              "npf_abspath too long: out empty, ENAMETOOLONG");
+        CHECK(npf_abspath("/a", out, sizeof out) == 0 && strcmp(out, "/a") == 0, "npf_abspath");
+    }
     fd = npf_udp_socket(AF_INET, 0, 1);             /* no hook yet */
     CHECK(fd >= 0 && seen == 0, "a socket without a hook");
     npf_sock_close(fd);

@@ -206,6 +206,9 @@ int npf_win_errno(unsigned long err)
         return ENOSPC;
     case ERROR_WRITE_PROTECT:
         return EROFS;
+    case ERROR_INVALID_NAME:
+    case ERROR_BAD_PATHNAME:
+        return EINVAL;
     case ERROR_FILENAME_EXCED_RANGE:
         return ENAMETOOLONG;
     case ERROR_NOT_ENOUGH_MEMORY:
@@ -254,10 +257,22 @@ int npf_abspath(const char *p, char *out, size_t cap)
 {
     wchar_t w[WPATH], full[WPATH];
     DWORD r;
+    if (cap)
+        out[0] = 0;                         /* no half-written path on failure */
     if (npf_wpath(p, w, WPATH) < 0)
         return -1;
     r = GetFullPathNameW(w, WPATH, full, NULL);
-    return r > 0 && r < WPATH && WideCharToMultiByte(CP_UTF8, 0, full, -1, out, (int)cap, NULL, NULL) > 0 ? 0 : -1;
+    if (r == 0 || r >= WPATH) {
+        errno = r ? ENAMETOOLONG : npf_win_errno(GetLastError());
+        return -1;
+    }
+    /* a lone surrogate has no UTF-8: an error, not U+FFFD */
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, full, -1, out, (int)cap, NULL, NULL) > 0)
+        return 0;
+    errno = GetLastError() == ERROR_INSUFFICIENT_BUFFER ? ENAMETOOLONG : EINVAL;
+    if (cap)
+        out[0] = 0;
+    return -1;
 }
 
 /* no tcp_info here */

@@ -1,6 +1,7 @@
 /* Configuration files: parsing, path keys relative to the file, the default
  * path next to the file, and atomic private file writes. */
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -171,6 +172,13 @@ int test_conf(void)
     CHECK(npf_file_too_open(path), "0644 is too open");
     snprintf(want, sizeof want, "%s/secret.tmp", dir);
     CHECK(stat(want, &st) < 0, "no temp file left behind");
+    snprintf(path, sizeof path, "%s/adir", dir);     /* the rename fails: a directory, not empty, in the way */
+    snprintf(want, sizeof want, "%s/adir/x", dir);
+    CHECK(mkdir(path, 0700) == 0 && npf_file_write(want, "x", 1, 0600) == 0, "a directory in the way");
+    errno = 0;
+    CHECK(npf_file_write(path, "y", 1, 0600) < 0 && errno != 0, "a failed rename: -1, errno %d", errno);
+    snprintf(want, sizeof want, "%s/adir.tmp", dir);
+    CHECK(stat(want, &st) < 0, "and its temp file removed");
     CHECK(npf_file_read("/nonexistent/npf", &rd) < 0, "missing file");
 
     rm_dir(dir);

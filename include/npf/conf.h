@@ -106,7 +106,7 @@ int  npf_file_unreadable(const char *path);
  * first, never written through) with mode, flushed, renamed over path; on
  * POSIX the directory is synced too. On Windows a mode without group or
  * other bits gives the file a DACL of SYSTEM, Administrators and the owner
- * only. 0, or -1 with errno set (on Windows too). */
+ * only. 0, or -1 with errno set (on Windows too) and no path.tmp left. */
 int npf_file_write(const char *path, const void *data, size_t len, int mode);
 
 #endif

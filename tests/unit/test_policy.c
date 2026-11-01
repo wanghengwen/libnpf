@@ -4,6 +4,7 @@
  * allowed. And the resources themselves (resources.h). */
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -218,8 +219,9 @@ int test_policy(void)
             free(n2);
             static const char dup[] = "[{\"name\":\"a\",\"target\":\"127.0.0.1:1\"},"
                                       "{\"name\":\"a\",\"target\":\"127.0.0.1:2\"}]";
+            errno = 0;
             n1 = npf_res_normalize(dup, strlen(dup));
-            CHECK(!n1, "two of one name refused");
+            CHECK(!n1 && errno == EINVAL, "two of one name refused (EINVAL)");
             free(n1);
             npf_out_free(&o);
         }

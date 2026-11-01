@@ -415,6 +415,7 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
     }
     if (!MoveFileExW(wtmp, wpath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         errno = npf_win_errno(GetLastError());
+        DeleteFileW(wtmp);                  /* no secret left beside it */
         return -1;
     }
     return 0;
@@ -435,8 +436,12 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
         return -1;
     }
     close(fd);
-    if (rename(tmp, path) < 0)
+    if (rename(tmp, path) < 0) {
+        int e = errno;
+        unlink(tmp);
+        errno = e;
         return -1;
+    }
     {   /* the rename on the disk too: after a power cut the old file must
          * not come back (an unpairing, a new password, a revocation undone) */
         char dir[1024];

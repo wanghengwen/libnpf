@@ -65,7 +65,8 @@ void npf_res_json(npf_out *o, const npf_res *r, int n);
  * stands for 127.0.0.1 and ::1. 0, or -1 when one does not fit (p unchanged). */
 int  npf_res_rules(npf_policy *p, const npf_res *r, int n);
 /* A list checked and written again in the form local.json and the
- * "resources" event keep: malloc'd JSON text (free), NULL when not a valid list. */
+ * "resources" event keep: malloc'd JSON text (free), or NULL with errno
+ * EINVAL (not a valid list) or ENOMEM. */
 char *npf_res_normalize(const char *json, size_t len);
 
 #endif

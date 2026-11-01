@@ -306,11 +306,15 @@ int npf_path_is_abs(const char *p)
 int npf_abspath(const char *p, char *out, size_t cap)
 {
     char cwd[1024];
-    if (npf_path_is_abs(p))
-        return snprintf(out, cap, "%s", p) < (int)cap ? 0 : -1;
-    if (!getcwd(cwd, sizeof cwd))
-        return -1;
-    return snprintf(out, cap, "%s/%s", cwd, p) < (int)cap ? 0 : -1;
+    int r = npf_path_is_abs(p) ? snprintf(out, cap, "%s", p)
+            : getcwd(cwd, sizeof cwd) ? snprintf(out, cap, "%s/%s", cwd, p) : -1;
+    if (r >= 0 && r < (int)cap)
+        return 0;
+    if (cap)
+        out[0] = 0;
+    if (r >= 0)
+        errno = ENAMETOOLONG;
+    return -1;
 }
 
 /* A TCP connection's kernel side, for a log line when it stalls: the bytes

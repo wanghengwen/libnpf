@@ -197,7 +197,7 @@ typedef struct npf_nat_profile {
 
 说明：
 
-- **端口映射**：设备端启动时尝试 PCP → NAT-PMP（为什么没有 UPnP 见 5.1），成功后定期续期（租期 1 小时，提前 10 分钟续期），退出时删除；换了网络（默认网关或本机通往它的地址变了，2026-10-26）重新申请。NAS 大多在家庭路由器后面，这一项往往直接解决问题。已实现于 `src/ice/portmap.c`：PCP（RFC 6887）与 NAT-PMP（RFC 6886），都向默认网关 UDP 5351 发送，先试 PCP（较新、直接返回外部地址、支持 IPv6）再退回 NAT-PMP；网关在 Linux 上从 `/proc/net/route` 读取，macOS 查路由表，Windows 用 `GetBestRoute`，iOS、Android 不知道网关（不尝试）。网关怎么应答的（映射可用 / 外部地址不是公网 / 没有应答 / 不知道网关 / 关闭）随 NAT 画像的 `pm` 上报平台，供穿透统计（signaling.md `nat`）；
+- **端口映射**：设备端启动时尝试 PCP → NAT-PMP（为什么没有 UPnP 见 5.1），成功后定期续期（租期 1 小时，提前 10 分钟续期），退出时删除（用建立映射时的方式：绕不绕开 VPN 随 `connect_mode` 变，2026-11-01）；换了网络（默认网关或本机通往它的地址变了，2026-10-26）重新申请。NAS 大多在家庭路由器后面，这一项往往直接解决问题。已实现于 `src/ice/portmap.c`：PCP（RFC 6887）与 NAT-PMP（RFC 6886），都向默认网关 UDP 5351 发送，先试 PCP（较新、直接返回外部地址、支持 IPv6）再退回 NAT-PMP；网关在 Linux 上从 `/proc/net/route` 读取，macOS 查路由表，Windows 用 `GetBestRoute`，iOS、Android 不知道网关（不尝试）。网关怎么应答的（映射可用 / 外部地址不是公网 / 没有应答 / 不知道网关 / 关闭）随 NAT 画像的 `pm` 上报平台，供穿透统计（signaling.md `nat`）；
 - **只收集必要的 host 地址**：排除回环、链路本地、docker/虚拟网卡（按网卡名与地址段过滤，可配置）；
 - 候选中的地址经信令发给对端，对端能看到本端的内网地址。这是 ICE 的通常做法；有顾虑时可以只发送私网地址的哈希，由对端判断是否可能同网段，作为可选项。
 

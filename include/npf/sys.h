@@ -177,7 +177,8 @@ typedef struct npf_udp_watch {
 } npf_udp_watch;
 /* From now on npf_udp_send on this thread notes into w->other the datagrams
  * on fd that count; fd -1 stops w. w must stay valid until stopped, on this
- * thread: stop it before fd is closed (the number may be reused). */
+ * thread: stop it before fd is closed (the number may be reused). From
+ * another thread: an error logged, nothing changed. */
 void npf_udp_watch_on(npf_udp_watch *w, int fd);
 
 /* The node's UDP sockets (main, punching, NAT probing, port mapping; not
@@ -259,7 +260,8 @@ int  npf_file_private(const char *path);
  * on Windows. */
 int  npf_file_too_open(const char *path);
 /* p made absolute against the working directory (symlinks not resolved),
- * into out of cap bytes. 0, or -1 (an error, or it does not fit). */
+ * into out of cap bytes. 0, or -1 with errno and out empty (an error, or it
+ * does not fit: ENAMETOOLONG). */
 int  npf_abspath(const char *p, char *out, size_t cap);
 int  npf_path_is_abs(const char *p);
 /* p's last separator ('/', on Windows '\\' too), NULL: none; its directory

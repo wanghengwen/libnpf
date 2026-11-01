@@ -356,7 +356,7 @@ struct npf_node {
     uint16_t      pred_port;        /* sequential allocation: the next mapping's port ("pred" candidate) */
     /* the router's port mapping */
     struct npf_portmap pm;
-    int           pm_ok, pm_tried;
+    int           pm_ok, pm_tried, pm_bypass; /* pm_bypass: the mapping's, for its removal */
     int           pm_gw, pm_m;      /* what the gateway did (PM_GW_*), the method that answered */
     void         *pm_job;
     uint64_t      pm_net;           /* npf_portmap_net at the last start */
@@ -666,8 +666,9 @@ void npf_node_report_nat(npf_node *n);
  * written) when there is none. */
 int npf_node_home_status(npf_node *n, npf_out *o);
 /* connect_mode: 0 p2p (direct paths first, around a VPN), 1 secure (relays
- * only, no address to the peer, the VPN kept). On a change the platform is
- * told and the UDP sockets reopen (npf_node_udp_reset). */
+ * only, no address to the peer, the VPN kept). On a change the UDP sockets
+ * reopen (npf_node_udp_reset) and the platform is told: at once for secure,
+ * for p2p once the NAT is measured again (unless nothing reopens). */
 void npf_node_set_secure(npf_node *n, int on);
 
 

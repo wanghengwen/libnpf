@@ -275,8 +275,10 @@ void npf_node_set_secure(npf_node *n, int on)
     n->cfg.secure = on != 0;
     npf_log("connect_mode %s: %s", on ? "secure" : "p2p",
             on ? "relays only, no address to the peers, a VPN kept" : "direct paths first, around a VPN");
-    npf_node_report_nat(n);
-    npf_node_udp_reset(n, "connect_mode changed");  /* the sessions open again under it */
+    /* the sessions open again under it; p2p: reported after the full
+     * measurement (nat_settled), not the secure one meanwhile */
+    if (npf_node_udp_reset(n, "connect_mode changed") < 0 || on)
+        npf_node_report_nat(n);
 }
 
 int npf_node_udp_reset(npf_node *n, const char *why)

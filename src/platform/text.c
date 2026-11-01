@@ -129,10 +129,16 @@ int npf_http_status(const char *s)
     return code >= 100 && (*s == ' ' || *s == '\r' || *s == '\n') ? code : -1;
 }
 
+/* ASCII only: tolower would follow the locale (a Latin-1 one folds 0xC4 to 0xE4) */
+static int ascii_lower(unsigned char c)
+{
+    return c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c;
+}
+
 int npf_prefix_nocase(const char *s, const char *p)
 {
     for (; *p; s++, p++)
-        if (tolower((unsigned char)*s) != tolower((unsigned char)*p))
+        if (ascii_lower((unsigned char)*s) != ascii_lower((unsigned char)*p))
             return 0;
     return 1;
 }
