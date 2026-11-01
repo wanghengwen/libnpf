@@ -154,7 +154,7 @@ void call_punch_done(npf_punch *p, const npf_punch_result *res, int fd, void *ar
     npf_log("call %s: direct path %s (%d ms)", c->call_id_s, npf_addr_str(&res->peer, a, sizeof a),
             res->elapsed_ms);
     call_punch_to(c, PN_LINGER, npf_mono_ms() + PUNCH_LINGER_MS);
-    call_path_up(c);
+    pm_check(c);                    /* its first check: used once it has an echo (call_path_input) */
 }
 
 /* S3 hard side: the sockets one punch may open. All calls share a node budget

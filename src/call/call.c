@@ -536,7 +536,7 @@ void npf_node_check_paths(npf_node *n, const char *why)
     char w[96];
     snprintf(w, sizeof w, "%s: checking the direct path", why);
     for (c = n->calls; c; c = c->next)
-        if (!call_over(c) && call_has_p2p(c) && !c->direct && c->anl && c->pd.p.health != PH_SUSPECT)
+        if (!call_over(c) && call_has_p2p(c) && !c->direct && c->anl && c->pd.p.health == PH_UP)
             call_p2p_suspect_start(c, w);
 }
 

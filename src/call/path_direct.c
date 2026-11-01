@@ -30,9 +30,10 @@ void path_direct_tx(npf_path *p, const uint8_t *dgram, size_t len)
         npf_udp_send(c->pd.fd, dgram, len, &c->pd.addr);
 }
 
-/* a punch's path (punch_done): fd the main socket, or an S3 one handed over.
- * 0, or -1 when an owned socket could not be watched (closed here; caller
- * falls back). */
+/* a punch's path (punch_done): fd the main socket, or an S3 one handed over;
+ * NEW, it carries nothing before an echo from there (the peer's proof: a
+ * spoofed NOMINATE's source never answers, security.md 11.1). 0, or -1 when
+ * an owned socket could not be watched (closed here; caller falls back). */
 int path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
 {
     int own = fd != c->n->udp_fd && fd != c->n->udp6_fd;
@@ -43,10 +44,10 @@ int path_direct_up(npf_call *c, int fd, const struct sockaddr_storage *peer)
     c->pd.owned = own;
     c->pd.fd = fd;
     c->pd.addr = *peer;
-    c->pd.p.last_rx = npf_mono_ms();
-    c->pd.p.since = c->pd.p.last_rx;
-    c->pd.p.rt_ok = c->pd.p.busy_since = 0;
-    c->pd.p.health = PH_UP;
+    c->pd.p.last_rx = c->pd.p.since = c->pd.p.suspect_at = c->pd.p.probe_at = npf_mono_ms();
+    c->pd.p.rt_ok = c->pd.p.busy_since = c->pd.p.probe_until = 0;
+    c->pd.p.health = PH_NEW;            /* checked as in doubt (pm_tick) */
+    path_direct_check(c);
     pm_add(&c->pm, &c->pd.p);
     return 0;
 }
@@ -63,11 +64,12 @@ void path_direct_fixed(npf_call *c, int fd, const struct sockaddr_storage *peer)
 
 /* ---- direct path check (nat-traversal.md 10.3) ----
  * Hearing the peer does not prove that it hears us (a path dead one way: a
- * firewall, a cut in a test). In doubt, PATH_CHECK{nonce} goes out every
- * 500 ms, the peer answers each with PATH_ECHO{nonce}: only a matching
- * echo, a round trip, brings the path back. SIV-sealed with a key of the
+ * firewall, a cut in a test). New, in doubt, or for consent (every 15 s),
+ * PATH_CHECK{nonce} goes out every 500 ms, the peer answers each with
+ * PATH_ECHO{nonce}: only a matching echo from the path's address, a round
+ * trip, proves the path or brings it back. SIV-sealed with a key of the
  * session and the sender's direction: nobody else can make one, and a
- * reflected check is no echo. */
+ * reflected check is no echo; each nonce proves once. */
 static void path_send(npf_call *c, int type, uint64_t nonce)
 {
     uint8_t buf[PATH_PKT_LEN], *p = buf + NPF_SIV_TAG_SIZE;
@@ -80,20 +82,25 @@ static void path_send(npf_call *c, int type, uint64_t nonce)
     npf_udp_send(c->pd.fd, buf, sizeof buf, &c->pd.addr);
 }
 
-/* 1 when the datagram was a path check or echo of this call */
+/* 1 when the datagram was a path check or echo of this call (from the
+ * path's address: the callers check) */
 int call_path_input(npf_call *c, const uint8_t *buf, size_t len)
 {
     uint8_t plain[16];
+    int h = c->pd.p.health;
     if (!c->keys_ready || len != PATH_PKT_LEN || npf_siv_open(&c->pd.keys, c->caller ? 1 : 0, buf, len, plain) < 0)
         return 0;
     if (plain[0] == PKT_PATH_CHECK)
         path_send(c, PKT_PATH_ECHO, npf_rd64(plain + 2));
-    else if (plain[0] == PKT_PATH_ECHO && (c->pd.p.health == PH_SUSPECT || c->pd.p.probe_until)
+    else if (plain[0] == PKT_PATH_ECHO && (h == PH_NEW || h == PH_SUSPECT || c->pd.p.probe_until)
              && npf_rd64(plain + 2) == c->pd.nonce) {
-        /* an echo of these checks (a doubt's, the standby's): UP; the relay
-         * standing by may go (pm_decide) */
+        /* an echo of these checks (a new path's, a doubt's, consent's, the
+         * standby's): UP; the relay standing by may go (pm_decide) */
+        path_direct_check(c);
         if (pm_rt(&c->pm, &c->pd.p, npf_mono_ms()))
-            npf_log("call %s: direct path alive again (checked both ways)", c->call_id_s);
+            npf_log("call %s: direct path %s (checked both ways)", c->call_id_s, h == PH_NEW ? "proven" : "alive again");
+        if (h == PH_NEW)
+            call_path_up(c);
         pm_check(c);
     }
     return 1;
@@ -126,7 +133,9 @@ void path_direct_suspect(npf_path *p, int64_t quiet)
 {
     npf_call *c = CALL_OF(p, pd.p);
     char why[80];
-    if (p->busy_since)
+    if (!quiet)
+        snprintf(why, sizeof why, "no echo on the direct path for %d s (consent)", pm_rules_of[PK_DIRECT].t_consent / 1000);
+    else if (p->busy_since)
         snprintf(why, sizeof why, "direct path silent for %lld ms", (long long)quiet);
     else
         snprintf(why, sizeof why, "nothing from the peer on the direct path for %lld s", (long long)quiet / 1000);
@@ -138,7 +147,7 @@ void path_direct_suspect(npf_path *p, int64_t quiet)
 void path_direct_dead(npf_path *p)
 {
     npf_call *c = CALL_OF(p, pd.p);
-    npf_logw("call %s: direct path lost%s", c->call_id_s,
+    npf_logw("call %s: direct path %s%s", c->call_id_s, p->rt_ok ? "lost" : "never answered its checks",
              call_has_relay(c) && c->pu.r.state == RB_BOUND ? ", staying on the relay"
              : call_has_relay(c) && c->pu.r.at ? ", the UDP relay still binding" : "");
 }
@@ -178,9 +187,9 @@ void call_p2p_input_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
             break;
         if (c->punch && npf_punch_input(c->punch, fd, buf, (size_t)r, &from))
             continue;
-        if (call_path_input(c, buf, (size_t)r))
+        if (npf_addr_eq(&from, &c->pd.addr) && call_path_input(c, buf, (size_t)r))
             continue;
-        if (call_anl_feed(c, buf, (size_t)r) == 0 && !call_over(c))
+        if (call_anl_feed(c, buf, (size_t)r) == 0 && !call_over(c) && npf_addr_eq(&from, &c->pd.addr))
             c->pd.p.last_rx = npf_mono_ms();
         if (call_over(c))
             return;

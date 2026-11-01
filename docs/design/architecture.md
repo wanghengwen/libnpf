@@ -317,7 +317,7 @@ struct npf_path {
 
 **1b 的实现与上面的不同之处**（2026-10-28）：
 
-- 规则在 `path_mgr.c:pm_tick`（纯函数：路径、现在、在途数据、RTO → 事件与下一个截止时刻），参数在 `pm_rules_of`（`t_busy`、`t_idle`、`t_probe`、`t_verdict`，0 表示这一条由路径自己做）。路径的操作是 `tx`、`name` 与三个事件 `suspect`、`probe`、`dead`；路径证明往返时调用 `pm_rt`，自己判定失效时调用 `pm_dead`。2.3 草图里每条路径的 `due` / `tick` 留给 1d；管理器已经只有一个定时器（`pm.t_check`，排在下一个截止时刻，只在提前时重排），取代了 `t_pcheck` 与 `t_rcheck`。
+- 规则在 `path_mgr.c:pm_tick`（纯函数：路径、现在、在途数据、RTO → 事件与下一个截止时刻），参数在 `pm_rules_of`（`t_busy`、`t_idle`、`t_probe`、`t_verdict`、`t_consent`，0 表示这一条由路径自己做；`t_consent` 只有直连有：30 秒没有往返就可疑，15 秒起探测，2026-11-02）。打洞得来的直连以 `NEW` 加入，不承载数据（`pm_route` 不选它），`pm_tick` 像可疑时一样探测、10 秒判失效，`PATH_ECHO` 来自它的地址时 `pm_rt` 使它 `UP`（security.md 11.1）。路径的操作是 `tx`、`name` 与三个事件 `suspect`、`probe`、`dead`；路径证明往返时调用 `pm_rt`，自己判定失效时调用 `pm_dead`。2.3 草图里每条路径的 `due` / `tick` 留给 1d；管理器已经只有一个定时器（`pm.t_check`，排在下一个截止时刻，只在提前时重排），取代了 `t_pcheck` 与 `t_rcheck`。
 - WS 中转有数据在途时不用 3 秒的规则（"只看 TCP"）：流式载体上排队几秒是正常的，重连会丢掉 8 MiB 的发送队列；只用 30 秒没有任何帧。可疑时不发 ping（25 秒的 ping 本来就在），而是关掉连接立即重连；每次重连要在 10 秒内配对（`WS_PAIR_MS`，表里没有：连上 TCP 之后 WebSocket、绑定没有超时），连续 5 次不成是 `DEAD`。
 - UDP 中转绑定期间是 `NEW`、绑上是 `UP`、探测期间 `SUSPECT`、所有地址试过 `DEAD`（`r.bound` 与健康一致）；`DEAD` 的 UDP 中转与 `DEAD` 的 WS 中转在没有别的路径时仍是主路径（发往它们没有坏处，去留由 1c 决定），只有 `DEAD` 的直连不再发送。探测期间名字仍显示 `relay (binding)`（D3 的翻转只剩真正的探测，空闲的会话不再探测）。
 - 直连的 `PATH_ECHO` 一到就恢复（原来等下一次 500 ms 的检查）。

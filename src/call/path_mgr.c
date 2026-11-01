@@ -10,13 +10,13 @@
 #include "../node/home.h"
 
 /* nat-traversal.md 10.3, data-channel.md 3: the direct path silent 3 s
- * busy, 20 s idle (AnLiu's keepalive is 15 s), checked every 500 ms, lost
- * 10 s after; the UDP relay the same silences, its probe a bind, its
+ * busy, 20 s idle (AnLiu's keepalive is 15 s), or 30 s without an echo
+ * (RFC 7675), checked every 500 ms, lost 10 s after; the UDP relay the same silences, its probe a bind, its
  * verdict every address tried (path_udp.c); the WS relay TCP's own
  * retransmission busy, 30 s without a frame (its ping is 25 s) half-open,
  * its verdict 5 reconnects that do not pair (path_ws.c) */
 const pm_rules pm_rules_of[PK_N] = {
-    [PK_DIRECT]    = {3000, 20000, 500, 10000},
+    [PK_DIRECT]    = {3000, 20000, 500, 10000, 30000},
     [PK_UDP_RELAY] = {3000, 20000, 0, 0},
     [PK_WS_RELAY]  = {0, 30000, 0, 0},
 };
@@ -72,12 +72,12 @@ static void path_do_dead(npf_path *p)
 }
 
 /* the roles from the paths in use and their health (path.h npf_pm); a
- * direct path given up carries nothing */
+ * direct path not proven yet or given up carries nothing */
 static void pm_route(npf_pm *m)
 {
     npf_path *d = m->p[PK_DIRECT], *u = m->p[PK_UDP_RELAY], *w = m->p[PK_WS_RELAY];
     int k;
-    if (d && d->health == PH_DEAD)
+    if (d && (d->health == PH_NEW || d->health == PH_DEAD))
         d = NULL;
     for (k = 0; k < PK_N; k++)
         if (m->p[k])
@@ -140,6 +140,13 @@ int pm_rt(npf_pm *m, npf_path *p, int64_t now)
     return 1;
 }
 
+/* probed for a verdict: in doubt, or NEW (the direct path's checks before
+ * use; a relay's NEW has no such rules, it decides on its own) */
+static int checked(const npf_path *p)
+{
+    return p->health == PH_SUSPECT || p->health == PH_NEW;
+}
+
 int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
 {
     int64_t due = INT64_MAX;
@@ -149,6 +156,21 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
         const pm_rules *r = &pm_rules_of[k];
         if (!p)
             continue;
+        if (p->health == PH_UP && r->t_consent && pm_relied(m, p)) {
+            /* consent: a round trip from t_consent / 2 on, none in t_consent: in doubt */
+            int64_t from = max64(p->rt_ok, p->since);
+            if (now - from >= r->t_consent) {
+                pm_suspect(m, p, now);
+                path_do_suspect(p, 0);
+                if (m->p[k] != p || p->health != PH_SUSPECT)
+                    continue;
+            } else if (now - from >= r->t_consent / 2) {
+                if (!p->probe_until)
+                    pm_probe(p, now, from + r->t_consent - now);
+            } else {
+                due = min64(due, from + r->t_consent / 2);
+            }
+        }
         if (p->health == PH_UP && p->probe_until) {
             /* probed with no doubt (pm_probe): until a round trip or the window's end */
             if (now >= p->probe_until || !r->t_probe) {
@@ -193,7 +215,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
             if (m->p[k] != p || p->health != PH_SUSPECT)
                 continue;                   /* gone, or proven already */
         }
-        if (p->health != PH_SUSPECT)
+        if (!checked(p))
             continue;
         if (r->t_verdict && now - p->suspect_at >= r->t_verdict) {
             pm_health(m, p, PH_DEAD);
@@ -203,7 +225,7 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
         if (r->t_probe && now >= p->probe_at) {
             p->probe_at = now + r->t_probe;
             path_do_probe(p);
-            if (m->p[k] != p || p->health != PH_SUSPECT)
+            if (m->p[k] != p || !checked(p))
                 continue;
         }
         if (r->t_probe)
@@ -260,7 +282,7 @@ int pm_decide(npf_pm *m, unsigned in, int64_t now)
         pm_probe(d, now, PM_PROBE_MS);
         return pm_wait(m, PM_W_PROBE, now + PM_PROBE_MS, PM_PROBE);
     }
-    if (u->health != PH_DEAD || in & PM_IN_HOLD || (d && m->tried & PM_T_RETRY))
+    if (u->health != PH_DEAD || in & PM_IN_HOLD || (d && (m->tried & PM_T_RETRY || d->health == PH_NEW)))
         return pm_wait(m, 0, 0, PM_NONE);
     if (m->wait && in & m->wait && now < m->act_at)
         return PM_NONE;

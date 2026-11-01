@@ -47,18 +47,19 @@ static int from_ok_cb(npf_punch *p, const struct sockaddr_storage *from, void *a
     return ((const struct sockaddr_in *)from)->sin_addr.s_addr != htonl(0x7f000003);
 }
 
-/* a controlling side's packet of type for round sid, sealed with key under
+/* a packet of type for round sid from the side dir, sealed with key under
  * label (a fresh txid), in out; its length */
-static size_t sealed(const uint8_t key[32], const char *label, int type, uint64_t sid, uint8_t out[128])
+static size_t sealed_by(int dir, const uint8_t key[32], const char *label, int type, uint64_t sid, uint8_t out[128])
 {
     npf_siv_keys k;
     uint8_t tx[NPF_TXID_SIZE], body[10] = {0};
     npf_siv_derive(&k, key, label);
     npf_random(tx, sizeof tx);
     npf_le64(body, sid);
-    return (size_t)npf_pkt_seal(&k, NPF_PUNCH_CONTROLLING, type, tx, 0, body, type == NPF_PKT_NOMINATE ? 8 : 10,
-                                96, out);
+    return (size_t)npf_pkt_seal(&k, dir, type, tx, 0, body, type >= NPF_PKT_NOMINATE ? 8 : 10, 96, out);
 }
+
+#define sealed(...) sealed_by(NPF_PUNCH_CONTROLLING, __VA_ARGS__)
 
 /* an owner that lets the round go from quiet or info (the free deferred:
  * tick_cb / sock_cb is on the stack); nothing of it is called after that */
@@ -272,8 +273,10 @@ int test_punch(void)
     }
     /* NOMINATE (nat-traversal.md 10.1) is the controlling side's pick: the
      * controlled one takes it before a path of its own is validated, and from
-     * another IP than the one it validated (another exit, a pooled NAT), not
-     * from a source from_ok refuses */
+     * another IP than the one it validated (another exit, a pooled NAT: the
+     * session checks it before use, call_path_input), not from a source
+     * from_ok refuses; the controlling side takes the NOMINATE_ACK only from
+     * where its NOMINATE went */
     {
         struct sockaddr_storage other = aa, bad = aa;
         uint8_t pkt[128];
@@ -300,9 +303,23 @@ int test_punch(void)
         npf_punch_input(f.p, fb, pkt, n, &aa);          /* the path via aa validated */
         n = sealed(cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE, 49, pkt);
         npf_punch_input(f.p, fb, pkt, n, &other);
-        CHECK(f.done && f.ok && npf_addr_eq(&f.peer, &other), "a NOMINATE from another IP: the path switches there (%d %d)",
-              f.done, f.ok);
+        CHECK(f.done && f.ok && npf_addr_eq(&f.peer, &other),
+              "a NOMINATE from another IP: the punch reports it, to be checked (%d %d)", f.done, f.ok);
         npf_punch_free(f.p);
+        cn = ca;
+        cn.plan.session_id = 52;
+        memset(&e, 0, sizeof e);
+        e.p = npf_punch_new(loop, &cn, fa, done_cb, &e);
+        n = sealed_by(NPF_PUNCH_CONTROLLED, cn.plan.punch_key, NPF_SIV_LABEL_PUNCH, NPF_PKT_PROBE_ACK, 52, pkt);
+        npf_punch_input(e.p, fa, pkt, n, &ba);          /* validated via ba: the NOMINATE goes there */
+        LOOP_UNTIL(loop, 0, 50);
+        n = sealed_by(NPF_PUNCH_CONTROLLED, cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE_ACK, 52, pkt);
+        npf_punch_input(e.p, fa, pkt, n, &other);
+        CHECK(!e.done, "a NOMINATE_ACK from another address: taken");
+        n = sealed_by(NPF_PUNCH_CONTROLLED, cn.plan.nominate_key, NPF_SIV_LABEL_NOMIN, NPF_PKT_NOMINATE_ACK, 52, pkt);
+        npf_punch_input(e.p, fa, pkt, n, &ba);
+        CHECK(e.done && e.ok && npf_addr_eq(&e.peer, &ba), "the NOMINATE_ACK from the winner: done (%d %d)", e.done, e.ok);
+        npf_punch_free(e.p);
     }
     /* an owner that lets an S2B round go in info (its fresh socket's mapping
      * from E1) while a PROBE waits behind the BIND_RESP: the rest is not read

@@ -18,7 +18,8 @@
  *   for a round before it started (kept) and running (its punch's), a new
  *   punch_start while a round runs (the old punch ends: a port of the old
  *   round goes nowhere, one of the new round to the new punch; 10-27 (4)),
- *   success (LINGER 10 s, then IDLE), failure (LINGER at once), the move to
+ *   success (LINGER 10 s, then IDLE; the direct path used only after an
+ *   echo of its check from the punched address), failure (LINGER at once), the move to
  *   the WS relay (NONE: rounds again on UDP) and the call's end (IDLE), the
  *   hard-side sockets back, a
  *   caller's round while another hard-side punch runs (busy: NONE, the
@@ -36,6 +37,7 @@
 #include "npf/node.h"
 #include "npf/platform.h"
 #include "call_internal.h"
+#include "node_internal.h"
 #include "test.h"
 
 static char states[64];             /* the public states the hook heard, as digits */
@@ -229,11 +231,25 @@ static void keys(npf_call *c)
     npf_random(c->nominate_key, 32);
 }
 
+/* the peer's PATH_ECHO of nonce, from addr, on the main socket */
+static void echo(npf_node *n, npf_call *c, uint64_t nonce, const char *addr)
+{
+    uint8_t b[PATH_PKT_LEN];
+    struct sockaddr_storage a;
+    b[NPF_SIV_TAG_SIZE] = 11;               /* PKT_PATH_ECHO */
+    b[NPF_SIV_TAG_SIZE + 1] = 0;
+    npf_le64(b + NPF_SIV_TAG_SIZE + 2, nonce);
+    npf_siv_seal(&c->pd.keys, c->caller ? 1 : 0, b, 10);
+    npf_addr_parse(addr, &a);
+    node_udp_input(n, n->udp_fd, b, sizeof b, &a);
+}
+
 static void punch_rows(npf_node *n)
 {
     npf_punch_result res;
     npf_call *c = new_call(n, 1, CS_CONNECTING), *o;
     int64_t at;
+    uint64_t nonce;
     if (!c)
         return;
     clear();
@@ -285,6 +301,14 @@ static void punch_rows(npf_node *n)
     call_punch_done(c->punch, &res, n->udp_fd, c);
     CHECK(c->punch_st == PN_LINGER && c->punch && call_has_p2p(c) && c->punch_at >= at + PUNCH_LINGER_MS && pn_ok(c),
           "a success: %d", c->punch_st);
+    CHECK(c->pd.p.health == PH_NEW && c->pm.primary != &c->pd.p, "the punched path used before an echo");
+    nonce = c->pd.nonce;
+    echo(n, c, nonce, "127.0.0.2:9");
+    echo(n, c, nonce + 1, "127.0.0.1:9");
+    CHECK(c->pd.p.health == PH_NEW && c->pm.primary != &c->pd.p, "an echo from elsewhere or of another check taken");
+    echo(n, c, nonce, "127.0.0.1:9");
+    CHECK(c->pd.p.health == PH_UP && c->pm.primary == &c->pd.p && c->pd.nonce != nonce
+          && strstr(logged, "direct path proven"), "the echo from the punched address: the path used");
     punch_start(c, 5, "");
     CHECK(c->punch_st == PN_LINGER && c->punch_round == 4, "a punch_start on a direct path taken");
     call_tick(c, c->punch_at - 1);

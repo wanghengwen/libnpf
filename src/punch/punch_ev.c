@@ -786,7 +786,8 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
                 set_winner(p, sock, fd, from);
                 finish(p, 1);
             }
-        } else if (pkt.type == NPF_PKT_NOMINATE_ACK && pl->role == NPF_PUNCH_CONTROLLING && p->nom_sent) {
+        } else if (pkt.type == NPF_PKT_NOMINATE_ACK && pl->role == NPF_PUNCH_CONTROLLING && p->nom_sent
+                   && npf_addr_eq(from, &p->winner)) {     /* from where the NOMINATE went only */
             if (!p->finished) {
                 p->res.rtt_ms = (int)(npf_mono_ms() - (p->nom_next - NOM_IVL_MS));
                 if (p->res.rtt_ms < 0)

@@ -5,7 +5,9 @@
  * which paths the rules apply to (relied on: the primary one, the second
  * while the primary is in doubt; not one standing by, not a direct
  * connection's fixed one, not one not proven yet, none before the peer
- * was heard); a probe with no doubt (the hot standby's check). */
+ * was heard); a probe with no doubt (the hot standby's check); the direct
+ * path's consent (an echo every 15 s, none in 30 s: in doubt) and its checks
+ * before use (NEW: probed, carrying nothing, lost after 10 s). */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -47,6 +49,8 @@ static void fake_dead(npf_path *p)
     ((fake *)(void *)p)->deads++;
 }
 
+#define FRESH (INT64_MAX / 4)       /* a round trip "then": consent fresh throughout (consent() tests it) */
+
 /* every path new and gone, the manager empty; the kinds given UP from t0 */
 static void start(int kinds, int64_t t0)
 {
@@ -61,6 +65,7 @@ static void start(int kinds, int64_t t0)
         if (kinds & 1 << k) {
             f[k].p.health = PH_UP;
             f[k].p.since = f[k].p.last_rx = t0;
+            f[k].p.rt_ok = FRESH;
             pm_add(&m, &f[k].p);
         }
     }
@@ -166,8 +171,8 @@ static void back(int kind)
     CHECK(pm_rt(&m, &x->p, 41000) == 1 && x->p.health == PH_UP && x->p.rt_ok == 41000, "kind %d: not back", kind);
     CHECK(pm_rt(&m, &x->p, 41001) == 0 && x->p.rt_ok == 41001, "kind %d: back twice", kind);
     x->p.last_rx = 41000;
-    CHECK(pm_tick(&m, 42000, 0, 200) == 41000 + (kind == PK_WS_RELAY ? 30000 : 20000) && x->suspects == 1,
-          "kind %d: in doubt again at once", kind);
+    CHECK(pm_tick(&m, 42000, 0, 200) == (kind == PK_DIRECT ? 41001 + 15000 : 41000 + (kind == PK_WS_RELAY ? 30000 : 20000))
+              && x->suspects == 1, "kind %d: in doubt again at once (the direct path: its consent first)", kind);
 }
 
 /* whom the rules apply to: the direct path and the UDP relay second while
@@ -265,6 +270,57 @@ static void probed(void)
     CHECK(d->probes == 21, "checks after the echo (%d)", d->probes);
 }
 
+/* consent (RFC 7675): the direct path relied on, heard all along, is
+ * checked 15 s after its last round trip, every 500 ms until an echo; none
+ * in 30 s: in doubt (the relay second), lost 10 s later */
+static void consent(void)
+{
+    fake *d = &f[PK_DIRECT], *u = &f[PK_UDP_RELAY];
+    int64_t t;
+    start(D | U, 0);
+    d->p.rt_ok = 1000;
+    d->p.last_rx = 1000000;
+    CHECK(pm_tick(&m, 15999, 0, 200) == 16000 && d->probes == 0, "consent: no check before 15 s");
+    CHECK(pm_tick(&m, 16000, 0, 200) == 16500 && d->probes == 1 && d->p.probe_until == 31000,
+          "consent: a check at 15 s (%d)", d->probes);
+    pm_rt(&m, &d->p, 16100);
+    CHECK(pm_tick(&m, 17000, 0, 200) == 31100 && d->probes == 1, "consent: an echo, the next check 15 s on");
+    for (t = 31100; t < 46100; t += 500)
+        pm_tick(&m, t, 0, 200);
+    CHECK(d->probes == 31 && d->suspects == 0 && d->p.health == PH_UP, "consent: checked without an echo (%d)",
+          d->probes);
+    pm_tick(&m, 46100, 0, 200);
+    CHECK(d->suspects == 1 && d->quiet == 0 && d->p.health == PH_SUSPECT && m.second == &u->p,
+          "consent: none in 30 s, in doubt, the relay second");
+    pm_tick(&m, 56100, 0, 200);
+    CHECK(d->deads == 1 && m.primary == &u->p, "consent: lost 10 s later");
+}
+
+/* a direct path not proven (NEW, punched): no data on it, the relay
+ * primary or nothing; checked every 500 ms, lost after 10 s without an
+ * echo; an echo makes it primary */
+static void unproven(void)
+{
+    fake *d = &f[PK_DIRECT], *u = &f[PK_UDP_RELAY];
+    int64_t t;
+    start(U, 0);
+    d->p.since = d->p.suspect_at = d->p.probe_at = 1000;
+    pm_add(&m, &d->p);
+    CHECK(d->p.health == PH_NEW && m.primary == &u->p && !m.second && d->p.role == PR_IDLE && !pm_relied(&m, &d->p),
+          "unproven: the relay primary, nothing on the direct path");
+    t = pm_tick(&m, 1000, 0, 200);
+    CHECK(t == 1500 && d->probes == 1, "unproven: checked at once (%d, %lld)", d->probes, (long long)t);
+    for (t = 1500; t < 11000; t += 500)
+        pm_tick(&m, t, 0, 200);
+    CHECK(d->probes == 20 && d->deads == 0 && m.primary == &u->p, "unproven: %d checks in 10 s", d->probes);
+    pm_tick(&m, 11000, 0, 200);
+    CHECK(d->deads == 1 && d->p.health == PH_DEAD && m.primary == &u->p, "unproven: lost after 10 s");
+    start(0, 0);
+    pm_add(&m, &d->p);
+    CHECK(!m.primary && pm_code(&m) == 0, "unproven, no relay: nothing carries data");
+    CHECK(pm_rt(&m, &d->p, 2000) == 1 && m.primary == &d->p, "unproven: an echo, the direct path primary");
+}
+
 int test_path_health(void)
 {
     int k;
@@ -278,6 +334,8 @@ int test_path_health(void)
     }
     relied();
     probed();
+    consent();
+    unproven();
     pm_hook_suspect = NULL;
     pm_hook_probe = NULL;
     pm_hook_dead = NULL;

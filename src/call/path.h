@@ -15,8 +15,9 @@
 #include "../node/relay_bind.h"
 
 enum { PK_DIRECT, PK_UDP_RELAY, PK_WS_RELAY, PK_N };     /* kinds, by rank: direct > UDP relay > WS relay */
-/* health: NEW not proven yet (a UDP relay binding, a WS relay not paired),
- * UP, SUSPECT (silent while relied on: probed), DEAD (the verdict) */
+/* health: NEW not proven yet (a UDP relay binding, a WS relay not paired, a
+ * direct path not checked: probed as in doubt, carries nothing), UP, SUSPECT
+ * (silent while relied on: probed), DEAD (the verdict) */
 enum { PH_NEW, PH_UP, PH_SUSPECT, PH_DEAD };
 enum { PR_IDLE, PR_PRIMARY, PR_SECOND, PR_STANDBY };     /* the role the manager gives a path */
 
@@ -46,12 +47,14 @@ struct npf_path {                   /* the times: monotonic ms */
 
 /* The health rules (architecture.md 2.4), their times per kind (ms,
  * pm_rules_of): UP and relied on (pm_relied), a path goes SUSPECT when
- * silent for max(t_busy, 2 RTO) with data in flight, for t_idle without;
- * SUSPECT, it is probed every t_probe, a round trip (pm_rt) brings it UP,
- * t_verdict after it is DEAD. 0: no such rule (t_busy: t_idle with data in
- * flight too; t_probe, t_verdict: the path probes and decides on its own) */
+ * silent for max(t_busy, 2 RTO) with data in flight, for t_idle without, or
+ * without a round trip for t_consent (probed from half that: RFC 7675's
+ * consent); SUSPECT (or NEW), it is probed every t_probe, a round trip
+ * (pm_rt) brings it UP, t_verdict after it is DEAD. 0: no such rule
+ * (t_busy: t_idle with data in flight too; t_probe, t_verdict: the path
+ * probes and decides on its own) */
 typedef struct pm_rules {
-    int t_busy, t_idle, t_probe, t_verdict;
+    int t_busy, t_idle, t_probe, t_verdict, t_consent;
 } pm_rules;
 
 extern const pm_rules pm_rules_of[PK_N];
