@@ -7,10 +7,13 @@
  * unset, empty and 0 are off. */
 #define _GNU_SOURCE
 #include "npf/sys.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "npf/log.h"
+#include "npf/node.h"
 #include "npf/testhooks.h"
 #include "test.h"
 
@@ -102,6 +105,13 @@ int test_sys(void)
     tcp_diag();
 #endif
     udp_watch();
+    {   /* npf_abspath: out empty when it does not fit */
+        char out[8];
+        errno = 0;
+        CHECK(npf_abspath("/a/rather/long/path", out, sizeof out) < 0 && out[0] == 0 && errno == ENAMETOOLONG,
+              "npf_abspath too long: out empty, ENAMETOOLONG");
+        CHECK(npf_abspath("/a", out, sizeof out) == 0 && strcmp(out, "/a") == 0, "npf_abspath");
+    }
     fd = npf_udp_socket(AF_INET, 0, 1);             /* no hook yet */
     CHECK(fd >= 0 && seen == 0, "a socket without a hook");
     npf_sock_close(fd);

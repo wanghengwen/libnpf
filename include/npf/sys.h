@@ -259,7 +259,8 @@ int  npf_file_private(const char *path);
  * on Windows. */
 int  npf_file_too_open(const char *path);
 /* p made absolute against the working directory (symlinks not resolved),
- * into out of cap bytes. 0, or -1 (an error, or it does not fit). */
+ * into out of cap bytes. 0, or -1 with errno and out empty (an error, or it
+ * does not fit: ENAMETOOLONG). */
 int  npf_abspath(const char *p, char *out, size_t cap);
 int  npf_path_is_abs(const char *p);
 /* p's last separator ('/', on Windows '\\' too), NULL: none; its directory
