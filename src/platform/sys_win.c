@@ -242,10 +242,71 @@ int npf_file_private(const char *path)
     return r == ERROR_SUCCESS ? 0 : -1;
 }
 
+/* rights that change a file, or a directory's entries */
+#define W_RIGHTS                                                                                                  \
+    (FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES | FILE_DELETE_CHILD | DELETE \
+     | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL)
+
+static int is_sid(PSID sid, WELL_KNOWN_SID_TYPE t)
+{
+    BYTE b[SECURITY_MAX_SID_SIZE];
+    DWORD n = sizeof b;
+    return CreateWellKnownSid(t, NULL, b, &n) && EqualSid(sid, b);
+}
+
+static int admins(PSID sid)
+{
+    return is_sid(sid, WinLocalSystemSid) || is_sid(sid, WinBuiltinAdministratorsSid);
+}
+
+/* why someone besides SYSTEM, the Administrators and the owner may have one
+ * of rights on path (admin: nor a link, nor another owner), NULL: no one */
+static const char *others_may(const char *path, DWORD rights, int admin)
+{
+    wchar_t w[WPATH];
+    PSECURITY_DESCRIPTOR sd = NULL;
+    PSID owner = NULL;
+    PACL dacl = NULL;
+    ACCESS_ALLOWED_ACE *e;
+    const char *why = NULL;
+    DWORD i;
+    if (npf_wpath(path, w, WPATH) < 0 || (i = GetFileAttributesW(w)) == INVALID_FILE_ATTRIBUTES)
+        return "not found";
+    if (admin && (i & FILE_ATTRIBUTE_REPARSE_POINT))
+        return "a link (reparse point)";
+    if (GetNamedSecurityInfoW(w, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &owner,
+                              NULL, &dacl, NULL, &sd) != ERROR_SUCCESS)
+        return "its permissions cannot be read";
+    if (admin && !admins(owner))
+        why = "not owned by SYSTEM or the Administrators";
+    else if (!dacl)
+        why = "open to everyone (no DACL)";
+    /* allowed entries in effect here (not only inherited by children) */
+    for (i = 0; !why && i < dacl->AceCount; i++) {
+        PSID s;
+        if (!GetAce(dacl, i, (void **)&e)) {
+            why = "its permissions cannot be read";
+            break;
+        }
+        s = (PSID)&e->SidStart;
+        if ((e->Header.AceType == ACCESS_ALLOWED_ACE_TYPE || e->Header.AceType == ACCESS_ALLOWED_CALLBACK_ACE_TYPE)
+            && !(e->Header.AceFlags & INHERIT_ONLY_ACE) && (e->Mask & rights) && !admins(s) && !EqualSid(s, owner)
+            && !is_sid(s, WinCreatorOwnerRightsSid))
+            why = rights == W_RIGHTS ? "others may change it" : "others may open it";
+    }
+    LocalFree(sd);
+    return why;
+}
+
 int npf_file_too_open(const char *path)
 {
-    (void)path;
-    return 0;
+    npf_stat_t st;
+    return npf_stat(path, &st) == 0 && others_may(path, FILE_READ_DATA | GENERIC_READ | W_RIGHTS, 0) != NULL;
+}
+
+const char *npf_file_not_admins(const char *path)
+{
+    return others_may(path, W_RIGHTS, 1);
 }
 
 int npf_path_is_abs(const char *p)
