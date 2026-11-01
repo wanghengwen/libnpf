@@ -19,7 +19,8 @@
 #define NPF_SHARE_USES_MAX 100
 
 /* role "admin" (paired with the password) or "member" (with a share code);
- * "" (a file of before the roles) is admin (security.md D25) */
+ * "" (a record of before the roles, without the key) is admin; a role
+ * there but invalid is a member's (security.md D25) */
 typedef struct npf_paired {
     uint8_t pub[32];
     int64_t added;

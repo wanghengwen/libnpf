@@ -251,6 +251,33 @@ static void owner_grants(const char *dir)
     npf_loop_free(loop);
 }
 
+/* a role that is there but invalid is a member's: only a record without
+ * the key is of before the roles, an admin (lib-core audit 3) */
+static void role_values(const char *dir)
+{
+    static npf_callee d;
+    static const char *const roles[] = {"\"member\"", "\"Member\"", "\"moderator\"", "\"memb\\u0001er\"",
+                                        "null", "1", "[\"admin\"]", "\"\"", "\"administrator\"", "{}"};
+    char path[256], e[NPF_B64_LEN(32)], b[300];
+    uint8_t seed[32] = {1}, k[32];
+    size_t i;
+    int n;
+    snprintf(path, sizeof path, "%s/role-state.json", dir);
+    memset(k, 7, 32);
+    npf_b64url_encode(k, 32, e);
+    for (i = 0; i < sizeof roles / sizeof roles[0]; i++) {
+        n = snprintf(b, sizeof b, "{\"password\":\"pw-123456\",\"paired\":[{\"pub\":\"%s\",\"added\":1,\"role\":%s}]}",
+                     e, roles[i]);
+        npf_file_write(path, b, (size_t)n, 0600);
+        CHECK(npf_callee_init(&d, path, 123, seed, "default-pw-0") == 0 && !d.damaged
+                  && (d.npaired == 0 || !npf_callee_is_admin(&d, k)), "role %s: not an admin", roles[i]);
+    }
+    n = snprintf(b, sizeof b, "{\"password\":\"pw-123456\",\"paired\":[{\"pub\":\"%s\",\"added\":1}]}", e);
+    npf_file_write(path, b, (size_t)n, 0600);
+    CHECK(npf_callee_init(&d, path, 123, seed, "default-pw-0") == 0 && npf_callee_is_admin(&d, k),
+          "no role key (before the roles): an admin");
+}
+
 int test_callee(void)
 {
     static npf_callee d;
@@ -369,6 +396,7 @@ int test_callee(void)
 
     roles_shares(dir);
     owner_grants(dir);
+    role_values(dir);
     rm_dir(dir);
     return fails;
 }

@@ -36,8 +36,8 @@ static int paired_at(const npf_callee *d, const uint8_t pub[32])
     return -1;
 }
 
-/* admin: paired with the password ("admin"), or a file of before the roles
- * (none); any other role is a member's (security.md D25) */
+/* admin: paired with the password ("admin"), or a record of before the
+ * roles (no role key: state_load); any other role is a member's (security.md D25) */
 static int is_admin(const npf_paired *p)
 {
     return !p->role[0] || strcmp(p->role, "admin") == 0;
@@ -144,6 +144,18 @@ static int state_changed(npf_callee *d)
     return changed;
 }
 
+/* the record of pub in state.json's paired list has a role key, valid or
+ * not (null, "", a number, too long: state_load reads them as none) */
+static int role_given(const npf_json *j, const uint8_t pub[32])
+{
+    int arr = npf_json_get(j, 0, "paired"), e, i;
+    uint8_t k[32];
+    for (i = 0; (e = npf_json_item(j, arr, i)) >= 0; i++)
+        if (npf_json_get_b64(j, e, "pub", k, 32) == 32 && memcmp(k, pub, 32) == 0 && npf_json_get(j, e, "role") >= 0)
+            return 1;
+    return 0;
+}
+
 /* a state file's text and its JSON (tok on the heap): 0; -1 when it cannot
  * be read (*missing: it is not there at all) or parsed */
 static int state_read(const char *path, char **s, long *n, npf_jtok **tok, npf_json *j, int *missing)
@@ -226,6 +238,9 @@ static int state_load(npf_callee *d)
         snprintf(d->password, sizeof d->password, "%s", d->default_pw);
     memcpy(d->paired, m->paired, (size_t)m->npaired * sizeof *d->paired);
     d->npaired = m->npaired;
+    for (i = 0; n >= 0 && i < d->npaired; i++)    /* a role there but not valid: a member's (only none is an admin's) */
+        if (!d->paired[i].role[0] && role_given(&j, d->paired[i].pub))
+            snprintf(d->paired[i].role, sizeof d->paired[i].role, "member");
     memcpy(d->shares, m->shares, (size_t)m->nshares * sizeof *d->shares);
     d->nshares = m->nshares;
     d->fails = (int)m->fails;
