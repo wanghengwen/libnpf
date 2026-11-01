@@ -410,13 +410,16 @@ static NPF_THREAD_LOCAL npf_udp_watch *t_watch;
 
 void npf_udp_watch_on(npf_udp_watch *w, int fd)
 {
-    npf_udp_watch **p;
-    if (w->fd >= 0)
-        for (p = &t_watch; *p; p = &(*p)->next)
-            if (*p == w) {
-                *p = w->next;
-                break;
-            }
+    npf_udp_watch **p = &t_watch;
+    if (w->fd >= 0) {
+        while (*p && *p != w)
+            p = &(*p)->next;
+        if (!*p) {                          /* on another thread's list: neither one touched */
+            npf_loge("udp: a send watch (fd %d) moved on a thread not its own", w->fd);
+            return;
+        }
+        *p = w->next;
+    }
     w->fd = fd;
     if (fd >= 0) {
         w->next = t_watch;
