@@ -375,12 +375,20 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
     wchar_t wtmp[1024], wpath[1024];
     if (npf_wpath(tmp, wtmp, 1024) < 0 || npf_wpath(path, wpath, 1024) < 0)
         return -1;
+    if (len > MAXDWORD) {           /* one WriteFile */
+        errno = EFBIG;
+        return -1;
+    }
     memset(&sa, 0, sizeof sa);
     sa.nLength = sizeof sa;
-    if ((mode & 077) == 0
-        && ConvertStringSecurityDescriptorToSecurityDescriptorA("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)",
-                                                                SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL))
+    if ((mode & 077) == 0) {        /* a secret is never written without its DACL */
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorA("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;OW)",
+                                                                  SDDL_REVISION_1, &sa.lpSecurityDescriptor, NULL)) {
+            errno = npf_win_errno(GetLastError());
+            return -1;
+        }
         psa = &sa;
+    }
     /* CREATE_ALWAYS on a tmp file someone else made keeps its DACL (and
      * MoveFileEx then the file's): removed, then made new with ours */
     DeleteFileW(wtmp);
@@ -391,9 +399,14 @@ int npf_file_write(const char *path, const void *data, size_t len, int mode)
         errno = npf_win_errno(GetLastError());
         return -1;
     }
-    ok = (len == 0 || (WriteFile(h, data, (DWORD)len, &wrote, NULL) && wrote == len)) && FlushFileBuffers(h);
-    if (!ok)
-        err = wrote < len && GetLastError() == 0 ? ERROR_DISK_FULL : GetLastError();
+    /* a short write that WriteFile calls a success: the disk is full */
+    if (len > 0 && !WriteFile(h, data, (DWORD)len, &wrote, NULL))
+        err = GetLastError() ? GetLastError() : ERROR_WRITE_FAULT;
+    else if (wrote != len)
+        err = ERROR_DISK_FULL;
+    else if (!FlushFileBuffers(h))
+        err = GetLastError() ? GetLastError() : ERROR_WRITE_FAULT;
+    ok = err == 0;
     CloseHandle(h);
     if (!ok) {
         DeleteFileW(wtmp);
