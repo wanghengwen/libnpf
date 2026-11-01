@@ -36,10 +36,11 @@ static int paired_at(const npf_callee *d, const uint8_t pub[32])
     return -1;
 }
 
-/* admin: paired with the password, or a file of before the roles (security.md D25) */
+/* admin: paired with the password ("admin"), or a file of before the roles
+ * (none); any other role is a member's (security.md D25) */
 static int is_admin(const npf_paired *p)
 {
-    return strcmp(p->role, "member") != 0;
+    return !p->role[0] || strcmp(p->role, "admin") == 0;
 }
 
 /* the platform forgets a locator (signaling.md share_del; offline: share_sync at the login) */

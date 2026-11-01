@@ -92,6 +92,9 @@ static void roles_shares(const char *dir)
     npf_timer_cancel(loop, d.t_watch);
     d.t_watch = NULL;                       /* (a node offline: nothing goes to the platform) */
     CHECK(npf_callee_is_admin(&d, ka) && d.nshares == 1, "an entry of before the roles: an admin");
+    snprintf(d.paired[0].role, sizeof d.paired[0].role, "Admin");
+    CHECK(!npf_callee_is_admin(&d, ka), "a role neither none nor \"admin\" (\"Admin\"): a member's");
+    d.paired[0].role[0] = 0;
 
     /* the code's form */
     CHECK(npf_share_parse(code, id, s1) == 0 && strcmp(id, "K7Q2") == 0 && npf_share_parse("k7q2abcd efgh", NULL, s2) == 0
