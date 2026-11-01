@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.71。更新日期：2026-11-01。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.72。更新日期：2026-11-01。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -252,7 +252,7 @@ SIG_HELLO_ACK  不长于请求       body = noise2(52)
 | `type` | 字符串 | 消息类型，使用固定 ASCII 名称 |
 | `id` | 字符串 | 请求编号，在该连接本端未完成请求中唯一 |
 | `reply_to` | 字符串 | 响应对应的对端请求编号 |
-| `app` | 布尔 | 可选，节点上的应用经 `npf_request` 发的请求（库自己的信令不带）：平台只处理它的平台请求（账户、设备、分享、映射、托管、套餐等，见下文各消息目录，服务器以 `appHandler` 登记）；其他类型，即库自己的信令（`login`、`call`、`punch_*`、`relay_*`、`home_*`、`grant_get`、`enroll`、`nat_report` 等）与程序的报告，都回 `unsupported_type`、不处理，与没有的类型一样。库因此不必知道平台请求的名字，应用也冒充不了库的协议步骤 |
+| `app` | 布尔 | 可选，节点上的应用经 `npf_request` 发的请求（库自己的信令不带）：平台只处理它的平台请求（账户、设备、分享码、映射、托管、套餐等，见下文各消息目录，服务器以 `appHandler` 登记）；其他类型，即库自己的信令（`login`、`call`、`punch_*`、`relay_*`、`home_*`、`grant_get`、`enroll`、`nat_report` 等）与程序的报告，都回 `unsupported_type`、不处理，与没有的类型一样。库因此不必知道平台请求的名字，应用也冒充不了库的协议步骤 |
 | `status` | 字符串 | 响应为 `ok`、`pending` 或 `error` |
 | `error` | 字符串 | 仅失败时出现，供程序判断的错误码 |
 | `message` | 字符串 | 可选说明，不作为客户端判断依据 |
@@ -378,7 +378,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 
 - 平台分配一个 9 位编号（与 NAS 设备号共用同一个编号空间，含校验位），为握手中的静态公钥签发节点证书（type 3，`vendor_id` 为 NPF 自身、`model` 为 `console`），并把该节点**自动绑定到当前账户**，账户成为它的所有者（安全设计 8.2）；
 - 应答：`{"number": "...", "cert": "<中间证书 | 节点证书>"}`。平台把这条连接当场转为节点连接（登记路由表，可以被呼叫），不需要重连；程序把编号、节点证书与客户端证书保存在本地，之后用 `login{role: "node", number, account_cert}` 登录；
-- 节点本地生成配对口令并在控制台显示，其余授权规则（本地授权列表、托管信任、分享、撤销）与 NAS 设备端相同；
+- 节点本地生成配对口令并在控制台显示，其余授权规则（本地授权列表、托管信任、分享码、撤销）与 NAS 设备端相同；
 - 每个账户最多注册 20 个控制台节点；未登录账户的控制台程序不能注册，只能作为纯客户端（匿名或账户客户端）去呼叫别人；
 - 节点被解绑后保留编号与证书，但没有所有者；所有者可以在设备列表中**注销**控制台节点（`node_retire{number}`），平台吊销其节点证书，编号作废、不再分配（安全设计第 6 节）。NAS 设备端的身份由厂商凭证体系管理，不能这样注销。
 
@@ -456,7 +456,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 |---|---|---|
 | `verify_begin` | 客户端到平台 | `channel`（`email` 或 `phone`）、`address`，可选 `lang`（`zh-CN` 或 `en`：界面的语言，邮件用这种语言写；不给或其他值时中英文都写）；平台发送验证码，返回 `verification_id`。邮件说明验证码的用途：没有账户会话时为注册，有账户会话时为给本账户绑定这个邮箱。验证码由短信网关或邮件网关发出后才回复；短信网关拒绝时回 `rate_limited`（号码的频控）、`bad_request`（`address`，号码无效）或 `unavailable`（`sms`：网关故障；`sms_daily_limit`：平台当天的短信总量到了上限）；邮件网关拒绝收件地址时回 `bad_request`（`address`），其他失败回 `unavailable`（`mail`），当天的邮件总量到了上限回 `unavailable`（`mail_daily_limit`） |
 | `verify_finish` | 客户端到平台 | `verification_id`、`code`；成功后该验证可在 10 分钟内被注册、绑定或找回消费一次 |
-| `account_register` | 客户端到平台 | `password`、`verification_id`（已验证的邮箱或手机号作为登录名），`name` 可选：不给时取邮箱 @ 前面的部分，或中间四位隐藏的手机号（`138****8000`；设备主人在 `share_list` 里看得到访客的名字），以后用 `account_update` 改 |
+| `account_register` | 客户端到平台 | `password`、`verification_id`（已验证的邮箱或手机号作为登录名），`name` 可选：不给时取邮箱 @ 前面的部分，或中间四位隐藏的手机号（`138****8000`），以后用 `account_update` 改 |
 | `account_login` | 客户端到平台 | `login`（邮箱或手机号）、`password`。账号不存在或密码不对都回 `unauthenticated`，消息为 `credentials`（不区分两者，不透露哪些地址有账户） |
 | `auth_providers` | 客户端到平台 | → `{providers}`：本平台配置了的第三方登录（`google`、`wechat`），界面据此显示按钮 |
 | `auth_begin`、`auth_status`、`auth_finish` | 客户端到平台 | Google / 微信登录事务，见下文 |
@@ -470,7 +470,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | `password_change` | 客户端到平台 | 旧密码、新密码；成功后吊销该账户其他客户端的证书（R34）。旧密码不对回 `forbidden`、消息 `password`；账户没有密码（第三方登录注册的）回 `forbidden`、消息 `no_password`（用 `password_reset_begin` 设一个） |
 | `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：`password_reset_begin` 的字段、应答与错误同 `verify_begin`（邮件说明用途是找回密码），`verify_finish` 之后以 `verification_id` 调 `password_reset_finish` 设置新密码；验证不成立或地址不属于任何账户都回 `forbidden`、消息 `verification` |
 | `account_logout` | 客户端到平台 | 吊销当前客户端的客户端证书；连接的会话结束（应答之前的空 `account`） |
-| `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、撤销分享、删除公网映射、吊销全部客户端证书）。同步完成：这条连接的会话结束（应答之前的空 `account`，连接留下，与退出相同），该账户的其他连接被关闭。密码不对回 `forbidden`、消息 `password`；事务或确认码不对回 `forbidden`、消息 `verification` |
+| `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、删除公网映射、吊销全部客户端证书）。同步完成：这条连接的会话结束（应答之前的空 `account`，连接留下，与退出相同），该账户的其他连接被关闭。密码不对回 `forbidden`、消息 `password`；事务或确认码不对回 `forbidden`、消息 `verification` |
 
 - **登录的结果**：`account_login`、`auth_finish`、`account_register`、`password_reset_finish` 成功后，平台为当前连接的客户端公钥（Noise 握手中的静态公钥）签发客户端证书（安全设计 8.1，有效期 30 天），客户端之后在 `login` 中出示它；证书的续签在 `welcome` 中完成，不另设刷新消息。这些请求都带 `sign_pub`（客户端的 Ed25519 公钥）和 `key_sig = Ed25519(签名私钥, "npf-client-key-v1" | Noise 握手哈希)`：证明持有签名私钥，并把证明绑定到这条连接；证书（`中间证书 | 客户端证书`）在应答之前的 `account` 事件里，应答为账户资料；
 - **账户不合并**（R31）：同一个邮箱、手机号或第三方身份只能属于一个账户。绑定时如果它已经属于另一个账户，返回 `conflict`；第一版不提供合并；
@@ -523,11 +523,9 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 |---|---|
 | `device_id` | 稳定设备号；平台与设备身份系统管理，用户不可直接修改 |
 | `alias` | 当前账户中的设备备注，只有这个账户看得到；没有时不返回 |
-| `name` | 设备自己的名称，设备的所有者和访问者都看得到：设备起的名字（`node_name`，或 `node_enroll` 的 `name`），没有时是它最近一次登录上报的主机名（`login` 的 `host.hostname`）；都没有时不返回。界面先显示 `alias`，没有再显示 `name`，再没有显示设备号 |
+| `name` | 设备自己的名称：设备起的名字（`node_name`，或 `node_enroll` 的 `name`），没有时是它最近一次登录上报的主机名（`login` 的 `host.hostname`）；都没有时不返回。界面先显示 `alias`，没有再显示 `name`，再没有显示设备号 |
 | `model`、`firmware` | 认证设备上报的资料，平台校验后保存 |
 | `online`、`last_seen` | 平台根据认证连接生成；时间建议为 UTC RFC 3339 字符串 |
-| `role` | 当前账户对该设备的角色：`owner`（所有者）或 `visitor`（访问者，经分享获得）（R32） |
-| `permissions` | 由角色决定的权限摘要：所有者为 `connect`、`edit_alias`、`share`、`unbind`、`public_map`；访问者为 `connect`、`edit_alias`（备注只属于自己的账户），经所有者 `share_set` 允许时还可有 `public_map` |
 | `revision` | 账户设备关系及可编辑元数据的版本，用于并发更新 |
 | `binding_state` | 关联或解绑流程状态，例如 `active`、`pending_device` |
 
@@ -553,8 +551,6 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
         "model": "NAS-A",
         "firmware": "0.1.0",
         "online": true,
-        "role": "owner",
-        "permissions": ["connect", "edit_alias", "share", "unbind", "public_map"],
         "revision": "rel-7",
         "binding_state": "active"
       }
@@ -602,30 +598,15 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 绑定证明已有确定性编码：`LE64(number) | LE32(key_gen) | LE64(account_id) | operation_id(16) | challenge(16) | LE64(expires)`，共 60 字节；对 ASCII `npf-bind-v1`（不含结尾 NUL）与这 60 字节的拼接签名，`proof` 是 64 字节签名的 Base64url。见 [npf_bind_proof_msg](../../src/crypto/cert.c)。第 3 步只记待确认账户，第 5 步收到匹配的 `bind_committed` 才生效；节点侧待确认记录的期限与重启行为见“隧道内控制消息”。
 
-**谁能绑定**（R37）：配对口令只证明访问资格。设备**没有所有者**时，第一个完成上述流程的账户成为所有者；设备已有所有者时，第 3 步设备拒绝签署（设备在本地记录所有者的 `account_id`），平台也拒绝 `bind_begin`（`conflict`），其他账户只能经分享成为访问者。不允许靠重复绑定夺取已有所有者的设备。
+**谁能绑定**（R37）：配对口令只证明访问资格。设备**没有所有者**时，第一个完成上述流程的账户成为所有者；设备已有所有者时，第 3 步设备拒绝签署（设备在本地记录所有者的 `account_id`），平台也拒绝 `bind_begin`（`conflict`），其他账户只能经分享码成为节点的成员（下文"分享码"）。不允许靠重复绑定夺取已有所有者的设备。
 
-**重置所有者**：默认被叫在本地清除所有者并持久化待上报标记，在下一次登录回调中发送 `owner_reset` 事件后清除标记；事件没有应答确认。平台据此解除原所有者的绑定及其全部分享，之后可以重新绑定。
+**重置所有者**：默认被叫在本地清除所有者并持久化待上报标记，在下一次登录回调中发送 `owner_reset` 事件后清除标记；事件没有应答确认。平台据此解除原所有者的绑定，之后可以重新绑定。
 
 平台提交与设备确认是两个步骤。`operation_get` 查询、持久化对账及 `pending` 同步状态属于平台约定，未在本仓库验证；当前库没有 `operation_get` 的通用请求入口，默认被叫也不持久化待确认绑定记录，不能承诺丢包或重启后自动恢复完整绑定流程。
 
-### 分享
-
-关联需求：R32。只有所有者能分享，被分享者成为访问者，经托管信任连接设备。
-
-| 类型 | 方向 | 内容 |
-|---|---|---|
-| `share_create` | 所有者客户端到平台 | `device_id`；返回一次性邀请码 `invite`（设备编号 8 字节大端 + 16 字节随机数，Base64url）与过期时间（24 小时）。平台把邀请码的 SHA-256 随设备一起保存（不保存邀请码本身），所以被分享者经哪台服务器接受都可以；每台设备最多 16 个未接受的邀请码；设备换了所有者后，旧所有者的邀请码作废 |
-| `share_accept` | 被分享者客户端到平台 | `invite`；成功后该设备出现在被分享者的设备列表中，`role = visitor` |
-| `share_list` | 所有者客户端到平台 | `device_id`；返回访问者列表（昵称、接受时间、`public`：是否允许它建公网映射），不返回其邮箱或手机号 |
-| `share_set` | 所有者客户端到平台 | `device_id`、`account_id`、`public`（布尔）：允许或不再允许该访问者在这台设备上建公网映射（security.md 8.4，D24）；不是访问者回 `not_found`，不是所有者回 `forbidden`。改为不允许时，平台删除该访问者在这台设备上的公网映射（释放端口，通知它的连接 `mappings_changed`、托管服务 `hosted_changed`），本地映射不动。访问者被撤销、自己退出，设备解绑或换所有者时，允许一并清除 |
-| `share_revoke` | 所有者客户端到平台 | `device_id`、`account_id`；撤销该访问者，效果见"撤销的生效" |
-| `share_leave` | 访问者客户端到平台 | `device_id`；访问者自己退出 |
-
-用邀请码而不是按邮箱或手机号查找对方，平台不会泄露某个账户是否存在。邀请码只能被接受一次；所有者可以随时撤销。
-
 ### 分享码（2026-11-01）
 
-节点的管理员邀请别人成为**成员**（security.md 8.6，D25），与上面平台账户的分享无关。分享码 `XXXX-XXXX-XXXX`：前 4 位是平台分配的定位符（字母表 `23456789ABCDEFGHJKMNPQRSTUVWXYZ`），后 8 位是 PAKE 的秘密，只在节点和成员之间，不经过平台。平台只保存定位符 → 节点、所有者、到期时间与次数（次数由节点计，平台只记录）；节点换了所有者或解绑（带 `owner` 的 `revoke`）时，它的定位符全部作废。
+节点的管理员邀请别人成为**成员**（security.md 8.6，D25）。分享码 `XXXX-XXXX-XXXX`：前 4 位是平台分配的定位符（字母表 `23456789ABCDEFGHJKMNPQRSTUVWXYZ`），后 8 位是 PAKE 的秘密，只在节点和成员之间，不经过平台。平台只保存定位符 → 节点、所有者、到期时间与次数（次数由节点计，平台只记录）；节点换了所有者或解绑（带 `owner` 的 `revoke`）时，它的定位符全部作废。
 
 | 类型 | 方向 | 内容 |
 |---|---|---|
@@ -640,8 +621,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 关联需求：R33。"删除设备"就是**解绑**：`device_unbind` 携带 `device_id`、`expected_revision` 和 `operation_key`。
 
-- 所有者解绑：解除自己与设备的关系，同时撤销该设备的全部分享和公网映射；之后设备没有所有者，可以重新绑定；
-- 访问者"删除设备"等同于 `share_leave`；
+- 所有者解绑：解除自己与设备的关系，同时删除自己到该设备的映射；之后设备没有所有者，可以重新绑定；
 - 解绑**不**注销设备身份，也不恢复出厂；用口令配对过的客户端在设备本地的授权列表中，不受影响。
 
 ### 撤销的生效
@@ -669,7 +649,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 
 - 只有已登录的节点连接可以发（控制台节点与 NAS 设备端都可以），改的是这条连接的节点自己；其他连接回 `unauthenticated`；
 - `name`：1–128 字节的 UTF-8，不含换行与 NUL，首尾空白去掉；空字符串表示不再用起的名字，回到主机名；不带 `name` 只查询；不合格回 `bad_request`（`message` 为 `name`）；
-- 应答：`{"name": "<起的名字，没有为空>", "hostname": "<平台记录的主机名>"}`。名字变了时平台给所有者和访问者的账户发 `devices_changed`；
+- 应答：`{"name": "<起的名字，没有为空>", "hostname": "<平台记录的主机名>"}`。名字变了时平台给所有者的账户发 `devices_changed`；
 - 节点登录后查询一次，供本机状态显示。
 
 ### 上报和变更同步
@@ -840,7 +820,7 @@ NPF 登录凭据与 Google、微信的访问令牌分开；不向设备分发第
 | `grant` | 托管信任（安全 8.2）：主叫先用 `grant_get{callee}` 取得被叫证书（type 3）与 `grant`，用证书中的 `dh_pub` 跑 IK，`call` 中出示 `grant` | Noise IK 消息 1 |
 | `pake` | 首次口令配对（安全 9.3） | Noise XXpsk3 消息 1；CPace 的主叫消息放在 `cpace` 字段 |
 
-`grant_get`：`data = {"callee": "123456789"}`，应答 `{"cert": "<中间证书 | 被叫的节点证书>", "grant": "<grant，二进制格式见安全设计 8.2>", "expires": ...}`；主叫用根公钥验证证书链、检查证书的编号就是被叫，再用证书中的 `dh_pub` 跑 IK；主叫无权访问该节点（不是所有者或访问者）、被叫不存在时一律 `unavailable`。主叫不长期保存 `grant`，每次呼叫前重新取得；`grant` 绑定主叫连接的静态公钥，换了密钥就要重新取得。
+`grant_get`：`data = {"callee": "123456789"}`，应答 `{"cert": "<中间证书 | 被叫的节点证书>", "grant": "<grant，二进制格式见安全设计 8.2>", "expires": ...}`；主叫用根公钥验证证书链、检查证书的编号就是被叫，再用证书中的 `dh_pub` 跑 IK；主叫无权访问该节点（不是它的所有者）、被叫不存在时一律 `unavailable`。主叫不长期保存 `grant`，每次呼叫前重新取得；`grant` 绑定主叫连接的静态公钥，换了密钥就要重新取得。
 
 `share`（2026-11-01，只能与 `auth = pake` 一起，否则 `bad_request`）：这是分享码的配对（XXpsk3 消息 1 的载荷是定位符），平台不按被叫的口令锁定拒绝它，其他闸门照旧（未配对请求的份额、匿名配对次数）；口令配对不带它。主叫谎称 `share` 得不到什么：被叫对空载荷（节点口令）自己检查锁定（安全 8.6）。
 
@@ -1150,7 +1130,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 |---|---|
 | `mapping_id` | 平台分配的映射标识 |
 | `kind` | `local` 或 `public` |
-| `device_id` | 目标设备，创建与修改时检查账户权限；`public` 只有所有者与它允许的访问者（`share_set`）能创建和修改 |
+| `device_id` | 目标设备，创建与修改时检查账户权限；只有设备的所有者能为它建映射 |
 | `executor` | 执行映射的一方：`{"kind": "client" 或 "node", "id"}`。`local`：用户指定自己账户的一个客户端或控制台节点；`public`：由平台填写 `{"kind": "hosted", "id": 托管服务的编号}`，请求中带 `executor` 回 `bad_request` |
 | `protocol` | 平台保存的映射配置在本文仍约定为 `tcp`；库端 UDP 转发已另行实现，见数据通道协议第 15 节，不代表平台配置已同步支持 `udp` |
 | `scheme` | 可选，目标服务说的协议：`http` 或 `https`（网页），客户端据此把入口显示成可以在浏览器中打开的链接；空或省略为不知道。其他值回 `bad_request` |
@@ -1164,13 +1144,13 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 消息目录为 `mapping_list`、`mapping_create`、`mapping_update`、`mapping_delete` 和 `mapping_report`。写操作使用独立 `operation_key`，修改和删除检查版本；列表分页复用设备列表规则。执行状态通过 `mapping_report` 上报，只允许指定执行者报告自己的配置。
 
-创建与修改失败时，应答的 `message` 给出原因（客户端据此向用户说明，判断仍以 `error` 为准）：`no_hosted`（`unavailable`：没有在线且还有空位的托管服务）、`plan_limit`（`forbidden`：套餐的公网映射数已满，免费级为 0）、`not_publisher`（`forbidden`：不是设备的所有者，也不是被允许发布公网映射的访问者）、`choose_port`（`forbidden`：套餐不能自选端口）、`port_range`（`bad_request`：端口不在托管服务的范围内）、`port_taken`（`conflict`：端口已被占用）、`mapping_limit`（`forbidden`：映射总数已满）、`device`（`not_found`：账户没有这台设备）。
+创建与修改失败时，应答的 `message` 给出原因（客户端据此向用户说明，判断仍以 `error` 为准）：`no_hosted`（`unavailable`：没有在线且还有空位的托管服务）、`plan_limit`（`forbidden`：套餐的公网映射数已满，免费级为 0）、`choose_port`（`forbidden`：套餐不能自选端口）、`port_range`（`bad_request`：端口不在托管服务的范围内）、`port_taken`（`conflict`：端口已被占用）、`mapping_limit`（`forbidden`：映射总数已满）、`device`（`not_found`：账户没有这台设备）。
 
 - **`local`**：平台保存配置后通知指定的执行者拉取并应用（`mapping_list` 带 `executor` 过滤）；重连时执行者重新拉取。平台保存成功不等于端口监听成功，端口占用、设备离线等运行问题要单独显示；
-- **`public`**：创建时客户端必须明确提示"服务将暴露在公网，任何人都能访问，平台能看到经过的数据"，用户确认后才提交。只有设备所有者与经 `share_set` 允许的访问者能创建；其他访问者回 `forbidden`。平台选一个在线、有空闲端口、还能接纳账户的托管服务（依次优先：该账户已经在用的、设备所在服务器上的、账户最少的；都没有回 `unavailable`），分配端口，通知托管服务（`hosted_changed`），由它启动或更新该账户的托管客户端；托管客户端按映射监听，连接设备时出示带目标列表的托管 `grant`，映射变化后在会话中用 `grant_update` 换上新列表；开始监听后用 `mapping_report` 上报 `listening`。设备端不另设开关（安全设计 D23），公网发布权限由所有者直接使用或通过 `share_set` 授予访问者；设备关闭了托管信任时，托管客户端连接设备失败。修改只能改目标、启用状态、`allow_from`（套餐允许时还可改端口），不能换设备；删除、所有者失去设备时端口回到托管服务；
-- 平台在映射写入后向账户的连接和映射的执行者（无论连在哪台服务器）发 `mappings_changed` 事件（无数据）；执行者登录时和收到事件时用 `mapping_list{executor}` 拉取并应用。`mapping_report` 的 `data`：`mapping_id`、`revision`（报告针对的版本）、`state`（`listening`、`stopped`、`error`）、`error`（`state = error` 时的原因，最长 64 字节）；平台在映射的 `status` 中返回最近一次报告（`state`、`error`、`at`、`revision`）。账户失去对设备的访问权（解绑、撤销分享、注销账户）时，该账户指向这台设备的映射一并删除；
+- **`public`**：创建时客户端必须明确提示"服务将暴露在公网，任何人都能访问，平台能看到经过的数据"，用户确认后才提交。只有设备所有者能创建（设备不是该账户的回 `not_found`）。平台选一个在线、有空闲端口、还能接纳账户的托管服务（依次优先：该账户已经在用的、设备所在服务器上的、账户最少的；都没有回 `unavailable`），分配端口，通知托管服务（`hosted_changed`），由它启动或更新该账户的托管客户端；托管客户端按映射监听，连接设备时出示带目标列表的托管 `grant`，映射变化后在会话中用 `grant_update` 换上新列表；开始监听后用 `mapping_report` 上报 `listening`。设备端不另设开关（安全设计 D23），公网发布只由所有者决定；设备关闭了托管信任时，托管客户端连接设备失败。修改只能改目标、启用状态、`allow_from`（套餐允许时还可改端口），不能换设备；删除、所有者失去设备时端口回到托管服务；
+- 平台在映射写入后向账户的连接和映射的执行者（无论连在哪台服务器）发 `mappings_changed` 事件（无数据）；执行者登录时和收到事件时用 `mapping_list{executor}` 拉取并应用。`mapping_report` 的 `data`：`mapping_id`、`revision`（报告针对的版本）、`state`（`listening`、`stopped`、`error`）、`error`（`state = error` 时的原因，最长 64 字节）；平台在映射的 `status` 中返回最近一次报告（`state`、`error`、`at`、`revision`）。账户失去设备（解绑、重置所有者、注销账户）时，该账户指向这台设备的映射一并删除；
 - 每次实际连接创建一条新子链路，并再次经过设备的目标授权；`public` 映射的目标还必须在托管客户端的 `grant` 目标列表中；
-- 每个账户最多 50 个 `local` 映射；`public` 映射的个数与速率由套餐决定（免费级没有），超过回 `forbidden`；流量计入创建该公网映射的账户（所有者或获准访问者，见“呼叫记录”）。
+- 每个账户最多 50 个 `local` 映射；`public` 映射的个数与速率由套餐决定（免费级没有），超过回 `forbidden`；流量计入创建该公网映射的账户（所有者，见“呼叫记录”）。
 
 目标地址以明文 JSON 保存在平台，平台知道内网地址和端口，这属于配置元数据的可见范围。`public` 映射的数据本身也对平台可见（安全设计 8.4）。
 
@@ -1193,9 +1173,9 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | `pubconn_list` | 客户端 → 平台 | 请求 | `{"mapping_id"?, "before"?, "limit"?}`：本账户的公网访问记录（`conn_report` 记下的，每次访问一条），新的在前，每页至多 60 条（默认 50）；应答 `{"conns": [{"id", "mapping_id", "port", "from", "start", "end", "conns", "refused", "in", "out", "connect_ms", "connect_avg", "first_byte_ms", "first_byte_avg", "path", "result"}], "next"}`，`next` 是下一页的 `before`，到头为空。命令行 `npf mapping log`，控制台"我的 → 公网映射"的「访问记录」 |
 | `conn_report` | 托管客户端 → 平台 | 事件或请求 | `{"conns": [{"mapping_id", "port", "from", "start", "end", "conns", "refused", "in", "out", "connect_ms", "connect_avg", "first_byte_ms", "first_byte_avg", "path", "result"}]}`：已结束的公网访问，每次一项。**一次访问**是同一个来源 IP 对同一个映射的一串连接：最后一个连接断开后 30 秒内没有新连接（同一 IP），这次访问才结束（2026-10-15 起；之前每个连接一项）。`from` 为来源 IP，`start` 为第一个连接开始、`end` 为最后一个连接结束（Unix 毫秒），`conns` 为放进来的连接数、`refused` 为被拒绝的连接数，`in` / `out` 为从来源收到 / 发给来源的字节合计；`connect_ms` / `connect_avg` 为从接受连接到设备连上目标服务（设备的 CONNECT 应答）的最小 / 平均毫秒数，`first_byte_ms` / `first_byte_avg` 为到第一个字节发给来源的最小 / 平均毫秒数，没有为 -1；`path` 为最后一个连接结束时会话的路径；`result` 为最后一个连接的结束方式：`local_closed`（来源先关闭）、`peer_closed`（设备端先关闭）、`target_failed`（设备连不上目标服务）、`target_refused`（设备的策略不允许）、`peer_failed`（设备一侧的一般失败）、`request_unsupported`（设备不支持这个请求）、`protocol_error`（设备一侧违反协议）、`peer_reset`、`local_reset`、`session_ended`、`mapping_closed`（映射被关闭、到期或删除），或最后一次被拒绝的原因 `refused:原因`（`allow_from`、`quota`、`mapping_full`、`address_full`、`address_rate`、`no_session`、`session_full`）；托管客户端停止时进行中的访问一并结束上报；访问结束后 5 秒内或攒满 100 条时发送，一条消息最多 100 条，离线时暂存（最多 2000 条）；平台记在该账户名下（中心数据库 `public_conns`，保留 90 天，`npf-admin pubconns`），映射已删除的也记 |
 
-- **托管客户端能做的事**：只有呼叫相关的消息（`call`、`call_end`、`punch_*`、`relay_*` 等）、`mapping_list`、`mapping_report`、`grant_get`、`quota`、`usage_report`、`conn_report`，其余账户操作一律 `forbidden`：它持有账户的证书，但运行在面向互联网的机器上，不能修改账户、设备或分享。托管服务登录后可发 `hosted_register`、`hosted_accounts`、`hosted_stats` 与 `hosted_token`；
+- **托管客户端能做的事**：只有呼叫相关的消息（`call`、`call_end`、`punch_*`、`relay_*` 等）、`mapping_list`、`mapping_report`、`grant_get`、`quota`、`usage_report`、`conn_report`，其余账户操作一律 `forbidden`：它持有账户的证书，但运行在面向互联网的机器上，不能修改账户或设备。托管服务登录后可发 `hosted_register`、`hosted_accounts`、`hosted_stats` 与 `hosted_token`；
 - **拉取映射**：托管客户端用 `mapping_list{executor: {kind: "hosted", id: 托管服务编号}}` 拉取，只执行 `kind = public` 的映射；`mapping_report` 只接受该托管服务的托管客户端报告；
-- **托管 `grant`**：托管客户端的 `grant_get` 得到 `kind = 2`（`npf-grant-hosted-v1`）的 `grant`，目标列表为该账户经这个托管服务指向该设备的全部启用的公网映射的目标；对设备所有者或获准创建公网映射的访问者签发。设备对这种会话的每条子链路检查目标（按 `CONNECT` 中写的地址或名称匹配），不在列表中回 `REP = 02`；
+- **托管 `grant`**：托管客户端的 `grant_get` 得到 `kind = 2`（`npf-grant-hosted-v1`）的 `grant`，目标列表为该账户经这个托管服务指向该设备的全部启用的公网映射的目标；只对设备所有者签发。设备对这种会话的每条子链路检查目标（按 `CONNECT` 中写的地址或名称匹配），不在列表中回 `REP = 02`；
 - **计费**：托管客户端的呼叫，中转只记录不计费；`usage_report` 报告的字节全部计费；
 - **限速**：每个公网映射每个方向不超过 `rate_kbps`，由托管客户端在隧道中按映射限速（令牌桶，1 秒的突发）。
 
@@ -1214,7 +1194,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 没有在数据库中定义级别 0 时，免费级为每月 200 MB、128 kbps、没有公网映射。
 
-**计入额度的流量**：中转转发的字节中呼叫发起 15 秒以后的部分（`relay_free_s`），以及公网映射的全部字节；直连不计。记到哪个账户同"呼叫记录"：客户端的账户、访问别人设备时访问者的账户、节点的所有者账户、创建公网映射的账户。
+**计入额度的流量**：中转转发的字节中呼叫发起 15 秒以后的部分（`relay_free_s`），以及公网映射的全部字节；直连不计。记到哪个账户同"呼叫记录"：客户端的账户、节点的所有者账户、创建公网映射的账户。
 
 **每月重置**：订阅从开通时刻起按月计（31 日开通的，在短的月份取月末），免费级从账户创建时刻起按月计；换了级别（开通、升级、到期）就从新级别的起点重新计。
 
@@ -1268,6 +1248,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-11-01 | 0.72 | 去掉账户之间的分享：`share_create`、`share_accept`、`share_list`、`share_set`、`share_revoke`、`share_leave` 与访问者；设备视图去掉 `role`、`permissions`；`grant_get` 与托管 `grant` 只对所有者签发；映射去掉 `not_publisher`（不是所有者的设备回 `not_found`） |
 | 2026-11-01 | 0.71 | `call` 的 `share`：分享码的配对不受被叫口令锁定的平台闸门限制（原来口令被人试错锁定后，所有分享码也配对不了） |
 | 2026-11-01 | 0.70 | 新增分享码：节点的 `share_new`、`share_del`、`share_sync`，客户端的 `share_resolve`（限速，匿名可用）；XXpsk3 消息 1 的载荷选择口令（空或定位符）；隧道内控制消息新增 `admin_get`、`admin_unpair`、`admin_share_new`、`admin_share_del`、`admin_res_put`、`admin_res_del`（只限管理员的 IK / PAKE 会话，`remote_admin`）；`bind_approve` 只接受管理员（安全 8.6，D25） |
 | 2026-10-30 | 0.69 | 匿名主叫的呼叫（没有中转）打洞放弃而没有直连路径时，平台立即以 `no_path` 结束（`call_ended`），同额度用完的；呼叫的中转在另一台服务器上时（M4），那台服务器发两侧分配的 R（服务器之间的 `caller_r` 改名 `relay_r`，带分配的 id）；R 来了而计划已经用着同一个地址时不发 `punch_info`；`conn_report` 的 `result` 按实际发生的事细分（`target_refused`、`peer_failed`、`request_unsupported`、`protocol_error`，architecture.md） |

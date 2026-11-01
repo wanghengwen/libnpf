@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-文档版本：2.8。更新日期：2026-11-01。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。2.6：库填写的结构体（`*_info`、`npf_media_stats`、列表元素）不再带 `size`，也没有 `_init`，由查询的宏传调用方的 `sizeof`（第 2 节）；`npf_media_open` 与其他创建函数一样返回错误码、经输出参数给出编号；`npf_peer_remove_id` 改名 `npf_peer_remove`；`npf_media_opt_default` 改名 `npf_media_opt_init`，保留未用的 `rcv_deadline_ms` 去掉；`no_log_ring` 改为开关 `NPF_OPT_NO_LOG_RING`；`NPF_PLATFORM` 为 4；模块的 `status_json` 钩子不再有 `first` 参数（第 12 节）。2.7：模块的配置键是 `npf_key` 表（`check` 钩子去掉），模块只包含 `npf/module.h`（`npf_int.h` 去掉），应答回调拿 `npf_env`（第 12 节）。2.8：`npf_pairing` 带角色 `admin`，分享码与远程管理（第 5 节，security.md 8.6）。文档版本与库版本、`NPF_API_VERSION` 分别编号。
+文档版本：2.9。更新日期：2026-11-01。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。2.6：库填写的结构体（`*_info`、`npf_media_stats`、列表元素）不再带 `size`，也没有 `_init`，由查询的宏传调用方的 `sizeof`（第 2 节）；`npf_media_open` 与其他创建函数一样返回错误码、经输出参数给出编号；`npf_peer_remove_id` 改名 `npf_peer_remove`；`npf_media_opt_default` 改名 `npf_media_opt_init`，保留未用的 `rcv_deadline_ms` 去掉；`no_log_ring` 改为开关 `NPF_OPT_NO_LOG_RING`；`NPF_PLATFORM` 为 4；模块的 `status_json` 钩子不再有 `first` 参数（第 12 节）。2.7：模块的配置键是 `npf_key` 表（`check` 钩子去掉），模块只包含 `npf/module.h`（`npf_int.h` 去掉），应答回调拿 `npf_env`（第 12 节）。2.8：`npf_pairing` 带角色 `admin`，分享码与远程管理（第 5 节，security.md 8.6）。2.9：账户之间的分享去掉，平台的授权只给设备所有者（security.md 0.41）。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
@@ -242,7 +242,7 @@ npf_destroy(cli);
 | `max_calls` | `max_calls` | 同时被连接的会话上限，默认 32 |
 | `punch_lead_ms`、`punch_sockets` | 同名 | 打洞参数，默认自动 |
 | `no_host_report` | `report_host = 0` | 登录时不报告主机信息 |
-| `no_hosted_trust` | `hosted_trust = 0` | 不接受平台为设备所有者及其分享对象签发的授权 |
+| `no_hosted_trust` | `hosted_trust = 0` | 不接受平台为设备所有者签发的授权 |
 | `peer_idle_s` | `peer_idle` | 按需连接的对端（第 7 节）默认的空闲秒数；0 为 300 |
 
 `npf_create` 会校验 `npf_setup`，失败时在 `err` 中说明字段或配置问题。常见原因包括：非直连角色没有 `roots`；同时给出 `serverlist` 和 `serverlist_file`；两者均未给出且没有 `server_url`；给了 `server_url` 却没有 `server_pub`；`cred` 缺少 `password`；同时给出 `cred` 和 `model_cred`；非零 `direct_port` 缺少 `direct_psk`；数值越界（按下文的键表，`err` 为 `npf_setup: udp_port: a number from 0 to 65535` 这样的一句；`punch_lead_ms` 只有 −1 表示自动）。
@@ -414,7 +414,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | 设置 | `npf_config_get`（未知键 `NPF_ENOENT`；`password`、`cred`、`model_cred`、`direct_psk` 显示 `(hidden)`；缓冲区不足 `NPF_ETOOBIG`）；`npf_config_set`（`NPF_OK` 或 `NPF_ESAVE` 时值已采用，`*restart` 说明何时生效：0 即时，1 是启动时设置、下次启动生效；模块的键看它有没有 `NPF_K_LIVE`） |
 | 诊断（JSON，调用方 `npf_free`） | `npf_status_json`、`npf_config_json`（可即时修改的设置）、`npf_log_json`、`npf_sessions_json`、`npf_public_json` |
 | 命令 | `npf_command(argv)`：库自己的 `set`、`netcheck` 和程序的模块的命令，结果文本和退出码交给回调 |
-| 平台请求 | `npf_request(type, data, key_proof, cb)`：账户、设备、分享等请求（信令协议的 `account_*`、`device_*`、`share_*` 等），应答 JSON 整个交给回调。库不知道这些名字：任何类型都照原样发出，带信封字段 `app`，平台只处理其中的平台请求，库自己的信令回 `unsupported_type`；账户会话和证书由库按平台的 `account` 事件保存（信令协议 0.66） |
+| 平台请求 | `npf_request(type, data, key_proof, cb)`：账户、设备、分享码等请求（信令协议的 `account_*`、`device_*`、`share_resolve` 等），应答 JSON 整个交给回调。库不知道这些名字：任何类型都照原样发出，带信封字段 `app`，平台只处理其中的平台请求，库自己的信令回 `unsupported_type`；账户会话和证书由库按平台的 `account` 事件保存（信令协议 0.66） |
 | 应用数据 | `npf_session_send` |
 | 音视频 | `npf_media_open`、`npf_media_send`、`npf_media_stats_get`、`npf_media_close`，回调 `media_open`、`media_frame`、`media_closed` |
 

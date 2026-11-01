@@ -67,7 +67,6 @@ static const why_text_row k_platform[] = {
     {"no_hosted", "no public-mapping server has room right now (all are full or offline); try again later, or "
                   "tell the platform's operator"},
     {"plan_limit", "the account's plan allows no more public mappings (the free plan: none); upgrade it or delete one"},
-    {"not_publisher", "only the device's owner, or a visitor the owner allows, may open it to the internet"},
     {"choose_port", "choosing the public port needs a higher plan; leave the port to the platform"},
     {"port_range", "that public port is outside the platform's port ranges"},
     {"port_taken", "that port is already in use"},

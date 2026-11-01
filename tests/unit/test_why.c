@@ -59,7 +59,6 @@ int test_why(void)
     EXPECT(npf_why_platform_text("port_taken")
            && strstr(npf_why_platform_text("port_taken"), "in use"));
     EXPECT(npf_why_platform_text("no_hosted") != NULL);
-    EXPECT(npf_why_platform_text("not_publisher") != NULL);
     EXPECT(npf_why_platform_text("choose_port") != NULL);
     EXPECT(npf_why_platform_text("port_range") != NULL);
     EXPECT(npf_why_platform_text("mapping_limit") != NULL);
