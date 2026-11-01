@@ -413,6 +413,65 @@ static void test_states(npf_loop *loop)
     npf_node_stop(&node);
 }
 
+/* a pairing session of q, ended with why; message 3 sent or not */
+static void pake_session(npf_peers *qs, npf_peer *q, int sent3, const char *why)
+{
+    npf_call *c = call_new(qs->n, 1);
+    if (!c)
+        return;
+    c->auth = AUTH_PAKE;
+    q->st = PS_CALL;
+    q->call = c;
+    if (sent3)
+        npf_peers_on_call_state(qs, c, NPF_CALL_CONNECTING, NULL);
+    npf_peers_on_call_state(qs, c, NPF_CALL_CLOSED, why);
+    call_free(c);
+}
+
+/* a pairing session that sent message 3 and never came up is a guess the
+ * platform, as the callee, checks offline: PAKE_TRIES (2) of them end the
+ * peer needing the password, wiped, whatever the end reason (lib-core
+ * audit 1); one ended before message 3 is none; a new password counts anew */
+static void test_pake_tries(npf_loop *loop)
+{
+    static npf_node node;
+    static const npf_peers_cbs cbs = {.done = on_done};
+    static const char *const whys[] = {"timeout", "busy", "closed", "transport_lost", "no_path", "error"};
+    npf_peer_new pp = {.number = 4242, .password = "weak-pass-1", .connect = NPF_CONNECT_KEEP};
+    npf_peers *qs;
+    npf_peer *q = NULL;
+    char err[128];
+    size_t i;
+    int k;
+    CHECK(offline_node(&node, loop, NULL, NULL) == 0 && (qs = npf_peers_new(&node, NULL, &cbs, NULL)), "pake: set-up");
+    if (!qs)
+        return;
+    for (i = 0; i < sizeof whys / sizeof whys[0]; i++) {
+        if (q)
+            npf_peers_remove(qs, q);
+        if (!(q = npf_peers_create(qs, &pp, err, sizeof err, NULL)))
+            break;
+        for (k = 0; k < 3; k++) {       /* the second ends before message 3 */
+            pake_session(qs, q, k != 1, whys[i]);
+            if (k < 2)
+                CHECK(q->st == PS_RETRY && q->password[0], "pake %s: try %d retried with the password", whys[i], k + 1);
+        }
+        CHECK(q->st == PS_ENDED && !q->password[0] && (npf_peer_needs(q) & NPF_NEED_PASSWORD)
+                  && strcmp(q->last_why, "not_paired") == 0,
+              "pake %s: the second guess ends it, the password wiped (%d %s)", whys[i], q->st, q->last_why);
+    }
+    CHECK(q && npf_peer_password_try(q, "weak-pass-2") == 0, "pake: a new password");
+    if (q) {
+        pake_session(qs, q, 1, "timeout");
+        CHECK(q->st == PS_RETRY && q->password[0], "pake: a new password's first guess retried");
+        npf_peers_remove(qs, q);
+    }
+    for (k = 0; k < 5 && qs->gone; k++)
+        npf_loop_once(loop, 1);
+    npf_peers_free(qs);
+    npf_node_stop(&node);
+}
+
 int test_peers(void)
 {
     static npf_node node;
@@ -455,6 +514,7 @@ int test_peers(void)
     for (i = 0; i < 5; i++)
         npf_loop_once(loop, 1);
     test_states(loop);
+    test_pake_tries(loop);
     npf_peers_free(ps);
     npf_node_stop(&node);
     npf_loop_free(loop);

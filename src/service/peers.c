@@ -24,6 +24,13 @@
 #define STABLE_MS          60000
 #define LOGIN_SPREAD_MS    2000
 #define IDLE_DEFAULT_MS    300000   /* on demand, no idle time asked for nor set for all */
+/* A pairing session that sent CPace's message 3 and never came up is a
+ * guess at the password that the platform, playing the callee, can check
+ * offline, however it ends (security.md 9.2): after PAKE_TRIES of them the
+ * password is wiped and the peer needs it again. 2: one retry covers a
+ * session lost after message 3 (a relay or a punch that failed then), and
+ * each one more would give a platform one more guess per password given */
+#define PAKE_TRIES         2
 
 /* target's local.json record (made when create), NULL: none */
 static npf_ldev *dev_of(const npf_peers *ps, const char *target, int create)
@@ -761,6 +768,8 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
             break;
     if (!p)
         return 0;
+    if (st == NPF_CALL_CONNECTING && npf_call_auth(c) == NPF_AUTH_PAKE)
+        p->pake_tries++;                /* message 3 went (call_on_accepted) */
     if (st == NPF_CALL_ESTABLISHED) {
         npf_log("%s: connected (%s)", p->name, npf_call_path_label(c));
         p->up_since = npf_mono_ms();
@@ -807,6 +816,12 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
             p->pin_refused = 1;
             why = "pairing_lost";
         }
+        if (p->password[0] && !p->up_since && p->pake_tries >= PAKE_TRIES) {
+            npf_logw("%s: the pairing did not complete in %d tries: give the password or share code again (-p)",
+                     p->name, p->pake_tries);
+            npf_wipe(p->password, sizeof p->password);
+            why = "not_paired";
+        }
         p->call_pinned = 0;
         peers_forwards_session_gone(p);
         if (p->st == PS_REMOVED)
@@ -814,7 +829,7 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         if (p->up_since && npf_mono_ms() - p->up_since >= STABLE_MS)
             p->backoff = 0;             /* it was up long enough: start from 1 s again */
         p->up_since = 0;
-        if (npf_why_needs(why) & (NPF_NEED_PASSWORD_WRONG | NPF_NEED_PAIRING_LOST)) {
+        if (npf_why_needs(why) & NPF_NEED_PASSWORD) {
             finish(p, why);                 /* a new password tries again */
             return 1;
         }
@@ -970,6 +985,7 @@ int npf_peer_password_try(npf_peer *p, const char *password)
     if (!password[0] || strlen(password) >= sizeof p->password)
         return -1;
     snprintf(p->password, sizeof p->password, "%s", password);
+    p->pake_tries = 0;
     if (npf_why_needs(p->last_why))
         p->last_why[0] = 0;
     npf_log("%s: password given", p->name);

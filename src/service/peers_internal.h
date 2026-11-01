@@ -87,6 +87,7 @@ struct npf_peer {
     struct npf_resolve *rs;         /* that lookup, while it runs (PS_ASKING) */
     uint8_t    psk[32];
     char       password[128];       /* first pairing; wiped once paired */
+    int        pake_tries;          /* its pairing sessions that sent message 3 (PAKE_TRIES) */
     pfwd      *fwds[NPF_PEER_MAX_FWD];  /* 0 .. nfwd-1 allocated; a slot is never moved */
     int        nfwd;
     int        listening;

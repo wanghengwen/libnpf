@@ -113,7 +113,9 @@ void npf_peers_start(npf_peers *ps);
 void npf_peer_start(npf_peer *p);
 
 /* The node's hooks, passed on. on_login starts the platform peers (spread
- * over 2 s when several). on_call_state: 1 when the call is a peer's.
+ * over 2 s when several). on_call_state: 1 when the call is a peer's; a
+ * peer's second pairing that sent message 3 and did not come up ends it,
+ * its password wiped (security.md 9.2).
  * on_paired pins pub for number in lc and drops the peers' passwords. */
 void npf_peers_on_login(npf_peers *ps);
 int  npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why);
