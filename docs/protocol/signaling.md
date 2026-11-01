@@ -1136,7 +1136,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | `scheme` | 可选，目标服务说的协议：`http` 或 `https`（网页），客户端据此把入口显示成可以在浏览器中打开的链接；空或省略为不知道。其他值回 `bad_request` |
 | `listen_host`、`listen_port` | `local`：客户端的监听地址和端口，默认 `127.0.0.1`；`public`：`listen_host` 为 `0.0.0.0`，`listen_port` 由平台从托管服务的端口范围中分配；**套餐允许自选端口**（`choose_port`，见"流量额度"）的账户可以在创建或修改时指定 `listen_port`，须在托管服务登记的 `vip_ports` 或 `ports` 范围内且未被占用（占用回 `conflict`），其他账户指定回 `forbidden` |
 | `public_addr` | `public` 的公网入口 `host:port`，只读（托管服务登记的 `public_host`） |
-| `allow_from` | `public` 的来源 IP 白名单（CIDR 或地址的数组，最多 16 项），空表示不限制；不在其中的连接由托管客户端直接关闭 |
+| `allow_from` | `public` 的来源 IP 白名单（CIDR 或地址的数组，最多 16 项，每项最多 64 个字符），空表示不限制；不在其中的连接由托管客户端直接关闭。平台存的是规范写法：掩码后的短写法，单个地址加 `/32` / `/128`，IPv4 映射的 IPv6 写成 IPv4（`0000:…:ffff:203.0.113.5/128` → `203.0.113.5/32`），最长 43 个字符；托管客户端有一项读不了或超过 16 项时不执行这个映射（`mapping_report` 报 `error`），不会少读一项而让名单变空 |
 | `rate_kbps` | `public` 的速率上限（KB/s，每个方向），只读，取自账户套餐的 `public_kbps`，0 为不限 |
 | `target_host`、`target_port` | 设备侧目标地址和端口 |
 | `enabled` | 期望启用状态 |
