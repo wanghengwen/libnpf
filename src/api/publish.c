@@ -95,6 +95,7 @@ int npf_pub_load(npf_t *n, char *err, size_t errcap)
             continue;
         }
         r[m] = saved[i];
+        r[m].fixed = 0;                     /* npf.conf's only */
         r[m++].persist = 1;
     }
     if (m) {                                /* the list's own size (most nodes publish none) */

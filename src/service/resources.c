@@ -205,8 +205,10 @@ int npf_res_parse(const npf_json *j, int arr, npf_res *out, int max, char *err, 
         return -1;
     }
     for (i = 0; i < j->tok[arr].size; i++) {
-        if (npf_res_obj(j, npf_json_item(j, arr, i), &out[i], err, errcap) < 0)
+        int e = npf_json_item(j, arr, i);
+        if (npf_res_obj(j, e, &out[i], err, errcap) < 0)
             return -1;
+        npf_json_bool(j, npf_json_get(j, e, "fixed"), &out[i].fixed);   /* a peer's npf.conf's: shown so */
         for (k = 0; k < i; k++)
             if (strcmp(out[k].name, out[i].name) == 0) {
                 snprintf(err, errcap, "%s: two resources of that name", out[i].name);

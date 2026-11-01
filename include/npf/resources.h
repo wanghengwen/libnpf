@@ -59,7 +59,8 @@ int  npf_res_check(const npf_res *r, char *err, size_t errcap);
  * missing; "fixed" is not read. 0, or -1 with err. */
 int  npf_res_obj(const npf_json *j, int e, npf_res *r, char *err, size_t errcap);
 /* Reads the JSON array at token arr into out (each as npf_res_obj, names
- * unique). The count, or -1 with err (also for more than max). */
+ * unique; "fixed" kept: a peer's list says which are its npf.conf's). The
+ * count, or -1 with err (also for more than max). */
 int  npf_res_parse(const npf_json *j, int arr, npf_res *out, int max, char *err, size_t errcap);
 /* Writes one resource as a JSON object, n as an array (fixed ones with "fixed": true). */
 void npf_res_json1(npf_out *o, const npf_res *r);

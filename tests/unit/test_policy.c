@@ -213,8 +213,16 @@ int test_policy(void)
             n1 = npf_res_normalize(o.p, o.len);
             n2 = n1 ? npf_res_normalize(n1, strlen(n1)) : NULL;
             CHECK(n1 && n2 && strcmp(n1, n2) == 0 && strstr(n1, "\"path\":\"/admin\"")
-                      && strstr(n1, "\"type\":\"tcp\",\"svc\":\"http\""), "JSON round trip: %s",
-                  n1 ? n1 : "-");
+                      && strstr(n1, "\"type\":\"tcp\",\"svc\":\"http\"") && strstr(n1, "\"fixed\":true"),
+                  "JSON round trip, a list's fixed kept: %s", n1 ? n1 : "-");
+            {   /* one object (admin_res_put's): fixed not taken */
+                static const char one[] = "{\"name\":\"a\",\"target\":\"127.0.0.1:1\",\"fixed\":true}";
+                npf_jtok tk[16];
+                npf_json jj;
+                npf_res x;
+                CHECK(npf_json_parse(&jj, one, strlen(one), tk, 16) == 0 && npf_res_obj(&jj, 0, &x, e, sizeof e) == 0 && !x.fixed,
+                      "a single resource object: \"fixed\" not read");
+            }
             free(n1);
             free(n2);
             static const char dup[] = "[{\"name\":\"a\",\"target\":\"127.0.0.1:1\"},"
