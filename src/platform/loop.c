@@ -714,9 +714,10 @@ static int pfd_room(npf_loop *l, size_t need)
     return npf_grow(&l->own, &l->npfd, need, sizeof *l->own, 64);
 }
 
-/* WSAPoll reports POLLHUP whatever was asked: a socket watched for writing
- * whose peer sent its FIN, with its send buffer full, polls ready at once
- * until the peer reads. Such a hang-up is handed on as before (NPF_EV_READ),
+/* WSAPoll reports POLLHUP and POLLERR whatever was asked: a socket watched
+ * for writing whose peer sent its FIN (or reset it), with its send buffer
+ * full, polls ready at once until the peer reads. Such a hang-up or error
+ * with nothing readable nor writable is handed on as before (NPF_EV_READ),
  * then the socket waits out of the poll for HUP_PARK_MS: a check every
  * HUP_PARK_MS instead of a spin. */
 #define HUP_PARK_MS 20
@@ -769,7 +770,7 @@ static void wait_io(npf_loop *l, int wait)
         h = find_h(c, (int)l->pfd[i].fd);
         if (!h || !h->fn || h->gen != l->pgen[i])
             continue;
-        if (r == POLLHUP && !(h->events & NPF_EV_READ))
+        if ((r & (POLLHUP | POLLERR)) && !(r & (POLLRDNORM | POLLWRNORM)) && !(h->events & NPF_EV_READ))
             h->parked = l->now + HUP_PARK_MS;
         dispatch(l, c, h, e);
     }
