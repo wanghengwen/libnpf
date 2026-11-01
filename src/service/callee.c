@@ -826,6 +826,7 @@ static void share_sync(npf_callee *d)
 typedef struct share_req {
     npf_callee  *d;
     int          uses;
+    int64_t      ttl_s;
     npf_share_fn fn;
     void        *arg;
 } share_req;
@@ -855,7 +856,8 @@ static void share_made(npf_node *n, const npf_env *e, int ok, void *arg)
         npf_wipe(k, sizeof k);
         npf_share_parse(code, v.id, v.secret);
         v.uses = q->uses;
-        v.expires = exp;
+        /* the platform's time, but never later than asked by our clock (the lock's rule, 8.3) */
+        v.expires = exp < (int64_t)time(NULL) + q->ttl_s ? exp : (int64_t)time(NULL) + q->ttl_s;
         rc = d->damaged || !d->owner || d->nshares >= NPF_MAX_SHARES ? -5 : 0;
         if (rc == 0) {
             d->shares[d->nshares++] = v;
@@ -888,10 +890,10 @@ int npf_callee_share_new(npf_callee *d, int uses, int64_t ttl_s, npf_share_fn fn
         return -5;
     q->d = d;
     q->uses = uses < 1 || uses > NPF_SHARE_USES_MAX ? 1 : uses;
+    q->ttl_s = ttl_s < 1 || ttl_s > NPF_SHARE_TTL_MAX ? NPF_SHARE_TTL : ttl_s;
     q->fn = fn;
     q->arg = arg;
-    snprintf(data, sizeof data, "{\"ttl_s\":%lld,\"uses\":%d}",
-             (long long)(ttl_s < 1 || ttl_s > NPF_SHARE_TTL_MAX ? NPF_SHARE_TTL : ttl_s), q->uses);
+    snprintf(data, sizeof data, "{\"ttl_s\":%lld,\"uses\":%d}", (long long)q->ttl_s, q->uses);
     if (npf_node_request(d->node, "share_new", data, share_made, q) < 0) {
         free(q);
         return -3;
