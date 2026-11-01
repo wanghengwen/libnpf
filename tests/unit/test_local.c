@@ -111,6 +111,12 @@ int test_local(void)
           && !npf_name_valid("") && !npf_name_valid("x:1"), "names");
     CHECK(npf_nick_valid("老家 客厅的 NAS") && !npf_nick_valid("a\nb"), "nicks");
 
+    /* a device's resources that are not a valid list: dropped, the rest loaded */
+    put(dir, "local.json", "{\"devices\": {\"611631552\": {\"name\": \"dev\", \"resources\": [{\"name\": \"a\"}]}}}");
+    CHECK(npf_local_load(&m, dir, err, sizeof err) == 0 && m.ndev == 1 && !m.dev[0].resources
+              && strcmp(m.dev[0].name, "dev") == 0, "a device's invalid resources dropped: %s", err);
+    npf_local_free(&m);
+
     /* a damaged file is refused, not overwritten */
     put(dir, "local.json", "{\"devices\": {");
     CHECK(npf_local_load(&m, dir, err, sizeof err) < 0 && strstr(err, "not readable"), "damaged");

@@ -1,6 +1,7 @@
 /* local.json (local.h). */
 #define _GNU_SOURCE
 #include "npf/sys.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -227,9 +228,14 @@ static int device(npf_local *l, const char *s, const npf_json *j, int v, const c
     }
     if ((d->has_key = m->key_len == 32))
         memcpy(d->key, m->key, 32);
-    if (m->resources >= 0)
-        d->resources = npf_res_normalize(s + j->tok[m->resources].start,
-                                         j->tok[m->resources].end - j->tok[m->resources].start);
+    if (m->resources >= 0 && rc == 0
+        && !(d->resources = npf_res_normalize(s + j->tok[m->resources].start,
+                                              j->tok[m->resources].end - j->tok[m->resources].start))) {
+        if (errno == ENOMEM)
+            rc = -1;                        /* as for the record itself */
+        else
+            npf_logw("local.json: %s: the resources are not a valid list: dropped", target);
+    }
     for (i = 0, q = v + 1; i < j->tok[v].size && rc == 0; i++, q = j->tok[q + 1].next) {
         /* the keys not in the table are the modules': kept as they are (a string's text with its quotes) */
         char key[NPF_LOCAL_EXT_KEY + 1];

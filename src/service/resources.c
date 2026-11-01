@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #endif
 #include "npf/sys.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -277,15 +278,21 @@ char *npf_res_normalize(const char *json, size_t len)
     npf_json j;
     npf_out o = {0};
     char err[160], *out = NULL;
-    int n;
-    if (tok && r && npf_json_parse(&j, json, len, tok, NPF_RES_JSON_TOK) == 0
-        && (n = npf_res_parse(&j, 0, r, NPF_RES_MAX, err, sizeof err)) >= 0) {
-        npf_res_json(&o, r, n);
-        if (!o.failed)
-            out = o.p;                      /* the buffer, NUL-terminated, is the caller's now */
+    int n, e = ENOMEM;
+    if (tok && r) {
+        e = EINVAL;
+        if (npf_json_parse(&j, json, len, tok, NPF_RES_JSON_TOK) == 0
+            && (n = npf_res_parse(&j, 0, r, NPF_RES_MAX, err, sizeof err)) >= 0) {
+            npf_res_json(&o, r, n);
+            e = ENOMEM;
+            if (!o.failed)
+                out = o.p;                  /* the buffer, NUL-terminated, is the caller's now */
+        }
     }
-    if (!out)
+    if (!out) {
         npf_out_free(&o);
+        errno = e;
+    }
     free(tok);
     free(r);
     return out;
