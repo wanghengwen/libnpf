@@ -796,7 +796,7 @@ TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 | `NPF_NO_UDP` | 数 | 没有 UDP：报 `udp = 0`，会话走 WS，没有备用分配；`NPF_TEST_WS_FILE` 在运行中改它 | `nat.c`、`path_mgr.c`、`home.c` | loopback、media、quota、rlink、udp、wsswitch、natlab、`tests/bench/relay.sh`、realnet udp-fwd |
 | `NPF_NO_P2P` | 数 | 不打洞，只走中转 | `call_punch.c:call_no_p2p` | loopback、quota、rlink、wsswitch、natlab、`relay.sh`、realnet fwd-billing |
 | `NPF_NO_HOME` | 数 | 没有备用分配 | `home.c:home_allowed` | callsetup、natlab |
-| `NPF_TEST_DROP_P2P` | 数 | 直连建立后这么久（ms）切断 | `path_direct.c:call_p2p_cut` | loopback、mesh |
+| `NPF_TEST_DROP_P2P` | 数 | 直连证明可用（第一个回声）后这么久（ms）切断 | `path_direct.c:call_p2p_cut` | loopback、mesh |
 | `NPF_TEST_DROP_P2P_PORT` | 数 | ……只切到对方这个端口的那条（**新**，原来是 `DROP_P2P=ms:port`） | 同上 | mesh |
 | `NPF_TEST_BLOCK_RELAY` | 文字 | 这些中转地址或 URL 不可达 | `path_udp.c:call_relay_blocked` | loopback、wsswitch、natlab；单元 `test_call.c`、`test_direct.c` 直接改 `n->th` |
 | `NPF_TEST_DROP_BIND_ACK` | 数 | 丢掉确认绑定的 `BIND_ACK` | `path_udp.c`、`home.c:ack_in` | loopback |

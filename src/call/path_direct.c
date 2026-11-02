@@ -12,13 +12,15 @@
 
 #define PKT_PATH_CHECK     10         /* direct path check (both directions work?) */
 #define PKT_PATH_ECHO      11
-/* tests: NPF_TEST_DROP_P2P=ms cuts the direct path that long after it came
- * up; with NPF_TEST_DROP_P2P_PORT only the one to the peer on that port */
+/* tests: NPF_TEST_DROP_P2P=ms cuts the direct path that long after it was
+ * proven (its first echo: before, the cut would race the first check); with
+ * NPF_TEST_DROP_P2P_PORT only the one to the peer on that port */
 int call_p2p_cut(const npf_call *c)
 {
     int64_t cut = c->n->th.drop_p2p_ms;
     int port = (int)c->n->th.drop_p2p_port;
-    if (!cut || !call_has_p2p(c) || npf_mono_ms() - c->pd.p.since < cut)
+    const npf_path *p = &c->pd.p;
+    if (!cut || !call_has_p2p(c) || p->rt_ok < p->since || npf_mono_ms() - p->rt_ok < cut)
         return 0;
     return !port || npf_addr_port(&c->pd.addr) == port;
 }
