@@ -308,7 +308,13 @@ int npf_direct_psk(const char *key, const char *file, uint8_t psk[32])
     if (!file)
         return -1;
     if (npf_file_too_open(file)) {
+#ifdef _WIN32
+        npf_log("direct: %s is readable by others; let only you read it: icacls \"%s\" /inheritance:r /grant:r "
+                "\"%%USERNAME%%:F\", and remove any other user's or group's entry (icacls \"%s\" lists them)",
+                file, file, file);
+#else
         npf_log("direct: %s is readable by others; chmod 600 it", file);
+#endif
         return -1;
     }
     n = npf_file_read(file, &s);

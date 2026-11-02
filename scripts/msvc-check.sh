@@ -3,7 +3,7 @@
 # directory, built there with CMake and Ninja in the Visual Studio
 # environment (/W4 /WX: a warning fails it), then tests/msvc/smoke.c built
 # against npf.dll and run, and tests/msvc/loop_hup.c (the event loop on
-# WSAPoll) against npf_common.
+# WSAPoll) and tests/msvc/file_acl.c (a secret's permissions) against npf_common.
 #   scripts/msvc-check.sh            (in libnpf's tree)
 # NPF_VCVARS: the vcvars64.bat to use (default: the newest Visual Studio with
 # the C++ tools, by vswhere); NPF_MSVC_DIR: the Windows directory (default
@@ -39,12 +39,14 @@ copy /y build\\bin\\npf.dll build\\ > nul
 dumpbin /nologo /exports build\\bin\\npf.dll > build\\exports.txt || exit /b 1
 build\\smoke.exe || exit /b 1
 cl /nologo /MD /W4 /WX /utf-8 /Isrc\\include src\\tests\\msvc\\loop_hup.c /Febuild\\loop_hup.exe /Fobuild\\ build\\npf_common.lib build\\monocypher.lib build\\npf_mbedtls.lib build\\anliu.lib ws2_32.lib iphlpapi.lib bcrypt.lib winmm.lib advapi32.lib || exit /b 1
-build\\loop_hup.exe
+build\\loop_hup.exe || exit /b 1
+cl /nologo /MD /W4 /WX /utf-8 /Isrc\\include src\\tests\\msvc\\file_acl.c /Febuild\\file_acl.exe /Fobuild\\ build\\npf_common.lib build\\monocypher.lib build\\npf_mbedtls.lib build\\anliu.lib ws2_32.lib iphlpapi.lib bcrypt.lib winmm.lib advapi32.lib || exit /b 1
+build\\file_acl.exe
 EOF
 printf 'msvc-check: %s, in %s\n' "$vcvars" "$win"
 (cd "$dst" && cmd.exe /c check.bat) > "$dst/check.log" 2>&1
 rc=$?
-grep -aE "warning C|error C|error LNK|PASS|FAIL|smoke:" "$dst/check.log" | sed 's/\r$//'
+grep -aE "warning C|error C|error LNK|PASS|FAIL|SKIP|smoke:" "$dst/check.log" | sed 's/\r$//'
 [ $rc -eq 0 ] || { printf 'msvc-check: failed (log: %s\\check.log)\n' "$win"; exit 1; }
 def=$(awk '/^EXPORTS/{e=1;next} e&&NF{print $1}' "$lib/src/api/npf.def" | sort)
 dll=$(tr -d '\r' < "$dst/build/exports.txt" | awk '$1~/^[0-9]+$/&&$4~/^npf_/{print $4}' | sort)

@@ -259,8 +259,27 @@ static int admins(PSID sid)
     return is_sid(sid, WinLocalSystemSid) || is_sid(sid, WinBuiltinAdministratorsSid);
 }
 
-/* why someone besides SYSTEM, the Administrators and the owner may have one
- * of rights on path (admin: nor a link, nor another owner), NULL: no one */
+/* the user this process runs as (elevated or not: the same SID) */
+static int is_me(PSID sid)
+{
+    union {
+        TOKEN_USER u;
+        BYTE       b[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    } t;
+    HANDLE h;
+    DWORD n;
+    int r = 0;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h)) {
+        r = GetTokenInformation(h, TokenUser, &t, sizeof t, &n) && EqualSid(sid, t.u.User.Sid);
+        CloseHandle(h);
+    }
+    return r;
+}
+
+/* why someone besides SYSTEM, the Administrators, the owner and (not admin)
+ * the user this process runs as may have one of rights on path (admin: nor
+ * a link, nor another owner), NULL: no one. An elevated user's file is the
+ * Administrators': the user's own entry in it is not someone else's. */
 static const char *others_may(const char *path, DWORD rights, int admin)
 {
     wchar_t w[WPATH];
@@ -291,7 +310,7 @@ static const char *others_may(const char *path, DWORD rights, int admin)
         s = (PSID)&e->SidStart;
         if ((e->Header.AceType == ACCESS_ALLOWED_ACE_TYPE || e->Header.AceType == ACCESS_ALLOWED_CALLBACK_ACE_TYPE)
             && !(e->Header.AceFlags & INHERIT_ONLY_ACE) && (e->Mask & rights) && !admins(s) && !EqualSid(s, owner)
-            && !is_sid(s, WinCreatorOwnerRightsSid))
+            && !is_sid(s, WinCreatorOwnerRightsSid) && (admin || !is_me(s)))
             why = rights == W_RIGHTS ? "others may change it" : "others may open it";
     }
     LocalFree(sd);

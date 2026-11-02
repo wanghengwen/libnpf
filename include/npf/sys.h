@@ -258,8 +258,8 @@ int  npf_mkdir_p(const char *path);
 int  npf_file_private(const char *path);
 /* 1 when others may open the file (a secret's check): POSIX, group or others
  * have any permission; Windows, its DACL allows anyone but SYSTEM, the
- * Administrators and its owner to read or change it. 0 also when it is not
- * there. */
+ * Administrators, its owner and the user this process runs as to read or
+ * change it. 0 also when it is not there. */
 int  npf_file_too_open(const char *path);
 #ifdef _WIN32
 /* NULL when only SYSTEM and the Administrators can change path, a file or a
