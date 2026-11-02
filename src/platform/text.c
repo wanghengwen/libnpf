@@ -142,3 +142,63 @@ int npf_prefix_nocase(const char *s, const char *p)
             return 0;
     return 1;
 }
+
+/* the code point of the UTF-8 sequence at s (*len its bytes), or -1: not
+ * UTF-8 (overlong, a surrogate, past U+10FFFF, cut) */
+static long utf8_at(const unsigned char *s, int *len)
+{
+    long c;
+    int n, i;
+    if (s[0] < 0x80) {
+        *len = 1;
+        return s[0];
+    }
+    n = s[0] >= 0xf0 && s[0] <= 0xf4 ? 4 : s[0] >= 0xe0 ? (s[0] < 0xf0 ? 3 : 0) : s[0] >= 0xc2 ? 2 : 0;
+    if (!n)
+        return -1;
+    c = s[0] & (0x7f >> n);
+    for (i = 1; i < n; i++) {
+        if ((s[i] & 0xc0) != 0x80)
+            return -1;
+        c = c << 6 | (s[i] & 0x3f);
+    }
+    if ((n == 3 && c < 0x800) || (n == 4 && (c < 0x10000 || c > 0x10ffff)) || (c >= 0xd800 && c <= 0xdfff))
+        return -1;
+    *len = n;
+    return c;
+}
+
+/* shown as nothing, or turning the text around it */
+static int hidden(long c)
+{
+    return c < 0x20 || (c >= 0x7f && c <= 0x9f) || c == 0x61c || (c >= 0x200b && c <= 0x200f)
+        || (c >= 0x202a && c <= 0x202e) || (c >= 0x2060 && c <= 0x2069) || c == 0xfeff;
+}
+
+int npf_text_display(char *s, size_t max)
+{
+    unsigned char *r = (unsigned char *)s, *w = r;
+    size_t n;
+    int len, full = 0;
+    while (*r) {
+        long c = utf8_at(r, &len);
+        if (c < 0) {
+            s[0] = 0;
+            return -1;
+        }
+        if (!hidden(c) && (w > (unsigned char *)s || c != ' ') && !full) {
+            if ((size_t)(w - (unsigned char *)s) + (size_t)len > max)
+                full = 1;                   /* cut at a character; the rest still checked */
+            else {
+                memmove(w, r, (size_t)len);
+                w += len;
+            }
+        }
+        r += len;
+    }
+    *w = 0;
+    n = strlen(s);
+    while (n && s[n - 1] == ' ')
+        s[--n] = 0;
+    return (int)n;
+}

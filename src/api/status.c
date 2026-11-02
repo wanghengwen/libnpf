@@ -180,6 +180,8 @@ static void peers_out(npf_t *c, npf_out *o)
         npf_out_kstr(o, "name", npf_peer_name(p));
         npf_out_kstr(o, "label", nul_if_empty(npf_peer_label(p)));
         npf_out_kstr(o, "nick", nul_if_empty(npf_peer_nick(p)));
+        npf_out_kstr(o, "remote_name", nul_if_empty(npf_peer_remote_name(p)));  /* its own (npf name), as it said */
+        npf_out_kstr(o, "role", nul_if_empty(npf_peer_role(p)));  /* this node there: admin, member */
         npf_out_kbool(o, "saved", npf_peer_tag(p) == NPF_PERSIST);
         npf_out_kint(o, "peer_id", npf_peer_id(p));
         npf_out_kstr(o, "connect", modes[npf_peer_connect_mode(p)]);

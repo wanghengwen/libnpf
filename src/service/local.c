@@ -228,6 +228,9 @@ static int device(npf_local *l, const char *s, const npf_json *j, int v, const c
     }
     if ((d->has_key = m->key_len == 32))
         memcpy(d->key, m->key, 32);
+    snprintf(d->remote_name, sizeof d->remote_name, "%s", m->remote_name);
+    if (npf_text_display(d->remote_name, NPF_PEER_NAME_MAX) < 0)
+        d->remote_name[0] = 0;              /* the file edited: shown only as a peer would send it */
     if (m->resources >= 0 && rc == 0
         && !(d->resources = npf_res_normalize(s + j->tok[m->resources].start,
                                               j->tok[m->resources].end - j->tok[m->resources].start))) {
@@ -457,6 +460,8 @@ int npf_local_save(npf_local *l)
             member(&o, &f3, "      ", "resources");
             npf_out_printf(&o, "%s", d->resources);
         }
+        if (d->remote_name[0])
+            kstr(&o, &f3, "      ", "remote_name", d->remote_name);
         for (k = 0; k < d->next; k++) {     /* the modules' keys, their values as they are */
             member(&o, &f3, "      ", d->ext[k].key);
             npf_out_printf(&o, "%s", d->ext[k].val);

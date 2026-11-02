@@ -466,7 +466,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | `account` | `{"account_id"}` | 账户会话开始或结束（null） |
 | `peer_done` | `{"peer", "why"}` | `peer` 为对端的目标文字（`318204776`、`host:9000`）。对端放弃了：`NPF_CONNECT_ONCE` 的会话结束，或需要应用处理（`npf_peer_get` 的 `state` 为 `NPF_PEER_ENDED`，`needs` 说明缺什么） |
 | `forward` | `{"peer", "spec", "up", "why"}` | 转发的状态或端口变了（`spec` 如 `-L ...`、`-D ...`、`-R ...` 或模块的写法；`up`：true 可用；失败时 `why`）；当前状态用 `npf_forward_get` 查 |
-| `resources` | `{"session", "resources"}` | 对端发布的资源（会话建立时和更新时）：`session` 为数字，`resources` 为数组，每项 `{"name", "target", "type"}`，设了才有 `svc`、`desc`、`path`，来自 npf.conf 的有 `"fixed": true` |
+| `resources` | `{"session", "resources", "name"}` | 对端发布的资源（会话建立时和资源或名称更新时）：`session` 为数字，`resources` 为数组，每项 `{"name", "target", "type"}`，设了才有 `svc`、`desc`、`path`，来自 npf.conf 的有 `"fixed": true`；`name` 是对端自己的名称（`npf name`，已清理，只用于显示；没有为空串）。状态 JSON 的 `peers[]` 里是 `remote_name` 与 `role`（本节点在对端那里是 `admin` 还是 `member`；没说为 `null`） |
 | `network` | `{"why"}` | 进程被挂起过、本机地址变了：库已经在检查并修复连接 |
 | `platform` | `{"type", "data"}` | 平台推送的事件，`data` 原样，没有为 null（[信令协议](../protocol/signaling.md)） |
 | `stopped` | `{}` | 运行结束：最后一个事件 |

@@ -167,6 +167,18 @@ const char *npf_peer_resources(const npf_peer *p);
 int npf_peer_resources_set(npf_peer *p, const char *json);
 /* 1 when json is the list its session gave last. */
 int npf_peer_resources_same(const npf_peer *p, const char *json);
+/* Its own name (npf name) as its session said, else as its lc record
+ * keeps it; "" none. Text from the peer: made safe to show
+ * (npf_text_display), never trusted for anything else. */
+const char *npf_peer_remote_name(const npf_peer *p);
+/* Keeps a name just heard (made safe here; "" the peer has none), also in
+ * its lc record. 1 changed, 0 the same, -1 not saved. */
+int npf_peer_remote_name_set(npf_peer *p, const char *name);
+/* What its session said this node is there: "admin", "member" (paired
+ * with the password, or a share code), "" not said (an account's grant, a
+ * direct session, no session yet). */
+const char *npf_peer_role(const npf_peer *p);
+void npf_peer_role_set(npf_peer *p, const char *role);
 /* npf_peer_state for people, into buf: "connected", "connecting", "on
  * demand", "retry in N s (why)", "ended (why)", "waiting for the server". */
 const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap);

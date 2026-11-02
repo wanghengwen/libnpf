@@ -472,6 +472,31 @@ static void test_pake_tries(npf_loop *loop)
     npf_node_stop(&node);
 }
 
+/* a peer's own name and role as its session said (UT-72): made safe,
+ * changed or not, a role other than admin or member is none */
+static void test_remote_name(void)
+{
+    npf_peer_new pp = {.number = 4343, .connect = NPF_CONNECT_KEEP};
+    char err[128], big[600];
+    npf_peer *q = npf_peers_create(ps, &pp, err, sizeof err, NULL);
+    CHECK(q && !npf_peer_remote_name(q)[0] && !npf_peer_role(q)[0], "remote name: none at first (%s)", err);
+    if (!q)
+        return;
+    CHECK(npf_peer_remote_name_set(q, "\xe2\x80\xae" "NAS" "\x1b") == 1 && strcmp(npf_peer_remote_name(q), "NAS") == 0,
+          "remote name: made safe, changed");
+    CHECK(npf_peer_remote_name_set(q, "NAS") == 0, "remote name: the same again");
+    memset(big, 'x', sizeof big - 1);
+    big[sizeof big - 1] = 0;
+    CHECK(npf_peer_remote_name_set(q, big) == 1 && strlen(npf_peer_remote_name(q)) == NPF_PEER_NAME_MAX,
+          "remote name: cut to %d bytes", NPF_PEER_NAME_MAX);
+    CHECK(npf_peer_remote_name_set(q, "a" "\xff") == 1 && !npf_peer_remote_name(q)[0], "remote name: not UTF-8, none");
+    npf_peer_role_set(q, "member");
+    CHECK(strcmp(npf_peer_role(q), "member") == 0, "role: member");
+    npf_peer_role_set(q, "owner");
+    CHECK(!npf_peer_role(q)[0], "role: anything else is none");
+    npf_peers_remove(ps, q);
+}
+
 int test_peers(void)
 {
     static npf_node node;
@@ -515,6 +540,9 @@ int test_peers(void)
         npf_loop_once(loop, 1);
     test_states(loop);
     test_pake_tries(loop);
+    test_remote_name();
+    for (i = 0; i < 5; i++)
+        npf_loop_once(loop, 1);
     npf_peers_free(ps);
     npf_node_stop(&node);
     npf_loop_free(loop);

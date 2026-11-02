@@ -81,5 +81,30 @@ int test_text(void)
     EXPECT(!npf_prefix_nocase("\xc4", "\xe4") && !npf_prefix_nocase("@[", "`{"));    /* ASCII letters only */
     EXPECT(!npf_prefix_nocase("\xc3\x89t", "\xe9t"));
 
+    {   /* a peer's name made safe to show (UT-70) */
+        char s[64];
+        snprintf(s, sizeof s, "%s", "  家里的 NAS ");
+        EXPECT(npf_text_display(s, 128) == (int)strlen("家里的 NAS") && !strcmp(s, "家里的 NAS"));
+        snprintf(s, sizeof s, "%s", "a" "\xe2\x80\xae" "b" "\x1b" "[31mc" "\x7f" "\xc2\x85" "d" "\xe2\x81\xa6" "e"
+                                  "\xef\xbb\xbf" "f" "\xe2\x80\x8b" "\xd8\x9c" "g");
+        EXPECT(npf_text_display(s, 128) == 11 && !strcmp(s, "ab[31mcdefg"));    /* bidi, ESC, DEL, C1, isolate, BOM, ZWSP, ALM */
+        snprintf(s, sizeof s, "%s", "ok" "\xc0\xaf" "ok");                    /* overlong */
+        EXPECT(npf_text_display(s, 128) < 0 && !s[0]);
+        snprintf(s, sizeof s, "%s", "\xed\xa0\x80");                    /* a surrogate */
+        EXPECT(npf_text_display(s, 128) < 0);
+        snprintf(s, sizeof s, "%s", "\xf4\x90\x80\x80");               /* past U+10FFFF */
+        EXPECT(npf_text_display(s, 128) < 0);
+        snprintf(s, sizeof s, "%s", "ab" "\xe5\xae");                       /* cut */
+        EXPECT(npf_text_display(s, 128) < 0);
+        snprintf(s, sizeof s, "%s", "ab家里");                            /* at most 5 bytes: cut at a character */
+        EXPECT(npf_text_display(s, 5) == 5 && !strcmp(s, "ab家"));
+        snprintf(s, sizeof s, "%s", "ab家" "\xff");                          /* past the cut still checked */
+        EXPECT(npf_text_display(s, 3) < 0);
+        snprintf(s, sizeof s, "%s", "\xe2\x80\xae" " " "\xe2\x80\x8f");    /* nothing to show */
+        EXPECT(npf_text_display(s, 128) == 0 && !s[0]);
+        snprintf(s, sizeof s, "%s", "\xf0\x9f\x8f\xa0" " NAS");           /* four bytes kept */
+        EXPECT(npf_text_display(s, 128) == 8);
+    }
+
     return fails;
 }

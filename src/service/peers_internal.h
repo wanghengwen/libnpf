@@ -94,6 +94,9 @@ struct npf_peer {
     int64_t    up_since;            /* the session's start (ms), for STABLE_MS */
     int        backoff;             /* ms */
     char      *resources;           /* what it published, as last heard (resources.h): a JSON array */
+    char       remote_name[NPF_PEER_NAME_MAX + 1];  /* its own name, as its session said (npf_text_display) */
+    int        has_remote_name;     /* its session said one ("" too) */
+    char       role[8];             /* what its session said this node is there: admin, member; "" not said */
     npf_call  *call;                /* PS_CALL */
     int        st;                  /* PS_* */
     int        renewing;            /* a grant_get for the session's grant (a hosted client's) */

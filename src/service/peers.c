@@ -418,6 +418,24 @@ int npf_peer_resources_same(const npf_peer *p, const char *json)
     return p->resources && strcmp(p->resources, json) == 0;
 }
 
+const char *npf_peer_remote_name(const npf_peer *p)
+{
+    npf_ldev *d;
+    if (p->has_remote_name)
+        return p->remote_name;
+    return (d = dev_of(p->ps, p->name, 0)) ? d->remote_name : "";
+}
+
+const char *npf_peer_role(const npf_peer *p)
+{
+    return p->role;
+}
+
+void npf_peer_role_set(npf_peer *p, const char *role)
+{
+    snprintf(p->role, sizeof p->role, "%s", strcmp(role, "admin") == 0 || strcmp(role, "member") == 0 ? role : "");
+}
+
 #define SAVE_GAP_MS 30000       /* local.json for the peers' lists: once in this long at most */
 
 static void save_later(npf_loop *loop, void *arg)
@@ -463,6 +481,25 @@ int npf_peer_resources_set(npf_peer *p, const char *json)
         return save_soon(p->ps);
     }
     return 0;
+}
+
+int npf_peer_remote_name_set(npf_peer *p, const char *name)
+{
+    npf_ldev *d = dev_of(p->ps, p->name, 0);
+    char v[NPF_PEER_NAME_MAX + 1];
+    int same;
+    snprintf(v, sizeof v, "%s", name);     /* longer: cut, then cut at a character */
+    if (npf_text_display(v, NPF_PEER_NAME_MAX) < 0)
+        v[0] = 0;
+    same = p->has_remote_name && strcmp(p->remote_name, v) == 0;
+    snprintf(p->remote_name, sizeof p->remote_name, "%s", v);
+    p->has_remote_name = 1;
+    if (d && !p->ps->no_cache && strcmp(d->remote_name, v) != 0) {
+        snprintf(d->remote_name, sizeof d->remote_name, "%s", v);
+        if (save_soon(p->ps) < 0)
+            return -1;
+    }
+    return !same;
 }
 
 npf_peers *npf_peers_new(npf_node *n, npf_local *lc, const npf_peers_cbs *cbs, void *arg)
