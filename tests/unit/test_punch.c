@@ -321,6 +321,33 @@ int test_punch(void)
         CHECK(e.done && e.ok && npf_addr_eq(&e.peer, &ba), "the NOMINATE_ACK from the winner: done (%d %d)", e.done, e.ok);
         npf_punch_free(e.p);
     }
+    /* no amplification (6.5): a PROBE from an address that is none of the
+     * peer's gets its PROBE_ACK, no longer than itself, and no triggered probe */
+    {
+        struct sockaddr_storage ta;
+        int t = lo_socket(SOCK_DGRAM, 0, &ta, sizeof ta), got = 0;
+        uint8_t pkt[512];
+        size_t n;
+        ssize_t r, max = 0;
+        npf_punch_cfg cs = cb;
+        npf_addr_parse("[2001:db8::1]:9", &cs.peers[0]);  /* fd6 -1: never probed */
+        cs.npeers = 1;
+        cs.from_ok = from_ok_cb;
+        cs.plan.session_id = 53;
+        memset(&f, 0, sizeof f);
+        f.p = npf_punch_new(loop, &cs, fb, done_cb, &f);
+        n = sealed(cs.plan.punch_key, NPF_SIV_LABEL_PUNCH, NPF_PKT_PROBE, 53, pkt);
+        npf_punch_input(f.p, fb, pkt, n, &ta);
+        LOOP_UNTIL(loop, 0, 100);
+        while ((r = recv(t, pkt, sizeof pkt, MSG_DONTWAIT)) > 0) {
+            got++;
+            max = r > max ? r : max;
+        }
+        CHECK(got == 1 && max <= (ssize_t)n, "a PROBE from elsewhere: %d packets back, %d bytes for %d", got, (int)max,
+              (int)n);
+        npf_punch_free(f.p);
+        close(t);
+    }
     /* an owner that lets an S2B round go in info (its fresh socket's mapping
      * from E1) while a PROBE waits behind the BIND_RESP: the rest is not read
      * and nothing of the owner's is called again */

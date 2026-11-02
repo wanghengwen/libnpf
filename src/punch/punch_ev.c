@@ -110,11 +110,16 @@ static size_t ack_body(uint8_t *b, uint64_t sid, uint16_t idx, const struct sock
     return 13 + alen;
 }
 
-static void send_pkt(int fd, const npf_siv_keys *keys, int dir, int type,
-                     const uint8_t *body, size_t blen, const struct sockaddr_storage *to)
+/* the sizes (6.5): random in [PKT_MIN, PKT_MAX], a reply no longer than
+ * what it answers (no amplification: max); PKT_MIN fits an IPv6 PROBE_ACK */
+#define PKT_MIN 72
+#define PKT_MAX 256
+
+static void send_pkt(int fd, const npf_siv_keys *keys, int dir, int type, const uint8_t *body, size_t blen,
+                     size_t max, const struct sockaddr_storage *to)
 {
-    uint8_t wire[256], txid[NPF_TXID_SIZE];
-    size_t len = npf_rand_range(64, 256);
+    uint8_t wire[PKT_MAX], txid[NPF_TXID_SIZE];
+    size_t len = npf_rand_range(PKT_MIN, (uint32_t)max);
     int n;
     npf_random(txid, sizeof(txid));
     n = npf_pkt_seal(keys, dir, type, txid, (uint32_t)npf_mono_ms(), body, blen, len, wire);
@@ -146,7 +151,7 @@ static void probe(npf_punch *p, int sock, const struct sockaddr_storage *to)
         fd = p->cfg.fd6;
     }
     npf_le16(b + n, (uint16_t)sock);
-    send_pkt(fd, &p->kp, p->cfg.plan.role, NPF_PKT_PROBE, b, n + 2, to);
+    send_pkt(fd, &p->kp, p->cfg.plan.role, NPF_PKT_PROBE, b, n + 2, PKT_MAX, to);
     if (to->ss_family == AF_INET && p->sent_to) {
         uint16_t port = npf_addr_port(to);
         p->sent_to[port >> 3] |= (uint8_t)(1u << (port & 7));
@@ -164,6 +169,29 @@ static int probed(const npf_punch *p, uint16_t port)
     return p->sent_to && (p->sent_to[port >> 3] & (1u << (port & 7))) != 0;
 }
 
+static int same_ip(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+    if (a->ss_family != b->ss_family)
+        return 0;
+    return a->ss_family == AF_INET
+               ? ((const struct sockaddr_in *)a)->sin_addr.s_addr == ((const struct sockaddr_in *)b)->sin_addr.s_addr
+               : memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr, 16) == 0;
+}
+
+/* a's IP is the peer's: a candidate's, its NAT's public one (the spray's
+ * target), the easy side's srflx (an S3 hard side's target) */
+static int peer_ip(const npf_punch *p, const struct sockaddr_storage *a)
+{
+    const npf_punch_plan *pl = &p->cfg.plan;
+    int i;
+    if (a->ss_family == AF_INET && pl->peer_ip4.s_addr
+        && pl->peer_ip4.s_addr == ((const struct sockaddr_in *)a)->sin_addr.s_addr)
+        return 1;
+    for (i = 0; i < p->cfg.npeers && !same_ip(a, &p->cfg.peers[i]); i++)
+        ;
+    return i < p->cfg.npeers || same_ip(a, &pl->peer_srflx);
+}
+
 /* A triggered check (ICE): a PROBE that came in shows a path from the peer
  * to this socket; probing back at once lets this side validate it too. In S3
  * the easy side's sprayed probe to a port often arrives before the hard
@@ -171,12 +199,13 @@ static int probed(const npf_punch *p, uint16_t port)
  * mapping get through later (the easy side sent there): without probing back
  * the caller never sees a PROBE_ACK and cannot nominate (a Mac -> a host
  * behind a cloud NAT gateway, 2026-10-07: 6 probes in, none of its own
- * answered, the round failed). */
+ * answered, the round failed). Only to an IP of the peer's (any port: a
+ * mapping not known yet): a spoofed source gets its PROBE_ACK, nothing more. */
 static void triggered(npf_punch *p, int sock, const struct sockaddr_storage *from)
 {
     int64_t now = npf_mono_ms();
     int i;
-    if (p->have_valid || p->finished)
+    if (p->have_valid || p->finished || !peer_ip(p, from))
         return;
     for (i = 0; i < p->ntrig; i++)
         if (p->trig[i].sock == sock && npf_addr_eq(&p->trig[i].a, from)) {
@@ -620,8 +649,8 @@ static void tick_cb(npf_loop *loop, void *arg)
     if (pl->role == NPF_PUNCH_CONTROLLING && p->have_valid) {
         uint8_t b[8];
         if ((!p->nom_sent && now >= p->nom_at) || (p->nom_sent && now >= p->nom_next)) {
-            send_pkt(p->win_fd, &p->kn, pl->role, NPF_PKT_NOMINATE,
-                     b, sid_body(b, pl->session_id), &p->winner);
+            send_pkt(p->win_fd, &p->kn, pl->role, NPF_PKT_NOMINATE, b, sid_body(b, pl->session_id), PKT_MAX,
+                     &p->winner);
             p->nom_sent = 1;
             p->nom_next = now + NOM_IVL_MS;
         }
@@ -713,7 +742,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
     int peer_dir = 1 - pl->role;
     uint8_t plain[NPF_PKT_MAX];
     npf_pkt pkt;
-    if (len < 64 || len > 256)          /* send_pkt's sizes (within NPF_PKT_MAX, plain's) */
+    if (len < PKT_MIN || len > PKT_MAX)  /* send_pkt's sizes (within NPF_PKT_MAX, plain's) */
         return 0;
     /* security.md 11.1 inbound: a source this side would never probe
      * (loopback, multicast, the platform's own endpoints, ...) gets no ACK,
@@ -742,8 +771,8 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
                 npf_logt("punch: PROBE from %s (sock %d, %d ms) -> PROBE_ACK", npf_addr_str(from, a, sizeof a), sock,
                          (int)(npf_mono_ms() - p->start));
             }
-            send_pkt(fd, &p->kp, pl->role, NPF_PKT_PROBE_ACK,
-                     b, ack_body(b, pl->session_id, npf_rd16(pkt.body + 8), from), from);
+            send_pkt(fd, &p->kp, pl->role, NPF_PKT_PROBE_ACK, b, ack_body(b, pl->session_id, npf_rd16(pkt.body + 8), from),
+                     len, from);
             triggered(p, sock, from);
         } else {
             p->res.acks_recv++;
@@ -780,8 +809,7 @@ static int handle(npf_punch *p, int sock, int fd, const uint8_t *buf, size_t len
         p->got_any = 1;
         if (pkt.type == NPF_PKT_NOMINATE && pl->role == NPF_PUNCH_CONTROLLED) {
             uint8_t b[8];
-            send_pkt(fd, &p->kn, pl->role, NPF_PKT_NOMINATE_ACK,
-                     b, sid_body(b, pl->session_id), from);
+            send_pkt(fd, &p->kn, pl->role, NPF_PKT_NOMINATE_ACK, b, sid_body(b, pl->session_id), len, from);
             if (!p->finished) {
                 set_winner(p, sock, fd, from);
                 finish(p, 1);
