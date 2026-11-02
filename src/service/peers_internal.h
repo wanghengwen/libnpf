@@ -92,6 +92,7 @@ struct npf_peer {
     int        nfwd;
     int        listening;
     int64_t    up_since;            /* the session's start (ms), for STABLE_MS */
+    int64_t    off_at;              /* its last remote_access_off (ms), for OFF_KEEP_MS; 0 none */
     int        backoff;             /* ms */
     char      *resources;           /* what it published, as last heard (resources.h): a JSON array */
     char       remote_name[NPF_PEER_NAME_MAX + 1];  /* its own name, as its session said (npf_text_display) */

@@ -472,6 +472,44 @@ static void test_pake_tries(npf_loop *loop)
     npf_node_stop(&node);
 }
 
+/* a callee with remote access off, tried again and again: the platform's
+ * limit on unpaired tries answers unavailable, which keeps the callee's
+ * remote_access_off for 2 min; later, or after a session, unavailable is
+ * itself again */
+static void test_remote_off(npf_loop *loop)
+{
+    static npf_node node;
+    static const npf_peers_cbs cbs = {.done = on_done};
+    npf_peer_new pp = {.number = 4545, .connect = NPF_CONNECT_KEEP};
+    npf_peers *qs;
+    npf_peer *q;
+    char err[128];
+    int k;
+    CHECK(offline_node(&node, loop, NULL, NULL) == 0 && (qs = npf_peers_new(&node, NULL, &cbs, NULL)), "off: set-up");
+    if (!qs)
+        return;
+    if ((q = npf_peers_create(qs, &pp, err, sizeof err, NULL))) {
+        pake_session(qs, q, 0, "remote_access_off");
+        for (k = 0; k < 3; k++)
+            pake_session(qs, q, 0, "unavailable");
+        CHECK(q->st == PS_RETRY && strcmp(q->last_why, "remote_access_off") == 0,
+              "off: the limit's unavailable keeps the device's reason (%s)", q->last_why);
+        q->off_at = npf_mono_ms() - 121000;
+        pake_session(qs, q, 0, "unavailable");
+        CHECK(strcmp(q->last_why, "unavailable") == 0, "off: 2 min later unavailable is itself (%s)", q->last_why);
+        pake_session(qs, q, 0, "remote_access_off");
+        q->off_at = 0;                  /* (a session came up since) */
+        pake_session(qs, q, 0, "unavailable");
+        CHECK(strcmp(q->last_why, "unavailable") == 0, "off: after a session unavailable is itself (%s)", q->last_why);
+        npf_peers_remove(qs, q);
+    } else
+        CHECK(0, "off: peer (%s)", err);
+    for (k = 0; k < 5 && qs->gone; k++)
+        npf_loop_once(loop, 1);
+    npf_peers_free(qs);
+    npf_node_stop(&node);
+}
+
 /* a peer's own name and role as its session said (UT-72): made safe,
  * changed or not, a role other than admin or member is none */
 static void test_remote_name(void)
@@ -628,6 +666,7 @@ int test_peers(void)
         npf_loop_once(loop, 1);
     test_states(loop);
     test_pake_tries(loop);
+    test_remote_off(loop);
     test_remote_name();
     test_web_host(loop);
     for (i = 0; i < 5; i++)
