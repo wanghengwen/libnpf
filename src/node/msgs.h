@@ -196,7 +196,8 @@ NODE_FILE(m_state, M_STATE)
 NODE_MSG(m_forward, M_FORWARD)
 #define M_DEVICE(T) F_STR(T, name, 33, 0) F_STR(T, nick, NPF_NICK_MAX + 1, 0) F_BOOL(T, save) F_STR(T, connect, 16, 0) \
     F_INT(T, idle_ms, 0, 0, 86400000, 0) F_STR(T, psk_file, 512, 0) F_STR(T, psk, 64, F_SECRET) \
-    F_ARR(T, forwards, m_forward, NPF_LOCAL_MAX_FWD, F_SKIP) F_B64(T, key, 32, 0, 32) F_TOK(T, resources, 0, NPF_JT_ARRAY)
+    F_ARR(T, forwards, m_forward, NPF_LOCAL_MAX_FWD, F_SKIP) F_B64(T, key, 32, 0, 32) F_TOK(T, resources, 0, NPF_JT_ARRAY) \
+    F_STR(T, remote_name, NPF_PEER_NAME_MAX + 1, 0)
 NODE_FILE(m_device, M_DEVICE)
 
 /* every table, NULL at the end (the tests, the fuzzer): the messages', the

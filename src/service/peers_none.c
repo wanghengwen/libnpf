@@ -101,6 +101,10 @@ void npf_peer_set_label(npf_peer *p, const char *name) {}
 const char *npf_peer_resources(const npf_peer *p) { return NULL; }
 int npf_peer_resources_set(npf_peer *p, const char *json) { return -1; }
 int npf_peer_resources_same(const npf_peer *p, const char *json) { return 0; }
+const char *npf_peer_remote_name(const npf_peer *p) { return ""; }
+int npf_peer_remote_name_set(npf_peer *p, const char *name) { return 0; }
+const char *npf_peer_role(const npf_peer *p) { return ""; }
+void npf_peer_role_set(npf_peer *p, const char *role) {}
 const char *npf_peer_status(const npf_peer *p, char *buf, size_t cap) { snprintf(buf, cap, "ended"); return buf; }
 int npf_peer_needs(const npf_peer *p) { return 0; }
 const char *npf_peer_last_why(const npf_peer *p) { return ""; }

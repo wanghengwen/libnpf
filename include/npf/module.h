@@ -64,6 +64,7 @@ struct npf {
     npf_policy    policy;           /* what sessions accepted by a client or a direct listener may reach */
     struct npf_res *res;            /* the published resources, nres of them */
     int           nres;
+    char          pub_name[NPF_PEER_NAME_MAX + 1];  /* this node's own name sent with them (npf_pub_name) */
     npf_direct   *dl;
     npf_budget    budget;           /* what a hosted client's tunnels may spend (a module keeps it filled) */
     int           end_stage;
@@ -193,6 +194,11 @@ void npf_emit(npf_t *n, const char *name, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)))
 #endif
     ;
+/* This node's own name (npf name, as the platform keeps it; "" none),
+ * sent to every session it accepts with its resources: to the ones up now
+ * when it changes. Never the host name: the platform shows that only to
+ * the account. */
+void npf_pub_name(npf_t *n, const char *name);
 /* A device enrolled at run time got its number: writes node.json and the
  * pairing state, and makes the node callable. 0, or -1 (logged). */
 int  npf_become_node(npf_t *n, uint64_t number);

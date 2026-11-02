@@ -121,18 +121,27 @@ void npf_pub_free(npf_t *n)
     n->nres = 0;
 }
 
-/* the event's data: {"resources": [...]} */
-static void pub_event(npf_t *n, npf_out *o)
+/* the event's data: {"resources": [...], "name": "...", "role": "admin"}:
+ * this node's own name (npf name: never the host name, which it was not
+ * given to show), and what the caller is here when it paired (a key's
+ * session: an account's grant, a direct session or a hosted client has
+ * none) */
+static void pub_event(npf_t *n, npf_call *c, npf_out *o)
 {
-    npf_out_printf(o, "{\"resources\":");
+    int auth = npf_call_auth(c);
+    npf_out_jobj(o);
+    npf_out_jkey(o, "resources");
     npf_res_json(o, n->res, n->nres);
-    npf_out_printf(o, "}");
+    npf_out_kstr(o, "name", n->pub_name);
+    if (n->callee && (auth == NPF_AUTH_IK || auth == NPF_AUTH_PAKE))
+        npf_out_kstr(o, "role", npf_callee_is_admin(n->callee, npf_call_peer_pub(c)) ? "admin" : "member");
+    npf_out_jend(o);
 }
 
 void npf_pub_send(npf_t *n, npf_call *c)
 {
     npf_out o = {0};
-    pub_event(n, &o);
+    pub_event(n, c, &o);
     if (!o.failed && npf_call_ctl_event(c, "resources", o.p) < 0)
         npf_logd("resources: not sent (the session is going)");
     npf_out_free(&o);
@@ -148,6 +157,14 @@ static void pub_push(npf_t *n)
         if (!i.caller && i.state == NPF_CALL_ESTABLISHED)
             npf_pub_send(n, c);
     }
+}
+
+void npf_pub_name(npf_t *n, const char *name)
+{
+    if (strcmp(n->pub_name, name) == 0)
+        return;
+    snprintf(n->pub_name, sizeof n->pub_name, "%s", name);
+    pub_push(n);
 }
 
 /* the ones of local.json (not npf.conf's) saved */
@@ -276,13 +293,30 @@ int npf_pub_remove(npf_t *n, const char *name, char *err, size_t errcap)
     return rc;
 }
 
+/* its name and role (the list may be the same) */
+static int heard_name(npf_peer *p, const npf_json *j, int d)
+{
+    char name[4 * NPF_PEER_NAME_MAX + 1], role[8] = "";
+    int ch;
+    if (npf_json_get_str(j, d, "name", name, sizeof name) < 0)
+        name[0] = 0;                        /* none, or too long: none */
+    npf_json_get_str(j, d, "role", role, sizeof role);
+    npf_peer_role_set(p, role);
+    ch = npf_peer_remote_name_set(p, name) == 1;
+    if (ch)
+        npf_log("%s: its name is \"%s\"", npf_peer_name(p), npf_peer_remote_name(p));
+    return ch;
+}
+
 void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d)
 {
     npf_res *r = malloc(NPF_RES_MAX * sizeof *r);
     npf_out o = {0};
     npf_peer *p;
     char e[200];
-    int m;
+    int m, named = 0;
+    if ((p = npf_peer_of_call(n, c)))
+        named = heard_name(p, j, d);
     if (!r)
         return;
     m = npf_res_parse(j, npf_json_get(j, d, "resources"), r, NPF_RES_MAX, e, sizeof e);
@@ -297,18 +331,22 @@ void npf_pub_heard(npf_t *n, npf_call *c, const npf_json *j, int d)
         npf_out_free(&o);
         return;
     }
-    p = npf_peer_of_call(n, c);
-    if (p && npf_peer_resources_same(p, o.p)) {
-        npf_out_free(&o);                   /* the same list again: no log, no event */
+    if (p && !named && npf_peer_resources_same(p, o.p)) {
+        npf_out_free(&o);                   /* the same list and name again: no log, no event */
         return;
     }
-    if (p) {
+    if (p && !npf_peer_resources_same(p, o.p)) {
         npf_peer_resources_set(p, o.p);
         npf_log("%s: %d resource%s published", npf_peer_name(p), m, m == 1 ? "" : "s");
     }
     if (n->cb.event) {
         npf_out ev = {0};
-        npf_out_printf(&ev, "{\"session\":%u,\"resources\":%s}", (unsigned)npf_session_of(n, c), o.p);
+        npf_out_jobj(&ev);
+        npf_out_kint(&ev, "session", (long long)npf_session_of(n, c));
+        npf_out_jkey(&ev, "resources");
+        npf_out_jraw(&ev, o.p);
+        npf_out_kstr(&ev, "name", p ? npf_peer_remote_name(p) : "");
+        npf_out_jend(&ev);
         if (!ev.failed)
             n->cb.event(n->cb.user, "resources", ev.p);
         npf_out_free(&ev);

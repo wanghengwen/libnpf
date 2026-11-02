@@ -31,6 +31,14 @@ static inline int npf_text_plain(const char *s)
     return 1;
 }
 
+/* Makes s, text from elsewhere to be shown to people (a peer's name), safe
+ * to show, in place: no control characters (C0, DEL, C1), no direction or
+ * invisible format characters (U+061C, U+200B..U+200F, U+202A..U+202E,
+ * U+2060..U+2069, U+FEFF), no white space at either end, at most max bytes
+ * (cut at a character). Its length, or -1 when s is not UTF-8 (s is then
+ * ""). */
+int npf_text_display(char *s, size_t max);
+
 /* s whole as a decimal number in lo..hi (hi < LONG_MAX / 10): digits only,
  * no sign, no leading zero. 0 with *out set, or -1. */
 int npf_text_dec(const char *s, long lo, long hi, long *out);

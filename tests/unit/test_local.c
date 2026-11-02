@@ -117,6 +117,18 @@ int test_local(void)
               && strcmp(m.dev[0].name, "dev") == 0, "a device's invalid resources dropped: %s", err);
     npf_local_free(&m);
 
+    /* a peer's own name as last heard (UT-71): made safe when read (a bidi
+     * override dropped; a control character refuses it), written back */
+    put(dir, "local.json", "{\"devices\": {\"611631552\": {\"nick\": \"n\", \"remote_name\": "
+                           "\"" "\xe5\xae\xb6" "\xe2\x80\xae" "NAS\"}, \"611631553\": {\"nick\": \"m\", \"remote_name\": \"\\u00c0\\u001b\"}}}");
+    CHECK(npf_local_load(&m, dir, err, sizeof err) == 0 && m.ndev == 2 && strcmp(m.dev[0].remote_name, "家NAS") == 0
+              && !m.dev[1].remote_name[0], "a peer's own name read, made safe (a control character: none): %s", err);
+    CHECK(npf_local_save(&m) == 0, "saved with the names");
+    npf_local_free(&m);
+    CHECK(npf_local_load(&m, dir, err, sizeof err) == 0 && m.ndev == 2 && strcmp(m.dev[0].remote_name, "家NAS") == 0,
+          "a peer's own name round trip");
+    npf_local_free(&m);
+
     /* a damaged file is refused, not overwritten */
     put(dir, "local.json", "{\"devices\": {");
     CHECK(npf_local_load(&m, dir, err, sizeof err) < 0 && strstr(err, "not readable"), "damaged");

@@ -16,6 +16,7 @@
  *        "psk_file": "key", "psk": "...",              a direct peer's key: a file, or base64url
  *        "key": "<base64url>",                         the peer's pinned public key
  *        "resources": [...],                           what it published, as last heard
+ *        "remote_name": "...",                         its own name, as last heard
  *        ...}},                                        modules' keys (npf_local_ext)
  *    "resources": [...]}                               what this node publishes (npf/resources.h)
  *
@@ -35,6 +36,7 @@
 #define NPF_LOCAL_MAX_EXT   8       /* the modules' keys, per device */
 #define NPF_LOCAL_EXT_KEY   47      /* bytes of a module's key, at most */
 #define NPF_NICK_MAX        128     /* bytes of UTF-8 (the platform takes 128) */
+#define NPF_PEER_NAME_MAX   128     /* a peer's own name (npf name), as it sends it: bytes of UTF-8 */
 
 /* a saved forward */
 typedef struct npf_lfwd {
@@ -61,6 +63,7 @@ typedef struct npf_ldev {
     int     has_key;
     uint8_t key[32];                /* the pinned public key, when has_key */
     char   *resources;              /* its resources as last heard: a normalised JSON array, or NULL */
+    char    remote_name[NPF_PEER_NAME_MAX + 1];    /* its own name as last heard (npf_text_display); "" none */
     int     next;                   /* the modules' keys (npf_local_ext) */
     struct npf_lext { char *key, *val; } *ext;
 } npf_ldev;
