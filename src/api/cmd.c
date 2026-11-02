@@ -34,6 +34,10 @@ static void apply_setting(npf_t *c, const char *k, const char *v)
         }
     } else if (strcmp(k, "connect_mode") == 0) {
         npf_node_set_secure(n, strcmp(v, "secure") == 0);
+    } else if (strcmp(k, "remote_access") == 0) {
+        n->cfg.remote_off = strcmp(v, "off") == 0;
+        if (n->cfg.remote_off)
+            npf_node_end_incoming(n, "remote_access_off");     /* this node's own calls stay */
     } else if (strcmp(k, "peer_idle") == 0) {
         npf_peers_set_idle(c->peers, (atoi(v) > 0 ? atoi(v) : 300) * 1000);     /* 0: the default, as at a start */
     } else if (npf_key_is(k, NPF_K_UNLISTED)) {
@@ -64,6 +68,8 @@ const char *npf_cmd_get(npf_t *c, const char *k, char *buf, size_t cap)
         snprintf(buf, cap, "%d", c->callee ? c->callee->hosted_trust : (int)npf_conf_int(&c->conf, k));
     else if (strcmp(k, "connect_mode") == 0)
         snprintf(buf, cap, "%s", n->cfg.secure ? "secure" : "p2p");
+    else if (strcmp(k, "remote_access") == 0)
+        snprintf(buf, cap, "%s", n->cfg.remote_off ? "off" : "on");
     else if (strcmp(k, "peer_idle") == 0)
         snprintf(buf, cap, "%d", npf_peers_idle(c->peers) / 1000);
     else

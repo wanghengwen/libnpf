@@ -69,6 +69,7 @@ int npf_node_cfg_from_conf(npf_node_cfg *cfg, const npf_conf *conf)
         cfg->udp_public = (int)npf_conf_int(conf, "udp_public");
     }
     cfg->doh_servers = npf_conf_get(conf, "doh_servers", NULL);
+    cfg->remote_off = npf_conf_int(conf, "remote_access") == 1;     /* on|off (security.md 8.7) */
     cfg->home_off = npf_conf_int(conf, "home_bind") == 1;     /* auto|off (home-binding.md 17.1) */
 #ifdef NPF_SIG_UDP
     cfg->sig_udp_off = npf_conf_int(conf, "sig_udp") == 1;    /* auto|off (signaling-udp.md 5.3) */

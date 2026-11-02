@@ -25,7 +25,9 @@
  *   caller's round while another hard-side punch runs (busy: NONE, the
  *   round comes again). After each row: a deadline in SCHEDULED and LINGER
  *   only, the call's timer no later, a punch in RUNNING and LINGER only;
- * - the platform's upgrade offer: its download page kept only as an https URL. */
+ * - the platform's upgrade offer: its download page kept only as an https URL;
+ * - remote_access off: incoming sessions end (this node's own stay), and an
+ *   incoming call is refused before the callee is asked anything. */
 #include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -36,6 +38,7 @@
 #include "npf/json.h"
 #include "npf/log.h"
 #include "npf/node.h"
+#include "npf/noise.h"
 #include "npf/platform.h"
 #include "call_internal.h"
 #include "node_internal.h"
@@ -361,6 +364,66 @@ static void upgrade_rows(npf_node *n)
     CHECK(strcmp(n->upgrade.url, "https://example.com/dl") == 0, "an https download page: kept (%s)", n->upgrade.url);
 }
 
+static int locked_asked;
+static int stub_locked(npf_node *n, void *arg)
+{
+    (void)n, (void)arg;
+    locked_asked++;
+    return 1;
+}
+
+/* the platform's incoming pairing call: a caller's message 1 of XXpsk3
+ * (its prologue: npf-pair-v1, the call id, the callee's number); the
+ * callee is then asked whether pairing is locked */
+static void incoming_pairing(npf_node *n)
+{
+    npf_noise_hs h;
+    uint8_t r[32], pro[48], m1[96];
+    char id[32], hs[160], cp[48];
+    int ml;
+    npf_random(r, 16);
+    npf_b64url_encode(r, 16, id);
+    memcpy(pro, "npf-pair-v1", 11);
+    memcpy(pro + 11, r, 16);
+    npf_le64(pro + 27, n->cfg.number);
+    npf_random(r, 32);
+    if (npf_noise_init(&h, NPF_NOISE_XXPSK3, 1, pro, 35, r, NULL, NULL) < 0
+        || (ml = npf_noise_write(&h, NULL, 0, m1, sizeof m1)) < 0)
+        return;
+    npf_b64url_encode(m1, (size_t)ml, hs);
+    npf_random(r, 32);
+    npf_b64url_encode(r, 32, cp);
+    snprintf(jbuf, sizeof jbuf, "{\"v\":1,\"type\":\"incoming\",\"id\":\"p9\",\"data\":{\"call_id\":\"%s\","
+             "\"auth\":\"pake\",\"hs\":\"%s\",\"cpace\":\"%s\"}}", id, hs, cp);
+    if (npf_json_parse(&j, jbuf, strlen(jbuf), tok, 64) == 0)
+        node_msg(n, &j);
+}
+
+static void remote_rows(npf_node *n)
+{
+    static const npf_callee_ops ops = {.locked = stub_locked};
+    npf_call *in, *out;
+    clear();
+    in = new_call(n, 0, CS_UP);
+    out = new_call(n, 1, CS_UP);
+    if (!in || !out)
+        return;
+    n->cfg.remote_off = 1;
+    npf_node_end_incoming(n, "remote_access_off");
+    CHECK(call_over(in) && end_of(n, in) && strcmp(end_of(n, in)->reason, "remote_access_off") == 0 && !call_over(out),
+          "remote access off: the incoming session ends (remote_access_off), this node's own stays");
+    npf_call_end(out, "bye");
+    npf_loop_once(n->loop, 0);
+    n->callee = &ops;
+    locked_asked = 0;
+    incoming_pairing(n);
+    CHECK(locked_asked == 0 && !n->calls, "remote access off: an incoming pairing asked the callee (%d)", locked_asked);
+    n->cfg.remote_off = 0;
+    incoming_pairing(n);
+    CHECK(locked_asked == 1 && !n->calls, "remote access on: the callee is asked (%d)", locked_asked);
+    n->callee = NULL;
+}
+
 int test_call_state(void)
 {
     static npf_node node;
@@ -382,6 +445,7 @@ int test_call_state(void)
     call_rows(&node);
     punch_rows(&node);
     upgrade_rows(&node);
+    remote_rows(&node);
 
     npf_log_ctx_swap(old);
     npf_node_stop(&node);

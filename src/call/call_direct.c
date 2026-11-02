@@ -210,8 +210,8 @@ static void direct_hello(npf_direct *d, const uint8_t *buf, size_t len, const st
     int pl, ml, i, sessions = 0;
     int64_t now = npf_mono_ms(), ts;
     npf_call *c;
-    if (len < 32 + 8 + 16 || len > 256)
-        return;
+    if (len < 32 + 8 + 16 || len > 256 || n->cfg.remote_off)
+        return;                             /* remote_access off: silent, as for a wrong key */
     /* a retransmitted message 1 (the same message from the same source): the
      * same answer; anything else with a seen ephemeral key: a replay */
     for (i = 0; i < DIRECT_SEEN; i++)

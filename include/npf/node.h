@@ -212,6 +212,9 @@ typedef struct npf_node_cfg {
     int         home_off;
     /* sig_udp = off: signaling over WebSocket only (signaling-udp.md 5.3) */
     int         sig_udp_off;
+    /* remote_access = off: every incoming session refused (remote_access_off),
+     * direct ones too; this node's own calls go on (security.md 8.7) */
+    int         remote_off;
 } npf_node_cfg;
 
 /* a call_end report not answered yet (npf_node_call_end) */
@@ -617,6 +620,8 @@ typedef struct npf_caller {
 /* Callee: ends each platform session, past its handshake, for which drop
  * returns nonzero (direct sessions are not asked). */
 void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *arg), void *arg);
+/* Callee: ends every incoming session, platform and direct, in any state, with why */
+void npf_node_end_incoming(npf_node *n, const char *why);
 /* Sets up n (cfg, id, hooks copied): loads the server list and, unless
  * cfg.udp_on_demand, opens the main UDP sockets. 0, or -1 (logged): no server
  * list or no socket. Nothing is connected until npf_node_start. */

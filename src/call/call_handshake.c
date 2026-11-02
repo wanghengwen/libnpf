@@ -329,6 +329,10 @@ void node_on_incoming(npf_node *n, const m_env *e, const void *msg)
     npf_out w = {0};
     if (!req[0])
         return;
+    if (n->cfg.remote_off) {                /* before any work for the caller (security.md 8.7) */
+        callee_reply_error(n, req, "remote_access_off");
+        return;
+    }
     if (!n->callee) {
         callee_reply_error(n, req, "unauthorized");
         return;
