@@ -147,7 +147,9 @@ typedef struct npf_callbacks {
      *     text ("318204776", "host:9000");
      *   "network" {why}: the process was suspended or the addresses changed;
      *     the library checks and mends its connections itself;
-     *   "platform" {type, data: as the platform sent it, null for none};
+     *   "platform" {type, data: as the platform sent it, null for none;
+     *     "upgrade": the offer as kept, {required, min, latest, url, notes},
+     *     url https only};
      *   "resources" {session: a number, resources: [{name, target, type, and
      *     svc, desc, path when set, fixed: true when from npf.conf}]}: the
      *     peer's published list, at the session's start and when it changes;

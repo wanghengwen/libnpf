@@ -244,6 +244,7 @@ if(NPF_HAS_PEERS)
     src/service/peers.c
     src/service/peers_forward.c
     src/service/peers_demand.c
+    src/service/peers_http.c
     src/service/peers_connections.c)
 else()
   target_sources(npf_common PRIVATE src/service/peers_none.c)

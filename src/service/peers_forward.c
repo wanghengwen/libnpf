@@ -153,15 +153,23 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
             peers_conn_gone(f->p->ps, cid, "mapping_closed");
             continue;
         }
-        if (peer_may_wait(f->p) && !npf_call_ready(f->p->call)) {
-            /* no session yet (on demand), between two (a kept peer
-             * reconnecting), or one established whose transport is not
-             * ready: it waits (the session starts now if there is none) */
-            peers_demand_wait(f, fd, cid);
-            continue;
-        }
-        peers_conn_open(f, fd, cid);
+        if (peers_fwd_http(f))
+            peers_http_wait(f, fd, cid);    /* a web page's: its first request's Host first */
+        else
+            peers_fwd_admitted(f, fd, cid);
     }
+}
+
+void peers_fwd_admitted(pfwd *f, int fd, uint64_t cid)
+{
+    if (peer_may_wait(f->p) && !npf_call_ready(f->p->call)) {
+        /* no session yet (on demand), between two (a kept peer
+         * reconnecting), or one established whose transport is not
+         * ready: it waits (the session starts now if there is none) */
+        peers_demand_wait(f, fd, cid);
+        return;
+    }
+    peers_conn_open(f, fd, cid);
 }
 
 static void udp_cb(npf_loop *loop, int fd, unsigned ev, void *arg)
@@ -253,6 +261,7 @@ void peers_fwd_stop(pfwd *f)
         npf_sock_close(f->fd);
         f->fd = -1;
     }
+    peers_http_drop(f->p->ps, f->id, "mapping_closed");    /* those still to send their first request */
     if (f->st == FS_UP || f->st == FS_RETRY)
         f->st = FS_WAIT;
     if (!f->reverse)

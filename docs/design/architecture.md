@@ -68,7 +68,8 @@
 | `resources.c` | 292 | 发布的资源：检查、解析、写出、变成策略规则 | 流上的服务（策略） |
 | `callee.c` | 671 | 被叫的本地状态（口令、配对、锁定、所有者、吊销，state.json） | 身份 |
 | `peers.c` | 961 | 对端对象、主动会话、重连 | 对端（SDK 服务） |
-| `peers_forward.c` | 775 | 转发规则、监听、重试 | 对端（SDK 服务） |
+| `peers_forward.c` | 771 | 转发规则、监听、重试 | 对端（SDK 服务） |
+| `peers_http.c` | 287 | 网页资源的本地转发：第一个请求的 `Host`（安全 8.8） | 对端（SDK 服务） |
 | `peers_connections.c` | 417 | 公开映射的连接准入与计数（每个映射、来源占映射的 1/16、来源、账户即实例、进程内全部实例，空闲 20 秒 / 10 分钟） | 对端（SDK 服务） |
 | `peers_demand.c` | 230 | 按需会话的等待队列、空闲 | 对端（SDK 服务） |
 | `peers_none.c` | 134 | `NPF_PEERS=OFF` 时的空实现 | 对端（SDK 服务） |
@@ -819,7 +820,7 @@ TABLE(m_punch_info, M_PUNCH_INFO)         /* msgs.c: 它的表 m_punch_info_d */
 | `NPF_TEST_UDP_AGAIN_MS` | 数 | 只因中转不通而在 WS 上、UDP 仍可用时多久试回 UDP（Q4） | `path_mgr.c` | natlab |
 | `NPF_TEST_SIG_UDP_AGAIN_MS` | 数 | 信令在 WebSocket 上时多久（空闲时）试回 UDP 信令（[信令协议](../protocol/signaling.md)"UDP 承载"的"选择与兜底"，平时 10 分钟 ± 20 %） | `node_signal.c` | `test_sigudp.c` |
 
-**去掉的**：`NPF_TEST_PACE`、`NPF_TEST_UDP_MAX_AGE_MS`（诊断用，没有测试用；`udpfwd.c` 里只为后者存在的 `max_age_ms` 一起去掉），`NPF_TEST_ONLY_HOST6`（总是和 `NPF_TEST_HOST6` 一起用，并入）。npf 的模块与程序自己的开关（`NPF_TEST_IDLE_MS`、`NPF_TEST_QUOTA_AGAIN_MS`、`NPF_TEST_UPGRADE_WATCH_MS`、`NPF_TEST_FILES_MS`、`NPF_TEST_CALLER_CHECK`）不在这张表里：库不认程序的键（第 7 节）。另有配置键 `test_one_host`（安全设计 11.1）：它是配置而不是环境变量，留在配置里。
+**去掉的**：`NPF_TEST_PACE`、`NPF_TEST_UDP_MAX_AGE_MS`（诊断用，没有测试用；`udpfwd.c` 里只为后者存在的 `max_age_ms` 一起去掉），`NPF_TEST_ONLY_HOST6`（总是和 `NPF_TEST_HOST6` 一起用，并入）。npf 的模块与程序自己的开关（`NPF_TEST_IDLE_MS`、`NPF_TEST_QUOTA_AGAIN_MS`、`NPF_TEST_UPGRADE_WATCH_MS`、`NPF_TEST_FILES_MS`、`NPF_TEST_CALLER_CHECK`、`NPF_TEST_FILES_UID`：文件服务把本机连接的另一端当作这个 uid 的进程，files.sh）不在这张表里：库不认程序的键（第 7 节）。另有配置键 `test_one_host`（安全设计 11.1）：它是配置而不是环境变量，留在配置里。
 
 **行为上的变化**：
 

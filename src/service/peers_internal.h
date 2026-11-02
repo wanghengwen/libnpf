@@ -148,6 +148,9 @@ typedef struct ipent {
     int64_t  at;                    /* last refill / use (ms) */
 } ipent;
 
+#define HTTP_HEAD_MAX 8192          /* a web page's first request: its head read at most (peers_http.c) */
+#define HTTP_WAITING  64            /* connections whose first request is awaited, per instance */
+
 struct npf_peers {
     npf_node     *n;
     npf_local    *lc;               /* local.json: names, nicks, pinned keys (the engine's) */
@@ -182,6 +185,8 @@ struct npf_peers {
         void               *arg;
     } kinds[NPF_FWD_KINDS];
     int           nkinds;
+    struct hwait *hw[HTTP_WAITING]; /* web pages' connections whose first request is not read yet (peers_http.c) */
+    int           nhw;
 };
 
 /* no session, none coming, not given up: one may start now */
@@ -207,6 +212,8 @@ void peers_listeners_close(npf_peer *p);
 void peers_forwards_start(npf_peer *p);
 void peers_forwards_session_gone(npf_peer *p);
 pfwd *peers_fwd_by_id(const npf_peers *ps, int id);
+/* a listener's connection let in: into the session, or waiting for it */
+void peers_fwd_admitted(pfwd *f, int fd, uint64_t cid);
 void peers_forwards_tick(npf_peer *p, int64_t now);   /* their retries, the accepting resumed */
 
 /* peers_demand.c */
@@ -230,5 +237,18 @@ void peers_conn_gone(npf_peers *ps, uint64_t cid, const char *why);
 void peers_subs_call_gone(npf_peers *ps, npf_call *c);
 void peers_conn_open(pfwd *f, int fd, uint64_t cid);
 void peers_conns_free(npf_peers *ps);     /* (npf_peers_free) */
+
+/* peers_http.c: a web page's forward (security.md 8.8): the first
+ * request's Host is checked before the connection goes on (DNS rebinding) */
+/* the forward reaches one of the peer's http resources (tcp, svc http):
+ * a -L of a peer, not public, socks, UDP or a module's kind */
+int  peers_fwd_http(const pfwd *f);
+void peers_http_wait(pfwd *f, int fd, uint64_t cid);
+void peers_http_drop(npf_peers *ps, int fid, const char *why);   /* fid's (peers_fwd_stop) */
+void peers_http_free(npf_peers *ps);    /* every one (npf_peers_free) */
+/* the head so far (n bytes): 1 let in (Host an IP address,
+ * localhost, *.localhost, none, or not an HTTP/1 request), 0 refused, -1
+ * more needed; host: the Host given ("" none) */
+int  npf_http_host_ok(const char *b, size_t n, char *host, size_t hcap);
 
 #endif

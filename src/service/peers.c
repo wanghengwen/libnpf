@@ -647,6 +647,7 @@ void npf_peers_free(npf_peers *ps)
         npf_timer_cancel(ps->n->loop, ps->t_save);
         npf_local_save(ps->lc);
     }
+    peers_http_free(ps);
     peers_conns_free(ps);
     free(ps->subs);
     free(ps);

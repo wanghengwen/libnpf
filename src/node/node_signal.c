@@ -202,12 +202,35 @@ void node_reconnect_now(npf_node *n)
 
 /* The platform's upgrade policy for this program, from a welcome's
  * "upgrade", an "upgrade" event or the data of upgrade_required (j[d]: the
- * object; d < 0: none, which clears what was offered); notify: tell the
- * modules of an offer (the "upgrade" event does reach them by itself; a
- * welcome's does not) */
+ * object; d < 0: none, which clears what was offered); the modules and
+ * the application hear of an offer, or of its end, as kept (upgrade_event) */
 #define UPGRADE_PACKAGES_MAX 16384
 
-static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int required, int notify)
+/* "upgrade" to the modules and the application: the offer as kept, not as
+ * sent (its download page https only; the packages are read from
+ * n->upgrade, where they are checked before use) */
+static void upgrade_event(npf_node *n)
+{
+    static const char *const key[] = {"min", "latest", "url", "notes"};
+    const char *v[] = {n->upgrade.min, n->upgrade.latest, n->upgrade.url, n->upgrade.notes};
+    npf_out o = {0};
+    npf_jtok tok[12];
+    npf_json j;
+    size_t k;
+    if (!n->hooks.on_event)
+        return;
+    npf_out_jobj(&o);
+    npf_out_kbool(&o, "required", n->upgrade.required);
+    for (k = 0; k < sizeof v / sizeof v[0]; k++)
+        if (v[k][0])
+            npf_out_kstr(&o, key[k], v[k]);
+    npf_out_jend(&o);
+    if (!o.failed && npf_json_parse(&j, o.p, o.len, tok, 12) >= 0)
+        n->hooks.on_event(n, "upgrade", &j, 0, n->hook_arg);
+    npf_out_free(&o);
+}
+
+static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int required)
 {
     int was = n->upgrade.latest[0] || n->upgrade.required;
     m_upgrade u;
@@ -232,11 +255,11 @@ static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int requir
                      n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
         else if (u.latest[0])
             npf_log("upgrade: version %s is available%s%s", u.latest, n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
-        if (notify && (n->upgrade.required || u.latest[0]) && n->hooks.on_event)
-            n->hooks.on_event(n, "upgrade", j, d, n->hook_arg);
     } else if (was) {
         npf_log("upgrade: no newer version offered any more");
     }
+    if (was || n->upgrade.required || n->upgrade.latest[0])
+        upgrade_event(n);               /* an offer, or none any more */
 }
 
 static void reconnect_cb(npf_loop *loop, void *arg)
@@ -765,7 +788,7 @@ static void welcome(npf_node *n, const npf_json *j, const m_welcome *m, int a)
     }
     if (m->ping_s)
         n->ping_s = (int)m->ping_s;
-    node_upgrade_apply(n, j, m->upgrade, 0, 1);
+    node_upgrade_apply(n, j, m->upgrade, 0);
     apply_keys(n, m);
     node_apply_probe(n, m);             /* measured below (node_nat_login) */
     /* a node's own certificate in "cert"; the account's in "account_cert"
@@ -823,7 +846,7 @@ void node_on_login(npf_node *n, const m_env *e, const void *m)
     }
     npf_logw("login: rejected (%s)", e->error);
     if (strcmp(e->error, "upgrade_required") == 0) {
-        node_upgrade_apply(n, e->j, e->data, 1, 1);
+        node_upgrade_apply(n, e->j, e->data, 1);
         snprintf(n->sig_error, sizeof n->sig_error, "this version is too old for the platform: upgrade to %s%s",
                  n->upgrade.min[0] ? n->upgrade.min : "the newest version", n->upgrade.url[0] ? " (see the download page)" : "");
     } else {
@@ -856,13 +879,11 @@ void node_on_server_list(npf_node *n, const m_env *e, const void *m)
     server_list_in(n, e->j, ((const m_server_list *)m)->blob);
 }
 
-/* the policy changed; the application hears of it too */
+/* the policy changed (the modules and the application hear of it there) */
 void node_on_upgrade(npf_node *n, const m_env *e, const void *m)
 {
     (void)m;
-    node_upgrade_apply(n, e->j, e->data, 0, 0);
-    if (n->hooks.on_event)
-        n->hooks.on_event(n, e->type, e->j, e->data, n->hook_arg);
+    node_upgrade_apply(n, e->j, e->data, 0);
 }
 
 void node_on_probe(npf_node *n, const m_env *e, const void *m)
