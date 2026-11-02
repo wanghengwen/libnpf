@@ -31,6 +31,13 @@
  * session lost after message 3 (a relay or a punch that failed then), and
  * each one more would give a platform one more guess per password given */
 #define PAKE_TRIES         2
+/* A callee with remote access off refuses each try; retried, a burst of
+ * tries from one source then meets the platform's limit on callers it has
+ * not paired with, which answers "unavailable" (security.md 8.3: it tells a
+ * stranger nothing). Within OFF_KEEP_MS (the limit's window) of the
+ * callee's own remote_access_off, an unavailable keeps that reason: the
+ * user sees why, not the limit */
+#define OFF_KEEP_MS        120000
 
 /* target's local.json record (made when create), NULL: none */
 static npf_ldev *dev_of(const npf_peers *ps, const char *target, int create)
@@ -809,6 +816,7 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
     if (st == NPF_CALL_ESTABLISHED) {
         npf_log("%s: connected (%s)", p->name, npf_call_path_label(c));
         p->up_since = npf_mono_ms();
+        p->off_at = 0;
         peers_forwards_start(p);        /* a mapping that fails retries on its own */
         if (p->st == PS_REMOVED)
             return 1;                   /* in a forward event */
@@ -821,7 +829,12 @@ int npf_peers_on_call_state(npf_peers *ps, npf_call *c, int st, const char *why)
         if (p->ps->cbs.up)
             p->ps->cbs.up(p, c, p->ps->arg);
     } else if (st == NPF_CALL_CLOSED) {
+        int64_t now = npf_mono_ms();
         npf_log("%s: session closed (%s)", p->name, why ? why : "");
+        if (why && strcmp(why, "remote_access_off") == 0)
+            p->off_at = now;
+        else if (why && strcmp(why, "unavailable") == 0 && p->off_at && now - p->off_at < OFF_KEEP_MS)
+            why = "remote_access_off";      /* the device's reason, not the limit's (OFF_KEEP_MS) */
         p->call = NULL;
         p->st = PS_IDLE;
         peers_subs_call_gone(p->ps, c);
