@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.74。更新日期：2026-11-02。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.75。更新日期：2026-11-02。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -455,7 +455,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | 类型 | 方向 | 主要内容 |
 |---|---|---|
 | `verify_begin` | 客户端到平台 | `channel`（`email` 或 `phone`）、`address`，可选 `lang`（`zh-CN` 或 `en`：界面的语言，邮件用这种语言写；不给或其他值时中英文都写）；平台发送验证码，返回 `verification_id`。邮件说明验证码的用途：没有账户会话时为注册，有账户会话时为给本账户绑定这个邮箱。验证码由短信网关或邮件网关发出后才回复；短信网关拒绝时回 `rate_limited`（号码的频控）、`bad_request`（`address`，号码无效）或 `unavailable`（`sms`：网关故障；`sms_daily_limit`：平台当天的短信总量到了上限）；邮件网关拒绝收件地址时回 `bad_request`（`address`），其他失败回 `unavailable`（`mail`），当天的邮件总量到了上限回 `unavailable`（`mail_daily_limit`） |
-| `verify_finish` | 客户端到平台 | `verification_id`、`code`；成功后该验证可在 10 分钟内被注册、绑定或找回消费一次 |
+| `verify_finish` | 客户端到平台 | `verification_id`、`code`；成功后该验证可在 10 分钟内被消费一次，只能用于发送时的用途：没有账户会话时 `verify_begin` 的用于注册，`password_reset_begin` 的用于找回，有账户会话时 `verify_begin` 的用于绑定与再次证明是本人；用途不对的请求回 `forbidden`（`verification`），验证不消耗 |
 | `account_register` | 客户端到平台 | `password`、`verification_id`（已验证的邮箱或手机号作为登录名），`name` 可选：不给时取邮箱 @ 前面的部分，或中间四位隐藏的手机号（`138****8000`），以后用 `account_update` 改 |
 | `account_login` | 客户端到平台 | `login`（邮箱或手机号）、`password`。账号不存在或密码不对都回 `unauthenticated`，消息为 `credentials`（不区分两者，不透露哪些地址有账户） |
 | `auth_providers` | 客户端到平台 | → `{providers}`：本平台配置了的第三方登录（`google`、`wechat`），界面据此显示按钮 |
@@ -463,18 +463,20 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
 | `account_get`、`account_update` | 客户端到平台 | 本人资料；`account_update` 只能改 `name` |
 | `plan_list` | 客户端到平台 | 可订阅的套餐 `plans`（`level, name, monthly_bytes, relay_kbps, public_max, public_kbps, choose_port, prices`，级别 0 为免费级；`prices` 为可购买的时长 `[{months, currency, amount}]`，金额为最小货币单位，账户已定币种时只给该币种）、账户当前的级别 `level` 与订阅 `sub{level, start, expires}`，以及支付页 `subscribe_url`（服务器配置 `subscribe_url`，没有配置时不给出：界面提示联系运营方） |
 | `pay_ticket` | 客户端到平台 | `{level?, lang?}` → `{url}`：`subscribe_url` 加片段 `#ticket=…&level=N&lang=…`。票据一次有效、10 分钟过期，带它打开支付页不需要再登录（服务器配置 `pay_ticket_secret`，没有配置时网址不带票据）；没有支付页时回 `unavailable` |
-| `login_method_bind` | 客户端到平台 | `{method, …}` 绑定新的登录方式：`google` / `wechat` 附 `purpose = bind` 的事务 `transaction_id` 与确认码 `code`；`email` / `phone` 附 `verification_id`（已有的被替换）；`password` 附 `password`，账户还没有邮箱或手机号时同时附 `verification_id`（R28）。应答为账户资料；已属于其他账户、或该第三方方式已绑定另一个身份时 `conflict`，已有密码时 `conflict`（改密码用 `password_change`）。另须**再次证明是本人**（见下行） |
-| `login_method_unbind` | 客户端到平台 | `{method}`：`password`、`google`、`wechat`、`email`、`phone`。解绑后必须还能登录（密码、Google、微信至少一种），有密码时还要留一个邮箱或手机号，否则 `conflict`；没有绑定该方式时 `not_found`。
+| `login_method_bind` | 客户端到平台 | `{method, …}` 绑定新的登录方式：`google` / `wechat` 附 `purpose = bind` 的事务 `transaction_id` 与确认码 `code`；`email` / `phone` 附 `verification_id`（已有的被替换：账户其他客户端的证书随之吊销、连接关闭，同改密码）；`password` 附 `password`，账户还没有邮箱或手机号时同时附 `verification_id`（R28）。应答为账户资料；已属于其他账户、或该第三方方式已绑定另一个身份时 `conflict`，已有密码时 `conflict`（改密码用 `password_change`）。另须**再次证明是本人**（见下行） |
+| `login_method_unbind` | 客户端到平台 | `{method}`：`password`、`google`、`wechat`、`email`、`phone`。解绑后必须还能登录（密码、Google、微信至少一种），有密码时还要留一个邮箱或手机号，否则 `conflict`；没有绑定该方式时 `not_found`。解绑成功后账户其他客户端的证书被吊销、连接关闭（同改密码），这个会话留下。
 
-绑定与解绑都要再次证明是本人（被盗的会话不能借此永久占有账户）：有密码的账户附 `current_password`（错了 `forbidden`，消息 `password`，计入该账户的密码错误次数）；没有密码的账户附一个已绑定身份的 `purpose = confirm` 事务（`confirm_transaction_id`、`confirm_code`，用后作废），或一个发到账户当前邮箱或手机号的验证（`current_verification_id`）。缺少或不对时 `forbidden`，消息 `reauth`。成功后平台给变更前的邮箱发一封通知 |
+绑定与解绑都要再次证明是本人（被盗的会话不能借此永久占有账户）：有密码的账户附 `current_password`（错了 `forbidden`，消息 `password`，计入这个会话的密码错误次数）；没有密码的账户附一个已绑定身份的 `purpose = confirm` 事务（`confirm_transaction_id`、`confirm_code`，用后作废），或一个发到账户当前邮箱或手机号的验证（`current_verification_id`）。缺少或不对时 `forbidden`，消息 `reauth`。成功后平台给变更前的邮箱发一封通知 |
 | `password_change` | 客户端到平台 | 旧密码、新密码；成功后吊销该账户其他客户端的证书（R34）。旧密码不对回 `forbidden`、消息 `password`；账户没有密码（第三方登录注册的）回 `forbidden`、消息 `no_password`（用 `password_reset_begin` 设一个） |
 | `password_reset_begin`、`password_reset_finish` | 客户端到平台 | 用任一已验证的邮箱或手机号找回：`password_reset_begin` 的字段、应答与错误同 `verify_begin`（邮件说明用途是找回密码），`verify_finish` 之后以 `verification_id` 调 `password_reset_finish` 设置新密码；验证不成立或地址不属于任何账户都回 `forbidden`、消息 `verification` |
 | `account_logout` | 客户端到平台 | 吊销当前客户端的客户端证书；连接的会话结束（应答之前的空 `account`） |
+| `account_logout_others` | 客户端到平台 | 让账户的其他客户端退出：吊销它们的客户端证书、关闭它们的连接，这个会话留下。须再次证明是本人，字段与错误同 `login_method_bind`（`current_password`，或 `confirm_transaction_id` + `confirm_code`，或 `current_verification_id`）：没有密码的账户也能用 |
 | `account_delete` | 客户端到平台 | 注销账户：有密码的账户附 `password`，没有密码的账户附 `purpose = confirm` 的事务 `transaction_id` 与 `code`（必须是本账户已绑定的身份）作二次验证；效果见安全设计 8.1（解除全部设备的所有者关系、删除公网映射、吊销全部客户端证书）。同步完成：这条连接的会话结束（应答之前的空 `account`，连接留下，与退出相同），该账户的其他连接被关闭。密码不对回 `forbidden`、消息 `password`；事务或确认码不对回 `forbidden`、消息 `verification` |
 
 - **登录的结果**：`account_login`、`auth_finish`、`account_register`、`password_reset_finish` 成功后，平台为当前连接的客户端公钥（Noise 握手中的静态公钥）签发客户端证书（安全设计 8.1，有效期 30 天），客户端之后在 `login` 中出示它；证书的续签在 `welcome` 中完成，不另设刷新消息。这些请求都带 `sign_pub`（客户端的 Ed25519 公钥）和 `key_sig = Ed25519(签名私钥, "npf-client-key-v1" | Noise 握手哈希)`：证明持有签名私钥，并把证明绑定到这条连接；证书（`中间证书 | 客户端证书`）在应答之前的 `account` 事件里，应答为账户资料；
 - **账户不合并**（R31）：同一个邮箱、手机号或第三方身份只能属于一个账户。绑定时如果它已经属于另一个账户，返回 `conflict`；第一版不提供合并；
-- **验证码**：6 位数字，10 分钟有效，每个 `verification_id` 最多尝试 5 次；每个地址、每个源 IP 发送验证码有频率限制；
+- **验证码**：6 位数字，10 分钟有效，每个 `verification_id` 最多尝试 5 次，只能用于发送时的用途（见 `verify_finish`）。发送的频率：每个地址、每个来源（IPv4 地址或 IPv6 /48）每分钟 1 个、每小时 5 个、每天 10 个，每个地址所有来源合计每天 30 个（别人替一个地址要光验证码，不挡主人自己来源的找回）；每个源 IP（IPv6 按 /64）每小时 10 个、每天 20 个，每个 IPv6 /48 每天 60 个、/40 每天 150 个；短信与邮件网关的每日总量中注册最多用 60%、找回最多用 30%，其余留给已登录的账户。超出回 `rate_limited`（总量与份额为 `unavailable`，`sms_daily_limit` / `mail_daily_limit`）；
+- **密码的错误次数**：每次检查密码之前先占一次（同时来的猜测不会都过），对了还回去。按（账户, 来源：IPv4 地址或 IPv6 /48）每刻钟 5 次、每天 20 次，按账户所有来源合计每刻钟 30 次、每天 100 次；不存在的登录名按名字同样计；会话中核对当前密码（`password_change`、`account_delete`、再次证明是本人）按那个会话单独计，每刻钟 5 次、每天 20 次，别人的猜测锁不住它；换了密码（找回、修改）重新计数。超出回 `rate_limited`（登录的消息为 `credentials`，会话中的为 `password`）；
 - 密码只在已认证的加密信令内发送，平台保存适合密码验证的加盐哈希，算法参数另行定稿；第三方登录的账户没有本地密码，不生成用户不知道的默认密码。
 
 ### Google 与微信登录流程
@@ -495,7 +497,7 @@ NAS 设备端没有编号时（身份文件新建或丢失），Noise 握手后�
    - 成功：事务转 `ready`，生成 8 位数字的**确认码**，事务的有效期从此刻重新计算；页面显示确认码（`1234-5678`），并在有 `origin` 时用 `postMessage` 只发给该回环来源的打开者窗口。失败：事务转 `denied`，页面提示重新开始。页面按 `Accept-Language` 显示中文或英文，禁止缓存、禁止嵌入，脚本只允许本页带随机数的一段。
 3. **`auth_status{transaction_id}`** → `{status, provider, purpose}`，`status` 为 `waiting`、`ready`、`denied`、`expired` 或 `consumed`；`purpose = login` 且 `ready`、而该身份还没有账户时，附 `new_account: true` 与第三方给的昵称 `suggested_name`（去掉控制字符，最多 128 字节）。只有发起事务的客户端密钥能查询，其他连接得到 `not_found`。
 4. **确认码**：完成事务（`auth_finish`、`login_method_bind`、`account_delete`）都要附浏览器页面上的确认码 `code`（可以带 `-` 与空格）。它证明完成登录的浏览器在用户自己手里：别人发起事务、把授权链接发给受害者，受害者登录后确认码只出现在受害者的浏览器里，发起者拿不到会话。错 5 次事务转 `denied`。控制台收到 `postMessage` 的确认码时自动继续；收不到时（中间的页面切断了打开者关系、命令行）由用户输入。
-5. **`auth_finish{transaction_id, code, name?, sign_pub, key_sig}`**：只有发起事务的客户端密钥能完成。身份已有账户时登录；没有账户时是**首次登录自动注册**（R29）：必须带 `name`（客户端的确认页预填 `suggested_name`，用户可以修改；缺少时 `bad_request`，消息为 `name`，事务不消耗），建号并把身份记入账户，邮箱与手机号留空，没有密码。应答与 `account_login` 相同（之前的 `account` 带证书，应答为账户资料），新建账户时另带 `new_account: true`。事务随即转 `consumed`；完成后 2 分钟内（只为应答丢失的情况），同一客户端用同一 `transaction_id` 重发 `auth_finish` 得到同一账户与新签的证书，不会重复建号，之后回 `expired`。同一身份由数据库唯一约束保证只属于一个账户。
+5. **`auth_finish{transaction_id, code, name?, sign_pub, key_sig}`**：只有发起事务的客户端密钥能完成。身份已有账户时登录；没有账户时是**首次登录自动注册**（R29）：必须带 `name`（客户端的确认页预填 `suggested_name`，用户可以修改；缺少时 `bad_request`，消息为 `name`，事务不消耗），建号并把身份记入账户，邮箱与手机号留空，没有密码。应答与 `account_login` 相同（之前的 `account` 带证书，应答为账户资料），新建账户时另带 `new_account: true`。事务随即转 `consumed`；完成后 2 分钟内（只为应答丢失的情况），同一客户端用同一 `transaction_id` 重发 `auth_finish` 得到同一账户与新签的证书，不会重复建号，之后回 `expired`；这个客户端此间已退出或证书已被吊销时也回 `expired`（重发不是退出后再进来的路）。同一身份由数据库唯一约束保证只属于一个账户。
 
 `transaction_id` 只是标识：查询和完成都要求同一个客户端密钥（Noise 握手中的静态公钥），完成还要确认码；换了密钥的客户端只能重新发起。第三方应用的秘密只保存在平台（`client_secret_file`、`app_secret_file`），平台不保存第三方的访问令牌。
 
@@ -1248,6 +1250,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-11-02 | 0.75 | 安全审计：新增 `account_logout_others`（再次证明是本人后让账户的其他客户端退出，没有密码的账户也能用）；解绑登录方式、替换邮箱或手机号时吊销账户的其他客户端；验证码只能用于发送时的用途；验证码按（地址, 来源）、IPv6 /48 与 /40 限频，网关每日总量按用途分份额；密码错误按（账户, 来源）与按账户计，会话中的核对单独计，检查前先占次数；`auth_finish` 的重发在退出或吊销后回 `expired` |
 | 2026-11-02 | 0.74 | 升级策略的 `url` 节点只接受 https（审计 client 10） |
 | 2026-11-02 | 0.73 | `owner_reset` 改为请求、立即发送，被叫收到应答才清除待上报标记（原来是下次登录时的事件，没有确认）；重置时被叫立即结束原所有者的 `grant` 会话；离开安全模式时也发（审计 lib-core 2、6） |
 | 2026-11-01 | 0.72 | 去掉账户之间的分享：`share_create`、`share_accept`、`share_list`、`share_set`、`share_revoke`、`share_leave` 与访问者；设备视图去掉 `role`、`permissions`；`grant_get` 与托管 `grant` 只对所有者签发；映射去掉 `not_publisher`（不是所有者的设备回 `not_found`） |
