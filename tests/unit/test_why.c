@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "npf/json.h"
+#include "npf/node.h"
 #include "npf/why.h"
 #include "test.h"
 
@@ -58,6 +60,31 @@ int test_why(void)
            && strstr(npf_why_platform_text("no reply"), "did not answer"));
     EXPECT(npf_why_platform_text("credentials")
            && strstr(npf_why_platform_text("credentials"), "password"));
+    {   /* a reply's code with its reason: rate_limited (credentials) is the rate, not a wrong password */
+        static const char *rows[][3] = {
+            {"rate_limited", "credentials", "too many wrong passwords"},
+            {"unauthenticated", "credentials", "wrong email / phone number or password"},
+            {"rate_limited", "password", "too many wrong passwords"},
+            {"forbidden", "password", "wrong password"},
+            {"bad_request", "password", "8 to 128 characters"},
+            {"rate_limited", "busy", "busy"},
+            {"rate_limited", "codes", "share codes"},
+            {"rate_limited", "", "too many attempts"},
+        };
+        size_t r;
+        for (r = 0; r < sizeof rows / sizeof rows[0]; r++) {
+            char s[256], out[256];
+            npf_jtok tok[16];
+            npf_json j;
+            snprintf(s, sizeof s, "{\"v\":1,\"type\":\"x\",\"status\":\"error\",\"error\":\"%s\",\"message\":\"%s\",\"data\":{}}",
+                     rows[r][0], rows[r][1]);
+            REQUIRE(npf_json_parse(&j, s, strlen(s), tok, 16) == 0);
+            npf_platform_err(&j, out, sizeof out);
+            EXPECT(strncmp(out, rows[r][0], strlen(rows[r][0])) == 0 && strstr(out, rows[r][2]));
+            if (!strstr(out, rows[r][2]))
+                fprintf(stderr, "  %s/%s: %s\n", rows[r][0], rows[r][1], out);
+        }
+    }
     EXPECT(npf_why_platform_text("port_taken")
            && strstr(npf_why_platform_text("port_taken"), "in use"));
     EXPECT(npf_why_platform_text("no_hosted") != NULL);

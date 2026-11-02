@@ -65,7 +65,15 @@ typedef struct {
     const char *text;
 } why_text_row;
 
+/* "code:reason" rows first: a reason that means something else under another
+ * code (rate_limited:credentials is not a wrong password) */
 static const why_text_row k_platform[] = {
+    {"rate_limited:credentials", "too many wrong passwords lately; wait a few minutes and try again "
+                                 "(forgot it? npf account reset EMAIL|PHONE)"},
+    {"rate_limited:password", "too many wrong passwords lately; wait a few minutes and try again"},
+    {"rate_limited:busy", "the platform is busy checking passwords; try again in a moment"},
+    {"rate_limited:codes", "the node has as many share codes as it may have (16); revoke one first"},
+    {"bad_request:password", "the password needs 8 to 128 characters"},
     {"no_hosted", "no public-mapping server has room right now (all are full or offline); try again later, or "
                   "tell the platform's operator"},
     {"plan_limit", "the account's plan allows no more public mappings (the free plan: none); upgrade it or delete one"},
