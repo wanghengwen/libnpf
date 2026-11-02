@@ -516,7 +516,7 @@ npf -c npf.conf run --direct [ADDR:]PORT --psk-file key             # 节点登�
 npf -c npf.conf run --peer "HOST:PORT --psk-file key -L 8080:127.0.0.1:80"   # 节点同时保持到直连对端的会话
 ```
 
-`--psk KEY` 可以代替 `--psk-file`，但命令行参数对本机其他用户可见，只适合测试。节点也可在配置文件中写 `direct = PORT`、`direct_psk_file = 路径`，直连对端写成 `peer = HOST:PORT --psk-file 路径 ...`。
+密钥文件在 Windows 上也要只有自己能用：它的 DACL 除了 SYSTEM、Administrators 和文件的所有者，不能允许别人读写（例如 `icacls key /inheritance:r /grant:r "%USERNAME%":F`），否则同样被拒绝。`--psk KEY` 可以代替 `--psk-file`，但命令行参数对本机其他用户可见，只适合测试。节点也可在配置文件中写 `direct = PORT`、`direct_psk_file = 路径`，直连对端写成 `peer = HOST:PORT --psk-file 路径 ...`。
 
 ## 14. 应用数据与音视频流（libnpf）
 

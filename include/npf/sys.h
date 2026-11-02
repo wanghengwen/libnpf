@@ -256,9 +256,17 @@ int  npf_mkdir_p(const char *path);
 /* Restricts a file holding secrets to its owner (POSIX mode 0600; Windows:
  * a protected DACL for SYSTEM, Administrators and the owner). 0 or -1. */
 int  npf_file_private(const char *path);
-/* 1 when group or others have any permission on the file (POSIX); always 0
- * on Windows. */
+/* 1 when others may open the file (a secret's check): POSIX, group or others
+ * have any permission; Windows, its DACL allows anyone but SYSTEM, the
+ * Administrators and its owner to read or change it. 0 also when it is not
+ * there. */
 int  npf_file_too_open(const char *path);
+#ifdef _WIN32
+/* NULL when only SYSTEM and the Administrators can change path, a file or a
+ * directory (what a service runs on): not a link (reparse point), owned by
+ * one of them, and its DACL lets no one else write it; else why not. */
+const char *npf_file_not_admins(const char *path);
+#endif
 /* p made absolute against the working directory (symlinks not resolved),
  * into out of cap bytes. 0, or -1 with errno and out empty (an error, or it
  * does not fit: ENAMETOOLONG). */
