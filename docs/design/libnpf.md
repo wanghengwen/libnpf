@@ -378,6 +378,7 @@ return npf_peer_setopt(n, peer, NPF_PEER_OPT_PERSIST, &persist, sizeof persist);
 | `NPF_FWD_REMOTE` | TCP、UDP | 对端上的地址：IP 地址、`localhost` 或 `*`（主机名是 `NPF_EINVAL`），默认 `127.0.0.1`；其他地址（所有地址，或对端的某个局域网地址）要对端的 reverse 资源带 `lan:`；端口 0 由对端选择，要它的 reverse 资源是 `*` 或 `lan:*` | 本机一侧的主机和端口 |
 
 - 本机端口被占用、组合不合法这类立即可知的错误在创建时返回（`NPF_EFAIL`、`NPF_EINVAL`），不留下对象；每个对端最多 `NPF_PEER_FORWARDS_MAX`（16）条，超出 `NPF_EBUSY`；
+- 目标是对端发布的网页资源（`tcp/http`）的本机转发，先看连接的第一个请求的 `Host`：不是 IP 地址、`localhost`、`*.localhost` 的回 421 并关闭（DNS 重绑定，[安全设计](security.md) 8.8）；
 - `npf_forward_get`：状态（`NPF_FWD_WAITING`、`UP`、`FAILED` 与 `why_code`）、实际使用的端口、当前连接数、被对端拒绝的连接数。`NPF_FWD_FAILED` 只表示整条规则不能用（端口被占、对端拒绝反向监听），规则在会话中自己退避重试，`NPF_FWD_WHY_FORBIDDEN`（对端的策略）等下一次会话；模块类型的转发 `kind` 为 0；单条连接被对端拒绝（目标不在它发布的资源里）只计数（`refused`，最近一次的目标在 `refused_why`），同一个 SOCKS 代理上允许的目标照常连通；
 - 带 `NPF_PERSIST` 的转发要求对端也是保存的；local.json 里保存的是请求的端口（0 仍是 0），实际端口只是运行状态；
 - `npf_forward_remove`、`npf_forward_list(n, peer, ...)`（`peer` 为 0 列出全部）、`npf_forward_setopt`（`NPF_FWD_OPT_CTX`，同 `npf_peer_setopt` 的约定；`npf_forward_get` 的 `ctx` 读出它）。
@@ -468,7 +469,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | `forward` | `{"peer", "spec", "up", "why"}` | 转发的状态或端口变了（`spec` 如 `-L ...`、`-D ...`、`-R ...` 或模块的写法；`up`：true 可用；失败时 `why`）；当前状态用 `npf_forward_get` 查 |
 | `resources` | `{"session", "resources", "name"}` | 对端发布的资源（会话建立时和资源或名称更新时）：`session` 为数字，`resources` 为数组，每项 `{"name", "target", "type"}`，设了才有 `svc`、`desc`、`path`，来自 npf.conf 的有 `"fixed": true`；`name` 是对端自己的名称（`npf name`，已清理，只用于显示；没有为空串）。状态 JSON 的 `peers[]` 里是 `remote_name` 与 `role`（本节点在对端那里是 `admin` 还是 `member`；没说为 `null`） |
 | `network` | `{"why"}` | 进程被挂起过、本机地址变了：库已经在检查并修复连接 |
-| `platform` | `{"type", "data"}` | 平台推送的事件，`data` 原样，没有为 null（[信令协议](../protocol/signaling.md)） |
+| `platform` | `{"type", "data"}` | 平台推送的事件，`data` 原样，没有为 null（[信令协议](../protocol/signaling.md)）；`upgrade` 例外：`data` 是库记下的升级信息 `{"required", "min", "latest", "url", "notes"}`（有值的才有；`url` 只有 https 的，安装包清单不在里面，欢迎消息与拒绝登录带的也这样送达） |
 | `stopped` | `{}` | 运行结束：最后一个事件 |
 
 模块的事件（第 12 节）也经 `event` 送达。会话建立时 `session` 的 `up` 为 1，`info` 为 `{"session", "peer", "path", "direction", "call_id"}`：`session` 为数字；`peer` 为对方编号，或 `key:` 加密钥指纹，握手前为 `-`；`path` 为 `p2p`、`relay`、`relay (binding)`、`ws relay`、`direct` 或 `none`；`direction` 为 `out` 或 `in`；别人呼入本端的会话另有 `app`（对方程序的 `名字 版本`，知道时才有）和 `"hosted": true`（托管客户端）。`npf_sessions_json` 的每项与它相同；结束时 `up` 为 0，`info` 为 `{"why"}`，它的媒体流随之结束。

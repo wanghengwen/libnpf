@@ -354,14 +354,26 @@ static void punch_rows(npf_node *n)
     npf_loop_once(n->loop, 0);
 }
 
+/* the platform's events as the modules and the application get them */
+static char ev_type[32], ev_data[512];
+static void event_hook(npf_node *n, const char *type, const npf_json *ej, int d, void *arg)
+{
+    (void)n, (void)arg;
+    snprintf(ev_type, sizeof ev_type, "%s", type);
+    snprintf(ev_data, sizeof ev_data, "%.*s", d >= 0 ? ej->tok[d].end - ej->tok[d].start : 0, d >= 0 ? ej->s + ej->tok[d].start : "");
+}
+
 static void upgrade_rows(npf_node *n)
 {
     clear();
     sig(n, "upgrade", "{\"data\":{\"latest\":\"%s\",\"url\":\"javascript:alert(1)\"}}", "9.9.9", 0);
     CHECK(strcmp(n->upgrade.latest, "9.9.9") == 0 && !n->upgrade.url[0] && strstr(logged, "not an https URL"),
           "an upgrade's download page not https: dropped (%s)", n->upgrade.url);
+    CHECK(strcmp(ev_type, "upgrade") == 0 && strstr(ev_data, "\"latest\":\"9.9.9\"") && !strstr(ev_data, "javascript"),
+          "the upgrade event: the offer as kept, without the page (%s)", ev_data);
     sig(n, "upgrade", "{\"data\":{\"latest\":\"%s\",\"url\":\"https://example.com/dl\"}}", "9.9.9", 0);
-    CHECK(strcmp(n->upgrade.url, "https://example.com/dl") == 0, "an https download page: kept (%s)", n->upgrade.url);
+    CHECK(strcmp(n->upgrade.url, "https://example.com/dl") == 0 && strstr(ev_data, "\"url\":\"https://example.com/dl\""),
+          "an https download page: kept, in the event too (%s)", ev_data);
 }
 
 static int locked_asked;
@@ -434,6 +446,7 @@ int test_call_state(void)
 
     memset(&hooks, 0, sizeof hooks);
     hooks.on_call_state = state_hook;
+    hooks.on_event = event_hook;
     CHECK(offline_node(&node, loop, &hooks, NULL) == 0, "set-up");
     if (fails)
         return fails;

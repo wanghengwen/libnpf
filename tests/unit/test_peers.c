@@ -497,6 +497,94 @@ static void test_remote_name(void)
     npf_peers_remove(ps, q);
 }
 
+/* a web page's forward: its first request's Host (security.md, DNS
+ * rebinding): the head's verdicts, then a forward of a peer's tcp/http
+ * resource refusing a page's name with 421 and letting localhost's in */
+static void test_web_host(npf_loop *loop)
+{
+    static const struct { const char *head; int v; } heads[] = {
+        {"GET / HTTP/1.1\r\nHost: 127.0.0.1:8080\r\n\r\n", 1},
+        {"GET / HTTP/1.1\r\nHost: localhost:8080\r\n\r\n", 1},
+        {"GET / HTTP/1.1\r\nhost:LocalHost\r\n\r\n", 1},
+        {"GET / HTTP/1.1\r\nHost: [::1]:8080\r\n\r\n", 1},
+        {"GET / HTTP/1.1\r\nHost: 192.168.1.20:8080\r\n\r\n", 1},
+        {"GET / HTTP/1.1\r\nUser-Agent: x\r\nHost: r1a2b.localhost:8080\r\n\r\n", 1},
+        {"GET / HTTP/1.1\r\nHost: evil.example:8080\r\n\r\n", 0},
+        {"GET / HTTP/1.1\r\nHost: localhost.evil.example\r\n\r\n", 0},
+        {"GET / HTTP/1.1\r\nHost: .localhost\r\n\r\n", 0},
+        {"GET / HTTP/1.1\r\nHost: [fe80::zz]\r\n\r\n", 0},
+        {"GET / HTTP/1.1\r\nHost: 127.0.0.1.nip.io\r\n\r\n", 0},
+        {"GET / HTTP/1.0\r\n\r\n", 1},                  /* no Host: not a browser's */
+        {"SSH-2.0-OpenSSH_9.6\r\n", 1},                 /* not http */
+        {"\x16\x03\x01\x02\x10\x01\x11\x01\xfc\x03\x03\x10\x10\x10\x10\x10", 1},   /* TLS's: 16 bytes, no space */
+        {"GET / HTTP/1.1\r\nHost: evil.exa", -1},       /* in parts: more */
+        {"GET / HTTP/1.1\r\nAccept: */*\r\n", -1},
+        {"GE", -1},
+    };
+    static const char res[] = "[{\"name\":\"web\",\"target\":\"localhost:80\",\"type\":\"tcp\",\"svc\":\"http\"},"
+                              "{\"name\":\"ssh\",\"target\":\"127.0.0.1:22\",\"type\":\"tcp\"}]";
+    static const uint8_t psk[32] = {5};
+    npf_peer_new pn = {.host = "127.0.0.1", .port = 13, .psk = psk, .connect = NPF_CONNECT_ON_DEMAND};
+    npf_fwd_new web = {.opt = 'L', .host = "127.0.0.1", .hostport = 80}, ssh = {.opt = 'L', .host = "127.0.0.1", .hostport = 22};
+    char host[256], err[128], b[256], big[HTTP_HEAD_MAX];
+    npf_fwd_state st = {0};
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK)};
+    npf_peer *p;
+    size_t k;
+    int i, r = 0;
+    for (k = 0; k < sizeof heads / sizeof heads[0]; k++) {
+        int v = npf_http_host_ok(heads[k].head, strlen(heads[k].head), host, sizeof host);
+        CHECK(v == heads[k].v, "Host check: %d for head %zu (%s), %d expected", v, k, host, heads[k].v);
+    }
+    memcpy(big, "GET / HTTP/1.1\r\n", 16);
+    memset(big + 16, 'a', sizeof big - 16);
+    CHECK(npf_http_host_ok(big, sizeof big, host, sizeof host) == 0, "Host check: 8 KB without a Host: refused");
+
+    p = npf_peers_create(ps, &pn, err, sizeof err, NULL);
+    CHECK(p && npf_peer_resources_set(p, res) == 0 && npf_peer_forward_add_parts(p, &web, 0, 0, err, sizeof err) == 0
+              && npf_peer_forward_add_parts(p, &ssh, 0, 0, err, sizeof err) == 1, "web host: a peer, two forwards (%s)", err);
+    if (!p)
+        return;
+    CHECK(peers_fwd_http(p->fwds[0]) && !peers_fwd_http(p->fwds[1]), "web host: the tcp/http resource's forward only");
+    npf_peer_start(p);
+    LOOP_UNTIL(loop, npf_peer_forward_state(p, 0, &st) >= 0 && st.lport, 250);
+    a.sin_port = htons((uint16_t)st.lport);
+    for (i = 0; i < 2; i++) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0), n0 = p->npend;
+        const char *req = i ? "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n" : "GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n";
+        CHECK(fd >= 0 && connect(fd, (struct sockaddr *)&a, sizeof a) == 0, "web host: connected");
+        LOOP_UNTIL(loop, ps->nhw == 1, 250);
+        CHECK(ps->nhw == 1 && p->npend == n0, "web host: waiting for its first request, not for the session");
+        if (i) {                            /* sent in two parts: looked at again */
+            send(fd, req, 20, 0);
+            LOOP_UNTIL(loop, 0, 60);
+            CHECK(ps->nhw == 1, "web host: half a head: still waiting");
+            send(fd, req + 20, strlen(req) - 20, 0);
+            LOOP_UNTIL(loop, p->npend == n0 + 1, 500);
+            CHECK(ps->nhw == 0 && p->npend == n0 + 1, "web host: localhost let in (waits for the session)");
+        } else {
+            struct pollfd pfd = {.fd = fd, .events = POLLIN};
+            send(fd, req, strlen(req), 0);
+            LOOP_UNTIL(loop, ps->nhw == 0, 500);
+            r = poll(&pfd, 1, 1000) == 1 ? (int)recv(fd, b, sizeof b - 1, 0) : -1;
+            b[r > 0 ? r : 0] = 0;
+            CHECK(ps->nhw == 0 && strncmp(b, "HTTP/1.1 421 ", 13) == 0 && eof_seen(fd),
+                  "web host: evil.example answered 421 and closed (%.20s)", b);
+        }
+        close(fd);
+    }
+    {   /* one that says nothing: closed when the forward goes */
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        CHECK(fd >= 0 && connect(fd, (struct sockaddr *)&a, sizeof a) == 0, "web host: a silent one");
+        LOOP_UNTIL(loop, ps->nhw == 1, 250);
+        npf_peers_remove(ps, p);
+        for (i = 0; i < 5; i++)
+            npf_loop_once(loop, 1);
+        CHECK(ps->nhw == 0 && eof_seen(fd), "web host: its forward gone: closed with it");
+        close(fd);
+    }
+}
+
 int test_peers(void)
 {
     static npf_node node;
@@ -541,6 +629,7 @@ int test_peers(void)
     test_states(loop);
     test_pake_tries(loop);
     test_remote_name();
+    test_web_host(loop);
     for (i = 0; i < 5; i++)
         npf_loop_once(loop, 1);
     npf_peers_free(ps);

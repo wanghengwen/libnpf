@@ -95,5 +95,5 @@ void npf_node_stop(npf_node *n)
 int npf_backoff(int *cur, int first, int max)
 {
     int ms = *cur = *cur ? (*cur * 2 > max ? max : *cur * 2) : first;
-    return ms * 3 / 4 + (int)npf_rand_range(0, (size_t)ms / 2 + 1);
+    return ms * 3 / 4 + (int)npf_rand_range(0, (size_t)ms / 2);  /* inclusive: +-25 % at most */
 }
