@@ -148,7 +148,7 @@ typedef struct c_arg {
 static int c_run(npf_t *n, void *arg)
 {
     c_arg *x = arg;
-    npf_out o = {0};
+    npf_out o = {.secret = 1};              /* show, share print a password or a code: wiped when freed */
     int r = npf_cmd_run(n, x->argc, x->argv, &o, x->cb, x->user);
     if (r >= 0 && x->cb)
         x->cb(x->user, o.failed ? 1 : r, o.failed ? "no memory" : o.p ? o.p : "");
