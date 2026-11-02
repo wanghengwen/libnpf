@@ -286,6 +286,16 @@ void npf_node_end_callers(npf_node *n, int (*drop)(const npf_caller *who, void *
     }
 }
 
+void npf_node_end_incoming(npf_node *n, const char *why)
+{
+    npf_call *x;
+    for (x = n->calls; x; x = x->next)
+        if (!x->caller && !call_over(x)) {
+            npf_log("call %s: ended (%s)", x->call_id_s, why);
+            npf_call_end(x, why);
+        }
+}
+
 /* ---- the platform's messages (msgs.c) ---- */
 
 /* the callee's profile and candidates, before the platform's next round */
@@ -360,6 +370,9 @@ static void call_why_hint(const char *why)
     else if (strcmp(why, "secure_plan") == 0)
         npf_log("connect_mode secure on one side: relays only, which takes a caller's account with a paid plan "
                 "(set connect_mode p2p allows direct paths)");
+    else if (strcmp(why, "remote_access_off") == 0)
+        npf_log("the device has remote access turned off: nothing connects to it until it is turned on there "
+                "(npf set remote_access on)");
     else if (strcmp(why, "quota") == 0)
         npf_log("this month's traffic of the account is used up: no relay, and no direct path either, "
                 "until next month or a larger plan");

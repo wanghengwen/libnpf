@@ -1,7 +1,8 @@
 /* Direct connections (data-channel.md 13): two offline nodes on one loop, a
  * listener with a pre-shared key, an initiator with the right key becomes a
  * session, one with the wrong key gets no answer and creates no session; the
- * initiator's close reaches the listener. Also the loop's wake hook. */
+ * initiator's close reaches the listener; with remote_access off even the
+ * right key gets nothing. Also the loop's wake hook. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <string.h>
@@ -182,6 +183,26 @@ int test_direct(void)
     /* the wrong-key initiator gives up by itself after its retries (~14 s): end it here instead */
     npf_call_end(cb, "closed");
     npf_loop_once(loop, 10);
+
+    /* remote_access off on the listener: the right key gets no answer and
+     * no session either; on again, it connects (security.md 8.7) */
+    {
+        int c0 = L.connecting, e0 = L.established;
+        npf_call *cr;
+        L.node.cfg.remote_off = 1;
+        cr = npf_direct_connect(&B.node, &to, psk);
+        LOOP_UNTIL(loop, L.connecting > c0, 1500);
+        CHECK(cr && L.connecting == c0 && B.established == 0, "remote access off: a direct session (%d)", L.connecting - c0);
+        if (cr)
+            npf_call_end(cr, "closed");
+        L.node.cfg.remote_off = 0;
+        cr = npf_direct_connect(&B.node, &to, psk);
+        LOOP_UNTIL(loop, L.established > e0, 3000);
+        CHECK(cr && L.established == e0 + 1, "remote access on again: no direct session");
+        if (cr)
+            npf_call_end(cr, "closed");
+        npf_loop_once(loop, 10);
+    }
 
     test_tunnel_move(loop, &to, psk, &L);
 

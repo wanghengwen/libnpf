@@ -25,6 +25,7 @@ static const why_end_row k_end[] = {
     {"revoked", NPF_END_REFUSED, 0},
     {"forbidden", NPF_END_REFUSED, 0},
     {"busy", NPF_END_REFUSED, 0},
+    {"remote_access_off", NPF_END_REFUSED, 0},
     {"no_path", NPF_END_UNREACHABLE, 0},
     {"unreachable", NPF_END_UNREACHABLE, 0},
     {"offline", NPF_END_UNREACHABLE, 0},

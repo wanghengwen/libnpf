@@ -265,6 +265,7 @@ void npf_status_out(npf_t *c, npf_out *o)
     snprintf(a, sizeof a, "%llu", (unsigned long long)c->number);
     npf_out_kstr(o, "number", c->has_number ? a : NULL);
     npf_out_kstr(o, "role", n->cfg.callable ? "node" : "client");
+    npf_out_kbool(o, "remote_access", !n->cfg.remote_off);     /* off: nothing connects in (security.md 8.7) */
     if (c->callee && c->callee->damaged)        /* safe mode (callee.h): calls and pairing refused */
         npf_out_kbool(o, "state_damaged", 1);
     if (c->model_dev) {                         /* one key per model: the enrolment (signaling.md "enroll") */
