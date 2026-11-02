@@ -150,12 +150,15 @@ void npf_platform_err(const npf_json *j, char *buf, size_t cap)
 {
     m_env e;
     const char *code = "no reply", *why = "", *say = NULL;
+    char both[96];
     if (j && npf_msg_parse(&m_env_d, j, 0, &e, NULL, 0) == 0) {
         code = e.error[0] ? e.error : code;
         why = e.message;
     }
-    /* the reasons first (the reply's message), then the codes */
-    if (why[0])
+    /* the code with its reason (the reply's message), the reason, the code */
+    if (why[0] && snprintf(both, sizeof both, "%s:%s", code, why) < (int)sizeof both)
+        say = npf_why_platform_text(both);
+    if (why[0] && !say)
         say = npf_why_platform_text(why);
     if (!say)
         say = npf_why_platform_text(code);
