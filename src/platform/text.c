@@ -1,3 +1,4 @@
+#include "npf/sys.h"
 #include <ctype.h>
 #include <errno.h>
 #include <limits.h>
@@ -201,4 +202,25 @@ int npf_text_display(char *s, size_t max)
     while (n && s[n - 1] == ' ')
         s[--n] = 0;
     return (int)n;
+}
+
+int npf_http_host_local(const char *v)
+{
+    char name[256];
+    uint8_t a[16];
+    size_t n = 0;
+    const char *e;
+    if (*v == '[') {
+        if (!(e = strchr(v, ']')) || (size_t)(e - v - 1) >= sizeof name)
+            return 0;
+        memcpy(name, v + 1, (size_t)(e - v - 1));
+        name[e - v - 1] = 0;
+        return inet_pton(AF_INET6, name, a) == 1;
+    }
+    for (; v[n] && v[n] != ':' && n + 1 < sizeof name; n++)
+        name[n] = (char)tolower((unsigned char)v[n]);
+    name[n] = 0;
+    if (inet_pton(AF_INET, name, a) == 1 || strcmp(name, "localhost") == 0)
+        return 1;
+    return n > 10 && strcmp(name + n - 10, ".localhost") == 0;
 }

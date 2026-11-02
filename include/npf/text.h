@@ -51,6 +51,12 @@ int npf_hostport(const char *s, char *host, size_t cap, uint16_t *port);
 /* The status code (100..999) of an HTTP/1.x status line, or -1. */
 int npf_http_status(const char *s);
 
+/* An HTTP Host value (":PORT" and IPv6 brackets allowed) that only this
+ * host's own pages use: an IP address, "localhost" or a name under
+ * ".localhost", in either case. 1, else 0. Local web servers refuse other
+ * names (DNS rebinding: a site's own name resolved to 127.0.0.1). */
+int npf_http_host_local(const char *v);
+
 /* s begins with p, ASCII letters in either case: 1, else 0 */
 int npf_prefix_nocase(const char *s, const char *p);
 

@@ -86,28 +86,6 @@ static int starts_ci(const char *s, size_t n, const char *w)
     return 1;
 }
 
-/* the Host's name (port and brackets off, lower case) is an address or localhost's */
-static int host_ok(const char *v)
-{
-    char name[256];
-    uint8_t a[16];
-    size_t n = 0;
-    const char *e;
-    if (*v == '[') {
-        if (!(e = strchr(v, ']')) || (size_t)(e - v - 1) >= sizeof name)
-            return 0;
-        memcpy(name, v + 1, (size_t)(e - v - 1));
-        name[e - v - 1] = 0;
-        return inet_pton(AF_INET6, name, a) == 1;
-    }
-    for (; v[n] && v[n] != ':' && n + 1 < sizeof name; n++)
-        name[n] = (char)lower((unsigned char)v[n]);
-    name[n] = 0;
-    if (inet_pton(AF_INET, name, a) == 1 || strcmp(name, "localhost") == 0)
-        return 1;
-    return n > 10 && strcmp(name + n - 10, ".localhost") == 0;
-}
-
 int npf_http_host_ok(const char *b, size_t n, char *host, size_t hcap)
 {
     const char *line = b, *end = b + n, *nl;
@@ -131,7 +109,7 @@ int npf_http_host_ok(const char *b, size_t n, char *host, size_t hcap)
             while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t'))
                 ve--;
             snprintf(host, hcap, "%.*s", (int)(ve - v), v);
-            return (size_t)(ve - v) < hcap && host_ok(host);
+            return (size_t)(ve - v) < hcap && npf_http_host_local(host);
         }
         line = nl + 1;
     }
