@@ -24,7 +24,8 @@
  *   hard-side sockets back, a
  *   caller's round while another hard-side punch runs (busy: NONE, the
  *   round comes again). After each row: a deadline in SCHEDULED and LINGER
- *   only, the call's timer no later, a punch in RUNNING and LINGER only. */
+ *   only, the call's timer no later, a punch in RUNNING and LINGER only;
+ * - the platform's upgrade offer: its download page kept only as an https URL. */
 #include <stdio.h>
 #include <string.h>
 #include <arpa/inet.h>
@@ -350,6 +351,16 @@ static void punch_rows(npf_node *n)
     npf_loop_once(n->loop, 0);
 }
 
+static void upgrade_rows(npf_node *n)
+{
+    clear();
+    sig(n, "upgrade", "{\"data\":{\"latest\":\"%s\",\"url\":\"javascript:alert(1)\"}}", "9.9.9", 0);
+    CHECK(strcmp(n->upgrade.latest, "9.9.9") == 0 && !n->upgrade.url[0] && strstr(logged, "not an https URL"),
+          "an upgrade's download page not https: dropped (%s)", n->upgrade.url);
+    sig(n, "upgrade", "{\"data\":{\"latest\":\"%s\",\"url\":\"https://example.com/dl\"}}", "9.9.9", 0);
+    CHECK(strcmp(n->upgrade.url, "https://example.com/dl") == 0, "an https download page: kept (%s)", n->upgrade.url);
+}
+
 int test_call_state(void)
 {
     static npf_node node;
@@ -370,6 +381,7 @@ int test_call_state(void)
 
     call_rows(&node);
     punch_rows(&node);
+    upgrade_rows(&node);
 
     npf_log_ctx_swap(old);
     npf_node_stop(&node);

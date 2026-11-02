@@ -218,7 +218,10 @@ static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int requir
         n->upgrade.required = u.required || required;
         memcpy(n->upgrade.min, u.min, sizeof u.min);
         memcpy(n->upgrade.latest, u.latest, sizeof u.latest);
-        memcpy(n->upgrade.url, u.url, sizeof u.url);
+        if (strncmp(u.url, "https://", 8) == 0)   /* a link people click (the console, the tray): https only */
+            memcpy(n->upgrade.url, u.url, sizeof u.url);
+        else if (u.url[0])
+            npf_logw("upgrade: the download page is not an https URL: not shown");
         memcpy(n->upgrade.notes, u.notes, sizeof u.notes);
         if (pk && pk->end - pk->start <= UPGRADE_PACKAGES_MAX && (n->upgrade.packages = malloc(pk->end - pk->start + 1))) {
             memcpy(n->upgrade.packages, j->s + pk->start, pk->end - pk->start);
@@ -226,9 +229,9 @@ static void node_upgrade_apply(npf_node *n, const npf_json *j, int d, int requir
         }
         if (n->upgrade.required)
             npf_logw("upgrade: this version is too old for the platform (%s needed%s%s)", u.min,
-                     u.url[0] ? ", see " : "", u.url);
+                     n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
         else if (u.latest[0])
-            npf_log("upgrade: version %s is available%s%s", u.latest, u.url[0] ? ", see " : "", u.url);
+            npf_log("upgrade: version %s is available%s%s", u.latest, n->upgrade.url[0] ? ", see " : "", n->upgrade.url);
         if (notify && (n->upgrade.required || u.latest[0]) && n->hooks.on_event)
             n->hooks.on_event(n, "upgrade", j, d, n->hook_arg);
     } else if (was) {
