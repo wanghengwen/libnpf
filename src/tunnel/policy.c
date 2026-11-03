@@ -174,9 +174,12 @@ int npf_policy_add(npf_policy *p, const char *spec)
 
 int npf_policy_add_udp(npf_policy *p, const char *spec)
 {
-    if (strcmp(spec, "*") != 0)
+    if (strcmp(spec, "*") == 0)
+        p->udp_any = 1;
+    else if (strcmp(spec, "lan") == 0)
+        p->udp_lan = 1;
+    else
         return add_rule(p->udp, &p->nudp, (int)(sizeof p->udp / sizeof p->udp[0]), spec);
-    p->udp_any = 1;
     return 0;
 }
 
@@ -184,7 +187,7 @@ void npf_policy_clear(npf_policy *p)
 {
     p->nrules = 0;
     p->nudp = 0;
-    p->lan = p->any = p->udp_any = 0;
+    p->lan = p->any = p->udp_lan = p->udp_any = 0;
     p->nrev = 0;
 }
 
@@ -284,8 +287,8 @@ int npf_policy_rules_match(const npf_policy_rule *r, int n, const struct sockadd
     return match(r, n, fam, a, -1);
 }
 
-/* UDP: only the "udp" resources (theirs "*" too), never net's or socks'
- * "lan" or "*" (data-channel.md 15) */
+/* UDP: only the "udp" resources (theirs "lan" and "*" too), never net's or
+ * socks' "lan" or "*" (data-channel.md 15) */
 int npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst)
 {
     uint8_t a[16];
@@ -293,9 +296,12 @@ int npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst)
     uint16_t port;
     if (!p || sa_parts(dst, 1, a, &fam, &port) < 0)
         return 0;
-    if (p->udp_any)
+    if (p->udp_any || match(p->udp, p->nudp, fam, a, port))
         return 1;
-    return match(p->udp, p->nudp, fam, a, port);
+    if (!p->udp_lan)
+        return 0;
+    lan_fresh(p);
+    return match(p->local, p->nlocal, fam, a, port);
 }
 
 int npf_policy_allowed(npf_policy *p, const struct sockaddr *dst)

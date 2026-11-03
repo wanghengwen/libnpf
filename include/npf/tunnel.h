@@ -61,6 +61,7 @@ typedef struct npf_policy {
     /* UDP targets (data-channel.md 15); TCP's "lan" and "*" do not cover UDP */
     npf_policy_rule udp[32];
     int      nudp;
+    int      udp_lan;               /* "lan" allowed (UDP) */
     int      udp_any;               /* "*" allowed (UDP) */
 } npf_policy;
 
@@ -79,7 +80,7 @@ int  npf_policy_lan_peer(npf_policy *p, const struct sockaddr *a);
 void npf_policy_refresh(npf_policy *p);     /* computes "lan" from the interfaces now */
 /* 1 when a TCP connection to dst is allowed; NULL p: 0. */
 int  npf_policy_allowed(npf_policy *p, const struct sockaddr *dst);
-/* Allows one UDP target: ADDR[/PREFIX][:PORT[-PORT]] or "*". 0, or -1 bad or full. */
+/* Allows one UDP target: ADDR[/PREFIX][:PORT[-PORT]], "lan" or "*". 0, or -1 bad or full. */
 int  npf_policy_add_udp(npf_policy *p, const char *spec);
 int  npf_policy_udp_allowed(npf_policy *p, const struct sockaddr *dst);     /* NULL p: 0 */
 /* 1 when the address is in one of the n rules, whatever their ports (an allow_from list). */

@@ -296,7 +296,13 @@ int test_policy(void)
             CHECK(npf_res_check(&u[0], err, sizeof err) < 0, "a service type is for one HOST:PORT only");
             strcpy(u[0].svc, "");
             strcpy(u[0].target, "lan");
-            CHECK(npf_res_check(&u[0], err, sizeof err) < 0, "udp lan: not a target");
+            CHECK(npf_res_check(&u[0], err, sizeof err) == 0, "udp lan is valid: %s", err);
+            memset(&q, 0, sizeof q);
+            CHECK(npf_res_rules(&q, u, 1) == 0 && q.udp_lan && udp4(&q, "127.0.0.1", 53) && !udp4(&q, "203.0.113.5", 53)
+                      && !allowed4(&q, "127.0.0.1", 53),
+                  "udp lan: this host (and its private networks), UDP only, not the internet");
+            npf_policy_clear(&q);
+            CHECK(!q.udp_lan && !udp4(&q, "127.0.0.1", 53), "clear takes udp lan too");
             strcpy(u[0].target, "10.1.0.0/40");
             CHECK(npf_res_check(&u[0], err, sizeof err) < 0, "a bad prefix refused");
         }

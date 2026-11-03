@@ -2,8 +2,8 @@
  * its side (data-channel.md 7, security.md D22). A target no resource covers
  * is refused. Types:
  *   tcp       one service, HOST:PORT (an IP address, [v6] or localhost)
- *   udp       HOST:PORT, "*" or ADDR[/PREFIX][:PORT[-PORT]]: the only type
- *             that lets UDP through
+ *   udp       HOST:PORT, "lan" (as net's), "*" or ADDR[/PREFIX][:PORT[-PORT]]:
+ *             the only type that lets UDP through
  *   net       "lan" (this host's addresses and its attached private
  *             networks), "*" or ADDR[/PREFIX][:PORT[-PORT]]; TCP only
  *   socks     the same, meant for a SOCKS5 proxy (-D); "*" is an exit node

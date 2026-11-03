@@ -48,7 +48,7 @@ static const struct {
     int (*add)(npf_policy *p, const char *spec);
 } k_types[] = {
     {"tcp", NULL, npf_policy_add},
-    {"udp", "HOST:PORT, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add_udp},
+    {"udp", "HOST:PORT, lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add_udp},
     {"net", "lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add},
     {"socks", "lan, *, or ADDR[/PREFIX][:PORT[-PORT]]", npf_policy_add},
     {"reverse", "[lan:]* or [lan:]PORT[-PORT] (1024 to 65535)", npf_policy_add_reverse},
