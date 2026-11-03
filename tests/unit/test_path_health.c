@@ -7,7 +7,8 @@
  * connection's fixed one, not one not proven yet, none before the peer
  * was heard); a probe with no doubt (the hot standby's check); the direct
  * path's consent (an echo every 15 s, none in 30 s: in doubt) and its checks
- * before use (NEW: probed, carrying nothing, lost after 10 s). */
+ * before use (NEW: probed, carrying nothing, lost after 10 s); a relay asked
+ * for in an idle doubt only when the probes found nothing in 3 s. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -321,6 +322,42 @@ static void unproven(void)
     CHECK(pm_rt(&m, &d->p, 2000) == 1 && m.primary == &d->p, "unproven: an echo, the direct path primary");
 }
 
+/* the direct path in doubt with no relay (pm_decide): from idle silence
+ * (a lost keepalive) its probes have PM_IDLE_ASK_MS first, an echo in that
+ * time asks for nothing; silence with data in flight, or no echo for the
+ * consent's 30 s, asks at once */
+static void idle_ask(void)
+{
+    fake *x = &f[PK_DIRECT];
+    start(D, 1000);
+    pm_tick(&m, 21000, 0, 200);
+    CHECK(x->p.health == PH_SUSPECT && x->p.idle_doubt, "idle silence: not an idle doubt");
+    CHECK(pm_decide(&m, 0, 21000) == PM_NONE && m.act_at == 21000 + PM_IDLE_ASK_MS, "idle doubt: a relay at once");
+    CHECK(pm_decide(&m, 0, 21000 + PM_IDLE_ASK_MS - 1) == PM_NONE, "idle doubt: a relay before the probes' time");
+    pm_rt(&m, &x->p, 21300);
+    CHECK(pm_decide(&m, 0, 21000 + PM_IDLE_ASK_MS) == PM_NONE, "idle doubt echoed: a relay anyway");
+    CHECK(x->p.health == PH_UP && !x->p.idle_doubt, "idle doubt echoed: still in doubt");
+    /* no echo: asked for at the end of the time */
+    start(D, 1000);
+    pm_tick(&m, 21000, 0, 200);
+    CHECK(pm_decide(&m, 0, 21000 + PM_IDLE_ASK_MS) == PM_NEED_UDP, "idle doubt, no echo: no relay");
+    /* data comes to send meanwhile: at once */
+    start(D, 1000);
+    pm_tick(&m, 21000, 0, 200);
+    pm_tick(&m, 21500, 2, 200);
+    CHECK(!x->p.idle_doubt && pm_decide(&m, 0, 21500) == PM_NEED_UDP, "idle doubt, then data: no relay at once");
+    /* data in flight: at once */
+    start(D, 1000);
+    pm_tick(&m, 50000, 4, 200);
+    pm_tick(&m, 53000, 4, 200);
+    CHECK(x->p.health == PH_SUSPECT && !x->p.idle_doubt, "in flight: an idle doubt");
+    CHECK(pm_decide(&m, 0, 53000) == PM_NEED_UDP, "in flight, in doubt: no relay at once");
+    /* in doubt for another reason (the consent's): at once */
+    start(D, 1000);
+    pm_suspect(&m, &x->p, 31000);
+    CHECK(pm_decide(&m, 0, 31000) == PM_NEED_UDP, "consent lost: no relay at once");
+}
+
 int test_path_health(void)
 {
     int k;
@@ -336,6 +373,7 @@ int test_path_health(void)
     probed();
     consent();
     unproven();
+    idle_ask();
     pm_hook_suspect = NULL;
     pm_hook_probe = NULL;
     pm_hook_dead = NULL;

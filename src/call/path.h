@@ -36,6 +36,7 @@ void path_direct_dead(npf_path *p);
 
 struct npf_path {                   /* the times: monotonic ms */
     uint8_t  kind, health, role;
+    uint8_t  idle_doubt;            /* SUSPECT from silence with nothing in flight (pm_decide waits on its probes) */
     int64_t  since;                 /* up since */
     int64_t  last_rx;               /* the peer last heard on it (the UDP relay: its answers too; the WS relay: any frame) */
     int64_t  busy_since;            /* relied on with data in flight since; 0 no */
@@ -122,6 +123,8 @@ enum { PM_NONE, PM_NEED_UDP, PM_NEED_WS, PM_NEED_WS_ELSEWHERE, PM_NEED_UDP_BACK,
 #define PM_UDP_AGAIN_MS 300000      /* on the WS relay while UDP works: the UDP relay tried again after this */
 #define PM_STANDBY_MS   30000       /* the relay standing by after the direct path came up, then released */
 #define PM_PROBE_MS     10000       /* ... once the direct path's check had an echo within this */
+#define PM_IDLE_ASK_MS  3000        /* the direct path in doubt from idle silence, no relay: its probes first, a relay
+                                     * asked for when none echoed in this (a lost keepalive is no reason for one) */
 int pm_decide(npf_pm *m, unsigned in, int64_t now);
 
 /* a path in use from now on (one of each kind), or no longer, its health: each changes the roles */

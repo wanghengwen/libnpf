@@ -11,7 +11,8 @@
 
 /* nat-traversal.md 10.3, data-channel.md 3: the direct path silent 3 s
  * busy, 20 s idle (AnLiu's keepalive is 15 s), or 30 s without an echo
- * (RFC 7675), checked every 500 ms, lost 10 s after; the UDP relay the same silences, its probe a bind, its
+ * (RFC 7675), checked every 500 ms, lost 10 s after (a relay asked for at
+ * once, idle 3 s after if no echo came: pm_decide); the UDP relay the same silences, its probe a bind, its
  * verdict every address tried (path_udp.c); the WS relay TCP's own
  * retransmission busy, 30 s without a frame (its ping is 25 s) half-open,
  * its verdict 5 reconnects that do not pair (path_ws.c) */
@@ -111,6 +112,8 @@ void pm_del(npf_pm *m, npf_path *p)
 void pm_health(npf_pm *m, npf_path *p, int health)
 {
     p->health = (uint8_t)health;
+    if (health != PH_SUSPECT)
+        p->idle_doubt = 0;
     if (m->p[p->kind] == p)
         pm_route(m);
 }
@@ -120,6 +123,7 @@ void pm_suspect(npf_pm *m, npf_path *p, int64_t now)
     p->suspect_at = now;
     p->probe_at = now;
     p->probe_until = 0;
+    p->idle_doubt = 0;              /* pm_tick's idle silence sets it after */
     pm_health(m, p, PH_SUSPECT);
 }
 
@@ -211,12 +215,15 @@ int64_t pm_tick(npf_pm *m, int64_t now, uint32_t inflight, int rto)
                 continue;
             }
             pm_suspect(m, p, now);
+            p->idle_doubt = !p->busy_since;
             path_do_suspect(p, quiet);
             if (m->p[k] != p || p->health != PH_SUSPECT)
                 continue;                   /* gone, or proven already */
         }
         if (!checked(p))
             continue;
+        if (inflight)
+            p->idle_doubt = 0;              /* data waits now: the relay at once (pm_decide) */
         if (r->t_verdict && now - p->suspect_at >= r->t_verdict) {
             pm_health(m, p, PH_DEAD);
             path_do_dead(p);
@@ -268,8 +275,13 @@ int pm_decide(npf_pm *m, unsigned in, int64_t now)
         return pm_wait(m, 0, 0, PM_NEED_WS);
     if (d && d->health == PH_DEAD)
         return pm_wait(m, 0, 0, u && u->health == PH_DEAD ? PM_DROP : PM_NEED_PATH_LOST);
-    if (!u)
+    if (!u) {
+        /* in doubt from idle silence: nothing waits to be sent, so its probes
+         * have PM_IDLE_ASK_MS to find it alive (one lost keepalive) first */
+        if (d && d->health == PH_SUSPECT && d->idle_doubt && m->need != PM_NEED_UDP && now - d->suspect_at < PM_IDLE_ASK_MS)
+            return pm_wait(m, 0, d->suspect_at + PM_IDLE_ASK_MS, PM_NONE);
         return pm_wait(m, 0, 0, (d ? d->health == PH_SUSPECT : m->need == PM_NEED_UDP) ? PM_NEED_UDP : PM_NONE);
+    }
     if (d && d->health == PH_UP) {
         if (m->wait != PM_W_STANDBY && m->wait != PM_W_PROBE)
             return pm_wait(m, PM_W_STANDBY, now + PM_STANDBY_MS, PM_NONE);
@@ -372,7 +384,7 @@ void pm_check(npf_call *c)
         m->heard_at = now;
     /* AnLiu's stats only for a path whose rules look at the data in flight */
     for (k = 0; k < PK_N; k++)
-        busy |= m->p[k] && m->p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(m, m->p[k]);
+        busy |= m->p[k] && ((m->p[k]->health == PH_UP && pm_rules_of[k].t_busy && pm_relied(m, m->p[k])) || m->p[k]->idle_doubt);
     memset(&st, 0, sizeof st);
     if (c->anl && (!busy || anl_get_stats(c->anl, &st) == 0)) {
         if (call_has_ws(c))

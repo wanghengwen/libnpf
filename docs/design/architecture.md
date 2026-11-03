@@ -125,7 +125,7 @@
 
 | 起因 | 代码路径 |
 |---|---|
-| 直连无声 | `call.c:call_tick` → `path_mgr.c:pm_check` → `pm_tick` → `path_direct.c:direct_suspect`（两条路都发；中转已释放时 `PM_NEED_UDP`：`relay_switch{mode:"udp"}`；没绑上时重绑）→ `PATH_ECHO`：`pm_rt`，恢复；10 s：`direct_lost` → `pm_decide`：`PM_NEED_PATH_LOST`（`call_punch.c:call_punch_report("path_lost")`），中转也不通时 `PM_NEED_WS` |
+| 直连无声 | `call.c:call_tick` → `path_mgr.c:pm_check` → `pm_tick` → `path_direct.c:direct_suspect`（两条路都发；中转已释放时 `PM_NEED_UDP`：`relay_switch{mode:"udp"}`，空闲的无声先等探测 3 s；没绑上时重绑）→ `PATH_ECHO`：`pm_rt`，恢复；10 s：`direct_lost` → `pm_decide`：`PM_NEED_PATH_LOST`（`call_punch.c:call_punch_report("path_lost")`），中转也不通时 `PM_NEED_WS` |
 | UDP 中转无声 | `pm_tick` → `path_udp.c:udp_suspect`（探测，先当前地址，Q2）→ 都不答：`path_udp_tick` 判 `PH_DEAD` → `pm_decide`：等端口、等打洞、再绑一次，或 `PM_NEED_WS` |
 | 改用 WS | `path_mgr.c:call_need(PM_NEED_WS)` → `relay_switch{mode:"ws"}`（10 s、30 s、之后每 30 s 重发）→ 平台的 `relay_switch{relay}` → `call.c:call_on_relay_switch` → `call_relay_setup` → `path_ws.c:call_ws_setup` → `wsr_paired` → `call_ws_carrier`（`ANL_CARRIER_STREAM`） |
 | 回到 UDP（`udp_back`） | `nat.c:probe_done`（上一次探测无回应、这一次有：`udp_back_ms`）→ `call.c:npf_node_calls_decide`，或在 WS 上 5 分钟（`PM_UDP_AGAIN_MS`）而 UDP 可用 → `pm_decide`：`PM_NEED_UDP_BACK` → `call_need`：只发一条 `relay_switch{mode:"udp", nat}` → 平台的 UDP 分配 → `call_on_relay_switch` → `call_relay_setup` → `path_ws.c:call_ws_leave`（`ANL_CARRIER_DGRAM`）→ `path_udp_setup`，绑定 |
@@ -314,6 +314,8 @@ struct npf_path {
 
 **被依赖从听到对方起**（2026-10-29，RN-16）：会话 `UP`（对方的 hello 到了，`pm.heard_at`）之前没有路径被依赖（`pm_relied`），无声不算；之后空闲的无声从 `max(last_rx, since, heard_at)` 算，有数据在途的照旧从 `max(last_rx, busy_since)`（`busy_since` 在被依赖之后才记）。原来对方还没来时（主叫在等迟到的 `call_accepted`）被叫的 hello 在途、中转上什么也没有，3 秒就"无声"，探测并重新绑定中转，每 3 秒一次（一小时里一个节点 37 次）；那时的无声说明不了中转，中转本身的好坏由绑定器的保活判断（3.3）。建立之后的规则不变。
 
+**空闲的无声先探测**（2026-11-03）：直连因空闲无声（没有数据在途）而可疑、又没有中转时，`pm_decide` 先等它自己的探测 `PM_IDLE_ASK_MS` 3 s（`path.idle_doubt`），这期间有回应就照旧，没有才 `PM_NEED_UDP`；有数据在途的可疑与 `t_consent` 的可疑照旧立即要中转。原来丢一个 15 s 的保活就是 20 s 无声，立即要一个中转，探测随即证明直连还在，中转热备 30 s 后释放；有丢包的 Wi-Fi 上空闲会话几分钟一次，一个呼叫累积许多份中转分配。另外，回应自己探测的 `PATH_ECHO` 记作听到对方（`path_direct.c:call_path_input` 更新 `last_rx`）：原来回应使直连 `UP` 却不更新 `last_rx`，下一次检查又是无声，每 0.5 s 可疑、恢复一次。对方的探测不算：它只证明对方到这边的一半，单向不通、有数据在途时，可疑的对方每 0.5 s 一个探测会让这边的 3 s 规则失效，要等 30 s 的 consent。
+
 今天的四套判断（P2）都是这张表的特例；备用分配不属于任何会话，它的看门狗（`home.c:dog_deadline`）保留，但用同一个绑定器状态机（第 3.3 节）。
 
 **1b 的实现与上面的不同之处**（2026-10-28）：
@@ -329,7 +331,7 @@ struct npf_path {
 排名能这样简单地比，是因为 WS 中转是排他的（第 4 条）：它在时没有别的路径可比。
 
 1. 主路径 = 健康为 `UP`（或 `NEW` 且 `tx_before_rx`）的路径中排名最高的；同名次保持现状（不来回切）。
-2. 主路径 `SUSPECT`：每个数据报再经排名次高、未 `DEAD` 的路径发一份（`PR_SECOND`，AnLiu 去重）；没有这样的路径时 `call_need(PM_NEED_UDP)`。今天 `call_transport.c:anl_out` 在 `p2p_suspect` 时双发，与此相同。
+2. 主路径 `SUSPECT`：每个数据报再经排名次高、未 `DEAD` 的路径发一份（`PR_SECOND`，AnLiu 去重）；没有这样的路径时 `call_need(PM_NEED_UDP)`（空闲的无声 3 s 内没有回应时才要，2.4）。今天 `call_transport.c:anl_out` 在 `p2p_suspect` 时双发，与此相同。
 3. 主路径 `DEAD`：移除；有下一条就换；没有时按第 3.6 节决定要 UDP、要 WS，或先等（这一轮打洞的结果、难侧打洞交还端口）。
 4. WS 中转是排他的：它在时没有别的路径，也不安排打洞（平台不发 `punch_start`）。
 5. 换主路径时比较载体：DGRAM ↔ STREAM 不同就 `tr_set_carrier`（现在 `path_ws.c:call_ws_carrier`、`call_ws_leave`）。MTU 现在都是 1200（`call_transport.c` 的 `ANL_MTU`，WS 中转的数据报上限也是 1200，data-channel.md 11），管理器只在不同时设 `ANL_OPT_MTU`，今天不会发生。

@@ -13,8 +13,9 @@
 #define PKT_PATH_CHECK     10         /* direct path check (both directions work?) */
 #define PKT_PATH_ECHO      11
 /* tests: NPF_TEST_DROP_P2P=ms cuts the direct path that long after it was
- * proven (its first echo: before, the cut would race the first check); with
- * NPF_TEST_DROP_P2P_PORT only the one to the peer on that port */
+ * proven (its first echo: before, the cut would race the first check), both
+ * ways, path checks too; with NPF_TEST_DROP_P2P_PORT only the one to the
+ * peer on that port */
 int call_p2p_cut(const npf_call *c)
 {
     int64_t cut = c->n->th.drop_p2p_ms;
@@ -92,12 +93,19 @@ int call_path_input(npf_call *c, const uint8_t *buf, size_t len)
     int h = c->pd.p.health;
     if (!c->keys_ready || len != PATH_PKT_LEN || npf_siv_open(&c->pd.keys, c->caller ? 1 : 0, buf, len, plain) < 0)
         return 0;
+    if (call_p2p_cut(c))
+        return 1;                   /* the test's cut: lost, as AnLiu's (call.c) */
     if (plain[0] == PKT_PATH_CHECK)
         path_send(c, PKT_PATH_ECHO, npf_rd64(plain + 2));
     else if (plain[0] == PKT_PATH_ECHO && (h == PH_NEW || h == PH_SUSPECT || c->pd.p.probe_until)
              && npf_rd64(plain + 2) == c->pd.nonce) {
         /* an echo of these checks (a new path's, a doubt's, consent's, the
-         * standby's): UP; the relay standing by may go (pm_decide) */
+         * standby's): UP; the relay standing by may go (pm_decide). The
+         * peer heard both ways: the silence counts from here (left at the
+         * last keepalive, the idle rule found the path silent again at once,
+         * every check; the peer's own checks prove only its half: counted,
+         * they would hide a dead half with data in flight 30 s, to consent) */
+        c->pd.p.last_rx = npf_mono_ms();
         path_direct_check(c);
         if (pm_rt(&c->pm, &c->pd.p, npf_mono_ms()))
             npf_log("call %s: direct path %s (checked both ways)", c->call_id_s, h == PH_NEW ? "proven" : "alive again");
