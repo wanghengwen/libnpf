@@ -262,7 +262,7 @@ static void resources(npf_t *a, const char *da, int echo)
     r.rule = "10.1.0.0/16:5000-5100";
     check(npf_resource_put(a, &r, err, sizeof err) == NPF_OK, "udp: a network with ports");
     r.rule = "lan";
-    check(npf_resource_put(a, &r, err, sizeof err) == NPF_EINVAL, "udp lan: NPF_EINVAL");
+    check(npf_resource_put(a, &r, err, sizeof err) == NPF_OK, "udp lan: this host and its private networks");
     check(npf_resource_remove(a, "udp-all") == NPF_OK, "udp rule removed");
     npf_resource_init(&r);
     r.type = NPF_RES_TCP;

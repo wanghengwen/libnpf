@@ -505,7 +505,7 @@ typedef struct npf_resource {
     const char  *svc;                  /* tcp / udp: "http", "https", "rdp", "ssh" ...; NULL: none */
     npf_endpoint service;              /* tcp / udp: an IP address (no brackets) or localhost, and port */
     const char  *rule;                 /* net / socks: "lan", "*", ADDR[/PREFIX][:PORT[-PORT]];
-                                          udp without a service host: "*" or ADDR[/PREFIX][:PORT[-PORT]];
+                                          udp without a service host: "lan", "*" or ADDR[/PREFIX][:PORT[-PORT]];
                                           reverse: [lan:]"*", PORT or PORT-PORT; up to 63 bytes */
     const char  *path;                 /* a web page: the page to open; NULL: "/" */
     const char  *desc;                 /* up to 256 bytes; NULL: none */
