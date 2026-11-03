@@ -802,7 +802,10 @@ int call_start_transport(npf_call *c)
     cfg.mtu = ANL_MTU;
     cfg.default_rcv_wnd = NPF_ANL_CTRL_WND;
     cfg.keepalive_ms = 15000;
-    cfg.idle_timeout_ms = 60000;
+    /* 7 keepalives lost in a row (at 60 s 3 were enough, the 4th just on
+     * time: an idle session on a lossy Wi-Fi ended now and then); a dead
+     * path is the path manager's, in seconds (path_mgr.c) */
+    cfg.idle_timeout_ms = 120000;
     c->anl = anl_create(c->conv, &cfg, c);
     npf_wipe(&cfg, sizeof cfg);
     if (!c->anl)
