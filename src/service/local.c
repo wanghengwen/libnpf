@@ -223,12 +223,16 @@ static int device(npf_local *l, const char *s, const npf_json *j, int v, const c
         snprintf(lf.spec, sizeof lf.spec, "%s", f->spec);
         lf.port = (int)f->port;
         lf.hostport = (int)f->hostport;
+        snprintf(lf.by, sizeof lf.by, "%s", f->by);
+        lf.added = f->added;
         if (lf.opt)                         /* else an earlier version's: not carried over */
             rc = npf_local_fwd_add(d, &lf);
     }
     if ((d->has_key = m->key_len == 32))
         memcpy(d->key, m->key, 32);
     snprintf(d->remote_name, sizeof d->remote_name, "%s", m->remote_name);
+    snprintf(d->by, sizeof d->by, "%s", m->by);
+    d->added = m->added;
     if (npf_text_display(d->remote_name, NPF_PEER_NAME_MAX) < 0)
         d->remote_name[0] = 0;              /* the file edited: shown only as a peer would send it */
     if (m->resources >= 0 && rc == 0
@@ -422,6 +426,11 @@ int npf_local_save(npf_local *l)
                 member(&o, &f3, "      ", "idle_ms");
                 npf_out_printf(&o, "%d", d->idle_ms);
             }
+            if (d->by[0]) {
+                kstr(&o, &f3, "      ", "by", d->by);
+                member(&o, &f3, "      ", "added");
+                npf_out_printf(&o, "%lld", (long long)d->added);
+            }
         }
         if (d->psk_file[0])
             kstr(&o, &f3, "      ", "psk_file", d->psk_file);
@@ -446,6 +455,11 @@ int npf_local_save(npf_local *l)
                 } else {
                     npf_out_printf(&o, "\"%c\", \"spec\": ", lf->opt);
                     npf_out_json_str(&o, lf->spec, strlen(lf->spec));
+                }
+                if (lf->by[0]) {
+                    npf_out_printf(&o, ", \"by\": ");
+                    npf_out_json_str(&o, lf->by, strlen(lf->by));
+                    npf_out_printf(&o, ", \"added\": %lld", (long long)lf->added);
                 }
                 npf_out_printf(&o, "}");
             }

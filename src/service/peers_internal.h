@@ -57,6 +57,8 @@ typedef struct pfwd {
     uint32_t  nrefused;             /* connections the peer refused (its resources) */
     char      refused_why[64];
     int       told_state, told_port, told_why;   /* what the application was told last (fwd_changed) */
+    char      by[17];               /* a remote admin's (npf_fwd_new) */
+    int64_t   added;
 } pfwd;
 
 /* a peer's state, one at a time (architecture.md 3.9) */

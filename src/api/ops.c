@@ -116,6 +116,8 @@ static int lfwd_of(const npf_peer *p, int i, npf_lfwd *lf)
     memset(lf, 0, sizeof *lf);
     lf->opt = st.opt;
     lf->udp = st.udp;
+    snprintf(lf->by, sizeof lf->by, "%s", st.by);
+    lf->added = st.added;
     if (st.opt == 'L' || st.opt == 'D' || st.opt == 'R') {
         snprintf(lf->bind, sizeof lf->bind, "%s", st.bind);
         lf->port = st.port;
@@ -141,7 +143,7 @@ int npf_ops_record(npf_t *n, npf_peer *p, int save, const char *psk_file)
     d->idle_ms = save ? npf_peer_idle_asked(p) : 0;   /* NPF_PEER_OPT_IDLE_MS: kept for on demand */
     npf_local_fwd_clear(d);
     if (!save) {
-        d->psk_file[0] = d->psk[0] = 0;
+        d->psk_file[0] = d->psk[0] = d->by[0] = 0;
     } else {
         if (psk_file) {
             snprintf(d->psk_file, sizeof d->psk_file, "%s", psk_file);
@@ -190,6 +192,8 @@ static void restore_fwds(npf_peer *p, const npf_ldev *d)
             fn.port = lf->port;
             fn.host = lf->host;
             fn.hostport = lf->hostport;
+            fn.by = lf->by;
+            fn.added = lf->added;
             r = npf_peer_forward_add_parts(p, &fn, 1, 0, e, sizeof e);
         } else {
             r = npf_peer_forward_add_kind(p, lf->opt, lf->spec, 1, e, sizeof e);

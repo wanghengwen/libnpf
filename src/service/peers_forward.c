@@ -57,6 +57,8 @@ static int fwd_fill(pfwd *f, const npf_fwd_new *fn, char *err, size_t errcap)
     f->port = fn->port;
     snprintf(f->host, sizeof f->host, "%s", socks ? "" : fn->host);
     f->hostport = socks ? 0 : fn->hostport;
+    snprintf(f->by, sizeof f->by, "%s", fn->by ? fn->by : "");
+    f->added = fn->added;
     {                                       /* what it is, for people (the logs, the status) */
         int b6 = strchr(f->bind, ':') != NULL, h6 = strchr(f->host, ':') != NULL, o;
         o = snprintf(f->spec, sizeof f->spec, "%s%s %s%s%s:%d", f->reverse ? "remote" : socks ? "socks" : "local",
@@ -121,6 +123,28 @@ static int peer_may_wait(const npf_peer *p)
     return p->st < PS_ENDED && (p->idle_ms || p->connect != NPF_CONNECT_ONCE);
 }
 
+/* a remote admin's forward on every address (remote-peers.md 5): from this
+ * host and its LAN only (what the published "lan" stands for), never the
+ * internet; 1 when fd is refused */
+static int lan_refused(pfwd *f, int fd)
+{
+    struct sockaddr_storage from = {0};
+    socklen_t fl = sizeof from;
+    npf_policy *pol = f->p->ps->n->callee ? f->p->ps->n->callee->policy : NULL;
+    static int64_t warned;                  /* a line a minute: a scan writes no more */
+    char a[64] = "?";
+    if (!f->by[0] || strcmp(f->bind, "0.0.0.0") != 0)
+        return 0;
+    if (getpeername(fd, (struct sockaddr *)&from, &fl) == 0 && pol && npf_policy_lan_peer(pol, (struct sockaddr *)&from))
+        return 0;
+    if (npf_mono_ms() - warned > 60000) {
+        npf_addr_str(&from, a, sizeof a);
+        npf_logw("%s: %s: %s is not on this host's LAN, refused", f->p->name, f->spec, a);
+        warned = npf_mono_ms();
+    }
+    return 1;
+}
+
 #define ACCEPT_ROUND 64                 /* connections (datagrams) taken per wakeup: the loop's other work goes on */
 
 static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
@@ -146,6 +170,10 @@ static void accept_cb(npf_loop *loop, int lfd, unsigned ev, void *arg)
             break;
         }
         uint64_t cid = 0;
+        if (lan_refused(f, fd)) {
+            npf_sock_close(fd);
+            continue;
+        }
         if (f->pub && !(cid = peers_public_admit(f, fd)))  /* a public mapping: who may, how many */
             continue;
         if (f->draining || f->p->st == PS_REMOVED || !f->used || f->fd != lfd) {
@@ -635,6 +663,8 @@ int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st)
     st->ctx = f->ctx;
     st->ext = f->ext;
     snprintf(st->spec, sizeof st->spec, "%s", f->spec);
+    snprintf(st->by, sizeof st->by, "%s", f->by);
+    st->added = f->added;
     if (f->st == FS_UP && f->reverse)
         snprintf(st->text, sizeof st->text, "up (callee port %d)", f->lport);
     else if (f->st == FS_UP && f->kind)
@@ -655,6 +685,15 @@ void npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx)
     pfwd *f = fwd_at(p, i);
     if (f)
         f->ctx = ctx;
+}
+
+void npf_peer_forward_set_by(npf_peer *p, int i, const char *by, int64_t added)
+{
+    pfwd *f = fwd_at(p, i);
+    if (f) {
+        snprintf(f->by, sizeof f->by, "%s", by);
+        f->added = added;
+    }
 }
 
 int npf_peer_forward_id(const npf_peer *p, int i)

@@ -127,6 +127,7 @@ int npf_peer_forward_used(const npf_peer *p) { return 0; }
 void npf_peer_forward_perm_set(npf_peer *p, int i, int perm) {}
 int npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st) { return -1; }
 void npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx) {}
+void npf_peer_forward_set_by(npf_peer *p, int i, const char *by, int64_t added) {}
 
 int npf_peer_state(const npf_peer *p, int *needs, int *retry_in_ms)
 {

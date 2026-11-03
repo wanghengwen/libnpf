@@ -17,6 +17,7 @@
  *        "key": "<base64url>",                         the peer's pinned public key
  *        "resources": [...],                           what it published, as last heard
  *        "remote_name": "...",                         its own name, as last heard
+ *        "by": "<fingerprint>", "added": 1793000000,   added by a remote admin (a forward too)
  *        ...}},                                        modules' keys (npf_local_ext)
  *    "resources": [...]}                               what this node publishes (npf/resources.h)
  *
@@ -47,6 +48,8 @@ typedef struct npf_lfwd {
     char host[256];
     int  hostport;
     char spec[300];                 /* a module's kind: in its own form */
+    char by[17];                    /* added by a remote admin: its key's fingerprint (hex); "" here */
+    int64_t added;                  /* then (Unix s) */
 } npf_lfwd;
 
 typedef struct npf_ldev {
@@ -64,6 +67,8 @@ typedef struct npf_ldev {
     uint8_t key[32];                /* the pinned public key, when has_key */
     char   *resources;              /* its resources as last heard: a normalised JSON array, or NULL */
     char    remote_name[NPF_PEER_NAME_MAX + 1];    /* its own name as last heard (npf_text_display); "" none */
+    char    by[17];                 /* a saved peer a remote admin added: its key's fingerprint; "" here */
+    int64_t added;                  /* then (Unix s) */
     int     next;                   /* the modules' keys (npf_local_ext) */
     struct npf_lext { char *key, *val; } *ext;
 } npf_ldev;

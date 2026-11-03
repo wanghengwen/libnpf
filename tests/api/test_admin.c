@@ -10,7 +10,14 @@
  * resource says why; a share code needs the platform (offline) and an owner
  * (no_owner), its uses and ttl bounded, and the code made later goes only
  * to the session of the admin that asked; there are no role changes; each
- * request is logged with the caller's fingerprint, at most 30 lines a minute. */
+ * request is logged with the caller's fingerprint, at most 30 lines a minute.
+ * The node's peers (remote-peers.md): listed with their forwards and who
+ * added them; a device paired before is added without a share code, one
+ * already a peer is existing, any other needs a share code (a password is
+ * refused), at most 8 added remotely; a -L only to a service the peer
+ * published, on loopback or every address, ports from 1024, at most 8 a
+ * peer, the adder kept in local.json; remote admins remove only what remote
+ * admins added; members, GRANT and remote_admin members are refused. */
 #define _DEFAULT_SOURCE                     /* mkdtemp */
 #include <stdlib.h>
 
@@ -62,6 +69,25 @@ static void keyjson(int i, char *out)
     sprintf(out, "{\"key\":\"%s\"}", b);
 }
 
+/* the k-th valid device number from 100000000 on (its check digit) */
+static uint64_t number(int k)
+{
+    uint64_t v;
+    char s[16];
+    for (v = 100000000; ; v++) {
+        snprintf(s, sizeof s, "%llu", (unsigned long long)v);
+        if (npf_number_parse(s) && v != 123456789 && k-- == 0)
+            return v;
+    }
+}
+
+/* the id after "id": in a reply */
+static long id_in(const char *s)
+{
+    const char *p = strstr(s, "\"id\":");
+    return p ? atol(p + 5) : 0;
+}
+
 static int count(const char *s, const char *sub)
 {
     int k = 0;
@@ -99,6 +125,19 @@ int main(void)
                    (long long)time(NULL) + 3600);
     put_file(dir, "state.json", st.p);
     npf_out_free(&st);
+    /* local.json: number(0) a saved peer with a service and a forward of its own, number(1) paired before only */
+    {
+        uint8_t k[32];
+        char b[NPF_B64_LEN(32)], lj[1200];
+        key_of(7, k);
+        b[npf_b64url_encode(k, 32, b)] = 0;
+        snprintf(lj, sizeof lj, "{\"devices\": {\"%llu\": {\"save\": true, \"key\": \"%s\", \"forwards\": [{\"kind\": "
+                 "\"local\", \"proto\": \"tcp\", \"listen\": \"127.0.0.1\", \"port\": 25301, \"host\": \"127.0.0.1\", "
+                 "\"hostport\": 22}], \"resources\": [{\"name\": \"web\", \"type\": \"tcp\", \"svc\": \"http\", "
+                 "\"target\": \"127.0.0.1:8080\"}]}, \"%llu\": {\"key\": \"%s\"}}}\n",
+                 (unsigned long long)number(0), b, (unsigned long long)number(1), b);
+        put_file(dir, "local.json", lj);
+    }
     if (!(n = instance(dir, NPF_ROLE_NODE, "udp_port = 0\n", NULL, err, sizeof err)) || !n->callee) {
         printf("     (%s)\n", err);
         check(0, "a node with a number");
@@ -224,6 +263,104 @@ int main(void)
         npf_log_recent(lg, sizeof lg);
         check(p && (p = strstr(lg, "admin: 5 more requests in that minute not logged")) && count(p, "(admin_get)") == 1,
               "the next minute: how many were not logged, then the lines again");
+    }
+
+    /* the node's peers and forwards */
+    {
+        static char lj_buf[65536];
+        char rq[300], by[17], *lj;
+        long a, b = 0, f = 0, local_f = 0;
+        snprintf(by, sizeof by, "%016llx", (unsigned long long)npf_fp((uint8_t[32]){1, [31] = 0x40}));
+        check(is(req(n, NPF_AUTH_IK, 2, "admin_peer_ls", "{}", out, sizeof out), "forbidden")
+                  && is(req(n, NPF_AUTH_GRANT, 0, "admin_peer_ls", "{}", out, sizeof out), "forbidden")
+                  && is(req(n, NPF_AUTH_IK, 2, "admin_fwd_add", "{\"id\":1,\"target\":\"127.0.0.1:8080\"}", out,
+                            sizeof out), "forbidden"),
+              "the peers: a member's, a GRANT session's requests forbidden");
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_peer_ls", "{}", out, sizeof out)) && count(out, "\"saved\":") == 1
+                  && strstr(out, "\"saved\":true,\"by\":\"\"") && strstr(out, "\"listen\":\"127.0.0.1:25301\"")
+                  && (local_f = id_in(strstr(out, "\"forwards\":"))) > 0,
+              "admin_peer_ls: the saved peer, added here, with its forward");
+        a = id_in(out);
+        snprintf(rq, sizeof rq, "{\"number\":%llu}", (unsigned long long)number(0));
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_peer_add", rq, out, sizeof out)) && id_in(out) == a
+                  && strstr(out, "\"existing\":true"), "a peer already: its id, existing");
+        snprintf(rq, sizeof rq, "{\"number\":%llu}", (unsigned long long)number(2));
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_peer_add", rq, out, sizeof out), "need_share"),
+              "not paired here, no share code: need_share");
+        snprintf(rq, sizeof rq, "{\"number\":%llu,\"share\":\"ABCD-EFGH\"}", (unsigned long long)number(2));
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_peer_add", rq, out, sizeof out), "bad_request")
+                  && is(req(n, NPF_AUTH_IK, 0, "admin_peer_add", "{\"number\":123456789,\"share\":\"K7Q2-ABCD-EFGH\"}",
+                            out, sizeof out), "bad_request")
+                  && is(req(n, NPF_AUTH_IK, 0, "admin_peer_add", "{\"number\":123456780}", out, sizeof out), "bad_request"),
+              "a password instead of a share code, this node, a bad number: bad_request");
+        snprintf(rq, sizeof rq, "{\"number\":%llu,\"name\":\"nas2\"}", (unsigned long long)number(1));
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_peer_add", rq, out, sizeof out)) && strstr(out, "\"existing\":false")
+                  && (b = id_in(out)) > 0 && npf_local_by_name(&n->lc, "nas2")
+                  && strcmp(npf_local_by_name(&n->lc, "nas2")->by, by) == 0 && npf_local_by_name(&n->lc, "nas2")->save,
+              "paired here before: added without a share code, saved, the adder's fingerprint kept");
+        for (i = 2; i < 9; i++) {
+            snprintf(rq, sizeof rq, "{\"number\":%llu,\"share\":\"K7Q2-ABCD-EFGH\"}", (unsigned long long)number(i));
+            if (!ok(req(n, NPF_AUTH_IK, 0, "admin_peer_add", rq, out, sizeof out)))
+                break;
+        }
+        snprintf(rq, sizeof rq, "{\"number\":%llu,\"share\":\"K7Q2-ABCD-EFGH\"}", (unsigned long long)number(9));
+        check(i == 9 && is(req(n, NPF_AUTH_IK, 0, "admin_peer_add", rq, out, sizeof out), "limit"),
+              "with a share code; 8 added remotely, the 9th: limit");
+
+        /* forwards */
+        snprintf(rq, sizeof rq, "{\"id\":%ld,\"target\":\"127.0.0.1:8080\",\"port\":25302}", a);
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", rq, out, sizeof out)) && (f = id_in(out)) > 0
+                  && strstr(out, "\"listen\":\"127.0.0.1:"), "admin_fwd_add: a -L on loopback to a service it published");
+        snprintf(rq, sizeof rq, "{\"id\":%ld,\"target\":\"127.0.0.1:8080\",\"port\":25303,\"lan\":true}", a);
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", rq, out, sizeof out))
+                  && strstr(out, "\"listen\":\"0.0.0.0:"), "lan: on every address (LAN connections only)");
+        snprintf(rq, sizeof rq, "{\"id\":%ld,\"target\":\"127.0.0.1:22\"}", a);
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", rq, out, sizeof out), "forbidden"),
+              "a target it did not publish: forbidden");
+        snprintf(rq, sizeof rq, "{\"id\":%ld,\"target\":\"127.0.0.1:8080\",\"port\":80}", a);
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", rq, out, sizeof out), "bad_request"), "a port below 1024: bad_request");
+        snprintf(rq, sizeof rq, "{\"id\":%ld,\"target\":\"127.0.0.1:8080\"}", b);
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", rq, out, sizeof out), "forbidden")
+                  && is(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", "{\"id\":9999,\"target\":\"127.0.0.1:8080\"}", out,
+                            sizeof out), "not_found"),
+              "a peer whose resources were never heard: forbidden; no such peer: not_found");
+        for (i = 2; i < 8; i++) {
+            snprintf(rq, sizeof rq, "{\"id\":%ld,\"target\":\"127.0.0.1:8080\",\"port\":%d}", a, 25302 + i);
+            if (!ok(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", rq, out, sizeof out)))
+                break;
+        }
+        snprintf(rq, sizeof rq, "{\"id\":%ld,\"target\":\"127.0.0.1:8080\",\"port\":25399}", a);
+        check(i == 8 && is(req(n, NPF_AUTH_IK, 0, "admin_fwd_add", rq, out, sizeof out), "limit"),
+              "8 forwards added remotely on a peer, the 9th: limit");
+        lj = file_text(dir, "local.json", lj_buf, sizeof lj_buf);
+        check(lj && count(lj, "\"by\": \"") == 8 + 8, "local.json: the adder of each remote peer and forward");
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_peer_ls", "{}", out, sizeof out)) && count(out, "\"by\":\"\"") == 2
+                  && count(out, by) == 8 + 8, "admin_peer_ls: who added each");
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_peer_res", (snprintf(rq, sizeof rq, "{\"id\":%ld}", a), rq), out,
+                     sizeof out)) && strstr(out, "\"resources\":[{") && strstr(out, "127.0.0.1:8080")
+                  && strstr(out, "\"connected\":false"), "admin_peer_res: its services as last heard");
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_peer_res", (snprintf(rq, sizeof rq, "{\"id\":%ld}", b), rq), out,
+                     sizeof out), "offline"), "never heard: offline");
+
+        /* removing: only what remote admins added */
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_fwd_del", (snprintf(rq, sizeof rq, "{\"id\":%ld}", local_f), rq), out,
+                     sizeof out), "forbidden")
+                  && is(req(n, NPF_AUTH_IK, 0, "admin_peer_del", (snprintf(rq, sizeof rq, "{\"id\":%ld}", a), rq), out,
+                            sizeof out), "forbidden"),
+              "a forward and a peer added here: forbidden");
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_fwd_del", (snprintf(rq, sizeof rq, "{\"id\":%ld}", f), rq), out,
+                     sizeof out))
+                  && is(req(n, NPF_AUTH_IK, 0, "admin_fwd_del", rq, out, sizeof out), "not_found"),
+              "admin_fwd_del: a forward added remotely; again: not_found");
+        check(ok(req(n, NPF_AUTH_IK, 0, "admin_peer_del", (snprintf(rq, sizeof rq, "{\"id\":%ld}", b), rq), out,
+                     sizeof out)) && !peer_of(n, (uint32_t)b) && npf_local_by_name(&n->lc, "nas2")
+                  && !npf_local_by_name(&n->lc, "nas2")->save && !npf_local_by_name(&n->lc, "nas2")->by[0],
+              "admin_peer_del: a peer added remotely, gone (its pinned key and name kept)");
+
+        npf_conf_set(&n->conf, "remote_admin", "members");
+        check(is(req(n, NPF_AUTH_IK, 0, "admin_peer_ls", "{}", out, sizeof out), "forbidden"),
+              "remote_admin members: the peers refused");
+        npf_conf_set(&n->conf, "remote_admin", "on");
     }
 
     /* remote_admin */

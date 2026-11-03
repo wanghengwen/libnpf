@@ -1,6 +1,6 @@
 # NPF JSON 信令协议草案
 
-版本：0.78。更新日期：2026-11-02。源码核对基线：`4b95135`。变更记录见文末。
+版本：0.79。更新日期：2026-11-03。源码核对基线：`4b95135`。变更记录见文末。
 
 本文描述 libnpf 的 JSON 信令及其平台对接约定。接入、呼叫、NAT 上报与隧道内控制以本仓库的节点端实现为依据；账户、数据库、第三方登录、托管服务、计费及服务器间路由属于外部平台约定，本仓库未包含这些服务端实现。相关服务器行为与限额不能视为已由本仓库验证。
 
@@ -1115,8 +1115,14 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 | `admin_share_del` | 主叫 → 被叫 | 请求 | `locator`：删除这个码（并告诉平台）；未知 `not_found`；应答 `{}` |
 | `admin_res_put` | 主叫 → 被叫 | 请求 | `resource`：发布或替换一个资源（数据通道协议第 7.2 节的写法，校验同本地 `npf resource add`）；`npf.conf` 固定的同名资源 `forbidden`；应答 `{}` |
 | `admin_res_del` | 主叫 → 被叫 | 请求 | `name`：删除这个资源；`npf.conf` 固定的 `forbidden`，未知 `not_found`；应答 `{}` |
+| `admin_peer_ls` | 主叫 → 被叫 | 请求 | 被叫自己的对端（它作为主叫去连的节点，托管客户端的平台映射除外）：`{"peers": [{"id", "target", "name", "remote_name", "connected", "state", "role", "saved", "by", "forwards": [{"id", "spec", "listen", "target", "udp", "up", "state", "by"}]}], "more"}`（`more`：控制消息放不下其余的）；`role` 是被叫在对方那里的角色，`by` 是远程添加它的管理员公钥指纹（16 位十六进制），本地加的为空；`listen`、`target`、`udp` 只在 `-L` 上 |
+| `admin_peer_add` | 主叫 → 被叫 | 请求 | `number`（必填）、`share`（对方的分享码）、`name`（可选）。已经是对端：`{"id", "existing": true}`，什么都不改；被叫的 `local.json` 存着对方的公钥（配对过）时不要分享码；否则没给 `need_share`，给的不是分享码（例如配对口令）`bad_request`。被叫保存这个对端（记下添加者与时间）并开始连接，应答 `{"id", "existing": false}`，配对结果之后经 `admin_peer_ls` 看。远程添加的至多 8 个（`limit`） |
+| `admin_peer_del` | 主叫 → 被叫 | 请求 | `id`：删除远程添加的对端（会话结束、转发删除，`local.json` 里只留公钥与名称）；本地加的 `forbidden`；应答 `{}` |
+| `admin_peer_res` | 主叫 → 被叫 | 请求 | `id`：`{"resources": [...], "connected"}`，对方最近一次发给被叫的资源列表；从没收到过 `offline` |
+| `admin_fwd_add` | 主叫 → 被叫 | 请求 | `id`（任一保存的对端）、`target`（`HOST:PORT`，必须是对方资源里的 `tcp` 服务，否则 `forbidden`）、`port`（0 或 1024 到 65535，默认 0：系统选）、`lan`（默认 `false`）：在被叫上开一个保存的 TCP `-L`，监听 `127.0.0.1`，`lan` 时监听所有地址但只接受被叫本机及其局域网（资源 `lan` 所指的地址）的连接。应答 `{"id", "listen"}`（还没连上时端口为 0）；端口被占用 `in_use`，每个对端远程添加的至多 8 个（`limit`） |
+| `admin_fwd_del` | 主叫 → 被叫 | 请求 | `id`：删除远程添加的转发；本地加的 `forbidden`；应答 `{}` |
 
-`admin_*` 只接受授权列表中角色为管理员的公钥的 IK 或 PAKE 会话（安全 8.6）：`grant`、直连与托管客户端的会话 `forbidden`；成员除 `admin_get` 外 `forbidden`；被叫的 `remote_admin = members` 拒绝 `admin_res_*`，`off` 全部拒绝（`forbidden`），状态文件损坏的安全模式下也拒绝；字段错误 `bad_request`，其他类型 `unsupported_type`。
+`admin_*` 只接受授权列表中角色为管理员的公钥的 IK 或 PAKE 会话（安全 8.6）：`grant`、直连与托管客户端的会话 `forbidden`；成员除 `admin_get` 外 `forbidden`；被叫的 `remote_admin = members` 拒绝 `admin_res_*`、`admin_peer_*`、`admin_fwd_*`，`off` 全部拒绝（`forbidden`），状态文件损坏的安全模式下也拒绝；字段错误 `bad_request`，其他类型 `unsupported_type`（没有对端功能的构建、由应用自己保存对象的实例对 `admin_peer_*`、`admin_fwd_*` 也回它：控制台据此不显示这部分）。拒绝的应答带 `message` 说明原因。被叫的对端与转发由管理员远程添加时，`local.json` 记下添加者（`by`、`added`），本机的 `npf node`、`npf forward` 显示，本机可以删除；X 不转发任何 `admin_*`：经它连上的设备只能被它用资源，不能经它被管理（安全 8.6）。
 
 默认被叫实现只保存一份节点级的待确认绑定记录，新请求会覆盖旧记录；`bind_committed` 必须在记录产生后 10 分钟内到达并匹配账户与操作号才会生效。记录不随会话结束自动清除，也不持久化；过期是在收到提交通知时检查，进程重启后不能恢复待确认操作。
 
@@ -1253,6 +1259,7 @@ calling ──call_accepted──► connecting ──数据通道 hello──�
 
 | 日期 | 版本 | 内容 |
 |---|---|---|
+| 2026-11-03 | 0.79 | 隧道内控制消息新增 `admin_peer_ls`、`admin_peer_add`、`admin_peer_del`、`admin_peer_res`、`admin_fwd_add`、`admin_fwd_del`：管理员远程让设备连接别的设备（分享码，或沿用已有配对）并在设备上开 `-L` 到对方共享的服务（`remote_admin = on`；安全 8.6） |
 | 2026-11-02 | 0.78 | `resources` 事件带被叫自己的名称与主叫的角色（数据通道 7.2） |
 | 2026-11-02 | 0.77 | `incoming` 的拒绝新增 `remote_access_off`（被叫关闭了远程访问，security.md 8.7），平台在 `call_rejected` 里原样转给主叫 |
 | 2026-11-02 | 0.76 | 安全评审：UDP 承载的第 3 条消息每次尝试占来源的令牌、缓存的第 2 条消息至多重发 3 次、`SIG_COOKIE` 按 /24 限速；`handshake` 只转发主叫的、`handshake_done` 之前、每个呼叫至多 8 条、每条至多 512 字节；"流量额度"：免费开头每个账户每分钟 30 秒、每天 1800 秒，不计费的字节每台服务器每天 4 MB，套餐没读到时慢速、记账、新呼叫没有中转；`share_resolve` 对未知定位符也读节点记录 |

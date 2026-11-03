@@ -74,6 +74,9 @@ typedef struct npf_fwd_new {
     int         port;               /* 0: picked (by the system here, by the peer for -R) */
     const char *host;               /* -L / -R: the target */
     int         hostport;
+    const char *by;                 /* added by a remote admin: its fingerprint (hex), NULL here; one on
+                                       every address then takes connections from the LAN only */
+    int64_t     added;              /* then (Unix s) */
 } npf_fwd_new;
 /* Adds a forward to p. perm: it is saved (npf_fwd_state.perm); ext: the
  * application's id (a platform mapping), 0 none. It starts when the peer
@@ -290,9 +293,13 @@ typedef struct npf_fwd_state {
     char     spec[300];             /* a module's kind: its form; else for people
                                        ("local 127.0.0.1:8080 -> 127.0.0.1:80") */
     char     text[112];             /* its state for people: "up", "retry in N s (why)", ... */
+    char     by[17];                /* npf_fwd_new's */
+    int64_t  added;
 } npf_fwd_state;
 int         npf_peer_forward_state(const npf_peer *p, int i, npf_fwd_state *st);
 void        npf_peer_forward_set_ctx(npf_peer *p, int i, void *ctx);
+/* npf_fwd_new's by (a fingerprint, copied) and added, of forward i */
+void        npf_peer_forward_set_by(npf_peer *p, int i, const char *by, int64_t added);
 /* The peer with forward id, its index in *idx (idx may be NULL); NULL none. */
 npf_peer   *npf_peers_fwd_find(const npf_peers *ps, int id, int *idx);
 npf_call   *npf_peer_call(const npf_peer *p);

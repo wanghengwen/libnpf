@@ -79,6 +79,9 @@ TABLE(m_admin_share_new, M_ADMIN_SHARE_NEW)
 TABLE(m_admin_share_del, M_ADMIN_SHARE_DEL)
 TABLE(m_admin_res_put, M_ADMIN_RES_PUT)
 TABLE(m_admin_res_del, M_ADMIN_RES_DEL)
+TABLE(m_admin_id, M_ADMIN_ID)
+TABLE(m_admin_peer_add, M_ADMIN_PEER_ADD)
+TABLE(m_admin_fwd_add, M_ADMIN_FWD_ADD)
 TABLE(m_server, M_SERVER)
 TABLE(m_sources, M_SOURCES)
 TABLE(m_list, M_LIST)
@@ -101,7 +104,7 @@ const npf_msgdesc *const node_msgdescs[] = {
     &m_call_accepted_d, &m_call_rejected_d, &m_handshake_d, &m_punch_start_d, &m_punch_info_d, &m_relay_switch_d,
     &m_call_ended_d, &m_close_d, &m_reverse_listen_d, &m_listen_id_d, &m_listening_d, &m_grant_update_d,
     &m_bind_approve_d, &m_admin_get_d, &m_admin_key_d, &m_admin_share_new_d, &m_admin_share_del_d, &m_admin_res_put_d,
-    &m_admin_res_del_d, NULL,
+    &m_admin_res_del_d, &m_admin_id_d, &m_admin_peer_add_d, &m_admin_fwd_add_d, NULL,
 };
 const npf_msgdesc *const node_filedescs[] = {&m_list_d, &m_state_d, &m_device_d, NULL};
 

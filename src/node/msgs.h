@@ -157,6 +157,16 @@ NODE_MSG(m_admin_share_del, M_ADMIN_SHARE_DEL)
 NODE_MSG(m_admin_res_put, M_ADMIN_RES_PUT)
 #define M_ADMIN_RES_DEL(T) F_STR(T, name, NPF_RES_NAME_MAX + 1, F_REQ)
 NODE_MSG(m_admin_res_del, M_ADMIN_RES_DEL)
+/* the node's own peers and forwards (remote-peers.md): admin_peer_ls takes
+ * nothing; admin_peer_del, admin_peer_res and admin_fwd_del an id */
+#define M_ADMIN_ID(T) F_INT(T, id, F_REQ | F_STRICT, 1, UINT32_MAX, 0)
+NODE_MSG(m_admin_id, M_ADMIN_ID)
+#define M_ADMIN_PEER_ADD(T) F_INT(T, number, F_REQ | F_STRICT, 1, INT64_MAX, 0) \
+    F_STR(T, share, NPF_SHARE_LEN + 1, F_SECRET) F_STR(T, name, 33, 0)
+NODE_MSG(m_admin_peer_add, M_ADMIN_PEER_ADD)
+#define M_ADMIN_FWD_ADD(T) F_INT(T, id, F_REQ | F_STRICT, 1, UINT32_MAX, 0) F_STR(T, target, 270, F_REQ) \
+    F_INT(T, port, F_STRICT, 0, 65535, 0) F_BOOLD(T, lan, 0, 0)
+NODE_MSG(m_admin_fwd_add, M_ADMIN_FWD_ADD)
 
 /* ---- the server list (signaling.md "服务器列表") and the node's files ---- */
 
@@ -192,12 +202,13 @@ NODE_FILE(m_state, M_STATE)
 
 /* a device's record in local.json (local.c, local.h); the other keys are the modules' */
 #define M_FORWARD(T) F_STR(T, kind, 16, 0) F_STR(T, proto, 8, 0) F_STR(T, listen, 64, 0) F_INT(T, port, 0, 0, 65535, 0) \
-    F_STR(T, host, 256, 0) F_INT(T, hostport, 0, 0, 65535, 0) F_STR(T, spec, 300, 0)
+    F_STR(T, host, 256, 0) F_INT(T, hostport, 0, 0, 65535, 0) F_STR(T, spec, 300, 0) F_STR(T, by, 17, 0) \
+    F_INT(T, added, 0, 0, INT64_MAX, 0)
 NODE_MSG(m_forward, M_FORWARD)
 #define M_DEVICE(T) F_STR(T, name, 33, 0) F_STR(T, nick, NPF_NICK_MAX + 1, 0) F_BOOL(T, save) F_STR(T, connect, 16, 0) \
     F_INT(T, idle_ms, 0, 0, 86400000, 0) F_STR(T, psk_file, 512, 0) F_STR(T, psk, 64, F_SECRET) \
     F_ARR(T, forwards, m_forward, NPF_LOCAL_MAX_FWD, F_SKIP) F_B64(T, key, 32, 0, 32) F_TOK(T, resources, 0, NPF_JT_ARRAY) \
-    F_STR(T, remote_name, NPF_PEER_NAME_MAX + 1, 0)
+    F_STR(T, remote_name, NPF_PEER_NAME_MAX + 1, 0) F_STR(T, by, 17, 0) F_INT(T, added, 0, 0, INT64_MAX, 0)
 NODE_FILE(m_device, M_DEVICE)
 
 /* every table, NULL at the end (the tests, the fuzzer): the messages', the
