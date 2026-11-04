@@ -1,0 +1,3 @@
+[workspace]
+members = ["npf-sys", "npf"]
+resolver = "2"

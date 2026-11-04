@@ -1,0 +1,10 @@
+[package]
+name = "npf"
+version = "0.9.4"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+description = "Safe Rust interface to libnpf: P2P sessions with application data, port forwards and media frame streams over AnLiu"
+
+[dependencies]
+npf-sys = { path = "../npf-sys", version = "0.9.4" }
