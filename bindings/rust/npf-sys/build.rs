@@ -85,6 +85,19 @@ fn build_from_source(manifest: &Path, target_os: &str) -> (PathBuf, PathBuf) {
     }
 
     let mut cfg = cmake::Config::new(&src);
+    // MSVC: the cmake crate picks the Visual Studio generator by the
+    // version it knows (older ones fail on a newer Visual Studio); Ninja,
+    // in every Visual Studio developer prompt, needs no such knowledge
+    println!("cargo:rerun-if-env-changed=CMAKE_GENERATOR");
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+        && env::var_os("CMAKE_GENERATOR").is_none()
+        && std::process::Command::new("ninja")
+            .arg("--version")
+            .output()
+            .map_or(false, |o| o.status.success())
+    {
+        cfg.generator("Ninja");
+    }
     cfg.profile("Release")
         .define("NPF_BUILD_LIB", "ON")
         .define("NPF_BUILD_TESTS", "OFF")
