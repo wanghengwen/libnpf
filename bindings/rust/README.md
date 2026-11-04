@@ -21,6 +21,23 @@ cargo test
 | `NPF_SRC_DIR` | libnpf 源码的位置（默认本仓库） |
 | `NPF_CMAKE_ARGS` | 给 CMake 的其他选项，如 `-DNPF_PEERS=OFF -DNPF_USE_OPENSSL=ON` |
 
+## 平台
+
+2026-11-04 在下面这些平台上跑通了 `cargo test`（布局校验 + 两个直连实例互传应用数据和媒体帧）：
+
+| 目标 | 怎么构建和运行 | 链接方式 |
+| --- | --- | --- |
+| x86_64-unknown-linux-gnu | 本机 | 静态 `libnpf.a` |
+| aarch64-unknown-linux-gnu | WSL 交叉编译（`aarch64-linux-gnu-gcc`），qemu-aarch64 运行 | 静态 `libnpf.a` |
+| x86_64-pc-windows-msvc | Windows 上的 cargo，在 VS 18 BuildTools 的 vcvars64 环境里 | `npf.dll` |
+| x86_64-pc-windows-gnu | WSL 交叉编译（MinGW-w64），在 Windows 上运行 | `libnpf.dll` |
+| x86_64-linux-android | Windows 上的 cargo + NDK 29（`CMAKE_GENERATOR=Ninja`、`CMAKE_TOOLCHAIN_FILE`、`NPF_CMAKE_ARGS=-DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-26`），模拟器上运行 | `libnpf.so` |
+| aarch64-linux-android | 同上（`ANDROID_ABI=arm64-v8a`），真机上运行 | `libnpf.so` |
+
+macOS、iOS 还没测。
+
+发布程序时：Windows 上把 `npf.dll`（MinGW 是 `libnpf.dll`）放在程序旁边；Android 上把 `libnpf.so` 和应用自己的 `.so` 一起打进 APK（`jniLibs/<abi>/`）。
+
 ## 用法
 
 ```rust

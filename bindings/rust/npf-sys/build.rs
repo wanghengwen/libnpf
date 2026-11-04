@@ -69,6 +69,11 @@ fn build_from_source(manifest: &Path, target_os: &str) -> (PathBuf, PathBuf) {
     let src = src
         .canonicalize()
         .unwrap_or_else(|e| panic!("libnpf source {}: {e}", src.display()));
+    // canonicalize gives \\?\C:\... on Windows, which CMake's globs do not take
+    let src = match src.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if !plain.starts_with("UNC") => PathBuf::from(plain),
+        _ => src,
+    };
     if !src.join("include/npf.h").exists() {
         panic!(
             "{} is not the libnpf source (no include/npf.h); set NPF_SRC_DIR or NPF_LIB_DIR",
@@ -98,8 +103,13 @@ fn build_from_source(manifest: &Path, target_os: &str) -> (PathBuf, PathBuf) {
         out.join("lib")
     };
     if target_os == "windows" {
-        // npf.dll is installed in bin/: the program needs it next to it or on PATH
-        println!("cargo:rustc-env=NPF_DLL_DIR={}", out.join("bin").display());
+        // npf.dll is installed in bin/; a search path inside the build makes
+        // cargo put it on PATH for `cargo test` and `cargo run` (a program
+        // shipped elsewhere needs npf.dll beside it)
+        println!(
+            "cargo:rustc-link-search=native={}",
+            out.join("bin").display()
+        );
     }
     (lib, out.join("include"))
 }
