@@ -559,6 +559,36 @@ NPF_API int npf_pairing_remove(npf_t *n, const uint8_t key[32]);
  * The pairings and their roles stay. */
 NPF_API int npf_owner_reset(npf_t *n);
 
+/* ---- a device's share codes (security.md D25) ----
+ * A caller pairs with a share code (XXXX-XXXX-XXXX, given as its peer's
+ * password after share_resolve: npf_request) as a member. The platform
+ * names the code's node by its first group, the locator, so making one
+ * needs the platform; a device needs an owner account, but for one enrolled
+ * with a model credential (the platform says). Only the locator and a hash
+ * are kept: the whole code is told once, to npf_share_new's callback.
+ * The codes go when the owner changes. */
+typedef struct npf_share_info {
+    char    locator[8];                /* the code's first group */
+    int64_t uses;                      /* pairings left */
+    int64_t expires;                   /* Unix time */
+} npf_share_info;
+/* rc NPF_OK with code and s, else code and s NULL: NPF_EBUSY (NPF_SHARES_MAX
+ * live, or the platform's limit), NPF_ESTATE (the platform's connection was
+ * lost), NPF_EUNAVAIL (no owner account), NPF_EFAIL (refused) */
+typedef void (*npf_share_cb)(void *user, int rc, const char *code, const npf_share_info *s);
+#define NPF_SHARES_MAX 16
+#define NPF_SHARE_CODE_LEN 15              /* XXXX-XXXX-XXXX and its NUL */
+/* A share code for uses pairings (1..100, else 1) within ttl_s seconds (up
+ * to 30 days, else 24 h). NPF_OK: cb comes once, on the instance's thread,
+ * when the platform has answered. NPF_ESTATE: not online (or no number,
+ * safe mode), NPF_EBUSY: NPF_SHARES_MAX live or asked for. */
+NPF_API int npf_share_new(npf_t *n, int uses, int64_t ttl_s, npf_share_cb cb, void *user);
+/* the live codes (not expired, not used up), oldest first */
+NPF_API int npf_share_list_size(npf_t *n, npf_share_info *out, size_t size, size_t cap, size_t *count);
+#define npf_share_list(n, out, cap, count) npf_share_list_size((n), (out), sizeof *(out), (cap), (count))
+/* Revokes the code with this locator (here and on the platform). NPF_ENOENT: none. */
+NPF_API int npf_share_del(npf_t *n, const char *locator);
+
 /* ---- this node, sessions, the network ---- */
 
 enum { NPF_NAT_UNKNOWN = 0, NPF_NAT_EIM, NPF_NAT_ADM, NPF_NAT_APDM };

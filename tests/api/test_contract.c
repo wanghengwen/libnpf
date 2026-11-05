@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #include "api_test.h"
 
@@ -241,6 +242,58 @@ static void roles(void)
     rm_dir(dir);
 }
 
+static void no_share(void *user, int rc, const char *code, const npf_share_info *s)
+{
+    (void)user, (void)rc, (void)code, (void)s;
+}
+
+/* share codes: npf_share_list gives the live ones (not expired, not used
+ * up) without their secrets, npf_share_del revokes one (unknown:
+ * NPF_ENOENT), npf_share_new needs the platform (offline: NPF_ESTATE, no
+ * callback) and a callback; a device with no owner may ask (the platform
+ * decides) */
+static void shares(void)
+{
+    char dir[] = "/tmp/npf-contract-XXXXXX", err[300] = "", st[1200], sec[44];
+    npf_share_info sh[4];
+    size_t count = 9;
+    long long now = (long long)time(NULL);
+    npf_t *n;
+    if (!mkdtemp(dir)) {
+        check(0, "a directory");
+        return;
+    }
+    memset(sec, 'x', 43);
+    sec[43] = 0;
+    put_file(dir, "npf.conf", "root = nvwgWTOBpFl_zXsDesOy2N9KGi56wOLQRngcgZkD_xM\nserver = wss://127.0.0.1:1/v1/ws\n"
+                              "server_pub = nvwgWTOBpFl_zXsDesOy2N9KGi56wOLQRngcgZkD_xM\n");
+    put_file(dir, "node.json", "{\"number\":\"123456789\",\"password\":\"ABCD-EFGH\"}\n");
+    snprintf(st, sizeof st, "{\"password\":\"pw-123456\",\"shares\":["
+             "{\"id\":\"K7Q2\",\"secret\":\"%s\",\"uses\":2,\"expires\":%lld},"
+             "{\"id\":\"AAAA\",\"secret\":\"%s\",\"uses\":2,\"expires\":%lld},"
+             "{\"id\":\"BBBB\",\"secret\":\"%s\",\"uses\":0,\"expires\":%lld}]}",
+             sec, now + 3600, sec, now - 10, sec, now + 3600);
+    put_file(dir, "state.json", st);
+    if (!(n = instance(dir, NPF_ROLE_NODE, "udp_port = 0\n", NULL, err, sizeof err))) {
+        printf("     (%s)\n", err);
+        check(0, "a node with a number");
+        rm_dir(dir);
+        return;
+    }
+    check(npf_share_list(n, sh, 4, &count) == NPF_OK && count == 1 && strcmp(sh[0].locator, "K7Q2") == 0
+              && sh[0].uses == 2 && sh[0].expires == now + 3600,
+          "share list: the live code (not the expired, not the used up)");
+    check(npf_share_new(n, 100, 4 * 3600, no_share, NULL) == NPF_ESTATE && npf_share_new(n, 1, 0, NULL, NULL) == NPF_EINVAL,
+          "share new: offline NPF_ESTATE (no owner: asked all the same), no callback NPF_EINVAL");
+    check(npf_share_del(n, "ZZZZ") == NPF_ENOENT && npf_share_del(n, "K7Q2-") == NPF_ENOENT
+              && npf_share_del(n, NULL) == NPF_EINVAL, "share del: unknown NPF_ENOENT, NULL NPF_EINVAL");
+    check(npf_share_del(n, "K7Q2") == NPF_OK && npf_share_list(n, sh, 4, &count) == NPF_OK && count == 0
+              && !strstr(file_text(dir, "state.json", st, sizeof st), "K7Q2"),
+          "share del: gone, from state.json too");
+    npf_destroy(n);
+    rm_dir(dir);
+}
+
 /* a structure not initialised (no _init: its size 0) or NULL: NPF_EINVAL
  * naming the _init, the number out 0, nothing made */
 static void not_initialised(void)
@@ -343,6 +396,7 @@ int main(void)
     node_json();
     safe_mode();
     roles();
+    shares();
     runtime_guard();
     return fails != 0;
 }

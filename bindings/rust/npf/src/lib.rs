@@ -560,12 +560,29 @@ impl SetupC {
 
 type TextFn = Box<dyn FnOnce(i32, &str) + Send>;
 type ReplyFn = Box<dyn FnOnce(Option<(bool, &str)>) + Send>;
+type ShareFn = Box<dyn FnOnce(Result<(String, ShareInfo)>) + Send>;
 
 unsafe extern "C" fn cb_text(user: *mut c_void, code: c_int, text: *const c_char) {
     let f = Box::from_raw(user as *mut TextFn);
     let text = lent_str(text);
     if catch_unwind(AssertUnwindSafe(|| f(code, text))).is_err() {
         eprintln!("npf: a command callback panicked");
+    }
+}
+unsafe extern "C" fn cb_share(
+    user: *mut c_void,
+    rc: c_int,
+    code: *const c_char,
+    s: *const sys::npf_share_info,
+) {
+    let f = Box::from_raw(user as *mut ShareFn);
+    let r = if rc == sys::NPF_OK && !code.is_null() && !s.is_null() {
+        Ok((lent_str(code).to_owned(), ShareInfo::from_raw(&*s)))
+    } else {
+        Err(Error::from_code(rc, &[]))
+    };
+    if catch_unwind(AssertUnwindSafe(|| f(r))).is_err() {
+        eprintln!("npf: a share code callback panicked");
     }
 }
 unsafe extern "C" fn cb_reply(user: *mut c_void, ok: c_int, reply: *const c_char) {
@@ -872,6 +889,51 @@ impl Instance {
     }
     pub fn owner_reset(&self) -> Result<()> {
         check(unsafe { sys::npf_owner_reset(self.n()) })
+    }
+
+    /* ---- share codes ---- */
+
+    /// Asks the platform for a share code good for `uses` pairings (1..=100)
+    /// within `ttl_s` seconds (up to 30 days). `done` gets, on the
+    /// instance's thread, the whole code (`XXXX-XXXX-XXXX`: told only here)
+    /// and its record, or why not: [`ErrorKind::Busy`] (16 live, or the
+    /// platform's limit), `State` (the platform's connection lost),
+    /// `Unavailable` (no owner account), `Failed`.
+    pub fn share_new(
+        &self,
+        uses: i32,
+        ttl_s: i64,
+        done: impl FnOnce(Result<(String, ShareInfo)>) + Send + 'static,
+    ) -> Result<()> {
+        let user = Box::into_raw(Box::new(Box::new(done) as ShareFn));
+        let rc = unsafe { sys::npf_share_new(self.n(), uses, ttl_s, Some(cb_share), user.cast()) };
+        if rc != sys::NPF_OK {
+            drop(unsafe { Box::from_raw(user) });
+        }
+        check(rc)
+    }
+    /// The live share codes, oldest first.
+    pub fn share_list(&self) -> Result<Vec<ShareInfo>> {
+        let zero = sys::npf_share_info {
+            locator: [0; 8],
+            uses: 0,
+            expires: 0,
+        };
+        let v = list_out(zero, |o, cap, count| unsafe {
+            sys::npf_share_list_size(
+                self.n(),
+                o,
+                std::mem::size_of::<sys::npf_share_info>(),
+                cap,
+                count,
+            )
+        })?;
+        Ok(v.iter().map(ShareInfo::from_raw).collect())
+    }
+    /// Revokes the share code of this locator, here and on the platform.
+    pub fn share_del(&self, locator: &str) -> Result<()> {
+        let l = cstr(locator)?;
+        check(unsafe { sys::npf_share_del(self.n(), l.as_ptr()) })
     }
 
     /* ---- this node, sessions, the network ---- */

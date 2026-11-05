@@ -7,8 +7,8 @@
  * share codes listed without their secrets; an admin unpairs members only,
  * not an admin (itself or another); unknown keys, names and locators are
  * not_found, a resource of npf.conf cannot be replaced or removed, a bad
- * resource says why; a share code needs the platform (offline) and an owner
- * (no_owner), its uses and ttl bounded, and the code made later goes only
+ * resource says why; a share code needs the platform (offline), which says
+ * whether it needs an owner (no_owner: a model device's does not), its uses and ttl bounded, and the code made later goes only
  * to the session of the admin that asked; there are no role changes; each
  * request is logged with the caller's fingerprint, at most 30 lines a minute.
  * The node's peers (remote-peers.md): listed with their forwards and who
@@ -378,10 +378,12 @@ int main(void)
     check(ok(req(n, NPF_AUTH_IK, 0, "admin_res_del", "{\"name\":\"web\"}", out, sizeof out)) && n->nres == 1,
           "on again: admin_res_del removes it");
 
-    /* no owner: no share code; the roles stay */
-    check(npf_owner_reset(n) == NPF_OK && is(req(n, NPF_AUTH_IK, 0, "admin_share_new", "{}", out, sizeof out), "no_owner")
+    /* no owner: its codes go; whether one is made now is the platform's word (a model
+     * device's: yes; offline here); the roles stay */
+    check(npf_owner_reset(n) == NPF_OK && n->callee->nshares == 0
+              && is(req(n, NPF_AUTH_IK, 0, "admin_share_new", "{}", out, sizeof out), "offline")
               && ok(req(n, NPF_AUTH_IK, 0, "admin_get", "{}", out, sizeof out)) && strstr(out, "\"role\":\"admin\""),
-          "no owner (owner reset): admin_share_new no_owner, the admins stay");
+          "no owner (owner reset): the codes gone, admin_share_new asks the platform, the admins stay");
 
     npf_destroy(n);
     rm_dir(dir);

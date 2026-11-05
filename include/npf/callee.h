@@ -124,8 +124,11 @@ void npf_callee_admin_log(npf_callee *d, const uint8_t pub[32], const char *type
 /* A share code for uses pairings (1..100) within ttl_s seconds (1..30
  * days), as a member: the platform gives its locator (share_new), the
  * secret is made here. 0: fn comes once with rc 0, the code (NPF_SHARE_LEN)
- * and its record, or rc -1 NPF_MAX_SHARES active, -3 offline, -4 no owner,
- * -5 refused; else that rc at once, without fn (-2 safe mode). */
+ * and its record, or rc -1 NPF_MAX_SHARES active, -3 offline, -4 no owner
+ * (the platform's word: a device enrolled with a model credential needs
+ * none), -5 refused; else that rc at once, without fn (-2 safe mode). The
+ * code is the owner's of the time (none: the device's own), and goes when
+ * the owner changes. */
 typedef void (*npf_share_fn)(void *arg, int rc, const char *code, const npf_share *s);
 int  npf_callee_share_new(npf_callee *d, int uses, int64_t ttl_s, npf_share_fn fn, void *arg);
 /* Revokes the share code with this locator: 0, -1 none, -2 not saved */

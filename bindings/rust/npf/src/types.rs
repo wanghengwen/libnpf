@@ -521,6 +521,27 @@ pub struct Pairing {
     pub admin: bool,
 }
 
+/// A live share code of this device (its whole code is told only when made).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareInfo {
+    /// the code's first group: the platform finds the device by it
+    pub locator: String,
+    /// pairings left
+    pub uses: i64,
+    /// Unix time
+    pub expires: i64,
+}
+
+impl ShareInfo {
+    pub(crate) fn from_raw(s: &sys::npf_share_info) -> Self {
+        ShareInfo {
+            locator: cbuf_str(&s.locator),
+            uses: s.uses,
+            expires: s.expires,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Nat {
     Unknown,

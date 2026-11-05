@@ -169,8 +169,15 @@ static void roles_shares(const char *dir)
     for (i = 0; i < NPF_MAX_SHARES; i++)
         d.shares[i] = (npf_share){.id = "AAAA", .uses = 1, .expires = time(NULL) + 60};
     CHECK(npf_callee_share_new(&d, 1, 3600, NULL, NULL) == -1, "16 active: no more");
-    CHECK(npf_callee_owner_reset(&d) == 0 && d.nshares == 0 && npf_callee_share_new(&d, 1, 3600, NULL, NULL) == -4,
-          "an owner reset drops them; no owner: no new code");
+    CHECK(npf_callee_owner_reset(&d) == 0 && d.nshares == 0 && npf_callee_share_new(&d, 1, 3600, NULL, NULL) == -3,
+          "an owner reset drops them; no owner: the platform decides (a model device may), offline here");
+    d.nshares = 1;
+    d.shares[0] = (npf_share){.id = "AAAA", .uses = 1, .expires = time(NULL) + 60};
+    d.pending_owner = 79;
+    memset(d.pending_op, 7, 16);
+    d.pending_until = time(NULL) + 60;
+    d.ops.bind_committed(&node, 79, d.pending_op, &d);
+    CHECK(d.owner == 79 && d.nshares == 0, "bound: the codes of no owner gone");
     roles_state(path, ka, code, 5, time(NULL) + 3600);
     npf_callee_refresh(&d);
     d.ops.revoke(&node, 78, 1000, 1, &d);

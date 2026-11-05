@@ -322,6 +322,26 @@ pub struct npf_pairing {
     pub admin: c_int,
 }
 
+pub const NPF_SHARES_MAX: usize = 16;
+pub const NPF_SHARE_CODE_LEN: usize = 15;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct npf_share_info {
+    pub locator: [c_char; 8],
+    pub uses: i64,
+    pub expires: i64,
+}
+
+pub type npf_share_cb = Option<
+    unsafe extern "C" fn(
+        user: *mut c_void,
+        rc: c_int,
+        code: *const c_char,
+        s: *const npf_share_info,
+    ),
+>;
+
 pub const NPF_NAT_UNKNOWN: c_int = 0;
 pub const NPF_NAT_EIM: c_int = 1;
 pub const NPF_NAT_ADM: c_int = 2;
@@ -522,6 +542,21 @@ extern "C" {
     ) -> c_int;
     pub fn npf_pairing_remove(n: *mut npf_t, key: *const u8) -> c_int;
     pub fn npf_owner_reset(n: *mut npf_t) -> c_int;
+    pub fn npf_share_new(
+        n: *mut npf_t,
+        uses: c_int,
+        ttl_s: i64,
+        cb: npf_share_cb,
+        user: *mut c_void,
+    ) -> c_int;
+    pub fn npf_share_list_size(
+        n: *mut npf_t,
+        out: *mut npf_share_info,
+        size: usize,
+        cap: usize,
+        count: *mut usize,
+    ) -> c_int;
+    pub fn npf_share_del(n: *mut npf_t, locator: *const c_char) -> c_int;
 
     pub fn npf_node_get_size(n: *mut npf_t, out: *mut npf_node_info, size: usize) -> c_int;
     pub fn npf_node_key(n: *mut npf_t, out: *mut c_char, cap: usize) -> c_int;

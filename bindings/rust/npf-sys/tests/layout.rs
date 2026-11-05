@@ -8,7 +8,7 @@ extern "C" {
     static npf_sys_layout_count: usize;
 }
 
-const N: usize = 184;
+const N: usize = 188;
 
 #[test]
 fn layout_matches_c() {
@@ -269,6 +269,16 @@ fn layout_matches_c() {
         (offset_of!(npf_pairing, key), "npf_pairing.key"),
         (offset_of!(npf_pairing, since), "npf_pairing.since"),
         (offset_of!(npf_pairing, admin), "npf_pairing.admin"),
+        (size_of::<npf_share_info>(), "sizeof npf_share_info"),
+        (
+            offset_of!(npf_share_info, locator),
+            "npf_share_info.locator",
+        ),
+        (offset_of!(npf_share_info, uses), "npf_share_info.uses"),
+        (
+            offset_of!(npf_share_info, expires),
+            "npf_share_info.expires",
+        ),
         (size_of::<npf_node_info>(), "sizeof npf_node_info"),
         (offset_of!(npf_node_info, number), "npf_node_info.number"),
         (offset_of!(npf_node_info, role), "npf_node_info.role"),

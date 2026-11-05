@@ -85,7 +85,8 @@ static int share_of(npf_callee *d, const char *code)
 
 static void share_sync(npf_callee *d);
 
-/* unbound: the share codes go (the platform drops their locators itself) */
+/* the owner changed (unbound, bound, reset): the share codes go (the
+ * platform drops their locators itself: they were the old owner's) */
 static void shares_drop(npf_callee *d)
 {
     npf_wipe(d->shares, sizeof d->shares);
@@ -613,6 +614,7 @@ static void op_bind_committed(npf_node *n, uint64_t account, const uint8_t op[16
         return;
     d->owner = account;
     d->pending_owner = 0;
+    shares_drop(d);                          /* those of no owner's (a model device's) */
     npf_callee_save(d);
     npf_log("owner is now account %llu", (unsigned long long)account);
 }
@@ -904,8 +906,8 @@ static void share_sync(npf_callee *d)
 {
     npf_out w = {0};
     int i;
-    if (d->damaged || !d->owner)
-        return;                             /* unbound: the platform dropped them */
+    if (d->damaged)
+        return;
     share_at(d, NULL);
     npf_out_jobj(&w);
     npf_out_jkey(&w, "locators");
@@ -923,6 +925,7 @@ typedef struct share_req {
     npf_callee  *d;
     int          uses;
     int64_t      ttl_s;
+    uint64_t     owner;                 /* the owner when asked: the code is its */
     npf_share_fn fn;
     void        *arg;
 } share_req;
@@ -954,7 +957,7 @@ static void share_made(npf_node *n, const npf_env *e, int ok, void *arg)
         v.uses = q->uses;
         /* the platform's time, but never later than asked by our clock (the lock's rule, 8.3) */
         v.expires = exp < (int64_t)time(NULL) + q->ttl_s ? exp : (int64_t)time(NULL) + q->ttl_s;
-        rc = d->damaged || !d->owner || d->nshares >= NPF_MAX_SHARES ? -5 : 0;
+        rc = d->damaged || d->owner != q->owner || d->nshares >= NPF_MAX_SHARES ? -5 : 0;
         if (rc == 0) {
             d->shares[d->nshares++] = v;
             npf_callee_save(d);
@@ -975,8 +978,6 @@ int npf_callee_share_new(npf_callee *d, int uses, int64_t ttl_s, npf_share_fn fn
     npf_callee_refresh(d);
     if (d->damaged)
         return -2;
-    if (!d->owner)
-        return -4;
     share_at(d, NULL);
     if (d->nshares + d->share_reqs >= NPF_MAX_SHARES)
         return -1;
@@ -985,6 +986,7 @@ int npf_callee_share_new(npf_callee *d, int uses, int64_t ttl_s, npf_share_fn fn
     if (!(q = calloc(1, sizeof *q)))
         return -5;
     q->d = d;
+    q->owner = d->owner;
     q->uses = uses < 1 || uses > NPF_SHARE_USES_MAX ? 1 : uses;
     q->ttl_s = ttl_s < 1 || ttl_s > NPF_SHARE_TTL_MAX ? NPF_SHARE_TTL : ttl_s;
     q->fn = fn;
