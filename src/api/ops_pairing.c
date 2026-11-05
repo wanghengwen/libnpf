@@ -125,7 +125,9 @@ int npf_owner_reset(npf_t *n)
 
 /* ---- share codes ---- */
 
-_Static_assert(NPF_SHARES_MAX == NPF_MAX_SHARES && NPF_SHARE_CODE_LEN == NPF_SHARE_LEN, "npf.h's share limits");
+#if NPF_SHARES_MAX != NPF_MAX_SHARES || NPF_SHARE_CODE_LEN != NPF_SHARE_LEN
+#error "npf.h's share limits differ from the library's"
+#endif
 
 typedef struct share_job {
     npf_share_cb cb;
