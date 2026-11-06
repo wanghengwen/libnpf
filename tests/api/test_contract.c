@@ -27,6 +27,7 @@ static void inits(void)
     npf_options *o = (npf_options *)(void *)buf;
     npf_callbacks *cb = (npf_callbacks *)(void *)buf;
     npf_media_opt *mo = (npf_media_opt *)(void *)buf;
+    npf_channel_opt *co = (npf_channel_opt *)(void *)buf;
     size_t small = offsetof(npf_options, cb) + sizeof o->cb;     /* an older application's build */
 
     memset(buf, 0xaa, sizeof buf);
@@ -44,6 +45,10 @@ static void inits(void)
     memset(buf, 0xaa, sizeof buf);
     npf_media_opt_init(mo);
     check(mo->size == sizeof *mo && all(buf, sizeof *mo, sizeof buf, 0xaa), "media options: the macro passes sizeof");
+    memset(buf, 0xaa, sizeof buf);
+    npf_channel_opt_init(co);
+    check(co->size == sizeof *co && co->tag == 0 && co->prio == 2 && all(buf, sizeof *co, sizeof buf, 0xaa),
+          "channel options: the macro passes sizeof, prio 2");
 }
 
 static void unsaved(void)
@@ -304,6 +309,7 @@ static void not_initialised(void)
     npf_forward_opt fo;
     npf_resource r;
     npf_media_opt mo;
+    npf_channel_opt co;
     npf_resource_info ri[1];
     npf_t *n = NULL;
     uint32_t id = 7;
@@ -320,6 +326,7 @@ static void not_initialised(void)
     memset(&fo, 0, sizeof fo);
     memset(&r, 0, sizeof r);
     memset(&mo, 0, sizeof mo);
+    memset(&co, 0, sizeof co);
     check(npf_peer_create(n, &po, &id, err, sizeof err) == NPF_EINVAL && id == 0 && strstr(err, "(npf_peer_opt_init)"),
           "npf_peer_create: options not initialised");
     id = 7;
@@ -333,6 +340,10 @@ static void not_initialised(void)
     check(npf_media_open(n, 1, &mo, &id) == NPF_EINVAL && id == 0, "npf_media_open: options not initialised");
     id = 7;
     check(npf_media_open(n, 1, NULL, &id) == NPF_EINVAL && id == 0, "npf_media_open: no options");
+    id = 7;
+    check(npf_channel_open(n, 1, &co, &id) == NPF_EINVAL && id == 0, "npf_channel_open: options not initialised");
+    id = 7;
+    check(npf_channel_open(n, 1, NULL, &id) == NPF_EINVAL && id == 0, "npf_channel_open: no options");
     check(npf_peer_list(n, NULL, 0, &count) == NPF_OK && count == 0
           && npf_resource_list(n, 0, ri, 1, &count) == NPF_OK && count == 0, "nothing made");
     npf_destroy(n);

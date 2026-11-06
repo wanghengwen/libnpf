@@ -5,7 +5,7 @@
  * device with its vendor credential, or an enrolled console node), a client
  * that calls nodes, or both. It keeps the signaling connection, makes direct
  * paths to peers (relays when it cannot), and carries in each session port
- * forwards, application data and media streams.
+ * forwards, application data, data channels and media streams.
  *
  * Directories (npf_options): the library only reads conf_dir (npf.conf and
  * the files it names). It writes data_dir: the identity, the number, the
@@ -38,8 +38,9 @@
  *     other's thread, would never end). npf_run is not available
  *     (NPF_ESTATE).
  *
- * Peers, forwards, sessions and media streams are numbers (0 = none), never
- * reused while the npf_t lives: a stale number gives NPF_ENOENT.
+ * Peers, forwards, sessions, media streams and channels are numbers (0 =
+ * none), never reused while the npf_t lives: a stale number gives
+ * NPF_ENOENT.
  *
  * Memory: text returned by a function is the caller's, freed with npf_free;
  * NULL means the run has ended or no memory. What a callback gets is lent
@@ -83,7 +84,7 @@ enum {
     NPF_ETOOBIG = -5,       /* the output buffer or the input is too large */
     NPF_ENOMEM = -6,
     NPF_EFAIL = -7,         /* other failure: the message in err */
-    NPF_EBUSY = -8,         /* a limit is reached (media streams, forwards, resources, a queue) */
+    NPF_EBUSY = -8,         /* a limit is reached (media streams, channels, forwards, resources, a queue) */
     NPF_ESAVE = -9,         /* done and in effect, but its file in data_dir (local.json, state.json)
                                could not be written; npf_save writes it, else a restart loses it */
     NPF_EEXIST = -10,       /* already there: a peer with this target, or the name is taken */
@@ -107,6 +108,9 @@ enum { NPF_FRAME_KEY = 1 };
 #define NPF_MEDIA_SEND_QUEUE (16u << 20)   /* bytes of frames queued from other threads, per instance */
 
 #define NPF_MEDIA_STREAMS_MAX 64          /* sending + receiving, across all sessions of one instance */
+#define NPF_CHANNELS_MAX      64          /* channels, opened here or by peers, across all sessions of one instance */
+#define NPF_CHANNEL_BUFFER   (2u << 20)   /* bytes a channel holds unacknowledged before npf_channel_send
+                                             refuses (NPF_EBUSY); also the most one call sends */
 
 /* why a peer's last session ended (npf_peer_info.end_reason) */
 enum { NPF_END_LOCAL = 1,              /* ended here (removed, stopped) */
@@ -164,7 +168,8 @@ typedef struct npf_callbacks {
      * (binding)", "ws relay", "direct" or "none", "direction": "out" or
      * "in", "call_id"}, for a caller here also "app" (its program, "name
      * ver", when known) and "hosted": true (a hosted client). Its media
-     * streams end first, each with media_closed. */
+     * streams and channels end first, each with media_closed or
+     * channel_closed. */
     void (*session)(void *user, uint32_t session, int up, const char *info);
     /* application data from the session's peer (npf_session_send there) */
     void (*data)(void *user, uint32_t session, const void *buf, size_t len);
@@ -175,6 +180,17 @@ typedef struct npf_callbacks {
     void (*media_frame)(void *user, uint32_t media, const void *buf, size_t len, const npf_frame_info *fi);
     /* a stream ended: the peer closed it or its session ended (not after npf_media_close) */
     void (*media_closed)(void *user, uint32_t media);
+    /* The peer opened channel with its tag (npf_channel_opt.tag). Return 1
+     * to take it (its bytes come to channel_data, and it sends), 0 to
+     * refuse. Without this callback every channel is refused. */
+    int  (*channel_open)(void *user, uint32_t session, uint32_t channel, int tag);
+    /* bytes of a channel, in order: a byte stream, not the sender's writes */
+    void (*channel_data)(void *user, uint32_t channel, const void *buf, size_t len);
+    /* npf_channel_send was refused (NPF_EBUSY): the channel takes more now */
+    void (*channel_writable)(void *user, uint32_t channel);
+    /* a channel ended: the peer closed or refused it, or its session ended
+     * (not after npf_channel_close) */
+    void (*channel_closed)(void *user, uint32_t channel);
 } npf_callbacks;
 
 /* The configuration as fields, instead of npf.conf (npf_options.setup).
@@ -668,6 +684,38 @@ NPF_API char *npf_public_json(npf_t *n, int close);
  * ordered, ahead of the forwards' data. Up to 16384 bytes per call, else
  * NPF_ETOOBIG. NPF_ESTATE: the session cannot send now. */
 NPF_API int   npf_session_send(npf_t *n, uint32_t session, const void *buf, size_t len);
+
+/* ---- sessions: data channels (AnLiu reliable byte streams) ---- */
+
+typedef struct npf_channel_opt {
+    size_t size;                /* set by npf_channel_opt_init */
+    int tag;                    /* the application's channel kind, 0..999 (the peer's channel_open gets it) */
+    int prio;                   /* 0 (first) .. 3; default 2: with the forwards' data */
+} npf_channel_opt;
+
+NPF_API void npf_channel_opt_init_size(npf_channel_opt *o, size_t size);
+#define npf_channel_opt_init(o) npf_channel_opt_init_size((o), sizeof *(o))
+/* Opens a channel to the session's peer, on any path: reliable and
+ * ordered, a byte stream both sides send on (as TCP), next to
+ * npf_session_send's messages. Media streams and channels share a
+ * session's AnLiu streams: 30 opened by each side together. NPF_ESTATE: the
+ * session is not up; NPF_EBUSY: NPF_CHANNELS_MAX per instance, or 30
+ * outgoing streams per session. */
+NPF_API int npf_channel_open(npf_t *n, uint32_t session, const npf_channel_opt *o, uint32_t *channel);
+/* Queues len bytes (1..NPF_CHANNEL_BUFFER), all or none: NPF_OK, or
+ * NPF_EBUSY while NPF_CHANNEL_BUFFER bytes wait to be acknowledged, then
+ * channel_writable comes once below half. Waits for the instance's thread,
+ * not for the network; buf may be reused on return. NPF_ESTATE: the peer
+ * closed the channel (channel_closed comes). */
+NPF_API int npf_channel_send(npf_t *n, uint32_t channel, const void *buf, size_t len);
+/* paused != 0: channel_data stops and the peer's bytes wait, until the
+ * window is full and its sends are refused too; 0 goes on */
+NPF_API int npf_channel_pause(npf_t *n, uint32_t channel, int paused);
+/* Closes a channel: nothing more comes of it here, and no channel_closed.
+ * What was sent still goes (for up to 30 s, while the session lasts); the
+ * peer gets its bytes, then channel_closed. The peer's bytes still on the
+ * way are dropped. */
+NPF_API int npf_channel_close(npf_t *n, uint32_t channel);
 
 /* ---- sessions: audio / video (AnLiu semi-reliable frame streams) ---- */
 

@@ -6,10 +6,11 @@
  *     keys), fails authentication and changes nothing there; replayed into
  *     its own session it is a replay. No connection is ever made for a conv
  *     (NPF has none for an unknown one), so no zombie;
- *   - rcv_wnd: a peer's media stream asking for a larger receive window
- *     than NPF's (NPF_ANL_MEDIA_WND) is refused (the opener sees the stream
- *     over), one within it is taken; past NPF_MEDIA_OUT_MAX streams opened
- *     by the peer the next is refused;
+ *   - rcv_wnd: a peer's media stream or channel asking for a larger
+ *     receive window than NPF's (NPF_ANL_MEDIA_WND) is refused (the opener
+ *     sees the stream over), one within it is taken; a channel's tag on a
+ *     message stream is refused; past NPF_MEDIA_OUT_MAX streams opened by
+ *     the peer (channels and media together) the next is refused;
  *   - over handles: AnLiu counts the handles of streams that are over (the
  *     peer closed or refused them) toward its 64 until anl_stream_close.
  *     NPF's media and UDP forward streams, opened here and refused by the
@@ -124,7 +125,7 @@ static void m_frame(void *a, uint32_t id, const uint8_t *b, size_t l, uint32_t f
 }
 static void m_closed(void *a, uint32_t id) { (void)a; (void)id; }
 static int m_ended(void *a) { (void)a; return 0; }
-static const npf_media_io mio = {m_kick, m_open, m_frame, m_closed, m_ended};
+static const npf_media_io mio = {m_kick, m_open, m_frame, m_closed, m_ended, m_open, NULL, NULL};
 
 /* a semi-reliable media stream from the client with this receive window;
  * after a while: 1 the server took it, 0 it was refused */
@@ -145,6 +146,25 @@ static int open_media(anl_t *c, anl_t *s, int rcv_wnd, anl_stream_t **out)
     if (out)
         *out = st;
     return r;
+}
+
+/* a channel (a reliable stream) from the client: messages (stream 0) or
+ * bytes, this window; 1 the server took it, 0 it was refused */
+static int open_chan(anl_t *c, anl_t *s, int stream, int rcv_wnd)
+{
+    anl_stream_opt opt;
+    anl_stream_t *st;
+    int err = 0, before = npf_media_count(g_media);
+    anl_stream_opt_default(&opt, ANL_RELIABLE);
+    opt.tag = NPF_TAG_CHAN + 7;
+    opt.stream = stream;
+    opt.rcv_wnd = rcv_wnd;
+    st = anl_stream_open(c, &opt, &err);
+    if (!st)
+        return -1;
+    anl_stream_send(st, "bytes", 5);
+    pump(c, s);
+    return npf_media_count(g_media) > before;
 }
 
 static void test_conv(void)
@@ -204,10 +224,17 @@ static void test_rcv_wnd(void)
     if (st)
         anl_stream_close(st);
     CHECK(open_media(c, s, NPF_ANL_MEDIA_WND + 1, NULL) == 0, "rcv_wnd one above NPF_ANL_MEDIA_WND was taken");
-    /* NPF's own window: taken, up to NPF_MEDIA_OUT_MAX streams */
-    for (k = 0, took = 0; k < NPF_MEDIA_OUT_MAX; k++)
+    /* channels: the same window; bytes only, not messages */
+    CHECK(open_chan(c, s, 1, NPF_ANL_MEDIA_WND + 1) == 0, "a channel with rcv_wnd above NPF_ANL_MEDIA_WND was taken");
+    CHECK(open_chan(c, s, 0, NPF_ANL_MEDIA_WND) == 0, "a channel's tag on a message stream was taken");
+    /* NPF's own window: taken, up to NPF_MEDIA_OUT_MAX streams, channels and media together */
+    for (k = 0, took = 0; k < 3; k++)
+        took += open_chan(c, s, 1, NPF_ANL_MEDIA_WND) == 1;
+    for (k = 3; k < NPF_MEDIA_OUT_MAX; k++)
         took += open_media(c, s, NPF_ANL_MEDIA_WND, NULL) == 1;
-    CHECK(took == NPF_MEDIA_OUT_MAX, "%d of %d media streams within the window taken", took, NPF_MEDIA_OUT_MAX);
+    CHECK(took == NPF_MEDIA_OUT_MAX, "%d of %d channels and media streams within the window taken", took,
+          NPF_MEDIA_OUT_MAX);
+    CHECK(open_chan(c, s, 1, NPF_ANL_MEDIA_WND) == 0, "a channel past NPF_MEDIA_OUT_MAX was taken");
     CHECK(open_media(c, s, NPF_ANL_MEDIA_WND, NULL) == 0, "stream %d past NPF_MEDIA_OUT_MAX was taken",
           NPF_MEDIA_OUT_MAX + 1);
     npf_media_free(g_media);

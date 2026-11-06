@@ -44,6 +44,7 @@ DEFAULTS(npf_peer_opt, .target = NPF_TARGET_NUMBER)
 DEFAULTS(npf_forward_opt, .kind = NPF_FWD_LOCAL)
 DEFAULTS(npf_resource, .type = NPF_RES_TCP)
 DEFAULTS(npf_media_opt, .prio = 1, .max_age_ms = 500, .fec = -1)
+DEFAULTS(npf_channel_opt, .prio = 2)
 
 /* ---- what the operations share ---- */
 

@@ -14,7 +14,7 @@ libnpf：一个 C99 写的 P2P 网络库，让 NAT 后面的设备打洞直连�
 | 路径 | 会话先在 UDP 中转上开始，打洞在后台进行，直连成功后无缝切换、30 秒后释放中转；直连失效时退回中转；UDP 不通时走 WebSocket 中转（普通 HTTPS 端口） |
 | 传输 | AnLiu：加密、多流、BBRv2 拥塞控制、SACK / RACK、按流 FEC、半可靠帧；同一条 AnLiu 连接在直连和中转之间切换不用重建 |
 | 安全 | 接入平台：WSS 内 Noise XK；首次配对：CPace（PAKE）+ Noise XXpsk3，口令不出设备；已配对：Noise IK；账户授权：Noise IK + 平台签发的授权；口令多次错误后锁定配对；被连接的一方只放行它发布的资源，未发布的目标一律拒绝 |
-| 会话内容 | 端口转发：本地转发、SOCKS5 代理、反向转发（对方开端口连回本机），TCP 与 UDP；应用数据（可靠、有序）；音视频流（每个实例同时最多 64 个，每个会话本端发出的最多 30 个；迟到丢帧、关键帧、FEC） |
+| 会话内容 | 端口转发：本地转发、SOCKS5 代理、反向转发（对方开端口连回本机），TCP 与 UDP；应用数据（可靠、有序的消息）；数据通道（可靠的字节流，双方都可以发，有背压，每个实例同时最多 64 个）；音视频流（每个实例同时最多 64 个，每个会话本端发出的最多 30 个；迟到丢帧、关键帧、FEC） |
 | 运行 | 每个实例一个事件循环线程（poll，Windows 上 WSAPoll）；一个进程可以有多个实例，也可以让很多实例共享一组线程（`npf_runtime`）；挂起和网络变化后自己恢复 |
 | 平台 | Linux、macOS、iOS、Android、Windows 10 起；用 musl 静态链接、按体积优化、关掉 `NPF_PEERS` 时，一个只被连接的设备程序约 600 KB |
 
@@ -75,7 +75,7 @@ o.cb = &cb;
 if (npf_create(&o, &n, err, sizeof err) != NPF_OK || npf_start(n) != NPF_OK)
     return 1;
 /* ... npf_resource_put、npf_peer_create、npf_forward_create、npf_peer_setopt、
- *     npf_session_send、npf_media_open ... */
+ *     npf_session_send、npf_channel_open、npf_media_open ... */
 npf_destroy(n);
 ```
 
@@ -99,7 +99,7 @@ src/proto/ src/ws/     JSON、DNS、HTTP、信令、WS 中转；WebSocket、TLS
 src/ice/ src/punch/    NAT 探测、候选地址、PCP / NAT-PMP、打洞
 src/node/              节点：身份、信令、服务器列表、NAT、端口映射、中转的绑定与备用分配
 src/call/              会话：握手、打洞、路径、AnLiu、反向映射
-src/stream/            会话里的 AnLiu 流：媒体、UDP 转发
+src/stream/            会话里的 AnLiu 流：媒体、数据通道、UDP 转发
 src/service/           节点之上：配置、本地状态、资源、被叫策略、对端（-L / -D / -R）
 src/tunnel/            隧道及其目标策略
 third_party/           AnLiu、Monocypher、mbedTLS

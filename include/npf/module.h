@@ -83,14 +83,15 @@ struct npf {
     unsigned      send_jobs;        /* media frames queued from other threads (at most 4096) */
     size_t        send_queued;      /* and their bytes (NPF_MEDIA_SEND_QUEUE) */
     npf_log_ctx   logctx;
-    /* sessions and media streams by number */
+    /* sessions, media streams and channels by number */
     struct npf_sess *sess;          /* nsess of capsess, up to NPF_MAX_SESS */
     int           nsess;
     size_t        capsess;
     uint32_t      next_sess;
-    struct npf_med *med;            /* NPF_MAX_MEDIA, allocated with the first stream */
-    int           nmed;
-    uint32_t      next_med;
+    struct npf_med *med;            /* NPF_MAX_MEDIA + NPF_MAX_CHAN, allocated with the first stream */
+    int           nmed;             /* media streams and channels, */
+    int           nchan;            /* channels of them */
+    uint32_t      next_med;         /* the numbers of both */
     /* the modules registered at npf_create (NULL-terminated) and their state */
     const struct npf_module *mods[NPF_MOD_MAX + 1];
     void         *mod_state[NPF_MOD_MAX];

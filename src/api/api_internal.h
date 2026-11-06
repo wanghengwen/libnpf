@@ -18,9 +18,10 @@
 #include "npf/tunnel.h"
 #include "npf/version.h"
 
-/* sessions and media streams by number (npf_t's sess, med) */
+/* sessions, media streams and channels by number (npf_t's sess, med) */
 #define NPF_MAX_SESS  256
 #define NPF_MAX_MEDIA NPF_MEDIA_STREAMS_MAX
+#define NPF_MAX_CHAN  NPF_CHANNELS_MAX
 
 typedef struct npf_sess {
     uint32_t  id;
@@ -32,6 +33,7 @@ typedef struct npf_med {
     uint32_t  id, session;
     npf_call *call;
     uint32_t  lid;                  /* its number in the session (stream/media.h) */
+    int       chan;                 /* a channel, else a media stream */
 } npf_med;
 
 /* the status object (npf_status_json) */
@@ -115,13 +117,16 @@ void npf_save_account_cert(npf_t *n);
 void npf_forget_account(npf_t *n);
 void npf_account_info(npf_t *n);
 /* engine_events.c: event "account" (the account session began or ended);
- * sessions and media streams by number */
+ * sessions, media streams and channels by number (npf_media_add with chan
+ * 1 adds a channel; npf_media_find finds media streams only, npf_chan_find
+ * channels; npf_media_forget either) */
 void npf_ev_account(npf_t *n);
 uint32_t  npf_session_of(npf_t *n, npf_call *call);
 npf_call *npf_session_call(npf_t *n, uint32_t id);
 npf_peer *npf_peer_of_call(npf_t *n, npf_call *call);   /* an outgoing call's peer, or NULL */
-uint32_t  npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid);
+uint32_t  npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid, int chan);
 npf_med  *npf_media_find(npf_t *n, uint32_t id);
+npf_med  *npf_chan_find(npf_t *n, uint32_t id);
 void      npf_media_forget(npf_t *n, uint32_t id);
 /* status.c: the other side of a call for people ("318204776", "key:<fingerprint>");
  * a session as the session callback has it; the sessions up */

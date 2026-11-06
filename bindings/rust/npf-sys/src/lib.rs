@@ -57,6 +57,8 @@ pub const NPF_FRAME_KEY: c_int = 1;
 pub const NPF_MEDIA_FRAME_MAX: usize = 4 << 20;
 pub const NPF_MEDIA_SEND_QUEUE: usize = 16 << 20;
 pub const NPF_MEDIA_STREAMS_MAX: usize = 64;
+pub const NPF_CHANNELS_MAX: usize = 64;
+pub const NPF_CHANNEL_BUFFER: usize = 2 << 20;
 
 pub const NPF_END_LOCAL: c_int = 1;
 pub const NPF_END_PEER: c_int = 2;
@@ -100,6 +102,14 @@ pub struct npf_callbacks {
         ),
     >,
     pub media_closed: Option<unsafe extern "C" fn(user: *mut c_void, media: u32)>,
+    pub channel_open: Option<
+        unsafe extern "C" fn(user: *mut c_void, session: u32, channel: u32, tag: c_int) -> c_int,
+    >,
+    pub channel_data: Option<
+        unsafe extern "C" fn(user: *mut c_void, channel: u32, buf: *const c_void, len: usize),
+    >,
+    pub channel_writable: Option<unsafe extern "C" fn(user: *mut c_void, channel: u32)>,
+    pub channel_closed: Option<unsafe extern "C" fn(user: *mut c_void, channel: u32)>,
 }
 
 #[repr(C)]
@@ -400,6 +410,13 @@ pub struct npf_media_opt {
 }
 
 #[repr(C)]
+pub struct npf_channel_opt {
+    pub size: usize,
+    pub tag: c_int,
+    pub prio: c_int,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct npf_media_stats {
     pub target_rate: u32,
@@ -615,4 +632,15 @@ extern "C" {
         size: usize,
     ) -> c_int;
     pub fn npf_media_close(n: *mut npf_t, media: u32) -> c_int;
+
+    pub fn npf_channel_opt_init_size(o: *mut npf_channel_opt, size: usize);
+    pub fn npf_channel_open(
+        n: *mut npf_t,
+        session: u32,
+        o: *const npf_channel_opt,
+        channel: *mut u32,
+    ) -> c_int;
+    pub fn npf_channel_send(n: *mut npf_t, channel: u32, buf: *const c_void, len: usize) -> c_int;
+    pub fn npf_channel_pause(n: *mut npf_t, channel: u32, paused: c_int) -> c_int;
+    pub fn npf_channel_close(n: *mut npf_t, channel: u32) -> c_int;
 }

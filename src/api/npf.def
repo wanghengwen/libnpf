@@ -60,3 +60,8 @@ EXPORTS
     npf_media_send
     npf_media_stats_get_size
     npf_media_close
+    npf_channel_opt_init_size
+    npf_channel_open
+    npf_channel_send
+    npf_channel_pause
+    npf_channel_close

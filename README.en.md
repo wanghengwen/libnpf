@@ -14,7 +14,7 @@ It is the core of the "Chuanshanjia" (pangolin) remote access service. Its trans
 | Paths | a session starts on a UDP relay while punching goes on behind it, moves to the direct path when it opens (the relay is released 30 s later), and back to the relay when the direct path fails; a WebSocket relay (an ordinary HTTPS port) where UDP does not get through |
 | Transport | AnLiu: encrypted, many streams, BBRv2 congestion control, SACK / RACK, FEC per stream, semi-reliable frames; one AnLiu connection moves between the direct path and the relay without being rebuilt |
 | Security | to the platform: Noise XK inside WSS; first pairing: CPace (PAKE) + Noise XXpsk3, the password never leaves the device; paired: Noise IK; the account's grant: Noise IK + a grant the platform signs; pairing locked after repeated wrong passwords; the called side lets through only what it published, any other target is refused |
-| In a session | port forwards: local, SOCKS5 proxy, and reverse (the peer opens a port that leads back here), TCP and UDP; application data (reliable, ordered); media streams (up to 64 per instance, at most 30 opened by one side of a session; late frames dropped, key frames, FEC) |
+| In a session | port forwards: local, SOCKS5 proxy, and reverse (the peer opens a port that leads back here), TCP and UDP; application data (reliable, ordered messages); data channels (reliable byte streams both sides send on, with backpressure, up to 64 per instance); media streams (up to 64 per instance, at most 30 opened by one side of a session, channels included; late frames dropped, key frames, FEC) |
 | Running | one event-loop thread per instance (poll; WSAPoll on Windows); several instances in one process, or many on a shared set of threads (`npf_runtime`); it mends itself after a suspend or a network change |
 | Platforms | Linux, macOS, iOS, Android, Windows 10 and later; a program for a device that is only called, linked statically with musl, optimised for size and without `NPF_PEERS`, is about 600 KB |
 
@@ -75,7 +75,7 @@ o.cb = &cb;
 if (npf_create(&o, &n, err, sizeof err) != NPF_OK || npf_start(n) != NPF_OK)
     return 1;
 /* ... npf_resource_put, npf_peer_create, npf_forward_create, npf_peer_setopt,
- *     npf_session_send, npf_media_open ... */
+ *     npf_session_send, npf_channel_open, npf_media_open ... */
 npf_destroy(n);
 ```
 
@@ -99,7 +99,7 @@ src/proto/ src/ws/     JSON, DNS, HTTP, signaling, WS relay; WebSocket, TLS
 src/ice/ src/punch/    NAT detection, candidates, PCP / NAT-PMP, hole punching
 src/node/              the node: identity, signaling, servers, the NAT, port mapping, relay binds, the spare allocation
 src/call/              sessions: the handshake, punching, the paths, AnLiu, reverse mappings
-src/stream/            a session's AnLiu streams: media, UDP forwards
+src/stream/            a session's AnLiu streams: media, data channels, UDP forwards
 src/service/           on top of the node: config, local state, resources, callee policy, peers (-L / -D / -R)
 src/tunnel/            the tunnel and its target policy
 third_party/           AnLiu, Monocypher, mbedTLS

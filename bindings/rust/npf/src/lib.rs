@@ -3,10 +3,11 @@
 //! An [`Npf`] is one instance: an identity with its own event-loop thread
 //! (or a thread of a shared [`Runtime`]). It makes sessions to peers, direct
 //! when it can and relayed when it cannot, and carries in each session
-//! reliable application data ([`Instance::session_send`]), port forwards and
-//! media frame streams ([`Instance::media_open`]): semi-reliable AnLiu streams
-//! that drop late frames, skip to the next key frame and tell the sender the
-//! rate the path takes ([`MediaStats::target_rate`]).
+//! reliable application data ([`Instance::session_send`]), port forwards,
+//! channels ([`Instance::channel_open`]): reliable byte streams both sides
+//! send on, and media frame streams ([`Instance::media_open`]): semi-reliable
+//! AnLiu streams that drop late frames, skip to the next key frame and tell
+//! the sender the rate the path takes ([`MediaStats::target_rate`]).
 //!
 //! Events come to a [`Handler`] on the instance's thread, one at a time. A
 //! handler method gets the [`Instance`] and may call any of its functions; it
@@ -246,8 +247,8 @@ impl Drop for Runtime {
 /* ---------------- the handler ---------------- */
 
 /// What the application hears from an instance. Every method has a default:
-/// log lines go to stderr, the rest is ignored, peers' media streams are
-/// refused.
+/// log lines go to stderr, the rest is ignored, peers' media streams and
+/// channels are refused.
 #[allow(unused_variables)]
 pub trait Handler: Send + Sync + 'static {
     /// A log line ("date time level message"). It may also come from the
@@ -271,6 +272,25 @@ pub trait Handler: Send + Sync + 'static {
     /// A stream ended: the peer closed it or its session ended (not after
     /// [`Instance::media_close`]).
     fn media_closed(&self, npf: &Instance, media: MediaId) {}
+    /// The peer opened a channel with its tag: true takes it (its bytes come
+    /// to `channel_data`, and it sends).
+    fn channel_open(
+        &self,
+        npf: &Instance,
+        session: SessionId,
+        channel: ChannelId,
+        tag: i32,
+    ) -> bool {
+        false
+    }
+    /// Bytes of a channel, in order: a byte stream, not the sender's writes.
+    fn channel_data(&self, npf: &Instance, channel: ChannelId, data: &[u8]) {}
+    /// [`Instance::channel_send`] was refused ([`ErrorKind::Busy`]): the
+    /// channel takes more now.
+    fn channel_writable(&self, npf: &Instance, channel: ChannelId) {}
+    /// A channel ended: the peer closed or refused it, or its session ended
+    /// (not after [`Instance::channel_close`]).
+    fn channel_closed(&self, npf: &Instance, channel: ChannelId) {}
 }
 
 /// A handler that only logs to stderr.
@@ -366,6 +386,43 @@ unsafe extern "C" fn cb_media_closed(user: *mut c_void, media: u32) {
     })
 }
 
+unsafe extern "C" fn cb_channel_open(
+    user: *mut c_void,
+    session: u32,
+    channel: u32,
+    tag: c_int,
+) -> c_int {
+    dispatch(user, false, |c| {
+        c.handler
+            .channel_open(&c.inst, SessionId(session), ChannelId(channel), tag)
+    }) as c_int
+}
+unsafe extern "C" fn cb_channel_data(
+    user: *mut c_void,
+    channel: u32,
+    buf: *const c_void,
+    len: usize,
+) {
+    let data = if len == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(buf as *const u8, len)
+    };
+    dispatch(user, (), |c| {
+        c.handler.channel_data(&c.inst, ChannelId(channel), data)
+    })
+}
+unsafe extern "C" fn cb_channel_writable(user: *mut c_void, channel: u32) {
+    dispatch(user, (), |c| {
+        c.handler.channel_writable(&c.inst, ChannelId(channel))
+    })
+}
+unsafe extern "C" fn cb_channel_closed(user: *mut c_void, channel: u32) {
+    dispatch(user, (), |c| {
+        c.handler.channel_closed(&c.inst, ChannelId(channel))
+    })
+}
+
 /* ---------------- the instance ---------------- */
 
 /// An instance, as the handler sees it: every function of npf.h but making
@@ -417,6 +474,10 @@ impl Npf {
         cb.media_open = Some(cb_media_open);
         cb.media_frame = Some(cb_media_frame);
         cb.media_closed = Some(cb_media_closed);
+        cb.channel_open = Some(cb_channel_open);
+        cb.channel_data = Some(cb_channel_data);
+        cb.channel_writable = Some(cb_channel_writable);
+        cb.channel_closed = Some(cb_channel_closed);
 
         let conf_dir = opts.conf_dir.as_deref().map(path_cstr).transpose()?;
         let data_dir = opts.data_dir.as_deref().map(path_cstr).transpose()?;
@@ -1035,6 +1096,36 @@ impl Instance {
         check(unsafe {
             sys::npf_session_send(self.n(), session.0, data.as_ptr().cast(), data.len())
         })
+    }
+
+    /* ---- channels ---- */
+
+    /// Opens a channel to the session's peer: reliable and ordered, a byte
+    /// stream both sides send on. [`ErrorKind::Busy`]: [`CHANNELS_MAX`] per
+    /// instance, or 30 streams (media and channels) opened here per session.
+    pub fn channel_open(&self, session: SessionId, o: &ChannelOpt) -> Result<ChannelId> {
+        let raw = o.to_raw();
+        let mut id = 0u32;
+        check(unsafe { sys::npf_channel_open(self.n(), session.0, &raw, &mut id) })
+            .map(|_| ChannelId(id))
+    }
+    /// Queues all of `data` (1..[`CHANNEL_BUFFER`] bytes) or none:
+    /// [`ErrorKind::Busy`] while [`CHANNEL_BUFFER`] bytes wait to be
+    /// acknowledged, then [`Handler::channel_writable`] comes.
+    pub fn channel_send(&self, channel: ChannelId, data: &[u8]) -> Result<()> {
+        check(unsafe {
+            sys::npf_channel_send(self.n(), channel.0, data.as_ptr().cast(), data.len())
+        })
+    }
+    /// Paused, [`Handler::channel_data`] stops and the peer is held back once
+    /// the window is full; unpaused it goes on.
+    pub fn channel_pause(&self, channel: ChannelId, paused: bool) -> Result<()> {
+        check(unsafe { sys::npf_channel_pause(self.n(), channel.0, paused as c_int) })
+    }
+    /// Closes a channel: what was sent still goes (no `channel_closed` here;
+    /// the peer gets the bytes, then `channel_closed`).
+    pub fn channel_close(&self, channel: ChannelId) -> Result<()> {
+        check(unsafe { sys::npf_channel_close(self.n(), channel.0) })
     }
 
     /* ---- media ---- */

@@ -133,7 +133,7 @@ typedef struct npf_node_hooks {
     int  (*on_media_open)(npf_node *n, npf_call *c, uint32_t media, int tag, void *arg);
     void (*on_media_frame)(npf_node *n, npf_call *c, uint32_t media, const uint8_t *buf, size_t len,
                            uint32_t frame_no, int flags, uint32_t lost_before, void *arg);
-    /* the peer closed or refused a media stream */
+    /* the peer closed or refused a media stream or a channel */
     void (*on_media_closed)(npf_node *n, npf_call *c, uint32_t media, void *arg);
     /* cfg.sig_idle_ms: nonzero while the program needs the connection */
     int  (*busy)(npf_node *n, void *arg);
@@ -147,6 +147,11 @@ typedef struct npf_node_hooks {
     void (*on_enroll_failed)(npf_node *n, const char *error, const char *reason, int retry_s, void *arg);
     /* the signaling connection was lost after a login; the node logs in again by itself */
     void (*on_offline)(npf_node *n, const char *why, void *arg);
+    /* the peer opened channel number chan with tag: 1 takes it, 0 refuses;
+     * bytes of a channel; a channel that refused a send has room again */
+    int  (*on_chan_open)(npf_node *n, npf_call *c, uint32_t chan, int tag, void *arg);
+    void (*on_chan_data)(npf_node *n, npf_call *c, uint32_t chan, const uint8_t *buf, size_t len, void *arg);
+    void (*on_chan_writable)(npf_node *n, npf_call *c, uint32_t chan, void *arg);
 } npf_node_hooks;
 
 /* npf_node.enroll_state */
@@ -465,6 +470,21 @@ uint32_t npf_call_media_open(npf_call *c, const npf_call_media_opt *o, int *err)
 int      npf_call_media_send(npf_call *c, uint32_t media, int flags, const void *buf, size_t len, int64_t t_submit);
 int      npf_call_media_get_stats(npf_call *c, uint32_t media, npf_call_media_stats *out);
 int      npf_call_media_close(npf_call *c, uint32_t media);
+
+typedef struct npf_call_chan_opt {
+    int tag;                        /* the application's, 0..999 */
+    int prio;
+} npf_call_chan_opt;
+
+/* Channels (reliable byte streams, both sides send), numbered with the
+ * media streams: open as npf_call_media_open; send queues all of buf or
+ * nothing (NPF_CALL_EBUSY while NPF_CHANNEL_BUFFER bytes wait, then
+ * on_chan_writable); a paused channel is not read; a closed one is gone at
+ * once for the caller, its data still sent (media.h). */
+uint32_t npf_call_chan_open(npf_call *c, const npf_call_chan_opt *o, int *err);
+int      npf_call_chan_send(npf_call *c, uint32_t chan, const void *buf, size_t len);
+int      npf_call_chan_pause(npf_call *c, uint32_t chan, int paused);
+int      npf_call_chan_close(npf_call *c, uint32_t chan);
 /* Replies to the control request req with status ("ok" / "error"), error
  * and data_json: 0, or -1 when req has no id or it cannot be sent. */
 int  npf_call_ctl_reply(npf_call *c, const char *type, const npf_json *req, const char *status, const char *error,

@@ -13,6 +13,11 @@ pub const MEDIA_SEND_QUEUE: usize = sys::NPF_MEDIA_SEND_QUEUE;
 pub const MEDIA_STREAMS_MAX: usize = sys::NPF_MEDIA_STREAMS_MAX;
 /// Bytes per [`crate::Instance::session_send`].
 pub const SESSION_SEND_MAX: usize = 16384;
+/// Channels, opened here or by peers, across all sessions of an instance.
+pub const CHANNELS_MAX: usize = sys::NPF_CHANNELS_MAX;
+/// Bytes a channel holds unacknowledged before [`crate::Instance::channel_send`]
+/// is refused ([`crate::ErrorKind::Busy`]); also the most one call sends.
+pub const CHANNEL_BUFFER: usize = sys::NPF_CHANNEL_BUFFER;
 
 macro_rules! id {
     ($(#[$m:meta])* $name:ident) => {
@@ -30,6 +35,8 @@ id!(/// A session with a peer.
     SessionId);
 id!(/// A media stream, sending or receiving.
     MediaId);
+id!(/// A channel: a reliable byte stream both sides send on.
+    ChannelId);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(i32)]
@@ -703,6 +710,35 @@ impl MediaOpt {
         o.fec_ratio = self.fec_ratio;
         o.latency_rtt = self.latency_rtt;
         o.rcv_drop_until_key = self.rcv_drop_until_key as i32;
+        o
+    }
+}
+
+/// A channel's options (`npf_channel_opt`). [`ChannelOpt::new`] has the
+/// library's defaults.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChannelOpt {
+    /// the application's channel kind, 0..999 (the peer's `channel_open` gets it)
+    pub tag: i32,
+    /// 0 (first) .. 3; default 2, with the forwards' data
+    pub prio: i32,
+}
+
+impl ChannelOpt {
+    pub fn new(tag: i32) -> Self {
+        let mut o: sys::npf_channel_opt = unsafe { std::mem::zeroed() };
+        unsafe {
+            sys::npf_channel_opt_init_size(&mut o, std::mem::size_of::<sys::npf_channel_opt>())
+        };
+        ChannelOpt { tag, prio: o.prio }
+    }
+    pub(crate) fn to_raw(self) -> sys::npf_channel_opt {
+        let mut o: sys::npf_channel_opt = unsafe { std::mem::zeroed() };
+        unsafe {
+            sys::npf_channel_opt_init_size(&mut o, std::mem::size_of::<sys::npf_channel_opt>())
+        };
+        o.tag = self.tag;
+        o.prio = self.prio;
         o
     }
 }

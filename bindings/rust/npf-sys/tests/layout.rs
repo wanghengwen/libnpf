@@ -8,7 +8,7 @@ extern "C" {
     static npf_sys_layout_count: usize;
 }
 
-const N: usize = 188;
+const N: usize = 196;
 
 #[test]
 fn layout_matches_c() {
@@ -41,6 +41,22 @@ fn layout_matches_c() {
         (
             offset_of!(npf_callbacks, media_closed),
             "npf_callbacks.media_closed",
+        ),
+        (
+            offset_of!(npf_callbacks, channel_open),
+            "npf_callbacks.channel_open",
+        ),
+        (
+            offset_of!(npf_callbacks, channel_data),
+            "npf_callbacks.channel_data",
+        ),
+        (
+            offset_of!(npf_callbacks, channel_writable),
+            "npf_callbacks.channel_writable",
+        ),
+        (
+            offset_of!(npf_callbacks, channel_closed),
+            "npf_callbacks.channel_closed",
         ),
         (size_of::<npf_setup>(), "sizeof npf_setup"),
         (offset_of!(npf_setup, size), "npf_setup.size"),
@@ -393,6 +409,10 @@ fn layout_matches_c() {
             offset_of!(npf_media_stats, capacity_short),
             "npf_media_stats.capacity_short",
         ),
+        (size_of::<npf_channel_opt>(), "sizeof npf_channel_opt"),
+        (offset_of!(npf_channel_opt, size), "npf_channel_opt.size"),
+        (offset_of!(npf_channel_opt, tag), "npf_channel_opt.tag"),
+        (offset_of!(npf_channel_opt, prio), "npf_channel_opt.prio"),
     ];
     let (c, count) = unsafe { (&npf_sys_layout, npf_sys_layout_count) };
     assert_eq!(count, N, "csrc/layout.c and this list differ in length");

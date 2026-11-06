@@ -1,5 +1,5 @@
 /* libnpf: the engine's events, the node's and the peers' callbacks, and the
- * sessions and media streams by number */
+ * sessions, media streams and channels by number */
 #ifndef _WIN32
 #define _GNU_SOURCE
 #endif
@@ -63,7 +63,7 @@ void npf_ev_account(npf_t *n)
     emit_account(n, "account", -1);
 }
 
-/* ---- sessions and media streams by number ---- */
+/* ---- sessions, media streams and channels by number ---- */
 
 uint32_t npf_session_of(npf_t *n, npf_call *call)
 {
@@ -107,10 +107,14 @@ static uint32_t sess_add(npf_t *n, npf_call *call)
 static void med_drop(npf_t *n, int i, int tell)
 {
     uint32_t id = n->med[i].id;
+    int chan = n->med[i].chan;
     npf_api_lock(n);                         /* npf_media_send looks at the registry from any thread */
+    n->nchan -= chan;
     n->med[i] = n->med[--n->nmed];
     npf_api_unlock(n);
-    if (tell && n->cb.media_closed)
+    if (tell && chan && n->cb.channel_closed)
+        n->cb.channel_closed(n->cb.user, id);
+    else if (tell && !chan && n->cb.media_closed)
         n->cb.media_closed(n->cb.user, id);
 }
 
@@ -320,20 +324,31 @@ static void on_app_data(npf_node *node, npf_call *call, const uint8_t *buf, size
         n->cb.data(n->cb.user, id, buf, len);
 }
 
-static int on_media_open(npf_node *node, npf_call *call, uint32_t lid, int tag, void *arg)
+/* the peer's new media stream or channel: numbered, the application asks */
+static int peer_open(npf_t *n, npf_call *call, uint32_t lid, int tag, int chan)
 {
-    npf_t *n = arg;
+    int (*fn)(void *, uint32_t, uint32_t, int) = chan ? n->cb.channel_open : n->cb.media_open;
     uint32_t sid, id;
-    (void)node;
     sid = npf_session_of(n, call);          /* (a stream of a session gone was never removed) */
-    if (!sid || npf_call_state(call) != NPF_CALL_ESTABLISHED || !n->cb.media_open
-        || !(id = npf_media_add(n, sid, call, lid)))
+    if (!sid || npf_call_state(call) != NPF_CALL_ESTABLISHED || !fn || !(id = npf_media_add(n, sid, call, lid, chan)))
         return 0;
-    if (!n->cb.media_open(n->cb.user, sid, id, tag)) {
+    if (!fn(n->cb.user, sid, id, tag)) {
         npf_media_forget(n, id);
         return 0;
     }
-    return npf_media_find(n, id) != NULL;
+    return (chan ? npf_chan_find(n, id) : npf_media_find(n, id)) != NULL;   /* (closed in the callback) */
+}
+
+static int on_media_open(npf_node *node, npf_call *call, uint32_t lid, int tag, void *arg)
+{
+    (void)node;
+    return peer_open(arg, call, lid, tag, 0);
+}
+
+static int on_chan_open(npf_node *node, npf_call *call, uint32_t lid, int tag, void *arg)
+{
+    (void)node;
+    return peer_open(arg, call, lid, tag, 1);
 }
 
 static int med_find(npf_t *n, npf_call *call, uint32_t lid)
@@ -369,34 +384,67 @@ static void on_media_closed(npf_node *node, npf_call *call, uint32_t lid, void *
         med_drop(n, i, 1);
 }
 
-uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid)
+static void on_chan_data(npf_node *node, npf_call *call, uint32_t lid, const uint8_t *buf, size_t len, void *arg)
+{
+    npf_t *n = arg;
+    int i = med_find(n, call, lid);
+    (void)node;
+    if (i >= 0 && n->med[i].chan && n->cb.channel_data)
+        n->cb.channel_data(n->cb.user, n->med[i].id, buf, len);
+}
+
+static void on_chan_writable(npf_node *node, npf_call *call, uint32_t lid, void *arg)
+{
+    npf_t *n = arg;
+    int i = med_find(n, call, lid);
+    (void)node;
+    if (i >= 0 && n->med[i].chan && n->cb.channel_writable)
+        n->cb.channel_writable(n->cb.user, n->med[i].id);
+}
+
+uint32_t npf_media_add(npf_t *n, uint32_t session, npf_call *call, uint32_t lid, int chan)
 {
     uint32_t id;
+    chan = chan != 0;
     npf_api_lock(n);
-    if (n->nmed >= NPF_MAX_MEDIA || (!n->med && !(n->med = calloc(NPF_MAX_MEDIA, sizeof *n->med)))) {
+    if ((chan ? n->nchan >= NPF_MAX_CHAN : n->nmed - n->nchan >= NPF_MAX_MEDIA)
+        || (!n->med && !(n->med = calloc(NPF_MAX_MEDIA + NPF_MAX_CHAN, sizeof *n->med)))) {
         npf_api_unlock(n);
         return 0;
     }
     if (!++n->next_med)
         n->next_med = 1;
     id = n->next_med;
-    n->med[n->nmed++] = (npf_med){.id = id, .session = session, .call = call, .lid = lid};
+    n->med[n->nmed++] = (npf_med){.id = id, .session = session, .call = call, .lid = lid, .chan = chan};
+    n->nchan += chan;
     npf_api_unlock(n);
     return id;
 }
 
-npf_med *npf_media_find(npf_t *n, uint32_t id)
+static npf_med *reg_find(npf_t *n, uint32_t id, int chan)
 {
     int i;
     for (i = 0; id && i < n->nmed; i++)
         if (n->med[i].id == id)
-            return &n->med[i];
+            return n->med[i].chan == chan ? &n->med[i] : NULL;
     return NULL;
+}
+
+npf_med *npf_media_find(npf_t *n, uint32_t id)
+{
+    return reg_find(n, id, 0);
+}
+
+npf_med *npf_chan_find(npf_t *n, uint32_t id)
+{
+    return reg_find(n, id, 1);
 }
 
 void npf_media_forget(npf_t *n, uint32_t id)
 {
-    npf_med *m = npf_media_find(n, id);
+    npf_med *m = reg_find(n, id, 0);
+    if (!m)
+        m = reg_find(n, id, 1);
     if (m)
         med_drop(n, (int)(m - n->med), 0);
 }
@@ -467,7 +515,7 @@ int npf_engine_node_init(npf_t *n, const npf_node_cfg *cfg)
 {
     npf_node_hooks hooks = {on_login, on_call_state, on_paired, on_event, on_enrolled, on_app_data, on_media_open,
                             on_media_frame, on_media_closed, sig_busy, on_resources, on_net_change,
-                            on_enroll_failed, on_offline};
+                            on_enroll_failed, on_offline, on_chan_open, on_chan_data, on_chan_writable};
     int r = npf_node_init(&n->node, n->loop, cfg, &n->id, &hooks, n);
     if (r < 0)
         return r;

@@ -76,3 +76,4 @@ npf.start()?;
 - 回调里的 panic 在 C 边界被截住，不会跨过 C 的栈展开。
 - `NPF_ESAVE`（已生效，但 `local.json` / `state.json` 没写成）返回 `Ok`；`NodeInfo::unsaved` 和 `Instance::save` 用来查看和重写。
 - `media_send` 从其他线程调用时只是入队，不等待；队列满时返回 `ErrorKind::Busy`。
+- `channel_send` 与其他接口一样等实例线程排好队（不等网络）；通道里未确认的字节达到 `CHANNEL_BUFFER` 时返回 `ErrorKind::Busy`，之后 `Handler::channel_writable` 通知可以再发。

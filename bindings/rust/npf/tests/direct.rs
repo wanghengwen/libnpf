@@ -1,6 +1,7 @@
 //! Two direct instances on loopback, no platform: A listens with a
-//! pre-shared key and echoes application data; B connects, sends data and a
-//! stream of media frames, and reads its stream statistics.
+//! pre-shared key and echoes application data and channel bytes; B connects,
+//! sends data, bytes over a channel and a stream of media frames, and reads
+//! its stream statistics.
 
 use npf::*;
 use std::path::PathBuf;
@@ -17,6 +18,9 @@ enum Ev {
     Opened(MediaId, i32),
     Frame(MediaId, usize, FrameInfo, u8),
     Closed(MediaId),
+    ChOpened(ChannelId, i32),
+    ChData(ChannelId, Vec<u8>),
+    ChClosed(ChannelId),
 }
 
 struct H {
@@ -48,6 +52,19 @@ impl Handler for H {
     }
     fn media_closed(&self, _: &Instance, m: MediaId) {
         let _ = self.tx.send(Ev::Closed(m));
+    }
+    fn channel_open(&self, _: &Instance, _s: SessionId, ch: ChannelId, tag: i32) -> bool {
+        let _ = self.tx.send(Ev::ChOpened(ch, tag));
+        tag == TAG
+    }
+    fn channel_data(&self, npf: &Instance, ch: ChannelId, data: &[u8]) {
+        if self.echo {
+            npf.channel_send(ch, data).expect("echo on the channel");
+        }
+        let _ = self.tx.send(Ev::ChData(ch, data.to_vec()));
+    }
+    fn channel_closed(&self, _: &Instance, ch: ChannelId) {
+        let _ = self.tx.send(Ev::ChClosed(ch));
     }
 }
 
@@ -148,6 +165,36 @@ fn direct_data_and_media() {
             .unwrap_err()
             .kind,
         ErrorKind::TooBig
+    );
+
+    // a channel: bytes there and back (A echoes), then closed
+    let ch = b.channel_open(sb, &ChannelOpt::new(TAG)).unwrap();
+    let sent: Vec<u8> = (0..1u32 << 20).map(|i| (i ^ (i >> 8)) as u8).collect();
+    for piece in sent.chunks(64 << 10) {
+        b.channel_send(ch, piece).unwrap();
+    }
+    let mut back = Vec::new();
+    wait(&rxb, "the channel's echo", |e| {
+        if let Ev::ChData(id, d) = e {
+            assert_eq!(id, ch);
+            back.extend_from_slice(&d);
+        }
+        (back.len() >= sent.len()).then_some(())
+    });
+    assert!(back == sent, "the bytes came back intact, in order");
+    assert_eq!(
+        b.channel_send(ch, &vec![0u8; CHANNEL_BUFFER + 1])
+            .unwrap_err()
+            .kind,
+        ErrorKind::TooBig
+    );
+    b.channel_close(ch).unwrap();
+    wait(&rxa, "channel_closed at A", |e| {
+        matches!(e, Ev::ChClosed(_)).then_some(())
+    });
+    assert_eq!(
+        b.channel_send(ch, b"x").unwrap_err().kind,
+        ErrorKind::NotFound
     );
 
     // a refused stream, then frames on a taken one

@@ -432,9 +432,21 @@ static void anl_drain_with(npf_call *c, char *buf, size_t cap)
 {
     anl_stream_t *rd[64];                   /* every stream at once (8: the rest waited for the next datagram) */
     int n, i;
+    unsigned gen = npf_media_gen(c->media);
     n = anl_readable(c->anl, rd, 64);
     for (i = 0; i < n && i < 64; i++) {
-        int ctrl = rd[i] == anl_default_stream(c->anl);
+        int ctrl;
+        if (npf_media_gen(c->media) != gen) {
+            /* an application's callback closed a stream (npf_media_close,
+             * npf_channel_close): rd may hold its released handle. The list
+             * again (from the start: what was read has nothing left); each
+             * stream closes once, so this ends */
+            gen = npf_media_gen(c->media);
+            n = anl_readable(c->anl, rd, 64);
+            i = -1;
+            continue;
+        }
+        ctrl = rd[i] == anl_default_stream(c->anl);
         if (!ctrl && rd[i] != c->stream) {
             if (npf_udpf_is_stream(c->udp, rd[i])) {
                 npf_udpf_drain(c->udp, rd[i]);
@@ -484,7 +496,7 @@ static void anl_drain(npf_call *c)
     if (!c->anl)
         return;
     dpend_send(c);
-    if (c->media && npf_media_poll(c->media) < 0)  /* the peer's new media streams: taken or not */
+    if (c->media && npf_media_poll(c->media) < 0)  /* the peer's new streams taken or not, channels' room */
         return;
     if (!(buf = npf_scratch(ANL_MSG_MAX)))     /* kept by the thread between uses (sys.h): no larger than needed */
         return;
@@ -633,7 +645,29 @@ static int m_ended(void *arg)
     return call_over(arg);
 }
 
-static const npf_media_io media_io = {anl_kick, m_open, m_frame, m_closed, m_ended};
+static int m_chan_open(void *arg, uint32_t id, int tag)
+{
+    npf_call *c = arg;
+    return c->n->hooks.on_chan_open && c->n->hooks.on_chan_open(c->n, c, id, tag, c->n->hook_arg);
+}
+
+static void m_chan_data(void *arg, uint32_t id, const uint8_t *buf, size_t len)
+{
+    npf_call *c = arg;
+    c->rx_bytes += len;
+    if (c->n->hooks.on_chan_data)
+        c->n->hooks.on_chan_data(c->n, c, id, buf, len, c->n->hook_arg);
+}
+
+static void m_chan_writable(void *arg, uint32_t id)
+{
+    npf_call *c = arg;
+    if (c->n->hooks.on_chan_writable)
+        c->n->hooks.on_chan_writable(c->n, c, id, c->n->hook_arg);
+}
+
+static const npf_media_io media_io = {anl_kick, m_open, m_frame, m_closed, m_ended,
+                                      m_chan_open, m_chan_data, m_chan_writable};
 
 /* the session's media streams, made on first use */
 npf_media *call_media_of(npf_call *c)
@@ -1033,4 +1067,33 @@ int npf_call_media_close(npf_call *c, uint32_t media)
 {
     int r = media_err(c);
     return r ? r : npf_media_close_stream(c->media, media);
+}
+
+uint32_t npf_call_chan_open(npf_call *c, const npf_call_chan_opt *o, int *err)
+{
+    npf_media *m;
+    if (!call_up(c) || !(m = call_media_of(c))) {
+        *err = NPF_CALL_ESTATE;
+        return 0;
+    }
+    return npf_media_open_chan(m, o, err);
+}
+
+int npf_call_chan_send(npf_call *c, uint32_t chan, const void *buf, size_t len)
+{
+    int r = media_err(c);
+    if (!r && (r = npf_media_chan_send(c->media, chan, buf, len)) == 0)
+        c->tx_bytes += len;
+    return r;
+}
+
+int npf_call_chan_pause(npf_call *c, uint32_t chan, int paused)
+{
+    int r = media_err(c);
+    return r ? r : npf_media_chan_pause(c->media, chan, paused);
+}
+
+int npf_call_chan_close(npf_call *c, uint32_t chan)
+{
+    return npf_call_media_close(c, chan);   /* the same table (media.h) */
 }

@@ -1,6 +1,6 @@
 # libnpf 开发者指南
 
-文档版本：2.10。更新日期：2026-11-02。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。2.6：库填写的结构体（`*_info`、`npf_media_stats`、列表元素）不再带 `size`，也没有 `_init`，由查询的宏传调用方的 `sizeof`（第 2 节）；`npf_media_open` 与其他创建函数一样返回错误码、经输出参数给出编号；`npf_peer_remove_id` 改名 `npf_peer_remove`；`npf_media_opt_default` 改名 `npf_media_opt_init`，保留未用的 `rcv_deadline_ms` 去掉；`no_log_ring` 改为开关 `NPF_OPT_NO_LOG_RING`；`NPF_PLATFORM` 为 4；模块的 `status_json` 钩子不再有 `first` 参数（第 12 节）。2.7：模块的配置键是 `npf_key` 表（`check` 钩子去掉），模块只包含 `npf/module.h`（`npf_int.h` 去掉），应答回调拿 `npf_env`（第 12 节）。2.8：`npf_pairing` 带角色 `admin`，分享码与远程管理（第 5 节，security.md 8.6）。2.9：账户之间的分享去掉，平台的授权只给设备所有者（security.md 0.41）。2.10：安全审计的修正（security.md 0.42 起）：配对的猜测次数、所有者的授权、`state.json` 的读入、远程管理的日志、未证明的直连路径。文档版本与库版本、`NPF_API_VERSION` 分别编号。
+文档版本：2.11。更新日期：2026-11-06。2.3 去掉了类型化事件（`npf_callbacks.notify`、`npf_event`、`NPF_EV_*`）：事件只有 `event`（名称与 JSON）和 `session` 两个回调，第 10 节；示例相应改写。2.4 把命令行的文字移出库：库自己的命令只剩 `set` 和 `netcheck`，`status`、`show` 等的文字由程序的模块给出（第 9、12 节）。2.5：WS 中转上的媒体流也是 AnLiu 流（数据通道 0.43），`NPF_MEDIA_WS_FRAME_MAX` 去掉。2.6：库填写的结构体（`*_info`、`npf_media_stats`、列表元素）不再带 `size`，也没有 `_init`，由查询的宏传调用方的 `sizeof`（第 2 节）；`npf_media_open` 与其他创建函数一样返回错误码、经输出参数给出编号；`npf_peer_remove_id` 改名 `npf_peer_remove`；`npf_media_opt_default` 改名 `npf_media_opt_init`，保留未用的 `rcv_deadline_ms` 去掉；`no_log_ring` 改为开关 `NPF_OPT_NO_LOG_RING`；`NPF_PLATFORM` 为 4；模块的 `status_json` 钩子不再有 `first` 参数（第 12 节）。2.7：模块的配置键是 `npf_key` 表（`check` 钩子去掉），模块只包含 `npf/module.h`（`npf_int.h` 去掉），应答回调拿 `npf_env`（第 12 节）。2.8：`npf_pairing` 带角色 `admin`，分享码与远程管理（第 5 节，security.md 8.6）。2.9：账户之间的分享去掉，平台的授权只给设备所有者（security.md 0.41）。2.10：安全审计的修正（security.md 0.42 起）：配对的猜测次数、所有者的授权、`state.json` 的读入、远程管理的日志、未证明的直连路径。2.11：数据通道 `npf_channel_*`（第 11 节）：会话里可靠的字节流，与媒体流一样是一条 AnLiu 流。文档版本与库版本、`NPF_API_VERSION` 分别编号。
 
 本文面向在设备固件或客户端应用中集成 libnpf 的开发者。安装包提供的公开头文件是 [npf.h](../../include/npf.h)，应用写 `#include <npf.h>` 即可。第 3–11 节介绍公开 SDK；第 12 节介绍需要参与源码构建的内部模块，两种集成方式的接口边界不同。
 
@@ -21,6 +21,7 @@
 | 对端 | 本实例主动连接的一方（设备编号，或直连的地址与密钥），一个 `uint32_t` 编号；可以保存，下次启动时恢复 |
 | 转发 | 一个对端上的端口转发：本地（`NPF_FWD_LOCAL`，本地端口到对方的服务）、SOCKS5 代理（`NPF_FWD_SOCKS`）、反向（`NPF_FWD_REMOTE`，对方开端口连回本地），也是一个编号 |
 | 应用数据 | 会话控制通道上的消息：可靠、有序，每条不超过 16384 字节 |
+| 数据通道 | 会话中的可靠字节流（像 TCP），双方都可以发，可以多路同时进行、反复开关；发送方有背压，接收方可以暂停 |
 | 媒体流 | 会话中的音视频帧流，可以多路同时进行、反复开关：迟到丢帧、关键帧、FEC、带宽估计 |
 
 ## 2. 构建与集成
@@ -63,7 +64,7 @@ LD_LIBRARY_PATH=./install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ./app
 
 - `NPF_API_VERSION` 为 1，soname 为 `libnpf.so.1`；不兼容的修改会提高 soname；
 - 结构体只在末尾增加字段，库按双方构建都知道的部分读写；
-- 应用交给库的结构体（`npf_options`、`npf_callbacks`、`npf_setup`、`npf_peer_opt`、`npf_forward_opt`、`npf_resource`、`npf_media_opt`）以 `size` 开头，用各自的 `*_init` 宏初始化：宏把调用方的 `sizeof` 传给库（`npf_options_init_size` 等），库写入默认值，只写这么多字节；读取时缺少的尾部字段用默认值；
+- 应用交给库的结构体（`npf_options`、`npf_callbacks`、`npf_setup`、`npf_peer_opt`、`npf_forward_opt`、`npf_resource`、`npf_media_opt`、`npf_channel_opt`）以 `size` 开头，用各自的 `*_init` 宏初始化：宏把调用方的 `sizeof` 传给库（`npf_options_init_size` 等），库写入默认值，只写这么多字节；读取时缺少的尾部字段用默认值；
 - 库填写的结构体（`npf_peer_info`、`npf_forward_info`、`npf_node_info`、`npf_session_info`、`npf_media_stats`、列表元素 `npf_resource_info`、`npf_pairing`）没有 `size`，不用初始化：查询的宏（`npf_peer_get`、`npf_resource_list` 等）把调用方的 `sizeof` 传给库（`npf_peer_get_size` 等），库只写这么多字节，多出的尾部清零。列表按调用方的元素大小定位每个元素，旧程序较小的元素也一样；
 - `npf_endpoint`、`npf_frame_info` 等小结构不扩展；
 - 事件是名称加 JSON：新版本可能增加事件和 JSON 键，应用忽略不认识的即可。
@@ -200,7 +201,7 @@ npf_destroy(cli);
 ```
 
 - `session` 回调（`up = 1`）带会话编号，`npf_session_get` 查它属于哪个对端；事件 `forward`（`"up": true`）之后浏览器打开 `http://127.0.0.1:端口` 就是设备上的页面；
-- `npf_session_send(cli, session, buf, len)` 发送应用数据，对方的 `data` 回调收到；`npf_media_open` / `npf_media_send` 发送音视频（第 11 节）；
+- `npf_session_send(cli, session, buf, len)` 发送应用数据，对方的 `data` 回调收到；`npf_channel_open` / `npf_channel_send` 在数据通道上传字节流，`npf_media_open` / `npf_media_send` 发送音视频（第 11 节）；
 - 第一次连接用口令配对，之后库在 `data_dir/local.json` 里记住对方的公钥。设备被重置、换了密钥时，对端进入 `NPF_PEER_ENDED`，`needs` 带 `NPF_NEED_PAIRING_LOST`，要用 `npf_peer_setopt` 的 `NPF_PEER_OPT_PASSWORD` 给它现在的口令。
 
 ### 3.3 不经平台的直连
@@ -399,13 +400,13 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 - **回调与内存**：运行期间的业务回调在实例线程串行执行，可以调用本实例允许在当前状态使用的 API，不要阻塞。回调参数只在本次调用期间有效；库函数返回的 JSON 和文本用 `npf_free` 释放。启动前的同步命令回调以及初始化、销毁期间的日志回调可能在调用线程执行，不能假定全部回调都来自后台线程；
 - **多个实例**：默认各自使用后台线程，日志级别、最近日志和 `log` 回调独立；共享运行时可以让多个实例共用线程。任何回调都应避免同步等待另一实例，以防形成循环等待；
 - **共享运行时**：实例很多时（例如服务器上为每个用户开一个），`npf_runtime_new(threads)` 建一组线程，`npf_options.runtime` 指向它，`npf_create` 时选定实例最少的线程，`npf_start` 在那里运行（这样的实例不能 `npf_run`：`NPF_ESTATE`）。回调不能阻塞：在运行时的线程上，调用另一线程上的实例返回 `NPF_ESTATE`（返回文字的函数为 NULL），`npf_destroy` 被拒绝，都记一行错误日志，而不是等待（两个线程各自等对方就会永远等下去）；同一线程上的实例和自己照常调用；`npf_runtime_free` 在最后一个实例销毁之后调用；
-- 对端、转发、会话和媒体流都使用实例内的整数 ID，0 表示没有对象。ID 不能跨实例或跨重启使用；对象结束或删除后应丢弃其 ID。查询不存在的对象返回 `NPF_ENOENT`，查询仍需遵守实例运行状态限制。
+- 对端、转发、会话、数据通道和媒体流都使用实例内的整数 ID，0 表示没有对象。ID 不能跨实例或跨重启使用；对象结束或删除后应丢弃其 ID。查询不存在的对象返回 `NPF_ENOENT`，查询仍需遵守实例运行状态限制。
 
 ## 9. 接口一览
 
 | 类别 | 函数 |
 |---|---|
-| 初始化（宏，各有 `_init_size` 函数） | `npf_options_init`、`npf_callbacks_init`、`npf_setup_init`、`npf_peer_opt_init`、`npf_forward_opt_init`、`npf_resource_init`、`npf_media_opt_init`；查询与列表的宏传结构体大小（`npf_peer_get` → `npf_peer_get_size` 等） |
+| 初始化（宏，各有 `_init_size` 函数） | `npf_options_init`、`npf_callbacks_init`、`npf_setup_init`、`npf_peer_opt_init`、`npf_forward_opt_init`、`npf_resource_init`、`npf_media_opt_init`、`npf_channel_opt_init`；查询与列表的宏传结构体大小（`npf_peer_get` → `npf_peer_get_size` 等） |
 | 生命周期 | `npf_create`、`npf_start` / `npf_run`、`npf_stop`、`npf_destroy`、`npf_free`、`npf_version`、`npf_api_version`、`npf_runtime_new` / `npf_runtime_free` |
 | 对端 | `npf_peer_create`、`npf_peer_remove`、`npf_peer_find`、`npf_peer_list`、`npf_peer_get`、`npf_peer_setopt`、`npf_peer_connect_now` |
 | 转发 | `npf_forward_create`、`npf_forward_remove`、`npf_forward_list`、`npf_forward_get`、`npf_forward_setopt` |
@@ -417,6 +418,7 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 | 命令 | `npf_command(argv)`：库自己的 `set`、`netcheck` 和程序的模块的命令，结果文本和退出码交给回调 |
 | 平台请求 | `npf_request(type, data, key_proof, cb)`：账户、设备、分享码等请求（信令协议的 `account_*`、`device_*`、`share_resolve` 等），应答 JSON 整个交给回调。库不知道这些名字：任何类型都照原样发出，带信封字段 `app`，平台只处理其中的平台请求，库自己的信令回 `unsupported_type`；账户会话和证书由库按平台的 `account` 事件保存（信令协议 0.66） |
 | 应用数据 | `npf_session_send` |
+| 数据通道 | `npf_channel_open`、`npf_channel_send`、`npf_channel_pause`、`npf_channel_close`，回调 `channel_open`、`channel_data`、`channel_writable`、`channel_closed` |
 | 音视频 | `npf_media_open`、`npf_media_send`、`npf_media_stats_get`、`npf_media_close`，回调 `media_open`、`media_frame`、`media_closed` |
 
 **常用返回码**：
@@ -479,14 +481,42 @@ local.json 写入失败时返回 `NPF_ESAVE`，运行变更已经生效，可以
 - 回调在实例线程中串行执行，由库在产生事件的工作里直接调用，不排队。任何回调里都可以删除对端（`npf_peer_remove`），包括这个对端自己的 `peer_done` 和 `forward`：对端在下一轮才释放，库里还在处理它的代码看到它已删除就停下，之后不再有它的事件；
 - `forward`、`peer_done` 的 `peer` 是对端的目标名（编号或 `HOST:PORT`），`npf_peer_find` 得到 ID，`npf_peer_get` 读出 `ctx`。事件里不带 `ctx`；
 - 对端的其他状态变化（连接中、退避等待）、对端或转发被删除、单条连接被对端拒绝都没有事件：需要时用 `npf_peer_get`（`state`、`needs`、`retry_in_ms`）和 `npf_forward_get`（`refused`）查询；
-- 新建转发时它的 `forward` 事件（`"up": false`）在 `npf_start` 之前就会送达；会话回调只在运行中出现。`session` 的建立先于这个会话的 `data` 和媒体回调；
+- 新建转发时它的 `forward` 事件（`"up": false`）在 `npf_start` 之前就会送达；会话回调只在运行中出现。`session` 的建立先于这个会话的 `data`、数据通道和媒体回调；
 - 库不负责释放 `ctx`，事件也不用它：删除对象（`npf_peer_remove`、`npf_forward_remove`）返回后应用即可释放它的上下文；对端的会话结束仍经 `session` 回调送达。运行结束（`stopped`）或 `npf_destroy` 返回之后，应用释放剩下的上下文。从未运行的实例不会产生 `stopped`。
 
-`data`、媒体回调和 `log` 按各自用途调用。
+`data`、数据通道与媒体的回调和 `log` 按各自用途调用。
 
-## 11. 应用数据与音视频
+## 11. 应用数据、数据通道与音视频
 
-**应用数据**：`npf_session_send` 在会话控制通道上发送，可靠、有序，每条不超过 16384 字节；对方通过 `data` 回调接收。它优先于端口转发数据，适合小型业务消息和通知；持续的大流量传输应使用转发，避免占用控制通道。
+**应用数据**：`npf_session_send` 在会话控制通道上发送，可靠、有序，每条不超过 16384 字节；对方通过 `data` 回调接收。它优先于端口转发数据，适合小型业务消息和通知；持续的大流量传输应使用数据通道或转发，避免占用控制通道。
+
+**数据通道**
+
+数据通道和媒体流是同一件事的两种用法：都是会话里一条自己的 AnLiu 流，媒体流按帧、半可靠，数据通道按字节流、可靠（AnLiu 的 `ANL_RELIABLE` 字节流模式，像 TCP）。
+
+- 打开：`npf_channel_open(n, session, &opt, &channel)` 在 `channel` 里给出通道编号；对方的 `channel_open` 回调收到 `tag`（应用自定的通道类型，0–999），返回 1 接受、0 拒绝（没有这个回调时全部拒绝）。被拒绝时打开方收到 `channel_closed`；
+- 双向：接受之后双方都在这个通道上 `npf_channel_send`、都从 `channel_data` 收；
+- 发送：`npf_channel_send(n, channel, buf, len)` 把 `len`（1 到 `NPF_CHANNEL_BUFFER`）字节整个排进发送队列，或一个也不排。与其他接口一样在实例线程上执行、调用方等待，但不等网络：返回后缓冲区可以复用；
+- **背压**：通道里还没被对方确认的字节达到 `NPF_CHANNEL_BUFFER`（2 MiB）时返回 `NPF_EBUSY`，降到一半以下时 `channel_writable` 回调通知，应用再发。没被拒绝过就不会有 `channel_writable`；
+- 接收：`channel_data(user, channel, buf, len)` 按顺序收到字节；这是字节流，回调的切分与发送方每次 `npf_channel_send` 的大小无关，应用自己定消息边界。每次回调最多 64 KiB；
+- 暂停：`npf_channel_pause(n, channel, 1)` 后不再有 `channel_data`，对方的字节在本端 AnLiu 里等着，窗口满了对方的发送就慢下来，最后得到 `NPF_EBUSY`；`npf_channel_pause(n, channel, 0)` 继续，等着的字节随即送达。适合写得比收得慢的场合（例如写磁盘）；
+- 关闭：`npf_channel_close` 之后这个通道在本端就没有了（编号作废，也不再有 `channel_closed`），但已经发出的字节照样送完：对方先收到全部字节，再收到 `channel_closed`。对方还在路上的字节丢弃。对方一直暂停、字节送不完时最多再等 30 秒；会话结束时没送完的丢失；
+- 对方关闭、拒绝或会话结束时收到 `channel_closed`；之后 `npf_channel_send` 返回 `NPF_ENOENT`（对方已关闭而回调还没到时为 `NPF_ESTATE`）；
+- 数据通道和媒体流的编号互不通用：`npf_media_send` 用在数据通道上返回 `NPF_ENOENT`，反过来也一样。
+
+**选项**（`npf_channel_opt`，用 `npf_channel_opt_init` 初始化）：
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| `tag` | 0 | 通道类型，对方据此决定是否接受 |
+| `prio` | 2 | 0（最先）到 3；与端口转发的数据相同，音视频（1）优先于它 |
+
+**数据通道的限制**
+
+- 一个实例全部会话合计最多同时 64 个（`NPF_CHANNELS_MAX`），包括对方打开的，与媒体流的 64 路分开计；
+- 一个会话里每一方打开的媒体流与数据通道合计最多 30 条（AnLiu 每个连接 64 条流）；超限返回 `NPF_EBUSY`；
+- 每个通道的接收窗口与媒体流相同，512 段（约 600 KB），单个通道的吞吐约为 600 KB / 往返时延（往返 100 ms 时约 6 MB/s），需要更快时可以开几个通道并行；端口转发的数据流窗口是它的 8 倍；
+- 直连、UDP 中转与 WS 中转都一样，会话换路径时通道不断。
 
 **媒体流**
 

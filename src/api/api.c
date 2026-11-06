@@ -1,5 +1,5 @@
 /* libnpf: npf.h's queries, settings, commands, platform requests, and a
- * session's application data and media streams. Each runs on the
+ * session's application data, channels and media streams. Each runs on the
  * instance's thread (npf_api_op); npf_media_send from another thread only
  * queues a copy. */
 #ifndef _WIN32
@@ -250,7 +250,7 @@ static int open_run(npf_t *n, void *arg)
         return NPF_EINVAL;
     if (!call)
         return NPF_ENOENT;
-    if (n->nmed >= NPF_MAX_MEDIA)
+    if (n->nmed - n->nchan >= NPF_MAX_MEDIA)
         return NPF_EBUSY;
     memset(&co, 0, sizeof co);
     co.tag = o->tag;
@@ -263,7 +263,7 @@ static int open_run(npf_t *n, void *arg)
     co.rcv_drop_until_key = o->rcv_drop_until_key;
     if (!(lid = npf_call_media_open(call, &co, &e)))
         return e ? e : NPF_ESTATE;
-    if (!(media = npf_media_add(n, x->id, call, lid))) {
+    if (!(media = npf_media_add(n, x->id, call, lid, 0))) {
         npf_call_media_close(call, lid);
         return NPF_ENOMEM;
     }
@@ -424,4 +424,94 @@ static int close_run(npf_t *n, void *arg)
 int npf_media_close(npf_t *n, uint32_t media)
 {
     return npf_api_op(n, close_run, &media);
+}
+
+/* ---- sessions: channels ---- */
+
+static int chan_open_run(npf_t *n, void *arg)
+{
+    op_arg *x = arg;
+    const npf_channel_opt *o = x->in;
+    npf_call *call = npf_session_call(n, x->id);
+    npf_call_chan_opt co;
+    uint32_t lid, ch;
+    int e = 0;
+    if (o->tag < 0 || o->tag > 999)
+        return NPF_EINVAL;
+    if (!call)
+        return NPF_ENOENT;
+    if (n->nchan >= NPF_MAX_CHAN)
+        return NPF_EBUSY;
+    co.tag = o->tag;
+    co.prio = o->prio < 0 || o->prio > 3 ? 2 : o->prio;
+    if (!(lid = npf_call_chan_open(call, &co, &e)))
+        return e ? e : NPF_ESTATE;
+    if (!(ch = npf_media_add(n, x->id, call, lid, 1))) {
+        npf_call_chan_close(call, lid);
+        return NPF_ENOMEM;
+    }
+    *(uint32_t *)x->out = ch;
+    return NPF_OK;
+}
+
+int npf_channel_open(npf_t *n, uint32_t session, const npf_channel_opt *o, uint32_t *channel)
+{
+    npf_channel_opt co;
+    op_arg x = {.id = session, .out = channel};
+    if (!channel)
+        return NPF_EINVAL;
+    npf_channel_opt_init(&co);
+    return op_take(n, chan_open_run, &x, &co, sizeof co, o, SIZE_TO(npf_channel_opt, prio),
+                   "npf_channel_opt_init");
+}
+
+static int chan_send_run(npf_t *n, void *arg)
+{
+    s_arg *x = arg;
+    npf_med *m = npf_chan_find(n, x->id);
+    if (!m)
+        return NPF_ENOENT;
+    return npf_call_chan_send(m->call, m->lid, x->buf, x->len);
+}
+
+int npf_channel_send(npf_t *n, uint32_t channel, const void *buf, size_t len)
+{
+    s_arg x = {.id = channel, .buf = buf, .len = len};
+    if (!n || !buf || !len)
+        return NPF_EINVAL;
+    if (len > NPF_CHANNEL_BUFFER)
+        return NPF_ETOOBIG;
+    return npf_api_op(n, chan_send_run, &x);
+}
+
+static int chan_pause_run(npf_t *n, void *arg)
+{
+    s_arg *x = arg;
+    npf_med *m = npf_chan_find(n, x->id);
+    if (!m)
+        return NPF_ENOENT;
+    return npf_call_chan_pause(m->call, m->lid, x->flags);
+}
+
+int npf_channel_pause(npf_t *n, uint32_t channel, int paused)
+{
+    s_arg x = {.id = channel, .flags = paused != 0};
+    return npf_api_op(n, chan_pause_run, &x);
+}
+
+static int chan_close_run(npf_t *n, void *arg)
+{
+    uint32_t id = *(uint32_t *)arg;
+    npf_med *m = npf_chan_find(n, id);
+    int rc;
+    if (!m)
+        return NPF_ENOENT;
+    if ((rc = npf_call_chan_close(m->call, m->lid)) == NPF_OK)
+        npf_media_forget(n, id);
+    return rc;
+}
+
+int npf_channel_close(npf_t *n, uint32_t channel)
+{
+    return npf_api_op(n, chan_close_run, &channel);
 }

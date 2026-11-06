@@ -17,6 +17,10 @@ const size_t npf_sys_layout[] = {
     offsetof(npf_callbacks, media_open),
     offsetof(npf_callbacks, media_frame),
     offsetof(npf_callbacks, media_closed),
+    offsetof(npf_callbacks, channel_open),
+    offsetof(npf_callbacks, channel_data),
+    offsetof(npf_callbacks, channel_writable),
+    offsetof(npf_callbacks, channel_closed),
     sizeof(npf_setup),
     offsetof(npf_setup, size),
     offsetof(npf_setup, roots),
@@ -191,5 +195,9 @@ const size_t npf_sys_layout[] = {
     offsetof(npf_media_stats, peer_frame_delay_max_ms),
     offsetof(npf_media_stats, peer_jitter_ms),
     offsetof(npf_media_stats, capacity_short),
+    sizeof(npf_channel_opt),
+    offsetof(npf_channel_opt, size),
+    offsetof(npf_channel_opt, tag),
+    offsetof(npf_channel_opt, prio),
 };
 const size_t npf_sys_layout_count = sizeof npf_sys_layout / sizeof npf_sys_layout[0];
